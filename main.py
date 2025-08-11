@@ -9,6 +9,7 @@ from collections import defaultdict
 import sys
 import maintenance_gui
 import tempfile # Assicuriamoci che tempfile sia importato (usato in fetch_and_open_document)
+import re
 
 
 # Import per gestire le immagini PNG
