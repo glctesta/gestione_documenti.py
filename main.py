@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+# Corretto l'import per coerenza
 from datetime import datetime
 import pyodbc
 import os
@@ -7,6 +8,7 @@ import subprocess
 from collections import defaultdict
 import sys
 import maintenance_gui
+import tempfile # Assicuriamoci che tempfile sia importato (usato in fetch_and_open_document)
 
 
 # Import per gestire le immagini PNG
@@ -43,8 +45,8 @@ class LanguageManager:
         """Carica le traduzioni dal database."""
         records = self.db.fetch_translations()
         if not records:
-            messagebox.showwarning("Traduzioni Mancanti",
-                                   "Nessuna traduzione trovata nel database. Verrà usato il testo di default.")
+            # Usiamo print inizialmente, messagebox potrebbe non essere disponibile se la GUI principale fallisce
+            print("Traduzioni Mancanti: Nessuna traduzione trovata nel database. Verrà usato il testo di default.")
             return
         for lang_code, key, value in records:
             self.translations[lang_code.lower()][key] = value
@@ -69,7 +71,433 @@ class LanguageManager:
 
 
 class Database:
-    # Da aggiungere alla classe Database in main.py
+    """Gestisce la connessione e le operazioni sul database."""
+
+    def __init__(self, conn_str):
+        self.conn_str = conn_str
+        self.conn = None
+        self.cursor = None
+        self.last_error_details = ""
+
+    # --- METODI DI CONNESSIONE ---
+
+    def connect(self):
+        try:
+            # Usiamo autocommit=False per gestire le transazioni manualmente (commit/rollback)
+            self.conn = pyodbc.connect(self.conn_str, autocommit=False)
+            self.cursor = self.conn.cursor()
+            return True
+        except pyodbc.Error as ex:
+            # L'errore specifico verrà gestito dalla classe App che chiama questo metodo
+            self.last_error_details = str(ex)
+            print(f"Database Connection Error: {ex}")
+            return False
+
+    def disconnect(self):
+        if self.cursor: self.cursor.close()
+        if self.conn: self.conn.close()
+
+        # NUOVO METODO: Cerca documenti esistenti attivi che corrispondono ai parametri
+
+    def fetch_and_open_maintenance_document(self, document_id):
+        """Recupera i dati binari di un documento di manutenzione dal DB, lo salva temporaneamente e lo apre."""
+
+        self.last_error_details = ""  # Resetta l'errore
+
+        try:
+            # Seleziona i dati binari (DocumentSource) e i metadati (FileType, FileName)
+            sql_select = """
+                         SELECT DocumentSource, FileName, FileType
+                         FROM eqp.EquipmentMantainanceDocs
+                         WHERE EquipmentDocumentationId = ? \
+                         """
+            self.cursor.execute(sql_select, document_id)
+            row = self.cursor.fetchone()
+
+            if row and row.DocumentSource:
+                binary_data = row.DocumentSource
+
+                # --- 1. Gestione Robusta dell'Estensione e del Nome File Temporaneo ---
+
+                # Determina l'estensione: Priorità a FileType, fallback su FileName, default a .pdf
+                file_extension = row.FileType if row.FileType else os.path.splitext(row.FileName)[1]
+                if not file_extension:
+                    print(f"Attenzione: Estensione mancante per doc ID {document_id}. Usando default .pdf")
+                    file_extension = '.pdf'  # Default ragionevole
+
+                # Assicurarsi che l'estensione inizi con '.'
+                if not file_extension.startswith('.'):
+                    file_extension = '.' + file_extension
+
+                # Usa una versione pulita del nome file originale come prefisso per facilitare l'identificazione
+                temp_prefix = "doc_"
+                if row.FileName:
+                    # Pulisce il nome del file (rimuove caratteri non sicuri)
+                    safe_name = re.sub(r'[^\w\-]', '_', os.path.splitext(row.FileName)[0])
+                    temp_prefix = safe_name[:50] + "_"  # Limita la lunghezza e aggiunge separatore
+
+                # --- 2. Creazione File Temporaneo ---
+
+                # delete=False è necessario affinché il programma esterno possa aprirlo prima che Python lo elimini
+                temp_file = tempfile.NamedTemporaryFile(prefix=temp_prefix, delete=False, suffix=file_extension)
+                temp_file.write(binary_data)
+                # Chiudi il file handle in Python affinché il sistema operativo possa aprirlo
+                temp_file.close()
+
+                print(f"Apertura del file temporaneo: {temp_file.name}")
+
+                # --- 3. Apertura File (Cross-platform) ---
+                try:
+                    if sys.platform == "win32":
+                        # Metodo specifico per Windows
+                        os.startfile(temp_file.name)
+                    else:
+                        # Fallback per macOS e Linux
+                        opener = "open" if sys.platform == "darwin" else "xdg-open"
+                        subprocess.call([opener, temp_file.name])
+                except Exception as open_e:
+                    self.last_error_details = f"Errore OS nell'apertura del file: {open_e}"
+                    return False
+
+                return True
+            else:
+                self.last_error_details = f"Documento ID {document_id} non trovato o dati binari assenti nel database."
+                return False
+
+        except pyodbc.Error as e:
+            print(f"Errore durante il recupero del documento dal DB: {e}")
+            self.last_error_details = f"Errore Database: {e}"
+            return False
+        except Exception as e:
+            # Gestione errori generici (es. permessi scrittura file temporaneo)
+            print(f"Errore imprevisto durante la gestione del file temporaneo: {e}")
+            self.last_error_details = f"Errore Applicazione (File System): {e}"
+            return False
+
+    def fetch_active_existing_maintenance_docs(self, equipment_id, intervention_id, doc_type_id):
+        """
+        Recupera i documenti esistenti e ATTIVI (DateOut IS NULL) per la configurazione data.
+        Restituisce i risultati ordinati per data (il più recente per primo).
+        """
+        # Query fornita dall'utente, con l'aggiunta di AND DateOut IS NULL e DocDescription per il confronto
+        query = """
+                SELECT [EquipmentDocumentationId], [Filename], DateSys AS DateUpload, Uploadedby, DocDescription
+                FROM [Traceability_RS].[eqp].[EquipmentMantainanceDocs]
+                WHERE ProgrammedInterventionid = ?
+                  AND equipmentid = ?
+                  AND Equipmentmaintenancedoctypeid = ?
+                  AND DateOut IS NULL -- FONDAMENTALE: Controlla solo i documenti attivi
+                ORDER BY DateSys DESC \
+                """
+        try:
+            # L'ordine dei parametri deve corrispondere ai '?' nella query
+            self.cursor.execute(query, intervention_id, equipment_id, doc_type_id)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore nella ricerca di documenti esistenti: {e}")
+            self.last_error_details = str(e)
+            return []
+
+        # NUOVO METODO (Helper privato per l'invalidazione)
+
+    def _invalidate_maintenance_docs(self, doc_ids):
+        """
+        Imposta DateOut = GETDATE() per una lista di EquipmentDocumentationId.
+        (Eseguito all'interno della transazione principale, NON fa commit).
+        """
+        if not doc_ids:
+            return True
+
+        # Crea i placeholders per la clausola IN (?, ?, ...)
+        placeholders = ','.join(['?'] * len(doc_ids))
+        query = f"""
+                   UPDATE [Traceability_RS].[eqp].[EquipmentMantainanceDocs]
+                   SET DateOut = GETDATE()
+                   WHERE EquipmentDocumentationId IN ({placeholders})
+                   """
+        try:
+            self.cursor.execute(query, doc_ids)
+            # Non facciamo commit qui, lo fa la funzione principale
+            return True
+        except pyodbc.Error as e:
+            print(f"Errore nell'invalidazione documenti: {e}")
+            self.last_error_details = str(e)
+            # Non facciamo rollback qui, lo fa la funzione principale
+            return False
+
+    # --- METODI PER MANUTENZIONE (CORRETTI E CONSOLIDATI) ---
+    # (Rimosse le definizioni multiple e duplicate presenti nel codice originale)
+    def fetch_specific_maintenance_doc_types(self):
+        """Recupera i tipi di documento specifici (ID 1, 2, 5)."""
+        query = """
+                SELECT [EquipmentMaintenanceDocTypeId]
+                      ,[DocumentType]
+                FROM [Traceability_RS].[eqp].[EquipmentMaintenanceDocTypes]
+                WHERE [EquipmentMaintenanceDocTypeId] IN (1,2,5)
+                ORDER BY [DocumentType] -- Aggiunto ordinamento per leggibilità
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore nel recupero dei tipi di documento specifici: {e}")
+            return []
+    # NUOVO METODO: Recupera gli interventi programmati usando la query fornita dall'utente
+    def fetch_programmed_interventions(self):
+        """Recupera tutti gli interventi programmati (Tipi di manutenzione)."""
+        query = """
+                SELECT [ProgrammedInterventionId]
+                      ,[TimingDescriprion]
+                      ,[TimingValue]
+                FROM [Traceability_RS].[eqp].[ProgrammedInterventions]
+                ORDER BY [TimingValue] -- Ordinamento per facilitare la lettura
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore nel recupero degli interventi programmati: {e}")
+            return []
+
+    # METODO CONSOLIDATO E CORRETTO
+    # Parametri aggiornati per il flusso semplificato: EquipmentId e ProgrammedInterventionId (intervention_id).
+    def replace_maintenance_document(self, equipment_id, intervention_id, doc_type_id, description, file_name,
+                                     file_type, binary_data, user_name, invalidate_ids=None):
+        """
+        Gestisce l'inserimento del nuovo documento e l'invalidazione dei vecchi in una singola transazione atomica.
+        """
+
+        # Assicuriamoci che DateOut sia NULL per il nuovo documento.
+        insert_query = """
+                       INSERT INTO eqp.EquipmentMantainanceDocs
+                       (EquipmentId, ProgrammedInterventionId, EquipmentMaintenanceDocTypeId, DocDescription, FileName, \
+                        FileType, DocumentSource, UploadedBy, DateSys, DateOut)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), NULL) \
+                       """
+        try:
+            # --- INIZIO TRANSAZIONE ATOMICA ---
+            # (Poiché pyodbc è stato connesso con autocommit=False, siamo già in una transazione)
+
+            # 1. Se richiesto, invalida i vecchi documenti (UPDATE)
+            if invalidate_ids:
+                if not self._invalidate_maintenance_docs(invalidate_ids):
+                    # Se l'UPDATE fallisce, annulla tutto (ROLLBACK) e restituisci False
+                    self.conn.rollback()
+                    return False
+
+            # 2. Inserisci il nuovo documento (INSERT)
+            self.cursor.execute(insert_query, equipment_id, intervention_id, doc_type_id, description, file_name,
+                                file_type, binary_data, user_name)
+
+            # 3. Conferma la transazione (COMMIT)
+            self.conn.commit()
+            return True
+
+            # --- FINE TRANSAZIONE ATOMICA ---
+
+        except pyodbc.Error as e:
+            self.conn.rollback()  # Annulla tutto in caso di errore nell'INSERT
+            self.last_error_details = str(e)
+            print(f"Errore SQL nella transazione replace_maintenance_document: {e}")
+            return False
+
+    def fetch_maintenance_doc_by_id(self, doc_id):
+        """Recupera i dettagli completi di un singolo documento di manutenzione tramite il suo ID."""
+        # Selezioniamo tutte le colonne (d.*) per avere accesso a tutti gli ID necessari per la sostituzione
+        query = """
+                SELECT d.*, e.InternalName, p.TimingDescriprion, t.DocumentType
+                FROM eqp.EquipmentMantainanceDocs d
+                         JOIN eqp.Equipments e ON d.EquipmentId = e.EquipmentId
+                         LEFT JOIN eqp.ProgrammedInterventions p \
+                                   ON d.ProgrammedInterventionId = p.ProgrammedInterventionId
+                         LEFT JOIN eqp.EquipmentMaintenanceDocTypes t \
+                                   ON d.EquipmentMaintenanceDocTypeId = t.EquipmentMaintenanceDocTypeId
+                WHERE d.EquipmentDocumentationId = ? \
+                """
+        try:
+            self.cursor.execute(query, doc_id)
+            return self.cursor.fetchone()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return None
+
+        # NUOVO METODO
+
+    def invalidate_single_maintenance_doc(self, doc_id, user_name):
+        """Invalida (cancella logicamente) un singolo documento impostando DateOut."""
+        # (user_name è incluso nel caso si volesse aggiungere una colonna InvalidatedBy in futuro)
+        query = """
+                UPDATE [Traceability_RS].[eqp].[EquipmentMantainanceDocs]
+                SET DateOut = GETDATE()
+                WHERE EquipmentDocumentationId = ? \
+                """
+        try:
+            self.cursor.execute(query, doc_id)
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+
+    def search_maintenance_documents(self, filters, include_inactive=False):
+        """Cerca i documenti di manutenzione. Include JOIN per visualizzare i nomi descrittivi."""
+        # Aggiunte JOIN per Intervento e Tipo Doc. Aggiunta DocDescription.
+        query = """
+                SELECT d.EquipmentDocumentationId, \
+                       d.FileName, \
+                       d.UploadedBy, \
+                       d.DateSys, \
+                       d.DocDescription, \
+                       d.DateOut,
+                       e.InternalName,
+                       p.TimingDescriprion AS InterventionName,
+                       t.DocumentType
+                FROM eqp.EquipmentMantainanceDocs d
+                         JOIN eqp.Equipments e ON d.EquipmentId = e.EquipmentId
+                         LEFT JOIN eqp.ProgrammedInterventions p \
+                                   ON d.ProgrammedInterventionId = p.ProgrammedInterventionId
+                         LEFT JOIN eqp.EquipmentMaintenanceDocTypes t \
+                                   ON d.EquipmentMaintenanceDocTypeId = t.EquipmentMaintenanceDocTypeId \
+                """
+        where_clauses = []
+        params = []
+
+        # Filtro per stato attivo (DateOut IS NULL)
+        if not include_inactive:
+            where_clauses.append("d.DateOut IS NULL")
+
+        # Filtri aggiornati per la nuova UI di ricerca
+        if filters.get('equipment_id'):
+            where_clauses.append("d.EquipmentId = ?")
+            params.append(filters['equipment_id'])
+
+        if filters.get('intervention_id'):
+            where_clauses.append("d.ProgrammedInterventionId = ?")
+            params.append(filters['intervention_id'])
+
+        if filters.get('doc_type_id'):
+            where_clauses.append("d.EquipmentMaintenanceDocTypeId = ?")
+            params.append(filters['doc_type_id'])
+
+        # (Rimuoviamo i vecchi filtri 'type_id' e 'machine_name' se non più necessari, o li manteniamo se usati altrove)
+
+        if where_clauses:
+            query += " WHERE " + " AND ".join(where_clauses)
+
+        query += " ORDER BY e.InternalName, d.DateSys DESC;"
+        try:
+            self.cursor.execute(query, params)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            print(f"Errore in search_maintenance_documents: {e}")
+            return []
+
+    def fetch_maintenance_doc_types(self):
+        # NOTA: Questo metodo non è più utilizzato dalla finestra semplificata, ma potrebbe servire per altre funzionalità.
+        """
+        Recupera i tipi di documento di manutenzione dal database.
+        """
+        query = """
+                SELECT t.EquipmentMaintenanceDocTypeId,
+                       t.ProgrammedInterventionId,
+                       t.[DocumentType],
+                       IIF(IsGeneral = 1, 'General doc', 'Specific doc') as GenerelType,
+                       p.TimingDescriprion,
+                       p.TimingValue
+                FROM eqp.EquipmentMaintenanceDocTypes as t
+                         INNER JOIN eqp.ProgrammedInterventions as p
+                                    ON t.[ProgrammedInterventionId] = p.[ProgrammedInterventionId]
+                ORDER BY [DocumentType], TimingValue;
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore nel recupero dei tipi di documento: {e}")
+            return []
+
+    # --- METODI GESTIONE MACCHINE ---
+
+    def search_equipments(self, filters):
+        """
+        Esegue una ricerca dinamica delle macchine basata su un dizionario di filtri.
+        """
+        query = """
+                SELECT eq.EquipmentId, eq.InternalName, eq.SerialNumber, b.Brand, et.EquipmentType, pp.ParentPhaseName
+                FROM eqp.Equipments eq
+                         LEFT JOIN eqp.EquipmentBrands b ON eq.BrandId = b.EquipmentBrandId
+                         LEFT JOIN eqp.EquipmentTypes et ON eq.EquipmentTypeId = et.EquipmentTypeId
+                         LEFT JOIN dbo.ParentPhases pp ON eq.ParentPhaseId = pp.IDParentPhase
+                """
+        where_clauses = []
+        params = []
+
+        if filters.get('brand_id'):
+            where_clauses.append("eq.BrandId = ?")
+            params.append(filters['brand_id'])
+
+        if filters.get('type_id'):
+            where_clauses.append("eq.EquipmentTypeId = ?")
+            params.append(filters['type_id'])
+
+        if filters.get('phase_id'):
+            where_clauses.append("eq.ParentPhaseId = ?")
+            params.append(filters['phase_id'])
+
+        if filters.get('search_text'):
+            # Cerca il testo nel nome, seriale o inventario
+            where_clauses.append("(eq.InternalName LIKE ? OR eq.SerialNumber LIKE ? OR eq.InventoryNumber LIKE ?)")
+            search_param = f"%{filters['search_text']}%"
+            params.extend([search_param, search_param, search_param])
+
+        if where_clauses:
+            query += " WHERE " + " AND ".join(where_clauses)
+
+        query += " ORDER BY eq.InternalName;"
+
+        try:
+            self.cursor.execute(query, params)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore nella ricerca macchine: {e}")
+            return []
+
+    def fetch_full_equipment_details(self, equipment_id):
+        """
+        Recupera tutte le informazioni correlate a una singola macchina.
+        """
+        details = {}
+        try:
+            # 1. Dati anagrafici
+            master_query = """
+                           SELECT eq.*, b.Brand, et.EquipmentType, pp.ParentPhaseName
+                           FROM eqp.Equipments eq
+                                    LEFT JOIN eqp.EquipmentBrands b ON eq.BrandId = b.EquipmentBrandId
+                                    LEFT JOIN eqp.EquipmentTypes et ON eq.EquipmentTypeId = et.EquipmentTypeId
+                                    LEFT JOIN dbo.ParentPhases pp ON eq.ParentPhaseId = pp.IDParentPhase
+                           WHERE eq.EquipmentId = ?
+                           """
+            details['master'] = self.cursor.execute(master_query, equipment_id).fetchone()
+
+            # 2. Log delle modifiche
+            changes_query = "SELECT Changed, WhoChange, DateChange FROM eqp.EquipmentChanges WHERE EquipmentId = ? ORDER BY DateChange DESC"
+            details['changes'] = self.cursor.execute(changes_query, equipment_id).fetchall()
+
+            # 3. Documenti di manutenzione
+            # NOTA: Selezioniamo FileName invece di DocumentSource (che è binario e pesante) per l'elenco
+            docs_query = "SELECT FileName, UploadedBy, DateSys FROM eqp.EquipmentMantainanceDocs WHERE EquipmentId = ? ORDER BY DateSys DESC"
+            details['docs'] = self.cursor.execute(docs_query, equipment_id).fetchall()
+
+            # 4. Schede di manutenzione compilate
+            logs_query = "SELECT DataEsecuzione, IdManutentore, NoteGenerali FROM dbo.LogManutenzioni WHERE EquipmentId = ? ORDER BY DataEsecuzione DESC"
+            details['logs'] = self.cursor.execute(logs_query, equipment_id).fetchall()
+
+            return details
+        except pyodbc.Error as e:
+            print(f"Errore nel recupero dettagli completi macchina: {e}")
+            return None
 
     def fetch_all_equipments(self):
         """Recupera ID, Nome Interno e Seriale di tutte le macchine per la selezione."""
@@ -98,17 +526,17 @@ class Database:
             # 1. Aggiorna la tabella principale
             update_query = """
                            UPDATE eqp.Equipments
-                           SET ParentPhaseId = ?, \
-                               InternalName  = ?, \
+                           SET ParentPhaseId = ?,
+                               InternalName  = ?,
                                SerialNumber  = ?
-                           WHERE EquipmentId = ?; \
+                           WHERE EquipmentId = ?;
                            """
             self.cursor.execute(update_query, new_phase_id, new_internal_name, new_serial, equipment_id)
 
             # 2. Inserisce il log delle modifiche
             log_query = """
                         INSERT INTO eqp.EquipmentChanges (EquipmentId, Changed, WhoChange, DateChange)
-                        VALUES (?, ?, ?, GETDATE()); \
+                        VALUES (?, ?, ?, GETDATE());
                         """
             self.cursor.execute(log_query, equipment_id, change_log_string, user_name)
 
@@ -122,104 +550,7 @@ class Database:
             print(f"Errore durante l'aggiornamento della macchina: {e}")
             return False
 
-    def __init__(self, conn_str):
-        self.conn_str = conn_str
-        self.conn = None
-        self.cursor = None
-        self.last_error_details = ""
-
-    def connect(self):
-        try:
-            self.conn = pyodbc.connect(self.conn_str, autocommit=False)
-            self.cursor = self.conn.cursor()
-            return True
-        except pyodbc.Error as ex:
-            messagebox.showerror("Database Error", f"Cannot connect to the database.\n\nDetails: {ex}")
-            return False
-
-    def disconnect(self):
-        if self.cursor: self.cursor.close()
-        if self.conn: self.conn.close()
-
-    def fetch_translations(self):
-        query = "SELECT LanguageCode, TranslationKey, TranslationValue FROM Traceability_rs.dbo.AppTranslations;"
-        try:
-            self.cursor.execute(query)
-            return self.cursor.fetchall()
-        except pyodbc.Error as e:
-            messagebox.showerror("Query Error", f"Error fetching translations: {e}")
-            return []
-
-    def fetch_products(self):
-        query = "SELECT DISTINCT p.IDProduct, p.ProductCode + ' ['+ SUBSTRING(p.productcode, 3, 2) + ']' AS ProductCode FROM Traceability_RS.dbo.Products AS P INNER JOIN [Traceability_RS].[dbo].[ProductParentPhases] AS PP ON pp.IDProduct = p.IDProduct INNER JOIN Traceability_RS.dbo.ParentPhases AS PF ON pf.IDParentPhase = pp.IDParentPhase ORDER BY p.ProductCode + ' ['+ SUBSTRING(p.productcode, 3, 2) + ']';"
-        try:
-            self.cursor.execute(query)
-            return self.cursor.fetchall()
-        except pyodbc.Error:
-            return []
-
-    def fetch_products_with_documents(self):
-        # --- CORREZIONE: Rimossi i backslash '\' non necessari per una migliore leggibilità ---
-        query = """
-                SELECT p.IDProduct, \
-                       p.ProductCode + ' [' + CAST(doc_counts.DocCount AS NVARCHAR(10)) + ' docs]' AS ProductCode
-                FROM Traceability_RS.dbo.Products AS p
-                         INNER JOIN (SELECT ProductId, COUNT(*) AS DocCount \
-                                     FROM Traceability_RS.dbo.ProductDocuments \
-                                     WHERE DateOutOfValidation IS NULL \
-                                     GROUP BY ProductId) AS doc_counts ON p.IDProduct = doc_counts.ProductId
-                ORDER BY ProductCode; \
-                """
-        try:
-            self.cursor.execute(query)
-            return self.cursor.fetchall()
-        except pyodbc.Error:
-            return []
-
-    def fetch_parent_phases(self, id_product):
-        query = "SELECT distinct pf.IDParentPhase, pf.ParentPhaseName + IIF(pp.IDProduct IS NULL, '*', '') AS Phase FROM Traceability_RS.dbo.ParentPhases AS pf LEFT JOIN Traceability_RS.dbo.ProductParentPhases AS pp ON pf.IDParentPhase = pp.IDParentPhase AND pp.IDProduct = ? ORDER BY Phase;"
-        try:
-            self.cursor.execute(query, id_product)
-            return self.cursor.fetchall()
-        except pyodbc.Error:
-            return []
-
-    # Dentro la classe Database
-
-    def fetch_existing_documents(self, product_id, parent_phase_id):
-        """
-        CORRETTO: Recupera i metadati dei documenti (inclusa la chiave primaria ID)
-        per una data fase, senza fare affidamento sulla vecchia colonna DocumentPath.
-        """
-        # La query ora non seleziona più DocumentPath, che è obsoleto.
-        # Selezioniamo l'ID, che è fondamentale per recuperare i dati binari in un secondo momento.
-        query = """
-                SELECT DocumentProductionID, documentName, DocumentRevisionNumber, CONVERT(bit, Validated) as IsValid
-                FROM Traceability_RS.dbo.ProductDocuments
-                WHERE Productid = ?
-                  AND ParentPhaseId = ?
-                  AND DateOutOfValidation IS NULL; \
-                """
-        try:
-            self.cursor.execute(query, product_id, parent_phase_id)
-            # Il risultato ora sarà una lista di righe, ciascuna contenente (DocumentProductionID, nome, revisione, è_valido)
-            return self.cursor.fetchall()
-        except pyodbc.Error as e:
-            print(f"Errore critico in fetch_existing_documents: {e}")
-            # In caso di errore, restituisce una lista vuota così l'interfaccia utente non si blocca.
-            self.last_error_details = str(e)
-            return []
-
-    def authenticate_user(self, user_id, password):
-        query = "SELECT u.NomeUser, ISNULL(e.EmployeeName + ' ' + e.EmployeeSurname, '#ND') as EmployeeName, u.pass FROM resetservices.dbo.tbuserkey as U INNER JOIN employee.dbo.employees as e ON e.EmployeeId = u.idanga INNER JOIN employee.dbo.EmployeeHireHistory as h ON e.EmployeeId = h.EmployeeId WHERE h.EndWorkDate IS NULL AND h.employeerid = 2 AND u.Nomeuser = ? AND Pass = ?;"
-        try:
-            self.cursor.execute(query, user_id, password)
-            row = self.cursor.fetchone()
-            return row.EmployeeName if row else None
-        except pyodbc.Error:
-            return None
-
-    # Da aggiungere all'interno della classe Database in main.py
+    # --- METODI DATI DI SUPPORTO (Brand, Tipi, Fasi) ---
 
     def fetch_brands(self):
         """Recupera tutti i brand delle macchine."""
@@ -255,9 +586,9 @@ class Database:
         """Salva una nuova macchina nel database."""
         query = """
                 INSERT INTO eqp.Equipments
-                (BrandId, EquipmentTypeId, ParentPhaseId, SerialNumber, InternalName, ProductionYear, InventoryNumber, \
+                (BrandId, EquipmentTypeId, ParentPhaseId, SerialNumber, InternalName, ProductionYear, InventoryNumber,
                  DateSys)
-                VALUES (?, ?, ?, ?, ?, ?, ?, GETDATE()) \
+                VALUES (?, ?, ?, ?, ?, ?, ?, GETDATE())
                 """
         try:
             self.cursor.execute(query, brand_id, type_id, phase_id, serial_number, internal_name, prod_year, inv_number)
@@ -269,10 +600,101 @@ class Database:
             print(f"Errore durante l'inserimento della macchina: {e}")
             return False
 
+    # --- METODI PER TRADUZIONI E AUTENTICAZIONE ---
+
+    def fetch_translations(self):
+        query = "SELECT LanguageCode, TranslationKey, TranslationValue FROM Traceability_rs.dbo.AppTranslations;"
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Error fetching translations: {e}")
+            return []
+
+    def authenticate_user(self, user_id, password):
+        query = """
+                SELECT u.NomeUser, ISNULL(e.EmployeeName + ' ' + e.EmployeeSurname, '#ND') as EmployeeName, u.pass
+                FROM resetservices.dbo.tbuserkey as U
+                INNER JOIN employee.dbo.employees as e ON e.EmployeeId = u.idanga
+                INNER JOIN employee.dbo.EmployeeHireHistory as h ON e.EmployeeId = h.EmployeeId
+                WHERE h.EndWorkDate IS NULL AND h.employeerid = 2 AND u.Nomeuser = ? AND Pass = ?;
+                """
+        try:
+            self.cursor.execute(query, user_id, password)
+            row = self.cursor.fetchone()
+            return row.EmployeeName if row else None
+        except pyodbc.Error as e:
+            print(f"Error during authentication: {e}")
+            return None
+
+    # --- METODI PER DOCUMENTI DI PRODUZIONE (Non Manutenzione) ---
+
+    def fetch_products(self):
+        query = """
+                SELECT DISTINCT p.IDProduct, p.ProductCode + ' ['+ SUBSTRING(p.productcode, 3, 2) + ']' AS ProductCode
+                FROM Traceability_RS.dbo.Products AS P
+                INNER JOIN [Traceability_RS].[dbo].[ProductParentPhases] AS PP ON pp.IDProduct = p.IDProduct
+                INNER JOIN Traceability_RS.dbo.ParentPhases AS PF ON pf.IDParentPhase = pp.IDParentPhase
+                ORDER BY p.ProductCode + ' ['+ SUBSTRING(p.productcode, 3, 2) + ']';
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error:
+            return []
+
+    def fetch_products_with_documents(self):
+        query = """
+                SELECT p.IDProduct,
+                       p.ProductCode + ' [' + CAST(doc_counts.DocCount AS NVARCHAR(10)) + ' docs]' AS ProductCode
+                FROM Traceability_RS.dbo.Products AS p
+                         INNER JOIN (SELECT ProductId, COUNT(*) AS DocCount
+                                     FROM Traceability_RS.dbo.ProductDocuments
+                                     WHERE DateOutOfValidation IS NULL
+                                     GROUP BY ProductId) AS doc_counts ON p.IDProduct = doc_counts.ProductId
+                ORDER BY ProductCode;
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error:
+            return []
+
+    def fetch_parent_phases(self, id_product):
+        query = """
+                SELECT distinct pf.IDParentPhase, pf.ParentPhaseName + IIF(pp.IDProduct IS NULL, '*', '') AS Phase
+                FROM Traceability_RS.dbo.ParentPhases AS pf
+                LEFT JOIN Traceability_RS.dbo.ProductParentPhases AS pp ON pf.IDParentPhase = pp.IDParentPhase AND pp.IDProduct = ?
+                ORDER BY Phase;
+                """
+        try:
+            self.cursor.execute(query, id_product)
+            return self.cursor.fetchall()
+        except pyodbc.Error:
+            return []
+
+    def fetch_existing_documents(self, product_id, parent_phase_id):
+        """
+        Recupera i metadati dei documenti per una data fase.
+        """
+        query = """
+                SELECT DocumentProductionID, documentName, DocumentRevisionNumber, CONVERT(bit, Validated) as IsValid
+                FROM Traceability_RS.dbo.ProductDocuments
+                WHERE Productid = ?
+                  AND ParentPhaseId = ?
+                  AND DateOutOfValidation IS NULL;
+                """
+        try:
+            self.cursor.execute(query, product_id, parent_phase_id)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore critico in fetch_existing_documents: {e}")
+            self.last_error_details = str(e)
+            return []
+
     def fetch_and_open_document(self, document_id):
         """Recupera i dati binari di un PDF dal DB, li salva in un file temporaneo e lo apre."""
         try:
-            # Assumendo che la colonna con i dati binari si chiami DocumentData
             sql_select = "SELECT DocumentData FROM Traceability_RS.dbo.ProductDocuments WHERE DocumentProductionID = ?"
             self.cursor.execute(sql_select, document_id)
             row = self.cursor.fetchone()
@@ -280,14 +702,13 @@ class Database:
             if row and row.DocumentData:
                 pdf_binary_data = row.DocumentData
 
-                import tempfile
-                # os è già importato globalmente
-
+                # Crea un file temporaneo sicuro
                 temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
                 temp_file.write(pdf_binary_data)
                 temp_file.close()
 
                 print(f"Apertura del file temporaneo: {temp_file.name}")
+                # Metodo cross-platform per aprire il file con l'applicazione predefinita
                 os.startfile(temp_file.name)
                 return True
             else:
@@ -297,8 +718,10 @@ class Database:
         except pyodbc.Error as e:
             print(f"Errore durante il recupero del documento dal DB: {e}")
             return False
+        except Exception as e:
+            print(f"Errore durante l'apertura del file temporaneo: {e}")
+            return False
 
-    # --- CORREZIONE: Corretta la struttura del blocco try...except che causava un errore di sintassi ---
     def save_document_to_db(self, product_id, parent_phase_id, doc_name, local_file_path, revision, user_name,
                             validated_int):
         """Legge un file PDF e lo salva come VARBINARY(MAX) nel database."""
@@ -307,12 +730,12 @@ class Database:
             with open(local_file_path, 'rb') as f:
                 pdf_binary_data = f.read()
 
-            # 2. Prepara la query di INSERT con un parametro (?) per i dati binari
+            # 2. Prepara la query di INSERT
             sql_insert = """
                          INSERT INTO Traceability_RS.dbo.ProductDocuments
-                         (ProductId, ParentPhaseId, documentName, DocumentRevisionNumber, DocumentData, InsertedBy, \
+                         (ProductId, ParentPhaseId, documentName, DocumentRevisionNumber, DocumentData, InsertedBy,
                           InsertionDate, Validated)
-                         VALUES (?, ?, ?, ?, ?, ?, GETDATE(), ?) \
+                         VALUES (?, ?, ?, ?, ?, ?, GETDATE(), ?)
                          """
 
             # 3. Esegui la query passando i dati binari come parametro.
@@ -337,27 +760,23 @@ class Database:
             print(self.last_error_details)
             return False
 
-    # Da aggiungere all'interno della classe Database
+    # --- METODO GESTIONE VERSIONI ---
 
     def fetch_latest_version(self, software_name):
         """
         Recupera la stringa della versione più recente per un dato software.
-        La versione più recente è indicata da dateout IS NULL.
         """
         query = "SELECT Version FROM traceability_rs.dbo.SwVersions WHERE NameProgram = ? AND dateout IS NULL"
         try:
             self.cursor.execute(query, software_name)
             row = self.cursor.fetchone()
-            # Se trova una riga, restituisce la versione, altrimenti None
             return row.Version if row else None
         except pyodbc.Error as e:
             print(f"Errore durante il recupero della versione del software: {e}")
-            # In caso di errore, è più sicuro non bloccare l'utente.
-            # Potresti voler gestire questo caso in modo diverso.
             return None
 
 
-# Sostituisci questa intera classe in main.py
+# --- CLASSI INTERFACCIA UTENTE (GUI) ---
 
 class LoginWindow(tk.Toplevel):
     """Finestra di autenticazione per l'utente."""
@@ -375,11 +794,8 @@ class LoginWindow(tk.Toplevel):
         self._create_widgets()
         self.update_texts()
 
-        # --- CORREZIONE: Assicura che il tasto Invio attivi sempre il login ---
         # "Lega" l'evento <Return> (Invio) all'intera finestra.
-        # In questo modo, funzionerà indipendentemente da quale widget ha il focus.
         self.bind('<Return>', self._attempt_login_event)
-        # --- FINE CORREZIONE ---
 
     def _create_widgets(self):
         self.geometry("350x200")
@@ -413,7 +829,6 @@ class LoginWindow(tk.Toplevel):
         self.login_button.config(text=self.lang.get('login_button'))
         self.cancel_button.config(text=self.lang.get('login_cancel_button'))
 
-    # --- CORREZIONE: Aggiunto un metodo "wrapper" per gestire l'evento ---
     def _attempt_login_event(self, event=None):
         """Funzione chiamata dall'evento 'bind' per poi chiamare la logica di login."""
         self._attempt_login()
@@ -439,8 +854,7 @@ class LoginWindow(tk.Toplevel):
 
 
 class InsertDocumentForm(tk.Toplevel):
-    # ... (Modificato _save_document per usare la nuova logica) ...
-    """Finestra di inserimento documenti."""
+    """Finestra di inserimento documenti (di Produzione)."""
 
     def __init__(self, master, db_handler, user_name, lang_manager):
         super().__init__(master)
@@ -578,9 +992,9 @@ class InsertDocumentForm(tk.Toplevel):
         # ... altre validazioni
         revision = self.revision_var.get()
         if len(revision) > 10:
-            msg = self.lang.get_raw('error_input_revision_length').replace('{revision}', revision).replace('{length}',
-                                                                                                           str(len(
-                                                                                                               revision)))
+            # Gestione sicura del messaggio di errore se il template usa .replace()
+            msg_template = self.lang.get_raw('error_input_revision_length')
+            msg = msg_template.replace('{revision}', revision).replace('{length}', str(len(revision)))
             messagebox.showerror(self.lang.get('app_title'), msg)
             return
 
@@ -592,7 +1006,6 @@ class InsertDocumentForm(tk.Toplevel):
         is_validated_bool = self.validated_var.get()
         validated_as_int = 1 if is_validated_bool else 0
 
-        # --- CORREZIONE: Chiamata al nuovo metodo per salvare i dati binari ---
         success = self.db.save_document_to_db(
             product_id,
             parent_phase_id,
@@ -608,7 +1021,9 @@ class InsertDocumentForm(tk.Toplevel):
             self._reset_input_fields()
             self._refresh_document_list()
         else:
-            msg = self.lang.get_raw('error_save_failed').replace('{e}', self.db.last_error_details)
+            # Gestione sicura del messaggio di errore se il template usa .replace()
+            msg_template = self.lang.get_raw('error_save_failed')
+            msg = msg_template.replace('{e}', self.db.last_error_details)
             messagebox.showerror(self.lang.get('app_title'), msg)
 
     def _refresh_document_list(self):
@@ -623,11 +1038,12 @@ class InsertDocumentForm(tk.Toplevel):
         yes_text = self.lang.get('text_yes')
         no_text = self.lang.get('text_no')
         for i, doc in enumerate(existing_docs):
+            # Accesso alle proprietà dell'oggetto Row di pyodbc
             is_valid_text = yes_text if doc.IsValid else no_text
             display_text = f"File: {doc.documentName} | Rev: {doc.DocumentRevisionNumber} | Validato: {is_valid_text}"
             self.docs_listbox.insert(tk.END, display_text)
             if doc.IsValid:
-                self.docs_listbox.itemconfig(i, {'bg': '#c8e6c9'})
+                self.docs_listbox.itemconfig(i, {'bg': '#c8e6c9'}) # Verde chiaro per validati
 
     def _reset_phase_section(self):
         self.parent_phase_var.set("")
@@ -650,7 +1066,7 @@ class InsertDocumentForm(tk.Toplevel):
 
 
 class ViewDocumentForm(tk.Toplevel):
-    """Finestra per visualizzare un documento."""
+    """Finestra per visualizzare un documento (di Produzione)."""
 
     def __init__(self, master, db_handler, lang_manager):
         super().__init__(master)
@@ -663,7 +1079,6 @@ class ViewDocumentForm(tk.Toplevel):
         self.products_data = {}
         self.all_product_names = []
         self.parent_phases_data = {}
-        # --- CORREZIONE: Aggiunto per tenere traccia dei documenti della fase selezionata ---
         self.documents_in_phase = []
 
         self.product_var = tk.StringVar()
@@ -674,7 +1089,6 @@ class ViewDocumentForm(tk.Toplevel):
         self._load_products()
 
     def _create_widgets(self):
-        # --- CORREZIONE: Aumentata l'altezza per far spazio alla lista dei documenti ---
         self.geometry("600x350")
         frame = ttk.Frame(self, padding="20")
         frame.pack(fill=tk.BOTH, expand=True)
@@ -693,7 +1107,6 @@ class ViewDocumentForm(tk.Toplevel):
         self.parent_phase_combo.pack(fill=tk.X, pady=(0, 15))
         self.parent_phase_combo.bind("<<ComboboxSelected>>", self._on_phase_select)
 
-        # --- CORREZIONE: Aggiunta una Listbox per selezionare quale documento aprire ---
         self.docs_listbox = tk.Listbox(frame, height=5)
         self.docs_listbox.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
         self.docs_listbox.bind("<Double-1>", self._on_doc_double_click)  # Evento doppio click
@@ -728,7 +1141,6 @@ class ViewDocumentForm(tk.Toplevel):
     def _on_product_select(self, event=None):
         self.parent_phase_var.set("")
         self.parent_phase_combo.config(state="disabled", values=[])
-        # --- CORREZIONE: Pulisce la lista dei documenti quando cambia il prodotto ---
         self.docs_listbox.delete(0, tk.END)
         self.documents_in_phase = []
 
@@ -742,9 +1154,7 @@ class ViewDocumentForm(tk.Toplevel):
                 messagebox.showerror(self.lang.get('app_title'), self.lang.get('error_no_phases_found'), parent=self)
 
     def _on_phase_select(self, event=None):
-        """
-        --- CORREZIONE: Questa funzione ora popola la lista dei documenti invece di tentare di aprirne uno. ---
-        """
+        """Popola la lista dei documenti."""
         self.docs_listbox.delete(0, tk.END)
         self.documents_in_phase = []
 
@@ -765,9 +1175,7 @@ class ViewDocumentForm(tk.Toplevel):
                 self.docs_listbox.insert(tk.END, f"{doc.documentName} (Rev: {doc.DocumentRevisionNumber})")
 
     def _on_doc_double_click(self, event=None):
-        """
-        --- CORREZIONE: Nuovo metodo che gestisce il doppio click su un documento nella lista. ---
-        """
+        """Gestisce il doppio click su un documento nella lista."""
         selected_indices = self.docs_listbox.curselection()
         if not selected_indices:
             return
@@ -778,63 +1186,46 @@ class ViewDocumentForm(tk.Toplevel):
 
         # Chiama il metodo corretto per recuperare e aprire il file binario usando il suo ID
         print(f"Richiesta apertura documento con ID: {selected_doc.DocumentProductionID}")
-        self.db.fetch_and_open_document(selected_doc.DocumentProductionID)
+        success = self.db.fetch_and_open_document(selected_doc.DocumentProductionID)
+        if not success:
+             messagebox.showerror(self.lang.get('error_title', "Errore"), "Impossibile aprire il documento.", parent=self)
 
 
 class App(tk.Tk):
-    # ... (Nessuna modifica in questa classe) ...
     """Classe principale dell'applicazione."""
-
-    def open_add_machine_with_login(self):
-        """Apre la finestra di login e, se l'autenticazione ha successo, apre la finestra per aggiungere una macchina."""
-        login_form = LoginWindow(self, self.db, self.lang)
-        self.wait_window(login_form)
-        authenticated_user = login_form.authenticated_user_name
-        if authenticated_user:
-            # Passiamo 'self', 'db', e 'lang' come argomenti
-            maintenance_gui.open_add_machine(self, self.db, self.lang)
-
-    # Modifica questo metodo nella classe App in main.py
-
-    def open_edit_machine_with_login(self):
-        """Apre la finestra di login e, se l'autenticazione ha successo, apre la finestra per modificare una macchina."""
-        login_form = LoginWindow(self, self.db, self.lang)
-        self.wait_window(login_form)
-        authenticated_user = login_form.authenticated_user_name
-        if authenticated_user:
-            # Salva temporaneamente l'utente per passarlo alla finestra di modifica
-            self.authenticated_user_for_maintenance = authenticated_user
-            maintenance_gui.open_edit_machine(self, self.db, self.lang)
 
     def __init__(self):
         super().__init__()
         self.geometry("800x600")
 
+        # Inizializza il database e la connessione
         self.db = Database(DB_CONN_STR)
         if not self.db.connect():
+            # Mostra l'errore se la connessione fallisce all'avvio
+            messagebox.showerror("Database Error", f"Impossibile connettersi al database.\n\nDetails: {self.db.last_error_details}")
             self.destroy()
             return
 
+        # Inizializza il gestore delle lingue
         self.lang = LanguageManager(self.db)
 
-        # --- INIZIO MODIFICA: LOGICA DI CONTROLLO VERSIONE ---
         # 1. Controlla la versione del software
         if self.check_version() is False:
-            # Se il controllo fallisce, la finestra di errore è già stata mostrata.
-            # Disconnetti e distruggi la finestra prima di uscire.
+            # Se il controllo fallisce, disconnetti e distruggi la finestra prima di uscire.
             self.db.disconnect()
             self.destroy()
             return  # Interrompe l'inizializzazione
-        # --- FINE MODIFICA ---
 
         self.logo_label = None
+        self.authenticated_user_for_maintenance = None # Variabile di appoggio per modifiche macchine
         self._create_widgets()
         self._create_menu()
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
 
         self.update_texts()
 
-    # Aggiungi questo nuovo metodo di supporto alla classe App
+    # --- METODI DI SUPPORTO ALL'INIZIALIZZAZIONE ---
+
     def check_version(self):
         """
         Controlla la versione dell'applicazione contro il database.
@@ -842,11 +1233,9 @@ class App(tk.Tk):
         """
         try:
             # Usa sys.executable, che punta sempre al file .exe in un'app compilata.
-            # È il metodo più robusto.
             app_name = os.path.basename(sys.executable)
-            # --- FINE MODIFICA ---
 
-            print(f"Nome eseguibile rilevato: {app_name}")  # Aggiunto per debugging
+            print(f"Nome eseguibile rilevato: {app_name}")
             latest_version = self.db.fetch_latest_version(app_name)
 
             # Se non troviamo una versione nel DB, procediamo per non bloccare l'utente
@@ -857,8 +1246,9 @@ class App(tk.Tk):
             # Confronta la versione attuale con quella del DB
             if latest_version != APP_VERSION:
                 # Le versioni non corrispondono, mostra un errore e blocca l'app
-                title = self.lang.get("upgrade_required_title")
-                message = self.lang.get("force_upgrade_message", APP_VERSION, latest_version)
+                title = self.lang.get("upgrade_required_title", "Aggiornamento Obbligatorio")
+                # Assicurati che il messaggio di traduzione usi {0} e {1} per la formattazione se si usa .format()
+                message = self.lang.get("force_upgrade_message", "Versione attuale: {0}. Versione richiesta: {1}. Aggiornare l'applicazione.", APP_VERSION, latest_version)
 
                 messagebox.showerror(title, message)
                 return False  # Indica che l'app deve chiudersi
@@ -877,6 +1267,7 @@ class App(tk.Tk):
             print("Pillow non è installato. Impossibile visualizzare il logo.")
             return
         try:
+            # Assicurati che logo.png sia nella stessa directory dell'eseguibile
             image = Image.open("logo.png")
             image.thumbnail((250, 250))
             self.logo_image = ImageTk.PhotoImage(image)
@@ -887,7 +1278,7 @@ class App(tk.Tk):
         except Exception as e:
             print(f"Errore durante il caricamento del logo: {e}")
 
-    # All'interno della classe App in main.py
+    # --- GESTIONE MENU E LINGUA ---
 
     def _create_menu(self):
         self.menubar = tk.Menu(self)
@@ -897,82 +1288,105 @@ class App(tk.Tk):
         self.document_menu = tk.Menu(self.menubar, tearoff=0)
         self.menubar.add_cascade(menu=self.document_menu)
 
-        # --- NUOVO: Menu Manutenzione ---
+        # Menu Manutenzione
         self.maintenance_menu = tk.Menu(self.menubar, tearoff=0)
         self.menubar.add_cascade(menu=self.maintenance_menu)
-        # --- FINE NUOVO ---
 
         # Menu Help
         self.help_menu = tk.Menu(self.menubar, tearoff=0)
         self.menubar.add_cascade(menu=self.help_menu)
 
-        # Sottomenu Lingua (rimane dentro Help)
+        # Sottomenu Lingua
         self.language_menu = tk.Menu(self.help_menu, tearoff=0)
         self.language_menu.add_command(label="Italiano", command=lambda: self._change_language('it'))
         self.language_menu.add_command(label="English", command=lambda: self._change_language('en'))
         self.language_menu.add_command(label="Română", command=lambda: self._change_language('ro'))
 
-    # Sostituisci questo metodo nella classe App in main.py
-
     def update_texts(self):
         """Aggiorna tutti i testi della UI principale."""
         self.title(self.lang.get('app_title'))
 
-        # Menu Documenti (invariato)
+        # Menu Documenti
         self.document_menu.delete(0, 'end')
         self.document_menu.add_command(label=self.lang.get('menu_insert_doc'), command=self.open_insert_form)
         self.document_menu.add_command(label=self.lang.get('menu_view_doc'), command=self.open_view_form)
         self.document_menu.add_separator()
         self.document_menu.add_command(label=self.lang.get('menu_quit'), command=self._on_closing)
-        self.menubar.entryconfig(1, label=self.lang.get('menu_documents'))
+
+        # Aggiorna le etichette dei menu principali (usando indici 1, 2, 3)
+        try:
+            self.menubar.entryconfig(1, label=self.lang.get('menu_documents'))
+        except tk.TclError:
+            pass # Gestione errore se il menu non è ancora pronto
 
         # Menu Manutenzione
         self.maintenance_menu.delete(0, 'end')
 
+        # Sottomenu Gestione Macchine
         machine_submenu = tk.Menu(self.maintenance_menu, tearoff=0)
-        # --- INIZIO MODIFICA: I comandi ora puntano ai metodi con login ---
         machine_submenu.add_command(label=self.lang.get('submenu_add_machine'),
                                     command=self.open_add_machine_with_login)
         machine_submenu.add_command(label=self.lang.get('submenu_edit_machine'),
                                     command=self.open_edit_machine_with_login)
-        # --- FINE MODIFICA ---
         machine_submenu.add_command(label=self.lang.get('submenu_view_machines'),
                                     command=lambda: maintenance_gui.open_view_machines(self, self.db, self.lang))
-
         self.maintenance_menu.add_cascade(label=self.lang.get('submenu_machines'), menu=machine_submenu)
-        self.maintenance_menu.add_command(label=self.lang.get('submenu_maintenance_docs'),
-                                          command=lambda: maintenance_gui.open_maintenance_docs(self, self.db,
-                                                                                                self.lang))
+
+        # Sottomenu Documenti Manutenzione
+        docs_submenu = tk.Menu(self.maintenance_menu, tearoff=0)
+        # Questo apre la finestra semplificata (richiede login)
+        docs_submenu.add_command(label=self.lang.get('submenu_add_maint_doc'),
+                                 command=self.open_add_maint_doc_with_login)
+        docs_submenu.add_command(label=self.lang.get('submenu_edit_maint_doc'),
+                                 command=self.open_edit_maint_doc_with_login)
+        docs_submenu.add_command(label=self.lang.get('submenu_view_maint_doc'),
+                                 command=lambda: maintenance_gui.open_search_maintenance_doc(self, self.db, self.lang,
+                                                                                             mode='view'))
+        self.maintenance_menu.add_cascade(label=self.lang.get('submenu_maintenance_docs'), menu=docs_submenu)
+
+        # Altre voci
         self.maintenance_menu.add_command(label=self.lang.get('submenu_fill_templates'),
                                           command=lambda: maintenance_gui.open_fill_templates(self, self.db, self.lang))
         self.maintenance_menu.add_command(label=self.lang.get('submenu_reports'),
                                           command=lambda: maintenance_gui.open_reports(self, self.db, self.lang))
 
-        self.menubar.entryconfig(2, label=self.lang.get('menu_maintenance'))
+        try:
+            self.menubar.entryconfig(2, label=self.lang.get('menu_maintenance'))
+        except tk.TclError:
+            pass
 
-        # Menu Help (invariato)
+        # Menu Help
         self.help_menu.delete(0, 'end')
         self.help_menu.add_cascade(label=self.lang.get('menu_language'), menu=self.language_menu)
         about_menu_label = f"{self.lang.get('menu_about')} {APP_VERSION}"
         self.help_menu.add_command(label=about_menu_label, command=self._show_about)
-        self.menubar.entryconfig(3, label=self.lang.get('menu_help'))
+
+        try:
+            self.menubar.entryconfig(3, label=self.lang.get('menu_help'))
+        except tk.TclError:
+            pass
+
     def _change_language(self, lang_code):
         """Cambia la lingua e aggiorna la UI."""
         self.lang.set_language(lang_code)
         self.update_texts()
 
+    # --- METODI DI NAVIGAZIONE E AZIONI ---
+
     def _show_about(self):
         """Mostra la finestra di dialogo 'About' con le informazioni del software."""
         about_title = f"{self.lang.get('about_title')} - v{APP_VERSION}"
         about_template = self.lang.get_raw('about_message')
+        # Assicurati che il template nel DB usi {version} e {developer}
         about_message = about_template.replace('{version}', APP_VERSION).replace('{developer}', APP_DEVELOPER)
 
         messagebox.showinfo(
-            about_title,  # Titolo aggiornato
+            about_title,
             about_message,
             parent=self
         )
 
+    # Lanciatori Documenti Produzione
     def open_insert_form(self):
         login_form = LoginWindow(self, self.db, self.lang)
         self.wait_window(login_form)
@@ -989,12 +1403,51 @@ class App(tk.Tk):
         view_form.grab_set()
         self.wait_window(view_form)
 
+    # Lanciatori Manutenzione (con Login Obbligatorio dove richiesto)
+    def open_add_maint_doc_with_login(self):
+        # Questo garantisce il requisito di login per l'inserimento documenti importanti.
+        login_form = LoginWindow(self, self.db, self.lang)
+        self.wait_window(login_form)
+        authenticated_user = login_form.authenticated_user_name
+        if authenticated_user:
+            # Chiama la funzione nel modulo maintenance_gui.py (che aprirà la finestra semplificata)
+            maintenance_gui.open_add_maintenance_doc(self, self.db, self.lang, authenticated_user)
+
+    def open_edit_maint_doc_with_login(self):
+        login_form = LoginWindow(self, self.db, self.lang)
+        self.wait_window(login_form)
+        authenticated_user = login_form.authenticated_user_name
+        if authenticated_user:
+            # La finestra di ricerca gestirà il resto
+            maintenance_gui.open_search_maintenance_doc(self, self.db, self.lang, mode='edit',
+                                                        user_name=authenticated_user)
+
+    def open_add_machine_with_login(self):
+        """Apre la finestra di login e, se l'autenticazione ha successo, apre la finestra per aggiungere una macchina."""
+        login_form = LoginWindow(self, self.db, self.lang)
+        self.wait_window(login_form)
+        authenticated_user = login_form.authenticated_user_name
+        if authenticated_user:
+            maintenance_gui.open_add_machine(self, self.db, self.lang)
+
+    def open_edit_machine_with_login(self):
+        """Apre la finestra di login e, se l'autenticazione ha successo, apre la finestra per modificare una macchina."""
+        login_form = LoginWindow(self, self.db, self.lang)
+        self.wait_window(login_form)
+        authenticated_user = login_form.authenticated_user_name
+        if authenticated_user:
+            # Salva temporaneamente l'utente per passarlo alla finestra di modifica tramite maintenance_gui
+            self.authenticated_user_for_maintenance = authenticated_user
+            maintenance_gui.open_edit_machine(self, self.db, self.lang)
+
     def _on_closing(self):
-        if messagebox.askokcancel(self.lang.get('quit_title'), self.lang.get('quit_message')):
+        if messagebox.askokcancel(self.lang.get('quit_title', "Quit"), self.lang.get('quit_message', "Do you want to quit?")):
             self.db.disconnect()
             self.destroy()
 
 
 if __name__ == "__main__":
     app = App()
-    app.mainloop()
+    # Esegui il mainloop solo se la finestra esiste (cioè se la connessione DB e il check versione sono riusciti)
+    if app.winfo_exists():
+        app.mainloop()
