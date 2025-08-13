@@ -98,7 +98,7 @@ class RequestWindow(tk.Toplevel):
                     if part.MaterialDescription:
                         display_text += f" - {part.MaterialDescription[:50]}..."
 
-                    self.spare_parts_data[display_text] = part.SparePartId
+                    self.spare_parts_data[display_text] = part.SparePartMaterialId
                 except AttributeError as e:
                     print(f"Errore: Colonna mancante nella tabella SparePartMaterials? Dettaglio: {e}")
                     messagebox.showerror("Errore Struttura DB",
@@ -137,7 +137,7 @@ class RequestWindow(tk.Toplevel):
                                                       parent=self)
 
         # Chiama il metodo DB aggiornato in main.py
-        new_id = self.db.add_new_spare_part(material_part_number, material_code, material_description)
+        new_id = self.db.add_new_spare_part(material_part_number, material_code, material_description, to_be_revizited=1)
 
         if new_id:
             messagebox.showinfo(self.lang.get('success_title'),

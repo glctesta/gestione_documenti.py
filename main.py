@@ -87,13 +87,13 @@ class Database:
             return None
         # NUOVO METODO: Aggiunge una nuova parte di ricambio al catalogo
 
-    def add_new_spare_part(self, part_name, part_code=None, description=None):
+    def add_new_spare_part(self, material_part_number, material_code=None, material_description=None, to_be_revizited=1):
         """Inserisce una nuova parte in eqp.SparePartMaterials e restituisce il nuovo ID."""
-        # Assumiamo che la tabella abbia un IDENTITY ID (SparePartId)
+        # Assumiamo che la tabella abbia un IDENTITY ID (SparePartMaterialId)
         query = """
-                INSERT INTO eqp.SparePartMaterials (MaterialPartNumber, MaterialCode, MaterialDescription,ToBeRevized)
-                OUTPUT INSERTED.SparePartId 
-                VALUES (?, ?, ?,1);
+                INSERT INTO eqp.SparePartMaterials (MaterialPartNumber, MaterialCode, MaterialDescription,toberevizited)
+                OUTPUT INSERTED.SparePartMaterialId 
+                VALUES (?, ?, ?, 1);
                 """
         try:
             # Esegui l'INSERT
@@ -311,7 +311,7 @@ class Database:
     # NUOVO METODO: Recupera le parti di ricambio/servizi disponibili
     def fetch_spare_parts(self):
         """Recupera la lista di parti di ricambio e servizi disponibili."""
-        # ATTENZIONE: Questa query assume i nomi delle colonne (SparePartId, MaterialPartNumber, PartCode, Description).
+        # ATTENZIONE: Questa query assume i nomi delle colonne (SparePartMaterialId, MaterialPartNumber, PartCode, Description).
         # Modificala se i nomi reali nella tua tabella eqp.SparePartMaterials sono diversi.
         query = """
                 SELECT SparePartMaterialId, MaterialPartNumber, MaterialCode, MaterialDescription
@@ -1052,21 +1052,35 @@ class Database:
         """Recupera i piani di manutenzione non ancora completati per un EquipmentId."""
         # MODIFICATO: Aggiunto pin.ProgrammedInterventionId che è necessario per la Query 2
         query = """
-        select distinct pma.PianoManutenzioneId, pin.TimingDescriprion, pin.ProgrammedInterventionId
-        from Traceability_rs.eqp.equipments as E
-        left join Traceability_rs.eqp.EquipmentTypes et on e.equipmenttypeid=et.equipmenttypeid
-        left join Traceability_rs.[eqp].[EquipmentBrands]  eb on eb.EquipmentBrandId=e.BrandId
-        left join Traceability_rs.[eqp].[PianiManutenzioneMacchina] pma on pma.equipmentid=e.equipmentid
-        left join Traceability_rs.[eqp].[ProgrammedInterventions] PIn on pin.[ProgrammedInterventionId]=pma.[ProgrammedInterventionId]
-        left join Traceability_rs.eqp.EquipmentMantainanceDocs emd on emd.ProgrammedInterventionId=pin.ProgrammedInterventionId
-        left join Traceability_rs.eqp.CompitiManutenzione CM on cm.ProgrammedInterventionId=emd.ProgrammedInterventionId
-        -- ATTENZIONE: Assicurati che lo schema per LogManutenzioni sia corretto (eqp o dbo)
-        left join Traceability_rs.eqp.LogManutenzioni LM on lm.compitoid=cm.compitoid
-        where e.equipmentid = ?
-          and lm.logid is null  -- Condizione chiave: nessun log esistente per i compiti
-          and pin.TimingDescriprion IS NOT NULL -- Assicura che il piano sia valido
-        order by pma.PianoManutenzioneid;
-        """
+            SELECT DISTINCT pma.PianoManutenzioneId, pin.TimingDescriprion, pin.ProgrammedInterventionId
+            FROM Traceability_rs.eqp.equipments AS E
+            LEFT JOIN Traceability_rs.eqp.EquipmentTypes et ON e.equipmenttypeid = et.equipmenttypeid
+            LEFT JOIN Traceability_rs.[eqp].[EquipmentBrands] eb ON eb.EquipmentBrandId = e.BrandId
+            LEFT JOIN Traceability_rs.[eqp].[PianiManutenzioneMacchina] pma ON pma.equipmentid = e.equipmentid
+            LEFT JOIN Traceability_rs.[eqp].[ProgrammedInterventions] pin ON pin.[ProgrammedInterventionId] = pma.[ProgrammedInterventionId]
+            LEFT JOIN Traceability_rs.eqp.EquipmentMantainanceDocs emd ON emd.ProgrammedInterventionId = pin.ProgrammedInterventionId
+            LEFT JOIN Traceability_rs.eqp.CompitiManutenzione CM ON cm.ProgrammedInterventionId = emd.ProgrammedInterventionId
+            LEFT JOIN Traceability_rs.eqp.LogManutenzioni LM ON lm.compitoid = cm.compitoid
+            WHERE e.equipmentid = ?
+              AND (
+                  CASE 
+                      WHEN pin.TimingValue < 1 THEN 
+                          IIF(DATEDIFF(HOUR, lm.DateStop, GETDATE()) > 8, 1, 0)
+                      WHEN pin.TimingValue >= 1 THEN
+                          CASE WHEN DATEDIFF(DAY, lm.DateStop, GETDATE()) > pin.TimingValue 
+                               AND DATEDIFF(DAY, lm.DateStop, GETDATE()) < (
+                                   SELECT TOP 1 TimingDescriprion 
+                                   FROM [eqp].[ProgrammedInterventions] 
+                                   WHERE TimingValue > pin.TimingValue
+                                   ORDER BY TimingValue
+                               )
+                               THEN 1 ELSE 0 END
+                      when pin.TimingValue = 0 then 1
+                  END = 1
+              )
+              or lm.logid IS NULL 
+            ORDER BY pma.PianoManutenzioneId;
+                    """
         try:
             self.cursor.execute(query, equipment_id)
             return self.cursor.fetchall()
