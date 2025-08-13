@@ -92,20 +92,29 @@ class Database:
         # Assumiamo che la tabella abbia un IDENTITY ID (SparePartId)
         query = """
                 INSERT INTO eqp.SparePartMaterials (MaterialPartNumber, MaterialCode, MaterialDescription,ToBeRevized)
+                OUTPUT INSERTED.SparePartId 
                 VALUES (?, ?, ?,1);
-                SELECT SCOPE_IDENTITY(); -- Recupera l'ID appena inserito \
                 """
         try:
-            self.cursor.execute(query, part_name, part_code, description)
-            new_id = self.cursor.fetchval()  # Recupera l'ID restituito da SCOPE_IDENTITY()
-            self.conn.commit()
-            return new_id
+            # Esegui l'INSERT
+            self.cursor.execute(query, material_part_number, material_code, material_description)
+
+            # Poiché abbiamo usato OUTPUT, l'INSERT ora restituisce un risultato che possiamo leggere con fetchval().
+            new_id = self.cursor.fetchval()
+
+            if new_id:
+                self.conn.commit()
+                return new_id
+            else:
+                self.conn.rollback()
+                self.last_error_details = "Inserimento riuscito ma impossibile recuperare il nuovo ID."
+                return None
+
         except pyodbc.Error as e:
             self.conn.rollback()
             print(f"Errore nell'aggiunta nuova parte di ricambio: {e}")
             self.last_error_details = str(e)
             return None
-
     # NUOVO METODO: Inserisce la richiesta nella tabella eqp.RequestSpareParts
     # (Assicurati che questo metodo esista o sostituisci quello precedente se presente)
     def insert_spare_part_request(self, equipment_id, spare_part_id, quantity, notes, requested_by):

@@ -92,17 +92,21 @@ class RequestWindow(tk.Toplevel):
         if parts:
             for part in parts:
                 try:
-                    display_text = f"{part.PartName} [{part.PartCode or 'N/D'}]"
-                    if part.Description:
-                        display_text += f" - {part.Description[:50]}..."
+                    # Usa MaterialPartNumber e MaterialCode
+                    display_text = f"{part.MaterialPartNumber} [{part.MaterialCode or 'N/D'}]"
+                    # Usa MaterialDescription
+                    if part.MaterialDescription:
+                        display_text += f" - {part.MaterialDescription[:50]}..."
 
                     self.spare_parts_data[display_text] = part.SparePartId
                 except AttributeError as e:
                     print(f"Errore: Colonna mancante nella tabella SparePartMaterials? Dettaglio: {e}")
                     messagebox.showerror("Errore Struttura DB",
-                                         f"Errore nel leggere i dati delle parti di ricambio.\n{e}", parent=self)
+                                         f"Errore nel leggere i dati delle parti di ricambio. Controllare lo schema della tabella (MaterialPartNumber, MaterialCode, MaterialDescription).\n{e}",
+                                         parent=self)
                     return
 
+            # Aggiorna i valori del combobox
             self.part_combo['values'] = list(self.spare_parts_data.keys())
         else:
             messagebox.showwarning(self.lang.get('warning_title'), self.lang.get('warn_no_spare_parts_found',
@@ -110,34 +114,52 @@ class RequestWindow(tk.Toplevel):
                                    parent=self)
 
     # NUOVO METODO: Gestisce l'aggiunta di una nuova parte al catalogo
-    def _handle_new_part(self, part_name):
-        """Chiede all'utente di aggiungere una nuova parte al catalogo e restituisce il nuovo ID."""
+    def _handle_new_part(self, material_part_number):
+        """Chiede all'utente di aggiungere una nuova parte (MaterialPartNumber) al catalogo."""
 
         # Chiedi conferma all'utente
         confirm_msg = self.lang.get('confirm_add_new_part',
-                                    "La parte '{0}' non esiste nel catalogo. Vuoi aggiungerla?").format(part_name)
+                                    "La parte '{0}' non esiste nel catalogo. Vuoi aggiungerla?").format(
+            material_part_number)
         if not messagebox.askyesno(self.lang.get('new_part_title', "Nuova Parte"), confirm_msg, parent=self):
             return None
 
-        # Chiedi dettagli aggiuntivi (Codice Parte e Descrizione) usando simpledialog
-        part_code = simpledialog.askstring(self.lang.get('new_part_title', "Nuova Parte"),
-                                           self.lang.get('enter_part_code', "Inserisci Codice Parte (Opzionale):"),
-                                           parent=self)
-        description = simpledialog.askstring(self.lang.get('new_part_title', "Nuova Parte"),
-                                             self.lang.get('enter_description', "Inserisci Descrizione (Opzionale):"),
-                                             parent=self)
+        # Richiesta 1: MaterialCode
+        material_code = simpledialog.askstring(self.lang.get('new_part_title', "Nuova Parte"),
+                                               self.lang.get('enter_material_code',
+                                                             "Inserisci Codice Materiale (Opzionale):"),
+                                               parent=self)
 
-        # Chiama il DB per inserire la nuova parte
-        new_id = self.db.add_new_spare_part(part_name, part_code, description)
+        # Richiesta 2: MaterialDescription
+        material_description = simpledialog.askstring(self.lang.get('new_part_title', "Nuova Parte"),
+                                                      self.lang.get('enter_material_description',
+                                                                    "Inserisci Descrizione Materiale (Opzionale):"),
+                                                      parent=self)
+
+        # Chiama il metodo DB aggiornato in main.py
+        new_id = self.db.add_new_spare_part(material_part_number, material_code, material_description)
 
         if new_id:
             messagebox.showinfo(self.lang.get('success_title'),
                                 self.lang.get('info_part_added', "Parte aggiunta al catalogo con successo."),
                                 parent=self)
+
             # Ricarica la lista per includere il nuovo elemento
             self._load_spare_parts()
+
+            # Seleziona automaticamente il nuovo elemento nel combo box
+            # Dobbiamo ricostruire il testo visualizzato esatto per selezionarlo
+            new_display_text = f"{material_part_number} [{material_code or 'N/D'}]"
+            if material_description:
+                # Assicurati che la formattazione corrisponda a _load_spare_parts
+                new_display_text += f" - {material_description[:50]}..."
+
+            # Imposta il valore nel combobox (questo aggiorna anche self.part_var)
+            self.part_combo.set(new_display_text)
+
             return new_id
         else:
+            # Qui verrà mostrato l'errore SQL se il DB fallisce (grazie alla correzione in main.py)
             messagebox.showerror(self.lang.get('error_title'), self.lang.get('error_adding_part',
                                                                              "Errore nell'aggiunta della parte al catalogo.") + f"\n{self.db.last_error_details}",
                                  parent=self)
@@ -150,7 +172,7 @@ class RequestWindow(tk.Toplevel):
         quantity_str = self.quantity_var.get()
         notes = self.notes_text.get("1.0", tk.END).strip()
 
-        # 1. Validazione Input Base
+        # 1. Validazione Input Base (Invariata)
         if not part_selection:
             messagebox.showerror(self.lang.get('error_title'),
                                  self.lang.get('error_part_required', "Selezionare o digitare una parte/servizio."),
@@ -168,17 +190,19 @@ class RequestWindow(tk.Toplevel):
             return
 
         # 2. Gestione ID Parte (Esistente o Nuova)
+        # Controlla se il testo digitato corrisponde esattamente a una voce esistente nel dizionario
         spare_part_id = self.spare_parts_data.get(part_selection)
 
         if not spare_part_id:
             # L'utente ha digitato un valore non presente nella lista
+            # Passiamo il testo digitato (part_selection) come MaterialPartNumber
             spare_part_id = self._handle_new_part(part_selection)
 
             # Se l'utente ha annullato l'inserimento o se l'inserimento è fallito
             if not spare_part_id:
                 return
 
-                # 3. Chiamata DB (Inserimento Richiesta)
+                # 3. Chiamata DB (Inserimento Richiesta) (Invariata)
         success = self.db.insert_spare_part_request(
             equipment_id=self.equipment_id,
             spare_part_id=spare_part_id,
@@ -188,7 +212,7 @@ class RequestWindow(tk.Toplevel):
         )
 
         if success:
-            # 4. Invio Email (NUOVA LOGICA)
+            # 4. Invio Email (Invariata)
             self._send_notification_email(part_selection, quantity, notes)
 
             messagebox.showinfo(self.lang.get('success_title'),
