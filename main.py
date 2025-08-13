@@ -91,7 +91,7 @@ class Database:
         """Inserisce una nuova parte in eqp.SparePartMaterials e restituisce il nuovo ID."""
         # Assumiamo che la tabella abbia un IDENTITY ID (SparePartId)
         query = """
-                INSERT INTO eqp.SparePartMaterials (MaterialPartName, MaterialCode, MaterialDescription,ToBeRevized)
+                INSERT INTO eqp.SparePartMaterials (MaterialPartNumber, MaterialCode, MaterialDescription,ToBeRevized)
                 VALUES (?, ?, ?,1);
                 SELECT SCOPE_IDENTITY(); -- Recupera l'ID appena inserito \
                 """
@@ -213,7 +213,7 @@ class Database:
         query = """
                 SELECT SparePartMaterialId, MaterialPartNumber, MaterialCode, MaterialDescription
                 FROM eqp.SparePartMaterials
-                ORDER BY PartName \
+                ORDER BY MaterialCode \
                 """
         try:
             self.cursor.execute(query)
@@ -302,12 +302,12 @@ class Database:
     # NUOVO METODO: Recupera le parti di ricambio/servizi disponibili
     def fetch_spare_parts(self):
         """Recupera la lista di parti di ricambio e servizi disponibili."""
-        # ATTENZIONE: Questa query assume i nomi delle colonne (SparePartId, PartName, PartCode, Description).
+        # ATTENZIONE: Questa query assume i nomi delle colonne (SparePartId, MaterialPartNumber, PartCode, Description).
         # Modificala se i nomi reali nella tua tabella eqp.SparePartMaterials sono diversi.
         query = """
-                SELECT SparePartMaterialId, MaterialPartNumber, MaterialPartNumber, MaterialCode, MaterialDescription
+                SELECT SparePartMaterialId, MaterialPartNumber, MaterialCode, MaterialDescription
                 FROM eqp.SparePartMaterials
-                ORDER BY PartName \
+                ORDER BY MaterialPartNumber \
                 """
         try:
             self.cursor.execute(query)
