@@ -4,12 +4,15 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from tkinter import filedialog
 import os
+import reportlab
+import richieste_intervento
 
 # Import per ReportLab (necessari per MachineDetailsWindow)
 try:
     from reportlab.pdfgen import canvas
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import cm
+    from reportlab.platypus import Image as ReportLabImage
 except ImportError:
     print("Warning: reportlab not installed. PDF generation might be affected.")
 
@@ -1448,16 +1451,328 @@ class MaintenanceDocsWindow(tk.Toplevel):
 
 
 class FillTemplateWindow(tk.Toplevel):
-    """Finestra per la compilazione dei template di manutenzione."""
+    """Finestra per la compilazione delle schede di manutenzione."""
 
-    def __init__(self, parent, db, lang):
+    def __init__(self, parent, db, lang, user_name):
         super().__init__(parent)
+        self.db = db
+        self.lang = lang
+        self.user_name = user_name
+        self.start_time = None  # Variabile per memorizzare l'ora di inizio (Requisito)
+
         self.title(lang.get('submenu_fill_templates'))
-        self.geometry("800x600")
-        ttk.Label(self, text="Finestra Compilazione Manutenzione - In Sviluppo", font=("Helvetica", 16)).pack(pady=50,
-                                                                                                              padx=20)
+        self.geometry("950x600")  # Dimensione adeguata per visualizzare i compiti
         self.transient(parent)
         self.grab_set()
+
+        # Dati e variabili
+        self.equipments_data = {}
+        self.plans_data = {}  # Mappa il testo del piano a (PianoManutenzioneId, ProgrammedInterventionId)
+        # Memorizza gli ID (CompitoId) dei compiti spuntati
+        self.completed_tasks = set()
+
+        self.equipment_var = tk.StringVar()
+        self.plan_var = tk.StringVar()
+
+        # Inizializzazione widget (per sicurezza)
+        self.tasks_tree = None
+        self.notes_text = None
+        self.save_button = None
+        self.request_button = None
+        self.plan_combo = None
+
+        self._create_widgets()
+        self._load_equipments()
+
+    def _create_widgets(self):
+        frame = ttk.Frame(self, padding="15")
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        # --- Sezione Selezione (Top) ---
+        selection_frame = ttk.Frame(frame)
+        selection_frame.pack(fill=tk.X, pady=10)
+
+        # 1. Selezione Macchina
+        ttk.Label(selection_frame, text=self.lang.get('select_machine_label')).pack(side=tk.LEFT, padx=5)
+        self.equipment_combo = ttk.Combobox(selection_frame, textvariable=self.equipment_var, state='readonly',
+                                            width=40)
+        self.equipment_combo.pack(side=tk.LEFT, padx=5)
+        # Il binding che causava l'errore (ora punta al metodo corretto definito sotto)
+        self.equipment_combo.bind("<<ComboboxSelected>>", self._on_equipment_select)
+
+        # 2. Selezione Piano Manutenzione
+        ttk.Label(selection_frame, text=self.lang.get('select_maintenance_plan', "Seleziona Piano:")).pack(side=tk.LEFT,
+                                                                                                           padx=5)
+        self.plan_combo = ttk.Combobox(selection_frame, textvariable=self.plan_var, state='disabled', width=40)
+        self.plan_combo.pack(side=tk.LEFT, padx=5)
+        self.plan_combo.bind("<<ComboboxSelected>>", self._on_plan_select)
+
+        # --- Sezione Compiti (Center) ---
+        tasks_frame = ttk.LabelFrame(frame, text=self.lang.get('maintenance_tasks_label', "Compiti da Eseguire"),
+                                     padding="10")
+        tasks_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        # Treeview per i compiti con checkbox simulati
+        cols = ('check', 'name', 'category', 'description')
+        self.tasks_tree = ttk.Treeview(tasks_frame, columns=cols, show='headings')
+
+        # Configurazione colonne
+        self.tasks_tree.heading('check', text='☑')
+        self.tasks_tree.heading('name', text=self.lang.get('header_task_name', 'Compito'))
+        self.tasks_tree.heading('category', text=self.lang.get('header_category', 'Categoria'))
+        self.tasks_tree.heading('description', text=self.lang.get('header_description', 'Descrizione'))
+
+        self.tasks_tree.column('check', width=30, anchor='center', stretch=tk.NO)
+        self.tasks_tree.column('name', width=250)
+        self.tasks_tree.column('category', width=120)
+        self.tasks_tree.column('description', width=450)
+
+        # Scrollbar
+        scrollbar = ttk.Scrollbar(tasks_frame, orient=tk.VERTICAL, command=self.tasks_tree.yview)
+        self.tasks_tree.configure(yscroll=scrollbar.set)
+
+        self.tasks_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Gestione click e doppio click
+        self.tasks_tree.bind('<Button-1>', self._on_tree_click)
+        self.tasks_tree.bind('<Double-1>', self._on_tree_double_click)
+
+        # --- Sezione Note (Bottom-Center) ---
+        notes_frame = ttk.LabelFrame(frame,
+                                     text=self.lang.get('maintenance_notes_label', "Note Generali / Osservazioni"),
+                                     padding="10")
+        notes_frame.pack(fill=tk.X, pady=5)
+
+        self.notes_text = tk.Text(notes_frame, height=4, wrap=tk.WORD)
+        self.notes_text.pack(fill=tk.X, expand=True, padx=5)
+        self.notes_text.config(state='disabled')
+
+        # --- Sezione Azioni (Bottom) ---
+        action_frame = ttk.Frame(frame)
+        action_frame.pack(fill=tk.X, pady=10)
+
+        # Pulsante Richiesta
+        request_button_text = self.lang.get('request_button', "Crea Richiesta (Parti/Intervento)")
+        self.request_button = ttk.Button(action_frame, text=request_button_text, command=self._open_request_window,
+                                         state='disabled')
+        self.request_button.pack(side=tk.LEFT, padx=5)
+
+        # Pulsante Salva
+        self.save_button = ttk.Button(action_frame,
+                                      text=self.lang.get('save_completed_tasks', "Salva Compiti Eseguiti"),
+                                      command=self._save_logs, state='disabled')
+        self.save_button.pack(side=tk.RIGHT, padx=5)
+
+    def _load_equipments(self):
+        # (Invariato)
+        equipments = self.db.fetch_all_equipments()
+        if equipments:
+            self.equipments_data = {f"{row.InternalName or 'N/D'} [{row.SerialNumber}]": row.EquipmentId for row in
+                                    equipments}
+            self.equipment_combo['values'] = list(self.equipments_data.keys())
+
+    def _reset_plan_and_tasks(self):
+        self.plan_var.set("")
+        if self.plan_combo:
+            self.plan_combo.config(state='disabled', values=[])
+        self.plans_data = {}
+        self._reset_tasks()
+
+    def _reset_tasks(self):
+        # Controllo difensivo: Assicurati che i widget esistano prima di accedervi
+        if self.tasks_tree:
+            for i in self.tasks_tree.get_children():
+                self.tasks_tree.delete(i)
+
+        self.completed_tasks = set()
+        self.start_time = None
+
+        if self.save_button:
+            self.save_button.config(state='disabled')
+
+        # Pulisci e disabilita il campo note e il pulsante richiesta
+        if self.notes_text:
+            self.notes_text.config(state='normal')
+            self.notes_text.delete('1.0', tk.END)
+            self.notes_text.config(state='disabled')
+
+        if self.request_button:
+            self.request_button.config(state='disabled')
+
+    # !!! METODO MANCANTE CHE CAUSAVA L'ERRORE !!!
+    def _on_equipment_select(self, event=None):
+        self._reset_plan_and_tasks()
+        equipment_id = self.equipments_data.get(self.equipment_var.get())
+
+        if equipment_id:
+            # Chiama il metodo DB per la Query 1
+            plans = self.db.fetch_available_maintenance_plans(equipment_id)
+            if plans:
+                # Mappiamo il testo descrittivo a una tupla (PianoManutenzioneId, ProgrammedInterventionId)
+                self.plans_data = {row.TimingDescriprion: (row.PianoManutenzioneId, row.ProgrammedInterventionId) for
+                                   row in plans}
+                self.plan_combo['values'] = list(self.plans_data.keys())
+                self.plan_combo.config(state='readonly')
+            else:
+                messagebox.showinfo(self.lang.get('info_title'), self.lang.get('info_no_plans_available',
+                                                                               "Nessun piano di manutenzione disponibile o tutti i compiti sono già stati eseguiti per questa macchina."),
+                                    parent=self)
+
+    def _on_plan_select(self, event=None):
+        self._reset_tasks()
+        plan_selection = self.plan_var.get()
+        if plan_selection and plan_selection in self.plans_data:
+            # Recupera ProgrammedInterventionId dalla tupla memorizzata (indice 1)
+            _, programmed_intervention_id = self.plans_data[plan_selection]
+
+            # --- TIME TRACKING: Memorizza l'ora corrente ---
+            self.start_time = datetime.now()
+            print(f"Inizio compilazione scheda alle: {self.start_time}")
+
+            # Chiama il metodo DB per la Query 2
+            tasks = self.db.fetch_maintenance_tasks(programmed_intervention_id)
+
+            if tasks:
+                for task in tasks:
+                    task_id = task.compitoid
+                    # Inserisce nella Treeview, usando task_id come iid
+                    self.tasks_tree.insert('', tk.END, iid=task_id,
+                                           values=("", task.nomecompito, task.categoria, task.descrizioneCompito))
+
+                # Abilita salvataggio, note e richieste
+                self.save_button.config(state='normal')
+                self.notes_text.config(state='normal')
+                self.request_button.config(state='normal')
+            else:
+                messagebox.showwarning(self.lang.get('warning_title'),
+                                       self.lang.get('warn_no_tasks_found', "Nessun compito trovato per questo piano."),
+                                       parent=self)
+
+    def _on_tree_click(self, event):
+        # Gestisce il click per simulare un checkbox nella Treeview
+        region = self.tasks_tree.identify("region", event.x, event.y)
+        column = self.tasks_tree.identify_column(event.x)
+
+        # Controlla se il click è avvenuto su una cella e nella prima colonna (#1, che è 'check')
+        if region == "cell" and column == "#1":
+            item_iid = self.tasks_tree.identify_row(event.y)
+            if item_iid:
+                try:
+                    task_id = int(item_iid)
+                except ValueError:
+                    return
+
+                # Inverti lo stato del checkbox
+                if task_id in self.completed_tasks:
+                    self.completed_tasks.remove(task_id)
+                    self.tasks_tree.set(item_iid, 'check', "")
+                else:
+                    self.completed_tasks.add(task_id)
+                    self.tasks_tree.set(item_iid, 'check', "✔")  # Carattere Unicode ✔
+
+    def _on_tree_double_click(self, event):
+        """Gestisce il doppio click su un compito per aprire il documento associato."""
+
+        item_iid = self.tasks_tree.focus()
+
+        if not item_iid:
+            return
+
+        # Evita l'esecuzione se si fa doppio click sulla colonna checkbox
+        column = self.tasks_tree.identify_column(event.x)
+        if column == "#1":
+            return
+
+        try:
+            task_id = int(item_iid)
+        except ValueError:
+            return
+
+        print(f"Richiesta apertura documento per CompitoId: {task_id}")
+
+        # Chiama il metodo DB (definito in main.py)
+        success = self.db.fetch_and_open_document_by_task_id(task_id)
+
+        if not success:
+            error_msg = self.lang.get('error_opening_task_document',
+                                      "Impossibile aprire il documento associato al compito.")
+
+            if hasattr(self.db, 'last_error_details') and self.db.last_error_details:
+                error_msg += f"\n\n{self.db.last_error_details}"
+
+            messagebox.showwarning(self.lang.get('warning_title'), error_msg, parent=self)
+
+    def _open_request_window(self):
+        # Recupera le informazioni necessarie sulla macchina corrente
+        equipment_name = self.equipment_var.get()
+        equipment_id = self.equipments_data.get(equipment_name)
+
+        if not equipment_id:
+            # Questo non dovrebbe succedere se il pulsante è abilitato solo dopo la selezione del piano
+            messagebox.showerror(self.lang.get('error_title'), "Errore interno: ID macchina non trovato.", parent=self)
+            return
+
+        # Chiama il launcher nel nuovo modulo 'richieste_intervento.py'
+        richieste_intervento.open_request_window(
+            parent=self,
+            db=self.db,
+            lang=self.lang,
+            user_name=self.user_name,
+            equipment_id=equipment_id,
+            equipment_name=equipment_name
+        )
+
+    def _save_logs(self):
+        if not self.completed_tasks:
+            messagebox.showwarning(self.lang.get('warning_title'), self.lang.get('warn_no_tasks_completed',
+                                                                                 "Nessun compito selezionato come completato."),
+                                   parent=self)
+            return
+
+        equipment_id = self.equipments_data.get(self.equipment_var.get())
+        if not equipment_id or not self.start_time:
+            messagebox.showerror(self.lang.get('error_title'),
+                                 "Errore interno: Dati macchina o ora di inizio mancanti.", parent=self)
+            return
+
+        # Recupera le note dal widget Text
+        notes_content = self.notes_text.get("1.0", tk.END).strip()
+
+        # Chiedi conferma
+        confirm_msg = self.lang.get('confirm_save_logs_message', "Salvare i log per {0} compiti?").format(
+            len(self.completed_tasks))
+
+        if messagebox.askyesno(self.lang.get('confirm_save_title', "Conferma Salvataggio"), confirm_msg, parent=self):
+
+            # Chiama il metodo DB per salvare i log in batch
+            success = self.db.log_completed_tasks(
+                equipment_id=equipment_id,
+                user_name=self.user_name,
+                completed_task_ids=list(self.completed_tasks),
+                start_time=self.start_time,
+                notes=notes_content  # Passaggio delle note
+            )
+
+            if success:
+                messagebox.showinfo(self.lang.get('success_title'),
+                                    self.lang.get('info_logs_saved_success', "Log manutenzione salvati con successo."),
+                                    parent=self)
+                # Resetta la selezione corrente e aggiorna la lista piani disponibili
+                self._on_equipment_select()
+            else:
+                messagebox.showerror(self.lang.get('error_title'), self.db.last_error_details, parent=self)
+
+
+# AGGIORNA la funzione launcher in maintenance_gui.py per accettare user_name
+# Sostituisci la vecchia definizione di open_fill_templates con questa:
+def open_fill_templates(parent, db, lang, user_name=None):
+    # Controlla se user_name è stato fornito (dovrebbe esserlo se chiamato tramite login da App)
+    if user_name:
+        FillTemplateWindow(parent, db, lang, user_name)  # Passa user_name alla classe
+    else:
+        # Fallback di sicurezza nel caso venga chiamata erroneamente senza utente
+        print("Errore: Tentativo di aprire Compilazione Schede senza autenticazione.")
 
 
 class ReportsWindow(tk.Toplevel):
@@ -1494,8 +1809,14 @@ def open_maintenance_docs(parent, db, lang):
     MaintenanceDocsWindow(parent, db, lang)
 
 
-def open_fill_templates(parent, db, lang):
-    FillTemplateWindow(parent, db, lang)
+def open_fill_templates(parent, db, lang, user_name=None):
+    # Controlla se user_name è stato fornito (dovrebbe esserlo se chiamato tramite login da App)
+    if user_name:
+        FillTemplateWindow(parent, db, lang, user_name) # Passa user_name alla classe
+    else:
+        # Fallback di sicurezza nel caso venga chiamata erroneamente senza utente
+        print("Errore: Tentativo di aprire Compilazione Schede senza autenticazione.")
+
 
 
 def open_reports(parent, db, lang):

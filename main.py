@@ -10,7 +10,7 @@ import sys
 import maintenance_gui
 import tempfile # Assicuriamoci che tempfile sia importato (usato in fetch_and_open_document)
 import re
-
+import reportlab
 
 # Import per gestire le immagini PNG
 try:
@@ -73,6 +73,269 @@ class LanguageManager:
 
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
+
+    # NUOVO METODO: Recupera impostazioni (es. email recipients)
+    def fetch_setting(self, attribute_name):
+        """Recupera un valore dalla tabella Settings."""
+        query = "select [value] from traceability_rs.dbo.Settings where atribute = ?;"
+        try:
+            self.cursor.execute(query, attribute_name)
+            row = self.cursor.fetchone()
+            return row.value if row else None
+        except pyodbc.Error as e:
+            print(f"Errore nel recupero impostazione '{attribute_name}': {e}")
+            return None
+        # NUOVO METODO: Aggiunge una nuova parte di ricambio al catalogo
+
+    def add_new_spare_part(self, part_name, part_code=None, description=None):
+        """Inserisce una nuova parte in eqp.SparePartMaterials e restituisce il nuovo ID."""
+        # Assumiamo che la tabella abbia un IDENTITY ID (SparePartId)
+        query = """
+                INSERT INTO eqp.SparePartMaterials (MaterialPartName, MaterialCode, MaterialDescription,ToBeRevized)
+                VALUES (?, ?, ?,1);
+                SELECT SCOPE_IDENTITY(); -- Recupera l'ID appena inserito \
+                """
+        try:
+            self.cursor.execute(query, part_name, part_code, description)
+            new_id = self.cursor.fetchval()  # Recupera l'ID restituito da SCOPE_IDENTITY()
+            self.conn.commit()
+            return new_id
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            print(f"Errore nell'aggiunta nuova parte di ricambio: {e}")
+            self.last_error_details = str(e)
+            return None
+
+    # NUOVO METODO: Inserisce la richiesta nella tabella eqp.RequestSpareParts
+    # (Assicurati che questo metodo esista o sostituisci quello precedente se presente)
+    def insert_spare_part_request(self, equipment_id, spare_part_id, quantity, notes, requested_by):
+        """Inserisce una nuova richiesta di parti di ricambio o intervento."""
+        query = """
+                INSERT INTO eqp.RequestSpareParts
+                (EquipmentId, SparePartMaterialId, Quantity, Note, RequestedBy, DateRequest, Solved)
+                VALUES (?, ?, ?, ?, ?, GETDATE(), 0)
+                """
+        try:
+            self.cursor.execute(query, equipment_id, spare_part_id, quantity, notes, requested_by)
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            print(f"Errore nell'inserimento richiesta: {e}")
+            self.last_error_details = str(e)
+            return False
+
+    # NUOVO METODO: Recupera le parti di ricambio/servizi disponibili
+    # (Assicurati che questo metodo esista o sostituisci quello precedente se presente)
+
+    # NUOVO METODO: Recupera e apre il documento basato su CompitoId
+    def fetch_and_open_document_by_task_id(self, task_id):
+        """Recupera e apre il documento associato a un CompitoId."""
+
+        self.last_error_details = ""
+
+        # Query fornita dall'utente. Aggiungiamo FileName e FileType necessari per l'apertura.
+        # Aggiungiamo ORDER BY per assicurarci di prendere il documento più recente se la JOIN ne producesse più di uno.
+        query = """
+                select emd.DocumentSource, emd.FileName, emd.FileType
+                from Traceability_rs.eqp.EquipmentMantainanceDocs emd
+                         left join Traceability_rs.eqp.CompitiManutenzione CM \
+                                   on cm.ProgrammedInterventionId = emd.ProgrammedInterventionId
+                where cm.compitoid = ?
+                -- Potresti voler aggiungere AND emd.DateOut IS NULL se vuoi mostrare solo documenti attivi
+                ORDER BY emd.DateSys DESC
+                """
+        try:
+            self.cursor.execute(query, task_id)
+            # Usiamo fetchone() per prendere solo il primo risultato (il più recente)
+            row = self.cursor.fetchone()
+
+            if row and row.DocumentSource:
+                binary_data = row.DocumentSource
+
+                # --- Logica Gestione File Temporaneo (Robusta) ---
+
+                # 1. Determina estensione e prefisso
+                file_extension = row.FileType if row.FileType else os.path.splitext(row.FileName)[1]
+                if not file_extension:
+                    print(f"Attenzione: Estensione mancante per task ID {task_id}. Usando default .pdf")
+                    file_extension = '.pdf'  # Default ragionevole
+
+                if not file_extension.startswith('.'):
+                    file_extension = '.' + file_extension
+
+                temp_prefix = "task_doc_"
+                if row.FileName:
+                    # Pulisce il nome del file (rimuove caratteri non sicuri) per usarlo come prefisso
+                    safe_name = re.sub(r'[^\w\-]', '_', os.path.splitext(row.FileName)[0])
+                    temp_prefix = safe_name[:50] + "_"
+
+                # 2. Crea e scrivi file temporaneo
+                # delete=False è necessario affinché il programma esterno possa aprirlo
+                temp_file = tempfile.NamedTemporaryFile(prefix=temp_prefix, delete=False, suffix=file_extension)
+                temp_file.write(binary_data)
+                temp_file.close()  # Chiudi handle Python per permettere apertura esterna
+
+                print(f"Apertura documento per compito ID {task_id}: {temp_file.name}")
+
+                # 3. Apertura File (Cross-platform)
+                try:
+                    if sys.platform == "win32":
+                        # Metodo per Windows (es. apre con Adobe Reader o Word/Excel predefinito)
+                        os.startfile(temp_file.name)
+                    else:
+                        # Fallback per macOS e Linux
+                        opener = "open" if sys.platform == "darwin" else "xdg-open"
+                        subprocess.call([opener, temp_file.name])
+                except Exception as open_e:
+                    self.last_error_details = f"Errore OS nell'apertura del file: {open_e}"
+                    return False
+
+                return True
+            else:
+                # Caso in cui la query non restituisce risultati (nessun documento collegato)
+                self.last_error_details = f"Nessun documento trovato associato al compito ID {task_id}."
+                return False
+
+        except pyodbc.Error as e:
+            print(f"Errore durante il recupero del documento dal DB per task ID {task_id}: {e}")
+            self.last_error_details = f"Errore Database: {e}"
+            return False
+        except Exception as e:
+            # Gestione errori (es. permessi scrittura file temporaneo)
+            print(f"Errore imprevisto durante la gestione del file temporaneo: {e}")
+            self.last_error_details = f"Errore Applicazione (File System): {e}"
+            return False
+
+    def fetch_spare_parts(self):
+        """Recupera la lista di parti di ricambio e servizi disponibili."""
+        # ATTENZIONE: Assicurati che i nomi delle colonne corrispondano alla tua tabella eqp.SparePartMaterials.
+        query = """
+                SELECT SparePartMaterialId, MaterialPartNumber, MaterialCode, MaterialDescription
+                FROM eqp.SparePartMaterials
+                ORDER BY PartName \
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore nel recupero parti di ricambio: {e}")
+            self.last_error_details = str(e)
+            return []
+
+
+    def fetch_and_open_maintenance_document(self, document_id):
+        """Recupera i dati binari di un documento di manutenzione dal DB, lo salva temporaneamente e lo apre."""
+
+        self.last_error_details = ""  # Resetta l'errore
+
+        try:
+            # Seleziona i dati binari (DocumentSource) e i metadati (FileType, FileName)
+            sql_select = """
+                         SELECT DocumentSource, FileName, FileType
+                         FROM eqp.EquipmentMantainanceDocs
+                         WHERE EquipmentDocumentationId = ?
+                         """
+            self.cursor.execute(sql_select, document_id)
+            row = self.cursor.fetchone()
+
+            if row and row.DocumentSource:
+                binary_data = row.DocumentSource
+
+                # --- 1. Gestione Robusta dell'Estensione e del Nome File Temporaneo ---
+
+                # Determina l'estensione: Priorità a FileType, fallback su FileName, default a .pdf
+                file_extension = row.FileType if row.FileType else os.path.splitext(row.FileName)[1]
+                if not file_extension:
+                    print(f"Attenzione: Estensione mancante per doc ID {document_id}. Usando default .pdf")
+                    file_extension = '.pdf'  # Default ragionevole
+
+                # Assicurarsi che l'estensione inizi con '.'
+                if not file_extension.startswith('.'):
+                    file_extension = '.' + file_extension
+
+                # Usa una versione pulita del nome file originale come prefisso per facilitare l'identificazione
+                temp_prefix = "doc_"
+                if row.FileName:
+                    # Pulisce il nome del file (rimuove caratteri non sicuri)
+                    safe_name = re.sub(r'[^\w\-]', '_', os.path.splitext(row.FileName)[0])
+                    temp_prefix = safe_name[:50] + "_"  # Limita la lunghezza e aggiunge separatore
+
+                # --- 2. Creazione File Temporaneo ---
+
+                # delete=False è necessario affinché il programma esterno possa aprirlo prima che Python lo elimini
+                temp_file = tempfile.NamedTemporaryFile(prefix=temp_prefix, delete=False, suffix=file_extension)
+                temp_file.write(binary_data)
+                # Chiudi il file handle in Python affinché il sistema operativo possa aprirlo
+                temp_file.close()
+
+                print(f"Apertura del file temporaneo: {temp_file.name}")
+
+                # --- 3. Apertura File (Cross-platform) ---
+                try:
+                    if sys.platform == "win32":
+                        # Metodo specifico per Windows
+                        os.startfile(temp_file.name)
+                    else:
+                        # Fallback per macOS e Linux
+                        opener = "open" if sys.platform == "darwin" else "xdg-open"
+                        subprocess.call([opener, temp_file.name])
+                except Exception as open_e:
+                    self.last_error_details = f"Errore OS nell'apertura del file: {open_e}"
+                    return False
+
+                return True
+            else:
+                self.last_error_details = f"Documento ID {document_id} non trovato o dati binari assenti nel database."
+                return False
+
+        except pyodbc.Error as e:
+            print(f"Errore durante il recupero del documento dal DB: {e}")
+            self.last_error_details = f"Errore Database: {e}"
+            return False
+        except Exception as e:
+            # Gestione errori generici (es. permessi scrittura file temporaneo)
+            print(f"Errore imprevisto durante la gestione del file temporaneo: {e}")
+            self.last_error_details = f"Errore Applicazione (File System): {e}"
+            return False
+
+    # NUOVO METODO: Recupera le parti di ricambio/servizi disponibili
+    def fetch_spare_parts(self):
+        """Recupera la lista di parti di ricambio e servizi disponibili."""
+        # ATTENZIONE: Questa query assume i nomi delle colonne (SparePartId, PartName, PartCode, Description).
+        # Modificala se i nomi reali nella tua tabella eqp.SparePartMaterials sono diversi.
+        query = """
+                SELECT SparePartMaterialId, MaterialPartNumber, MaterialPartNumber, MaterialCode, MaterialDescription
+                FROM eqp.SparePartMaterials
+                ORDER BY PartName \
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore nel recupero parti di ricambio: {e}")
+            self.last_error_details = str(e)
+            return []
+
+    # NUOVO METODO: Inserisce la richiesta nella tabella eqp.RequestSpareParts
+    def insert_spare_part_request(self, equipment_id, spare_part_id, quantity, notes, requested_by):
+        """Inserisce una nuova richiesta di parti di ricambio o intervento."""
+        # ATTENZIONE: Questa query assume la struttura della tabella eqp.RequestSpareParts.
+        # Ho impostato uno stato iniziale 'Open'.
+        query = """
+                INSERT INTO eqp.RequestSpareParts
+                (EquipmentId, SparePartMaterialId, Quantity, Note, RequestedBy, DateRequest, Solved)
+                VALUES (?, ?, ?, ?, ?, GETDATE(), 0) \
+                """
+        try:
+            self.cursor.execute(query, equipment_id, spare_part_id, quantity, notes, requested_by)
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            print(f"Errore nell'inserimento richiesta: {e}")
+            self.last_error_details = str(e)
+            return False
 
     def __init__(self, conn_str):
         self.conn_str = conn_str
@@ -775,7 +1038,174 @@ class Database:
         except pyodbc.Error as e:
             print(f"Errore durante il recupero della versione del software: {e}")
             return None
+    # NUOVO METODO: Query 1 - Recupera Piani di Manutenzione Disponibili per una macchina
+    def fetch_available_maintenance_plans(self, equipment_id):
+        """Recupera i piani di manutenzione non ancora completati per un EquipmentId."""
+        # MODIFICATO: Aggiunto pin.ProgrammedInterventionId che è necessario per la Query 2
+        query = """
+        select distinct pma.PianoManutenzioneId, pin.TimingDescriprion, pin.ProgrammedInterventionId
+        from Traceability_rs.eqp.equipments as E
+        left join Traceability_rs.eqp.EquipmentTypes et on e.equipmenttypeid=et.equipmenttypeid
+        left join Traceability_rs.[eqp].[EquipmentBrands]  eb on eb.EquipmentBrandId=e.BrandId
+        left join Traceability_rs.[eqp].[PianiManutenzioneMacchina] pma on pma.equipmentid=e.equipmentid
+        left join Traceability_rs.[eqp].[ProgrammedInterventions] PIn on pin.[ProgrammedInterventionId]=pma.[ProgrammedInterventionId]
+        left join Traceability_rs.eqp.EquipmentMantainanceDocs emd on emd.ProgrammedInterventionId=pin.ProgrammedInterventionId
+        left join Traceability_rs.eqp.CompitiManutenzione CM on cm.ProgrammedInterventionId=emd.ProgrammedInterventionId
+        -- ATTENZIONE: Assicurati che lo schema per LogManutenzioni sia corretto (eqp o dbo)
+        left join Traceability_rs.eqp.LogManutenzioni LM on lm.compitoid=cm.compitoid
+        where e.equipmentid = ?
+          and lm.logid is null  -- Condizione chiave: nessun log esistente per i compiti
+          and pin.TimingDescriprion IS NOT NULL -- Assicura che il piano sia valido
+        order by pma.PianoManutenzioneid;
+        """
+        try:
+            self.cursor.execute(query, equipment_id)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore nel recupero piani manutenzione: {e}")
+            self.last_error_details = str(e)
+            return []
 
+    # NUOVO METODO: Query 2 - Recupera Compiti per un Piano di Manutenzione
+    def fetch_maintenance_tasks(self, programmed_intervention_id):
+        """Recupera i compiti specifici per un ProgrammedInterventionId non ancora completati."""
+        # Query originale fornita dall'utente
+        query = """
+        select cm.compitoid,  cm.nomecompito, cm.categoria,
+            cm.descrizioneCompito,pin.ProgrammedInterventionId
+        from Traceability_rs.eqp.equipments as E
+        left join Traceability_rs.eqp.EquipmentTypes et on e.equipmenttypeid=et.equipmenttypeid
+        left join Traceability_rs.[eqp].[EquipmentBrands]  eb on eb.EquipmentBrandId=e.BrandId
+        left join Traceability_rs.[eqp].[PianiManutenzioneMacchina] pma on pma.equipmentid=e.equipmentid
+        left join Traceability_rs.[eqp].[ProgrammedInterventions] PIn on pin.[ProgrammedInterventionId]=pma.[ProgrammedInterventionId]
+        left join Traceability_rs.eqp.EquipmentMantainanceDocs emd on emd.ProgrammedInterventionId=pin.ProgrammedInterventionId
+        left join Traceability_rs.eqp.CompitiManutenzione CM on cm.ProgrammedInterventionId=emd.ProgrammedInterventionId
+        -- ATTENZIONE: Assicurati che lo schema per LogManutenzioni sia corretto (eqp o dbo)
+        left join Traceability_rs.eqp.LogManutenzioni LM on lm.compitoid=cm.compitoid
+        where pin.ProgrammedInterventionId=?
+          and lm.logid is null  -- Condizione chiave: compito non ancora loggato
+          and cm.compitoid IS NOT NULL -- Assicura che il compito sia valido
+        -- Cambiato l'ordine per renderlo più logico (per ID compito)
+        order by cm.compitoid;
+        """
+        try:
+            self.cursor.execute(query, programmed_intervention_id)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore nel recupero compiti manutenzione: {e}")
+            self.last_error_details = str(e)
+            return []
+
+    # NUOVO METODO: Salva i log dei compiti completati
+    def log_completed_tasks(self, equipment_id, user_name, completed_task_ids, start_time, notes=""):
+        """Inserisce record in LogManutenzioni per i compiti completati in una transazione batch."""
+        if not completed_task_ids:
+            return True
+
+        # ATTENZIONE: Modifica questa query se la struttura o lo schema di LogManutenzioni è diverso.
+        # Ho assunto lo schema 'eqp'.
+        # DataEsecuzione è impostata a GETDATE() (ora del server al momento del salvataggio).
+        # StartTime è l'ora passata dalla GUI (quando la scheda è stata caricata).
+        query = """
+                INSERT INTO Traceability_rs.eqp.LogManutenzioni
+                (CompitoId, EquipmentId, UserName, DateStop, DateStart, NoteGenerali)
+                VALUES (?, ?, ?, GETDATE(), ?, ?)
+                """
+        try:
+            # Prepariamo i dati per l'inserimento batch
+            batch_data = []
+            for task_id in completed_task_ids:
+                # Ordine parametri: (CompitoId, EquipmentId, IdManutentore, StartTime, NoteGenerali)
+                batch_data.append((task_id, equipment_id, user_name, start_time, notes))
+
+            # Esegui l'inserimento batch (efficiente)
+            self.cursor.executemany(query, batch_data)
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            print(f"Errore nel logging dei compiti completati: {e}")
+            self.last_error_details = str(e)
+            return False
+
+    # NUOVO METODO: Recupera e apre il documento basato su CompitoId
+    def fetch_and_open_document_by_task_id(self, task_id):
+        """Recupera e apre il documento associato a un CompitoId."""
+
+        self.last_error_details = ""
+
+        # Query fornita dall'utente. Aggiungiamo FileName e FileType necessari per l'apertura.
+        # Aggiungiamo ORDER BY per assicurarci di prendere il documento più recente se la JOIN ne producesse più di uno.
+        query = """
+                select emd.DocumentSource, emd.FileName, emd.FileType
+                from Traceability_rs.eqp.EquipmentMantainanceDocs emd
+                         left join Traceability_rs.eqp.CompitiManutenzione CM \
+                                   on cm.ProgrammedInterventionId = emd.ProgrammedInterventionId
+                where cm.compitoid = ?
+                -- Potresti voler aggiungere AND emd.DateOut IS NULL se vuoi mostrare solo documenti attivi
+                ORDER BY emd.DateSys DESC
+                """
+        try:
+            self.cursor.execute(query, task_id)
+            # Usiamo fetchone() per prendere solo il primo risultato (il più recente)
+            row = self.cursor.fetchone()
+
+            if row and row.DocumentSource:
+                binary_data = row.DocumentSource
+
+                # --- Logica Gestione File Temporaneo (Robusta) ---
+
+                # 1. Determina estensione e prefisso
+                file_extension = row.FileType if row.FileType else os.path.splitext(row.FileName)[1]
+                if not file_extension:
+                    print(f"Attenzione: Estensione mancante per task ID {task_id}. Usando default .pdf")
+                    file_extension = '.pdf'  # Default ragionevole
+
+                if not file_extension.startswith('.'):
+                    file_extension = '.' + file_extension
+
+                temp_prefix = "task_doc_"
+                if row.FileName:
+                    # Pulisce il nome del file (rimuove caratteri non sicuri) per usarlo come prefisso
+                    safe_name = re.sub(r'[^\w\-]', '_', os.path.splitext(row.FileName)[0])
+                    temp_prefix = safe_name[:50] + "_"
+
+                # 2. Crea e scrivi file temporaneo
+                # delete=False è necessario affinché il programma esterno possa aprirlo
+                temp_file = tempfile.NamedTemporaryFile(prefix=temp_prefix, delete=False, suffix=file_extension)
+                temp_file.write(binary_data)
+                temp_file.close()  # Chiudi handle Python per permettere apertura esterna
+
+                print(f"Apertura documento per compito ID {task_id}: {temp_file.name}")
+
+                # 3. Apertura File (Cross-platform)
+                try:
+                    if sys.platform == "win32":
+                        # Metodo per Windows (es. apre con Adobe Reader o Word/Excel predefinito)
+                        os.startfile(temp_file.name)
+                    else:
+                        # Fallback per macOS e Linux
+                        opener = "open" if sys.platform == "darwin" else "xdg-open"
+                        subprocess.call([opener, temp_file.name])
+                except Exception as open_e:
+                    self.last_error_details = f"Errore OS nell'apertura del file: {open_e}"
+                    return False
+
+                return True
+            else:
+                # Caso in cui la query non restituisce risultati (nessun documento collegato)
+                self.last_error_details = f"Nessun documento trovato associato al compito ID {task_id}."
+                return False
+
+        except pyodbc.Error as e:
+            print(f"Errore durante il recupero del documento dal DB per task ID {task_id}: {e}")
+            self.last_error_details = f"Errore Database: {e}"
+            return False
+        except Exception as e:
+            # Gestione errori (es. permessi scrittura file temporaneo)
+            print(f"Errore imprevisto durante la gestione del file temporaneo: {e}")
+            self.last_error_details = f"Errore Applicazione (File System): {e}"
+            return False
 
 # --- CLASSI INTERFACCIA UTENTE (GUI) ---
 
@@ -1194,6 +1624,17 @@ class ViewDocumentForm(tk.Toplevel):
 
 class App(tk.Tk):
     """Classe principale dell'applicazione."""
+    # NUOVO METODO LANCIATORE: Gestisce il requisito di login obbligatorio
+    def open_fill_templates_with_login(self):
+        """Apre la finestra di compilazione schede, richiedendo prima il login."""
+        # Assicurati che LoginWindow sia definita in main.py
+        login_form = LoginWindow(self, self.db, self.lang)
+        self.wait_window(login_form)
+        authenticated_user = login_form.authenticated_user_name
+        if authenticated_user:
+            # Chiama la funzione corretta in maintenance_gui, passando l'utente autenticato
+            maintenance_gui.open_fill_templates(self, self.db, self.lang, authenticated_user)
+
 
     def __init__(self):
         super().__init__()
@@ -1321,8 +1762,9 @@ class App(tk.Tk):
             pass # Gestione errore se il menu non è ancora pronto
 
         # Menu Manutenzione
-        self.maintenance_menu.delete(0, 'end')
-
+        #self.maintenance_menu.delete(0, 'end')
+        #self.maintenance_menu.add_command(label=self.lang.get('submenu_fill_templates'),
+        #                           command=self.open_fill_templates_with_login)
         # Sottomenu Gestione Macchine
         machine_submenu = tk.Menu(self.maintenance_menu, tearoff=0)
         machine_submenu.add_command(label=self.lang.get('submenu_add_machine'),
@@ -1346,8 +1788,10 @@ class App(tk.Tk):
         self.maintenance_menu.add_cascade(label=self.lang.get('submenu_maintenance_docs'), menu=docs_submenu)
 
         # Altre voci
+        #self.maintenance_menu.add_command(label=self.lang.get('submenu_fill_templates'),
+        #                                  command=lambda: maintenance_gui.open_fill_templates(self, self.db, self.lang))
         self.maintenance_menu.add_command(label=self.lang.get('submenu_fill_templates'),
-                                          command=lambda: maintenance_gui.open_fill_templates(self, self.db, self.lang))
+                                          command=self.open_fill_templates_with_login)
         self.maintenance_menu.add_command(label=self.lang.get('submenu_reports'),
                                           command=lambda: maintenance_gui.open_reports(self, self.db, self.lang))
 
@@ -1372,7 +1816,6 @@ class App(tk.Tk):
         self.lang.set_language(lang_code)
         self.update_texts()
 
-    # --- METODI DI NAVIGAZIONE E AZIONI ---
 
     def _show_about(self):
         """Mostra la finestra di dialogo 'About' con le informazioni del software."""
@@ -1441,11 +1884,27 @@ class App(tk.Tk):
             self.authenticated_user_for_maintenance = authenticated_user
             maintenance_gui.open_edit_machine(self, self.db, self.lang)
 
+
+
+    def open_fill_templates_with_login(self):
+        """Apre la finestra di compilazione schede, richiedendo prima il login."""
+        # Assicurati che LoginWindow sia definita in main.py
+        # 1. Mostra la finestra di Login (LoginWindow deve essere definita in main.py)
+        login_form = LoginWindow(self, self.db, self.lang)
+        self.wait_window(login_form)
+
+        # 2. Recupera il nome utente se l'autenticazione ha successo
+        authenticated_user = login_form.authenticated_user_name
+
+        # 3. Se autenticato, apri la finestra di compilazione passando il nome utente
+        if authenticated_user:
+            # Chiama la funzione corretta in maintenance_gui, passando l'utente autenticato
+            maintenance_gui.open_fill_templates(self, self.db, self.lang, authenticated_user)
+
     def _on_closing(self):
         if messagebox.askokcancel(self.lang.get('quit_title', "Quit"), self.lang.get('quit_message', "Do you want to quit?")):
             self.db.disconnect()
             self.destroy()
-
 
 if __name__ == "__main__":
     app = App()
