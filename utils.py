@@ -6,10 +6,11 @@ import traceback
 from datetime import datetime
 
 # Email Configuration (Assuming Office 365)
-SMTP_SERVER = "vandewiele-com.mail.protection.outlook.com"
-SMTP_PORT = 25
-SMTP_USER = "Accounting@Eutron.it"
-SMTP_PASSWORD = "9jHgFhSs7Vf+"  # Password fornita dall'utente
+#SMTP_SERVER = "vandewiele-com.mail.protection.outlook.com"
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+SMTP_USER = "u8588557424@gmail.com"
+SMTP_PASSWORD = "mork cnez vayb wgrb"  # Password fornita dall'utente
 
 
 def send_email(recipients, subject, body):
