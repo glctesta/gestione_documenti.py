@@ -74,6 +74,126 @@ class LanguageManager:
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
 
+    # In main.py, dentro la classe Database
+
+    def fetch_report_maintainers(self):
+        """Recupera la lista dei manutentori che hanno eseguito almeno una manutenzione."""
+        query = """
+                SELECT DISTINCT UPPER(e.EmployeeName + ' ' + e.EmployeeSurname) AS Manutentore
+                FROM resetservices.dbo.tbuserkey AS U
+                         INNER JOIN employee.dbo.employees AS e ON e.EmployeeId = u.idanga AND U.DataOut IS NULL
+                         INNER JOIN employee.dbo.EmployeeHireHistory AS h \
+                                    ON e.EmployeeId = h.EmployeeId AND h.EndWorkDate IS NULL AND h.employeerid = 2
+                         INNER JOIN Traceability_rs.EQP.LogManutenzioni LM ON lm.UserName COLLATE DATABASE_DEFAULT = \
+                                                                              UPPER(e.EmployeeName + ' ' + e.EmployeeSurname)
+                ORDER BY UPPER(e.EmployeeName + ' ' + e.EmployeeSurname); \
+                """
+        try:
+            self.cursor.execute(query)
+            # Restituiamo una lista semplice di nomi
+            return [row.Manutentore for row in self.cursor.fetchall()]
+        except pyodbc.Error as e:
+            print(f"Errore nel recupero dei manutentori per report: {e}")
+            return []
+
+    def fetch_report_dates(self):
+        """Recupera le date uniche in cui sono state fatte manutenzioni."""
+        query = """
+                SELECT DISTINCT CAST(lm.datestart AS DATE) AS DateMaintenance
+                FROM Traceability_rs.EQP.LogManutenzioni lm
+                ORDER BY CAST(lm.datestart AS DATE) DESC; \
+                """
+        try:
+            self.cursor.execute(query)
+            # Restituiamo una lista di oggetti data
+            return [row.DateMaintenance for row in self.cursor.fetchall()]
+        except pyodbc.Error as e:
+            print(f"Errore nel recupero delle date per report: {e}")
+            return []
+
+    def search_maintenance_report(self, equipment_id=None, maintenance_date=None, maintainer_name=None):
+        """Esegue la ricerca per il report di manutenzione con filtri opzionali."""
+        # Query di base
+        base_query = """
+                     SELECT ROW_NUMBER() OVER (ORDER BY cm.ordine, UPPER(ISNULL(e.EmployeeName + ' ' + e.EmployeeSurname, '#ND'))) AS [Row],
+                UPPER(ISNULL(e.EmployeeName + ' ' + e.EmployeeSurname, '#ND')) AS EmployeeName,
+                cm.NomeCompito,
+                eq.InternalName AS EquipmentName,
+                cm.DescrizioneCompito,
+                FORMAT(lm.datestart, 'd', 'ro-ro') AS DataIntervento,
+                CONVERT(VARCHAR(8), lm.datestart, 108) AS InizioOraIntervento,
+                CONVERT(VARCHAR(8), lm.datestop, 108) AS FineIntervento,
+                DATEDIFF(MINUTE, lm.DateStart, lm.DateStop) AS [DurataInterventoInMin]
+                     FROM Traceability_rs.EQP.LogManutenzioni LM
+                         INNER JOIN employee.dbo.employees AS e \
+                     ON lm.UserName COLLATE DATABASE_DEFAULT = UPPER (e.EmployeeName + ' ' + e.EmployeeSurname)
+                         INNER JOIN resetservices.dbo.tbuserkey AS U ON e.EmployeeId = u.idanga AND U.DataOut IS NULL
+                         INNER JOIN employee.dbo.EmployeeHireHistory AS h ON e.EmployeeId = h.EmployeeId AND h.EndWorkDate IS NULL AND h.employeerid = 2
+                         INNER JOIN traceability_rs.eqp.CompitiManutenzione cm ON lm.CompitoId = cm.CompitoId
+                         INNER JOIN traceability_rs.eqp.Equipments eq ON eq.EquipmentID = lm.EquipmentID \
+                     """
+
+        # Costruzione dinamica della clausola WHERE
+        where_clauses = []
+        params = []
+
+        if equipment_id:
+            where_clauses.append("eq.EquipmentId = ?")
+            params.append(equipment_id)
+
+        if maintenance_date:
+            where_clauses.append("CAST(lm.dateStart AS DATE) = ?")
+            params.append(maintenance_date)
+
+        if maintainer_name:
+            where_clauses.append("UPPER(e.EmployeeName + ' ' + e.EmployeeSurname) = ?")
+            params.append(maintainer_name.upper())
+
+        # Combina la query finale
+        final_query = base_query
+        if where_clauses:
+            final_query += " WHERE " + " AND ".join(where_clauses)
+
+        final_query += " ORDER BY lm.datestart, EmployeeName, cm.ordine;"
+
+        try:
+            self.cursor.execute(final_query, params)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore nella ricerca del report di manutenzione: {e}")
+            self.last_error_details = str(e)
+            return []
+
+    def add_new_spare_part(self, material_part_number, material_code, material_description):
+        """
+        Inserisce una nuova parte di ricambio in eqp.SparePartMaterials,
+        imposta toberevizited a 1 e restituisce il nuovo ID.
+        """
+        query = """
+                INSERT INTO eqp.SparePartMaterials (MaterialPartNumber, MaterialCode, MaterialDescription, toberevizited)
+                    OUTPUT INSERTED.SparePartMaterialId
+                VALUES (?, ?, ?, 1);
+                """
+        try:
+            # Usiamo fetchval() che è perfetto per recuperare un singolo valore
+            # da una query che restituisce una riga e una colonna, come il nostro OUTPUT.
+            new_id = self.cursor.execute(query, material_part_number, material_code, material_description).fetchval()
+
+            if new_id:
+                self.conn.commit()
+                return new_id
+            else:
+                # Questo caso è improbabile con OUTPUT, ma è una buona pratica gestirlo
+                self.conn.rollback()
+                self.last_error_details = "Inserimento nel DB riuscito ma impossibile recuperare il nuovo ID."
+                return None
+
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            print(f"Errore nell'aggiunta di una nuova parte di ricambio: {e}")
+            self.last_error_details = str(e)
+            return None
+
     # NUOVO METODO: Recupera impostazioni (es. email recipients)
     def fetch_setting(self, attribute_name):
         """Recupera un valore dalla tabella Settings."""
@@ -1047,6 +1167,8 @@ class Database:
         except pyodbc.Error as e:
             print(f"Errore durante il recupero della versione del software: {e}")
             return None
+
+
     # NUOVO METODO: Query 1 - Recupera Piani di Manutenzione Disponibili per una macchina
     def fetch_available_maintenance_plans(self, equipment_id):
         """Recupera i piani di manutenzione non ancora completati per un EquipmentId."""
@@ -1094,22 +1216,18 @@ class Database:
         """Recupera i compiti specifici per un ProgrammedInterventionId non ancora completati."""
         # Query originale fornita dall'utente
         query = """
-        select cm.compitoid,  cm.nomecompito, cm.categoria,
-            cm.descrizioneCompito,pin.ProgrammedInterventionId
-        from Traceability_rs.eqp.equipments as E
-        left join Traceability_rs.eqp.EquipmentTypes et on e.equipmenttypeid=et.equipmenttypeid
-        left join Traceability_rs.[eqp].[EquipmentBrands]  eb on eb.EquipmentBrandId=e.BrandId
-        left join Traceability_rs.[eqp].[PianiManutenzioneMacchina] pma on pma.equipmentid=e.equipmentid
-        left join Traceability_rs.[eqp].[ProgrammedInterventions] PIn on pin.[ProgrammedInterventionId]=pma.[ProgrammedInterventionId]
-        left join Traceability_rs.eqp.EquipmentMantainanceDocs emd on emd.ProgrammedInterventionId=pin.ProgrammedInterventionId
-        left join Traceability_rs.eqp.CompitiManutenzione CM on cm.ProgrammedInterventionId=emd.ProgrammedInterventionId
-        -- ATTENZIONE: Assicurati che lo schema per LogManutenzioni sia corretto (eqp o dbo)
-        left join Traceability_rs.eqp.LogManutenzioni LM on lm.compitoid=cm.compitoid
-        where pin.ProgrammedInterventionId=?
-          and lm.logid is null  -- Condizione chiave: compito non ancora loggato
-          and cm.compitoid IS NOT NULL -- Assicura che il compito sia valido
-        -- Cambiato l'ordine per renderlo più logico (per ID compito)
-        order by cm.compitoid;
+            SELECT
+                cm.compitoid,
+                cm.nomecompito,--,task.nomecompito, task.categoria, task.descrizioneCompito
+                cm.categoria,
+                cm.descrizioneCompito
+            FROM
+                Traceability_rs.eqp.CompitiManutenzione AS cm
+            WHERE
+                cm.ProgrammedInterventionId = ? -- Filtra per l'ID del piano selezionato
+            AND cm.CompitoId IS NOT NULL
+            ORDER BY
+                cm.Ordine;
         """
         try:
             self.cursor.execute(query, programmed_intervention_id)

@@ -6,6 +6,19 @@ from tkinter import filedialog
 import os
 import reportlab
 import richieste_intervento
+import openpyxl
+from datetime import datetime
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import landscape, A4
+from reportlab.lib.units import cm
+from reportlab.platypus import Image as ReportLabImage, Table, TableStyle
+from reportlab.lib import colors
+from reportlab.platypus import Paragraph, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
+from reportlab.pdfbase import pdfmetrics
+#import reportlab.pdfbase.ttfonts
+from reportlab.pdfbase.ttfonts import TTFont
 
 # Import per ReportLab (necessari per MachineDetailsWindow)
 try:
@@ -23,6 +36,301 @@ try:
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
+
+
+class MaintenanceReportWindow(tk.Toplevel):
+    """Finestra per la generazione di report sulle manutenzioni."""
+
+    def __init__(self, parent, db, lang):
+        super().__init__(parent)
+        self.db = db
+        self.lang = lang
+        self.parent_app = parent
+        self.report_data = []  # Memorizza i dati dell'ultima ricerca
+
+        self.title(self.lang.get('maintenance_report_title', "Report Manutenzioni"))
+        self.geometry("1200x700")
+        self.transient(parent)
+
+        # Dati e variabili per i filtri
+        self.equipments_data = {}
+        self.equipment_var = tk.StringVar()
+        self.maintainer_var = tk.StringVar()
+        self.date_var = tk.StringVar()
+
+        self._create_widgets()
+        self._load_filters()
+
+    def _create_widgets(self):
+        # Frame principale
+        main_frame = ttk.Frame(self, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        main_frame.rowconfigure(1, weight=1)
+        main_frame.columnconfigure(0, weight=1)
+
+        # Frame per i filtri
+        filter_frame = ttk.LabelFrame(main_frame, text=self.lang.get('search_filters_label', "Filtri di Ricerca"),
+                                      padding="10")
+        filter_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+
+        ttk.Label(filter_frame, text=self.lang.get('select_machine_label')).grid(row=0, column=0, padx=5, pady=5)
+        self.equipment_combo = ttk.Combobox(filter_frame, textvariable=self.equipment_var, state='readonly', width=30)
+        self.equipment_combo.grid(row=0, column=1, padx=5, pady=5)
+
+        ttk.Label(filter_frame, text=self.lang.get('maintainer_label', "Manutentore:")).grid(row=0, column=2, padx=5,
+                                                                                             pady=5)
+        self.maintainer_combo = ttk.Combobox(filter_frame, textvariable=self.maintainer_var, state='readonly', width=30)
+        self.maintainer_combo.grid(row=0, column=3, padx=5, pady=5)
+
+        ttk.Label(filter_frame, text=self.lang.get('date_label', "Data:")).grid(row=0, column=4, padx=5, pady=5)
+        self.date_combo = ttk.Combobox(filter_frame, textvariable=self.date_var, state='readonly', width=15)
+        self.date_combo.grid(row=0, column=5, padx=5, pady=5)
+
+        search_button = ttk.Button(filter_frame, text=self.lang.get('search_button', "Cerca"),
+                                   command=self._perform_search)
+        search_button.grid(row=0, column=6, padx=20, pady=5)
+        clear_button = ttk.Button(filter_frame, text=self.lang.get('clear_filters_button', "Pulisci"),
+                                  command=self._clear_filters)
+        clear_button.grid(row=0, column=7, padx=5, pady=5)
+
+        # Frame per i risultati (Treeview)
+        results_frame = ttk.Frame(main_frame)
+        results_frame.grid(row=1, column=0, sticky="nsew")
+        results_frame.rowconfigure(0, weight=1)
+        results_frame.columnconfigure(0, weight=1)
+
+        self.cols = ('Row', 'EmployeeName', 'NomeCompito', 'EquipmentName', 'DescrizioneCompito', 'DataIntervento',
+                     'InizioOraIntervento', 'FineIntervento', 'DurataInterventoInMin')
+        self.tree = ttk.Treeview(results_frame, columns=self.cols, show='headings')
+
+        # Definisci le intestazioni e le larghezze
+        headers = ["#", "Manutentore", "Compito", "Macchina", "Descrizione", "Data", "Inizio", "Fine", "Durata (Min)"]
+        widths = [40, 150, 200, 150, 250, 80, 60, 60, 80]
+        for col, head, w in zip(self.cols, headers, widths):
+            self.tree.heading(col, text=head)
+            self.tree.column(col, width=w, stretch=tk.NO)
+
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(results_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        # Frame per i pulsanti di export
+        export_frame = ttk.Frame(main_frame)
+        export_frame.grid(row=2, column=0, sticky="e", pady=(10, 0))
+
+        self.pdf_button = ttk.Button(export_frame, text=self.lang.get('generate_pdf_button', "Genera PDF"),
+                                     command=self._generate_pdf, state="disabled")
+        self.pdf_button.pack(side=tk.LEFT, padx=5)
+        self.excel_button = ttk.Button(export_frame, text=self.lang.get('generate_excel_button', "Genera Excel"),
+                                       command=self._generate_excel, state="disabled")
+        self.excel_button.pack(side=tk.LEFT)
+
+    def _load_filters(self):
+        # Carica Macchine
+        all_equipments_text = self.lang.get('all_equipments_filter', "TUTTI I MACCHINARI")
+        equipments = self.db.fetch_all_equipments()
+        self.equipments_data = {f"{row.InternalName or 'N/D'} [{row.SerialNumber}]": row.EquipmentId for row in
+                                equipments}
+        self.equipment_combo['values'] = [all_equipments_text] + sorted(list(self.equipments_data.keys()))
+        self.equipment_var.set(all_equipments_text)
+
+        # Carica Manutentori
+        all_maintainers_text = self.lang.get('all_maintainers_filter', "TUTTI I MANUTENTORI")
+        maintainers = self.db.fetch_report_maintainers()
+        self.maintainer_combo['values'] = [all_maintainers_text] + maintainers
+        self.maintainer_var.set(all_maintainers_text)
+
+        # Carica Date
+        all_dates_text = self.lang.get('all_dates_filter', "TUTTE LE DATE")
+        dates = self.db.fetch_report_dates()
+        self.date_combo['values'] = [all_dates_text] + [d.strftime('%Y-%m-%d') for d in dates]
+        self.date_var.set(all_dates_text)
+
+    def _clear_filters(self):
+        self.equipment_var.set(self.equipment_combo['values'][0])
+        self.maintainer_var.set(self.maintainer_combo['values'][0])
+        self.date_var.set(self.date_combo['values'][0])
+        self.tree.delete(*self.tree.get_children())
+        self.report_data = []
+        self.pdf_button.config(state="disabled")
+        self.excel_button.config(state="disabled")
+
+    def _perform_search(self):
+        self.tree.delete(*self.tree.get_children())
+
+        # Recupera valori dai filtri
+        eq_selection = self.equipment_var.get()
+        maint_selection = self.maintainer_var.get()
+        date_selection = self.date_var.get()
+
+        equipment_id = self.equipments_data.get(eq_selection)
+        maintainer_name = maint_selection if maint_selection != self.lang.get('all_maintainers_filter',
+                                                                              "TUTTI I MANUTENTORI") else None
+        maintenance_date = date_selection if date_selection != self.lang.get('all_dates_filter',
+                                                                             "TUTTE LE DATE") else None
+
+        self.report_data = self.db.search_maintenance_report(equipment_id, maintenance_date, maintainer_name)
+
+        if self.report_data:
+            for row in self.report_data:
+                self.tree.insert("", "end", values=tuple(row))
+            self.pdf_button.config(state="normal")
+            self.excel_button.config(state="normal")
+        else:
+            messagebox.showinfo(self.lang.get('info_title', "Info"),
+                                self.lang.get('info_no_data_found', "Nessun dato trovato con i filtri selezionati."),
+                                parent=self)
+            self.pdf_button.config(state="disabled")
+            self.excel_button.config(state="disabled")
+
+    def _generate_title(self):
+        """Crea il titolo dinamico per i report."""
+        macchina = self.equipment_var.get()
+        data = self.date_var.get()
+        manutentore = self.maintainer_var.get()
+
+        if macchina == self.lang.get('all_equipments_filter', "TUTTI I MACCHINARI"):
+            macchina = "per TUTTI I MACCHINARI DELLA FABBRICA"
+        else:
+            macchina = f"per il macchinario {macchina}"
+
+        if data == self.lang.get('all_dates_filter', "TUTTE LE DATE"):
+            data = "per TUTTE LE DATE"
+        else:
+            data = f"del {data}"
+
+        if manutentore == self.lang.get('all_maintainers_filter', "TUTTI I MANUTENTORI"):
+            manutentore = "da TUTTI I MANUTENTORI"
+        else:
+            manutentore = f"da {manutentore}"
+
+        return f"Rapporto Manutenzioni {macchina} {data} {manutentore}"
+
+    # In maintenance_gui.py, dentro la classe MaintenanceReportWindow
+
+    def _generate_pdf(self):
+        if not self.report_data: return
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF Documents", "*.pdf")],
+            title="Salva Report PDF"
+        )
+        if not file_path: return
+
+        try:
+            pdfmetrics.registerFont(TTFont('DejaVuSans', 'DejaVuSans.ttf'))
+            pdfmetrics.registerFont(TTFont('DejaVuSans-Bold', 'DejaVuSans-Bold.ttf'))
+        except Exception as e:
+            messagebox.showerror("Errore Font",
+                                 "File dei font non trovati (es. DejaVuSans.ttf).\n"
+                                 "Assicurati che siano nella stessa cartella del programma.", parent=self)
+            return
+
+        c = canvas.Canvas(file_path, pagesize=landscape(A4))
+        width, height = landscape(A4)
+
+        if os.path.exists("logo.png"):
+            c.drawImage("logo.png", 40, height - 90, width=100, preserveAspectRatio=True, mask='auto')
+
+        # --- PARTE MODIFICATA: Disegna il titolo su più righe ---
+        title_lines = self._generate_title()
+        y_position = height - 50  # Posizione verticale di partenza
+
+        # Disegna la prima riga (titolo principale) in grassetto e più grande
+        c.setFont("DejaVuSans-Bold", 16)
+        c.drawCentredString(width / 2.0, y_position, title_lines[0])
+        y_position -= 20  # Spazio dopo il titolo principale
+
+        # Disegna le righe successive più piccole
+        c.setFont("DejaVuSans", 11)
+        for i in range(1, len(title_lines)):
+            c.drawCentredString(width / 2.0, y_position, title_lines[i])
+            y_position -= 15  # Spazio tra le righe secondarie
+
+        # Spazio per la data di generazione
+        c.setFont("DejaVuSans", 8)
+        c.drawCentredString(width / 2.0, y_position - 5, f"Generato il: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+        # --- FINE PARTE MODIFICATA ---
+
+        # Il resto del codice per la tabella rimane invariato...
+        styles = getSampleStyleSheet()
+        style_body = styles['BodyText']
+        style_body.fontName = 'DejaVuSans'
+        style_body.fontSize = 7
+        style_header = styles['BodyText']
+        style_header.fontName = 'DejaVuSans-Bold'
+        style_header.fontSize = 8
+
+        headers = [Paragraph(h, style_header) for h in
+                   ["#", "Manutentore", "Compito", "Macchina", "Descrizione", "Data", "Inizio", "Fine", "Durata"]]
+        data_as_paragraphs = [[Paragraph(str(cell), style_body) for cell in row] for row in self.report_data]
+        table_data = [headers] + data_as_paragraphs
+
+        available_width = width - 80
+        colWidths = [
+            available_width * 0.04, available_width * 0.15, available_width * 0.20,
+            available_width * 0.14, available_width * 0.26, available_width * 0.06,
+            available_width * 0.05, available_width * 0.05, available_width * 0.05
+        ]
+
+        table = Table(table_data, colWidths=colWidths)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.darkgrey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+            ('TOPPADDING', (0, 0), (-1, 0), 10),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#F0F0F0')),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('LEFTPADDING', (0, 0), (-1, -1), 3),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 3),
+        ]))
+
+        table.wrapOn(c, width, height)
+        _, table_height = table.wrap(0, 0)
+        # Calcola la posizione della tabella in base alla nuova posizione del titolo
+        table.drawOn(c, 40, y_position - table_height - 20)
+
+        c.save()
+        messagebox.showinfo("Successo", f"PDF salvato con successo in:\n{file_path}", parent=self)
+
+    def _generate_excel(self):
+        if not self.report_data: return
+
+        # Crea la directory se non esiste
+        temp_dir = "C:\\temp"
+        try:
+            os.makedirs(temp_dir, exist_ok=True)
+        except OSError as e:
+            messagebox.showerror("Errore", f"Impossibile creare la directory {temp_dir}:\n{e}", parent=self)
+            return
+
+        # Crea un nome file univoco
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_path = os.path.join(temp_dir, f"report_manutenzioni_{timestamp}.xlsx")
+
+        try:
+            workbook = openpyxl.Workbook()
+            sheet = workbook.active
+            sheet.title = "Report Manutenzioni"
+
+            # Scrivi gli header
+            headers = ["#", "Manutentore", "Compito", "Macchina", "Descrizione", "Data Intervento", "Ora Inizio",
+                       "Ora Fine", "Durata (Min)"]
+            sheet.append(headers)
+
+            # Scrivi i dati
+            for row_data in self.report_data:
+                sheet.append(list(row_data))
+
+            workbook.save(file_path)
+            messagebox.showinfo("Successo", f"File Excel salvato con successo in:\n{file_path}", parent=self)
+
+        except Exception as e:
+            messagebox.showerror("Errore", f"Impossibile generare il file Excel:\n{e}", parent=self)
 
 
 class ResolveDuplicateDocsWindow(tk.Toplevel):
@@ -1820,4 +2128,5 @@ def open_fill_templates(parent, db, lang, user_name=None):
 
 
 def open_reports(parent, db, lang):
-    ReportsWindow(parent, db, lang)
+    # Sostituisce la vecchia finestra segnaposto con quella nuova
+    MaintenanceReportWindow(parent, db, lang)
