@@ -208,6 +208,35 @@ class MaintenanceReportWindow(tk.Toplevel):
         return f"Rapporto Manutenzioni {macchina} {data} {manutentore}"
 
     # In maintenance_gui.py, dentro la classe MaintenanceReportWindow
+    # In maintenance_gui.py, dentro la classe MaintenanceReportWindow
+
+    def _generate_title(self):
+        """Crea il titolo del report formattato su più righe."""
+        macchina_selection = self.equipment_var.get()
+        data_selection = self.date_var.get()
+        manutentore_selection = self.maintainer_var.get()
+
+        # Linea 1: Titolo principale
+        linea1 = "Rapporto Manutenzioni"
+
+        # Linea 2: Filtro macchina
+        if macchina_selection == self.lang.get('all_equipments_filter', "TUTTI I MACCHINARI"):
+            linea2 = "per Tutti i Macchinari della Fabbrica"
+        else:
+            linea2 = f"per il Macchinario: {macchina_selection}"
+
+        # Linea 3: Filtri data e manutentore
+        parti_linea3 = []
+        if data_selection != self.lang.get('all_dates_filter', "TUTTE LE DATE"):
+            parti_linea3.append(f"del {data_selection}")
+
+        if manutentore_selection != self.lang.get('all_maintainers_filter', "TUTTI I MANUTENTORI"):
+            parti_linea3.append(f"eseguite da {manutentore_selection}")
+
+        linea3 = " ".join(parti_linea3)
+
+        # Restituisce una lista di righe, filtrando eventuali righe vuote
+        return [line for line in [linea1, linea2, linea3] if line]
 
     def _generate_pdf(self):
         if not self.report_data: return
