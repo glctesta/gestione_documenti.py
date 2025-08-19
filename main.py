@@ -11,8 +11,8 @@ import maintenance_gui
 import tempfile # Assicuriamoci che tempfile sia importato (usato in fetch_and_open_document)
 import re
 import reportlab
+from packaging import version
 
-# Import per gestire le immagini PNG
 try:
     from PIL import Image, ImageTk
 
@@ -21,7 +21,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.4.0"  # Versione aggiornata
+APP_VERSION = "1.4.1"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
 # --- CONFIGURAZIONE DATABASE ---
@@ -32,6 +32,14 @@ DB_UID = 'emsreset'
 DB_PWD = 'E6QhqKUxHFXTbkB7eA8c9ya'
 DB_CONN_STR = f'DRIVER={DB_DRIVER};SERVER={DB_SERVER};DATABASE={DB_DATABASE};UID={DB_UID};PWD={DB_PWD};'
 
+
+def is_update_needed(current_ver_str, db_ver_str):
+    """Confronta due stringhe di versione (es. '1.4.0') in modo sicuro."""
+    try:
+        return version.parse(db_ver_str) > version.parse(current_ver_str)
+    except Exception:
+        # Fallback a un confronto di stringhe semplice in caso di errore
+        return db_ver_str > current_ver_str
 
 class LanguageManager:
     """Gestisce le traduzioni e la lingua corrente dell'applicazione."""
@@ -74,7 +82,95 @@ class LanguageManager:
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
 
-    # In main.py, dentro la classe Database
+    def fetch_tasks_for_editing(self, intervention_id, equipment_id):
+        """Recupera i compiti per un intervento e una macchina specifici."""
+        query = """
+                SELECT CompitoId, NomeCompito, Categoria, DescrizioneCompito, LinkedDocument
+                FROM eqp.CompitiManutenzione
+                WHERE ProgrammedInterventionId = ? \
+                  AND EquipmentId = ?
+                ORDER BY Ordine, CompitoId; \
+                """
+        try:
+            self.cursor.execute(query, intervention_id, equipment_id)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore nel recupero dei task per la modifica: {e}")
+            self.last_error_details = str(e)
+            return []
+    def update_maintenance_task(self, task_id, equipment_id, category, task_name, description, document_data):
+        """Aggiorna un compito di manutenzione esistente, incluso l'EquipmentId."""
+        query = """
+                UPDATE eqp.CompitiManutenzione
+                SET EquipmentId        = ?, \
+                    Categoria          = ?, \
+                    NomeCompito        = ?, \
+                    DescrizioneCompito = ?, \
+                    LinkedDocument     = ?
+                WHERE CompitoId = ?; \
+                """
+        try:
+            self.cursor.execute(query, equipment_id, category, task_name, description, document_data, task_id)
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+
+    def delete_maintenance_tasks(self, task_ids_to_delete):
+        """Cancella una lista di compiti dal database."""
+        if not task_ids_to_delete:
+            return True  # Nessuna operazione da eseguire
+
+        # Crea i segnaposto '?' per la clausola IN
+        placeholders = ', '.join('?' for _ in task_ids_to_delete)
+        query = f"DELETE FROM eqp.CompitiManutenzione WHERE CompitoId IN ({placeholders});"
+
+        try:
+            self.cursor.execute(query, task_ids_to_delete)
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+
+
+
+    def fetch_maintenance_interventions(self):
+        """Recupera i tipi di intervento di manutenzione per la selezione."""
+        query = """
+                SELECT [ProgrammedInterventionId], [TimingDescriprion]
+                FROM [Traceability_RS].[eqp].[ProgrammedInterventions]
+                ORDER BY TimingDescriprion; \
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore nel recupero dei tipi di intervento: {e}")
+            return []
+
+    def insert_new_maintenance_task(self, intervention_id, equipment_id, category, task_name, description, order,
+                                    document_data=None):
+        """Inserisce un singolo nuovo compito, ora direttamente collegato a una macchina."""
+        query = """
+                INSERT INTO eqp.CompitiManutenzione
+                (ProgrammedInterventionId, EquipmentId, Categoria, NomeCompito, DescrizioneCompito, Ordine, \
+                 LinkedDocument)
+                VALUES (?, ?, ?, ?, ?, ?, ?); \
+                """
+        try:
+            self.cursor.execute(query, intervention_id, equipment_id, category, task_name, description, order,
+                                document_data)
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            print(f"Errore nell'inserimento del nuovo task: {e}")
+            self.last_error_details = str(e)
+            return False
 
     def fetch_report_maintainers(self):
         """Recupera la lista dei manutentori che hanno eseguito almeno una manutenzione."""
@@ -235,7 +331,7 @@ class Database:
             print(f"Errore nell'aggiunta nuova parte di ricambio: {e}")
             self.last_error_details = str(e)
             return None
-    # NUOVO METODO: Inserisce la richiesta nella tabella eqp.RequestSpareParts
+
     # (Assicurati che questo metodo esista o sostituisci quello precedente se presente)
     def insert_spare_part_request(self, equipment_id, spare_part_id, quantity, notes, requested_by):
         """Inserisce una nuova richiesta di parti di ricambio o intervento."""
@@ -353,80 +449,7 @@ class Database:
             return []
 
 
-    def fetch_and_open_maintenance_document(self, document_id):
-        """Recupera i dati binari di un documento di manutenzione dal DB, lo salva temporaneamente e lo apre."""
 
-        self.last_error_details = ""  # Resetta l'errore
-
-        try:
-            # Seleziona i dati binari (DocumentSource) e i metadati (FileType, FileName)
-            sql_select = """
-                         SELECT DocumentSource, FileName, FileType
-                         FROM eqp.EquipmentMantainanceDocs
-                         WHERE EquipmentDocumentationId = ?
-                         """
-            self.cursor.execute(sql_select, document_id)
-            row = self.cursor.fetchone()
-
-            if row and row.DocumentSource:
-                binary_data = row.DocumentSource
-
-                # --- 1. Gestione Robusta dell'Estensione e del Nome File Temporaneo ---
-
-                # Determina l'estensione: Priorità a FileType, fallback su FileName, default a .pdf
-                file_extension = row.FileType if row.FileType else os.path.splitext(row.FileName)[1]
-                if not file_extension:
-                    print(f"Attenzione: Estensione mancante per doc ID {document_id}. Usando default .pdf")
-                    file_extension = '.pdf'  # Default ragionevole
-
-                # Assicurarsi che l'estensione inizi con '.'
-                if not file_extension.startswith('.'):
-                    file_extension = '.' + file_extension
-
-                # Usa una versione pulita del nome file originale come prefisso per facilitare l'identificazione
-                temp_prefix = "doc_"
-                if row.FileName:
-                    # Pulisce il nome del file (rimuove caratteri non sicuri)
-                    safe_name = re.sub(r'[^\w\-]', '_', os.path.splitext(row.FileName)[0])
-                    temp_prefix = safe_name[:50] + "_"  # Limita la lunghezza e aggiunge separatore
-
-                # --- 2. Creazione File Temporaneo ---
-
-                # delete=False è necessario affinché il programma esterno possa aprirlo prima che Python lo elimini
-                temp_file = tempfile.NamedTemporaryFile(prefix=temp_prefix, delete=False, suffix=file_extension)
-                temp_file.write(binary_data)
-                # Chiudi il file handle in Python affinché il sistema operativo possa aprirlo
-                temp_file.close()
-
-                print(f"Apertura del file temporaneo: {temp_file.name}")
-
-                # --- 3. Apertura File (Cross-platform) ---
-                try:
-                    if sys.platform == "win32":
-                        # Metodo specifico per Windows
-                        os.startfile(temp_file.name)
-                    else:
-                        # Fallback per macOS e Linux
-                        opener = "open" if sys.platform == "darwin" else "xdg-open"
-                        subprocess.call([opener, temp_file.name])
-                except Exception as open_e:
-                    self.last_error_details = f"Errore OS nell'apertura del file: {open_e}"
-                    return False
-
-                return True
-            else:
-                self.last_error_details = f"Documento ID {document_id} non trovato o dati binari assenti nel database."
-                return False
-
-        except pyodbc.Error as e:
-            print(f"Errore durante il recupero del documento dal DB: {e}")
-            self.last_error_details = f"Errore Database: {e}"
-            return False
-        except Exception as e:
-            # Gestione errori generici (es. permessi scrittura file temporaneo)
-            print(f"Errore imprevisto durante la gestione del file temporaneo: {e}")
-            self.last_error_details = f"Errore Applicazione (File System): {e}"
-            return False
 
     # NUOVO METODO: Recupera le parti di ricambio/servizi disponibili
     def fetch_spare_parts(self):
@@ -567,74 +590,6 @@ class Database:
             self.last_error_details = f"Errore Applicazione (File System): {e}"
             return False
 
-    def fetch_active_existing_maintenance_docs(self, equipment_id, intervention_id, doc_type_id):
-        """
-        Recupera i documenti esistenti e ATTIVI (DateOut IS NULL) per la configurazione data.
-        Restituisce i risultati ordinati per data (il più recente per primo).
-        """
-        # Query fornita dall'utente, con l'aggiunta di AND DateOut IS NULL e DocDescription per il confronto
-        query = """
-                SELECT [EquipmentDocumentationId], [Filename], DateSys AS DateUpload, Uploadedby, DocDescription
-                FROM [Traceability_RS].[eqp].[EquipmentMantainanceDocs]
-                WHERE ProgrammedInterventionid = ?
-                  AND equipmentid = ?
-                  AND Equipmentmaintenancedoctypeid = ?
-                  AND DateOut IS NULL -- FONDAMENTALE: Controlla solo i documenti attivi
-                ORDER BY DateSys DESC \
-                """
-        try:
-            # L'ordine dei parametri deve corrispondere ai '?' nella query
-            self.cursor.execute(query, intervention_id, equipment_id, doc_type_id)
-            return self.cursor.fetchall()
-        except pyodbc.Error as e:
-            print(f"Errore nella ricerca di documenti esistenti: {e}")
-            self.last_error_details = str(e)
-            return []
-
-        # NUOVO METODO (Helper privato per l'invalidazione)
-
-    def _invalidate_maintenance_docs(self, doc_ids):
-        """
-        Imposta DateOut = GETDATE() per una lista di EquipmentDocumentationId.
-        (Eseguito all'interno della transazione principale, NON fa commit).
-        """
-        if not doc_ids:
-            return True
-
-        # Crea i placeholders per la clausola IN (?, ?, ...)
-        placeholders = ','.join(['?'] * len(doc_ids))
-        query = f"""
-                   UPDATE [Traceability_RS].[eqp].[EquipmentMantainanceDocs]
-                   SET DateOut = GETDATE()
-                   WHERE EquipmentDocumentationId IN ({placeholders})
-                   """
-        try:
-            self.cursor.execute(query, doc_ids)
-            # Non facciamo commit qui, lo fa la funzione principale
-            return True
-        except pyodbc.Error as e:
-            print(f"Errore nell'invalidazione documenti: {e}")
-            self.last_error_details = str(e)
-            # Non facciamo rollback qui, lo fa la funzione principale
-            return False
-
-    # --- METODI PER MANUTENZIONE (CORRETTI E CONSOLIDATI) ---
-    # (Rimosse le definizioni multiple e duplicate presenti nel codice originale)
-    def fetch_specific_maintenance_doc_types(self):
-        """Recupera i tipi di documento specifici (ID 1, 2, 5)."""
-        query = """
-                SELECT [EquipmentMaintenanceDocTypeId]
-                      ,[DocumentType]
-                FROM [Traceability_RS].[eqp].[EquipmentMaintenanceDocTypes]
-                WHERE [EquipmentMaintenanceDocTypeId] IN (1,2,5)
-                ORDER BY [DocumentType] -- Aggiunto ordinamento per leggibilità
-                """
-        try:
-            self.cursor.execute(query)
-            return self.cursor.fetchall()
-        except pyodbc.Error as e:
-            print(f"Errore nel recupero dei tipi di documento specifici: {e}")
-            return []
     # NUOVO METODO: Recupera gli interventi programmati usando la query fornita dall'utente
     def fetch_programmed_interventions(self):
         """Recupera tutti gli interventi programmati (Tipi di manutenzione)."""
@@ -652,13 +607,6 @@ class Database:
             print(f"Errore nel recupero degli interventi programmati: {e}")
             return []
 
-    # METODO CONSOLIDATO E CORRETTO
-    # Parametri aggiornati per il flusso semplificato: EquipmentId e ProgrammedInterventionId (intervention_id).
-    def replace_maintenance_document(self, equipment_id, intervention_id, doc_type_id, description, file_name,
-                                     file_type, binary_data, user_name, invalidate_ids=None):
-        """
-        Gestisce l'inserimento del nuovo documento e l'invalidazione dei vecchi in una singola transazione atomica.
-        """
 
         # Assicuriamoci che DateOut sia NULL per il nuovo documento.
         insert_query = """
@@ -693,123 +641,6 @@ class Database:
             self.last_error_details = str(e)
             print(f"Errore SQL nella transazione replace_maintenance_document: {e}")
             return False
-
-    def fetch_maintenance_doc_by_id(self, doc_id):
-        """Recupera i dettagli completi di un singolo documento di manutenzione tramite il suo ID."""
-        # Selezioniamo tutte le colonne (d.*) per avere accesso a tutti gli ID necessari per la sostituzione
-        query = """
-                SELECT d.*, e.InternalName, p.TimingDescriprion, t.DocumentType
-                FROM eqp.EquipmentMantainanceDocs d
-                         JOIN eqp.Equipments e ON d.EquipmentId = e.EquipmentId
-                         LEFT JOIN eqp.ProgrammedInterventions p \
-                                   ON d.ProgrammedInterventionId = p.ProgrammedInterventionId
-                         LEFT JOIN eqp.EquipmentMaintenanceDocTypes t \
-                                   ON d.EquipmentMaintenanceDocTypeId = t.EquipmentMaintenanceDocTypeId
-                WHERE d.EquipmentDocumentationId = ? \
-                """
-        try:
-            self.cursor.execute(query, doc_id)
-            return self.cursor.fetchone()
-        except pyodbc.Error as e:
-            self.last_error_details = str(e)
-            return None
-
-        # NUOVO METODO
-
-    def invalidate_single_maintenance_doc(self, doc_id, user_name):
-        """Invalida (cancella logicamente) un singolo documento impostando DateOut."""
-        # (user_name è incluso nel caso si volesse aggiungere una colonna InvalidatedBy in futuro)
-        query = """
-                UPDATE [Traceability_RS].[eqp].[EquipmentMantainanceDocs]
-                SET DateOut = GETDATE()
-                WHERE EquipmentDocumentationId = ? \
-                """
-        try:
-            self.cursor.execute(query, doc_id)
-            self.conn.commit()
-            return True
-        except pyodbc.Error as e:
-            self.conn.rollback()
-            self.last_error_details = str(e)
-            return False
-
-    def search_maintenance_documents(self, filters, include_inactive=False):
-        """Cerca i documenti di manutenzione. Include JOIN per visualizzare i nomi descrittivi."""
-        # Aggiunte JOIN per Intervento e Tipo Doc. Aggiunta DocDescription.
-        query = """
-                SELECT d.EquipmentDocumentationId, \
-                       d.FileName, \
-                       d.UploadedBy, \
-                       d.DateSys, \
-                       d.DocDescription, \
-                       d.DateOut,
-                       e.InternalName,
-                       p.TimingDescriprion AS InterventionName,
-                       t.DocumentType
-                FROM eqp.EquipmentMantainanceDocs d
-                         JOIN eqp.Equipments e ON d.EquipmentId = e.EquipmentId
-                         LEFT JOIN eqp.ProgrammedInterventions p \
-                                   ON d.ProgrammedInterventionId = p.ProgrammedInterventionId
-                         LEFT JOIN eqp.EquipmentMaintenanceDocTypes t \
-                                   ON d.EquipmentMaintenanceDocTypeId = t.EquipmentMaintenanceDocTypeId \
-                """
-        where_clauses = []
-        params = []
-
-        # Filtro per stato attivo (DateOut IS NULL)
-        if not include_inactive:
-            where_clauses.append("d.DateOut IS NULL")
-
-        # Filtri aggiornati per la nuova UI di ricerca
-        if filters.get('equipment_id'):
-            where_clauses.append("d.EquipmentId = ?")
-            params.append(filters['equipment_id'])
-
-        if filters.get('intervention_id'):
-            where_clauses.append("d.ProgrammedInterventionId = ?")
-            params.append(filters['intervention_id'])
-
-        if filters.get('doc_type_id'):
-            where_clauses.append("d.EquipmentMaintenanceDocTypeId = ?")
-            params.append(filters['doc_type_id'])
-
-        # (Rimuoviamo i vecchi filtri 'type_id' e 'machine_name' se non più necessari, o li manteniamo se usati altrove)
-
-        if where_clauses:
-            query += " WHERE " + " AND ".join(where_clauses)
-
-        query += " ORDER BY e.InternalName, d.DateSys DESC;"
-        try:
-            self.cursor.execute(query, params)
-            return self.cursor.fetchall()
-        except pyodbc.Error as e:
-            self.last_error_details = str(e)
-            print(f"Errore in search_maintenance_documents: {e}")
-            return []
-
-    def fetch_maintenance_doc_types(self):
-        # NOTA: Questo metodo non è più utilizzato dalla finestra semplificata, ma potrebbe servire per altre funzionalità.
-        """
-        Recupera i tipi di documento di manutenzione dal database.
-        """
-        query = """
-                SELECT t.EquipmentMaintenanceDocTypeId,
-                       t.ProgrammedInterventionId,
-                       t.[DocumentType],
-                       IIF(IsGeneral = 1, 'General doc', 'Specific doc') as GenerelType,
-                       p.TimingDescriprion,
-                       p.TimingValue
-                FROM eqp.EquipmentMaintenanceDocTypes as t
-                         INNER JOIN eqp.ProgrammedInterventions as p
-                                    ON t.[ProgrammedInterventionId] = p.[ProgrammedInterventionId]
-                ORDER BY [DocumentType], TimingValue;
-                """
-        try:
-            self.cursor.execute(query)
-            return self.cursor.fetchall()
-        except pyodbc.Error as e:
-            print(f"Errore nel recupero dei tipi di documento: {e}")
-            return []
 
     # --- METODI GESTIONE MACCHINE ---
 
@@ -1155,15 +986,14 @@ class Database:
 
     # --- METODO GESTIONE VERSIONI ---
 
-    def fetch_latest_version(self, software_name):
+    def fetch_latest_version_info(self, software_name):
         """
-        Recupera la stringa della versione più recente per un dato software.
+        Recupera la versione più recente e il percorso di aggiornamento per un dato software.
         """
-        query = "SELECT Version FROM traceability_rs.dbo.SwVersions WHERE NameProgram = ? AND dateout IS NULL"
+        query = "SELECT Version, MainPath FROM traceability_rs.dbo.SwVersions WHERE NameProgram = ? AND dateout IS NULL"
         try:
             self.cursor.execute(query, software_name)
-            row = self.cursor.fetchone()
-            return row.Version if row else None
+            return self.cursor.fetchone()  # Restituisce l'intera riga (o None)
         except pyodbc.Error as e:
             print(f"Errore durante il recupero della versione del software: {e}")
             return None
@@ -1171,40 +1001,33 @@ class Database:
 
     # NUOVO METODO: Query 1 - Recupera Piani di Manutenzione Disponibili per una macchina
     def fetch_available_maintenance_plans(self, equipment_id):
-        """Recupera i piani di manutenzione non ancora completati per un EquipmentId."""
-        # MODIFICATO: Aggiunto pin.ProgrammedInterventionId che è necessario per la Query 2
+        """Recupera i piani di manutenzione disponibili per una macchina, basandosi sui compiti assegnati."""
+        # La logica per determinare se un piano è "scaduto" è complessa e la manteniamo,
+        # ma la struttura della query è più semplice senza join inutili.
         query = """
-            SELECT DISTINCT pma.PianoManutenzioneId, pin.TimingDescriprion, pin.ProgrammedInterventionId
-            FROM Traceability_rs.eqp.equipments AS E
-            LEFT JOIN Traceability_rs.eqp.EquipmentTypes et ON e.equipmenttypeid = et.equipmenttypeid
-            LEFT JOIN Traceability_rs.[eqp].[EquipmentBrands] eb ON eb.EquipmentBrandId = e.BrandId
-            LEFT JOIN Traceability_rs.[eqp].[PianiManutenzioneMacchina] pma ON pma.equipmentid = e.equipmentid
-            LEFT JOIN Traceability_rs.[eqp].[ProgrammedInterventions] pin ON pin.[ProgrammedInterventionId] = pma.[ProgrammedInterventionId]
-            LEFT JOIN Traceability_rs.eqp.EquipmentMantainanceDocs emd ON emd.ProgrammedInterventionId = pin.ProgrammedInterventionId
-            LEFT JOIN Traceability_rs.eqp.CompitiManutenzione CM ON cm.ProgrammedInterventionId = emd.ProgrammedInterventionId
-            LEFT JOIN Traceability_rs.eqp.LogManutenzioni LM ON lm.compitoid = cm.compitoid
-            WHERE e.equipmentid = ?
-              AND (
-                  CASE 
-                      WHEN pin.TimingValue < 1 THEN 
-                          IIF(DATEDIFF(HOUR, lm.DateStop, GETDATE()) > 8, 1, 0)
-                      WHEN pin.TimingValue >= 1 THEN
-                          CASE WHEN DATEDIFF(DAY, lm.DateStop, GETDATE()) > pin.TimingValue 
-                               AND DATEDIFF(DAY, lm.DateStop, GETDATE()) < (
-                                   SELECT TOP 1 TimingDescriprion 
-                                   FROM [eqp].[ProgrammedInterventions] 
-                                   WHERE TimingValue > pin.TimingValue
-                                   ORDER BY TimingValue
-                               )
-                               THEN 1 ELSE 0 END
-                      when pin.TimingValue = 0 then 1
-                  END = 1
-              )
-              or lm.logid IS NULL 
-            ORDER BY pma.PianoManutenzioneId;
-                    """
+                WITH LatestLogs AS (SELECT CompitoId, MAX(DateStop) AS LastCompletionDate \
+                                    FROM eqp.LogManutenzioni \
+                                    WHERE EquipmentId = ? \
+                                    GROUP BY CompitoId)
+                SELECT DISTINCT pi.ProgrammedInterventionId, pi.TimingDescriprion
+                FROM eqp.CompitiManutenzione cm
+                         INNER JOIN eqp.ProgrammedInterventions pi \
+                                    ON cm.ProgrammedInterventionId = pi.ProgrammedInterventionId
+                         LEFT JOIN LatestLogs ll ON cm.CompitoId = ll.CompitoId
+                WHERE cm.EquipmentId = ? \
+                  AND (
+                    ll.LastCompletionDate IS NULL OR
+                    (CASE
+                         WHEN pi.TimingValue < 1 THEN IIF(DATEDIFF(HOUR, ll.LastCompletionDate, GETDATE()) > 8, 1, 0)
+                         WHEN pi.TimingValue >= 1 THEN IIF( \
+                                 DATEDIFF(DAY, ll.LastCompletionDate, GETDATE()) >= pi.TimingValue, 1, 0)
+                         ELSE 1
+                        END) = 1
+                    )
+                ORDER BY pi.TimingDescriprion; \
+                """
         try:
-            self.cursor.execute(query, equipment_id)
+            self.cursor.execute(query, equipment_id, equipment_id)
             return self.cursor.fetchall()
         except pyodbc.Error as e:
             print(f"Errore nel recupero piani manutenzione: {e}")
@@ -1212,28 +1035,41 @@ class Database:
             return []
 
     # NUOVO METODO: Query 2 - Recupera Compiti per un Piano di Manutenzione
-    def fetch_maintenance_tasks(self, programmed_intervention_id):
-        """Recupera i compiti specifici per un ProgrammedInterventionId non ancora completati."""
-        # Query originale fornita dall'utente
+    # In main.py, dentro la classe Database
+
+    # In main.py, dentro la classe Database
+
+    def fetch_maintenance_tasks(self, programmed_intervention_id, equipment_id):
         query = """
-            SELECT
-                cm.compitoid,
-                cm.nomecompito,--,task.nomecompito, task.categoria, task.descrizioneCompito
-                cm.categoria,
-                cm.descrizioneCompito
-            FROM
-                Traceability_rs.eqp.CompitiManutenzione AS cm
-            WHERE
-                cm.ProgrammedInterventionId = ? -- Filtra per l'ID del piano selezionato
-            AND cm.CompitoId IS NOT NULL
-            ORDER BY
-                cm.Ordine;
-        """
+                WITH LatestLogs AS (SELECT CompitoId, MAX(DateStop) AS LastCompletionDate \
+                                    FROM eqp.LogManutenzioni \
+                                    WHERE EquipmentId = ? \
+                                    GROUP BY CompitoId)
+                SELECT cm.CompitoId, cm.NomeCompito, cm.Categoria, cm.DescrizioneCompito
+                FROM eqp.CompitiManutenzione AS cm
+                         INNER JOIN eqp.ProgrammedInterventions AS pin \
+                                    ON cm.ProgrammedInterventionId = pin.ProgrammedInterventionId
+                         LEFT JOIN LatestLogs AS ll ON cm.CompitoId = ll.CompitoId
+                WHERE cm.ProgrammedInterventionId = ?
+                  AND cm.EquipmentId = ?
+                  AND (
+                    ll.LastCompletionDate IS NULL OR
+                    (CASE
+                         WHEN pin.TimingValue = 0 THEN 1
+                         WHEN pin.TimingValue < 1 THEN IIF(DATEDIFF(HOUR, ll.LastCompletionDate, GETDATE()) > 8, 1, 0)
+                         WHEN pin.TimingValue >= 1 THEN IIF( \
+                                 DATEDIFF(DAY, ll.LastCompletionDate, GETDATE()) >= pin.TimingValue, 1, 0)
+                         ELSE 0
+                        END) = 1
+                    )
+                ORDER BY cm.Ordine, cm.CompitoId; \
+                """
         try:
-            self.cursor.execute(query, programmed_intervention_id)
+            # I parametri sono: equipment_id (per WITH), intervention_id (per WHERE), equipment_id (per WHERE)
+            self.cursor.execute(query, equipment_id, programmed_intervention_id, equipment_id)
             return self.cursor.fetchall()
         except pyodbc.Error as e:
-            print(f"Errore nel recupero compiti manutenzione: {e}")
+            print(f"Errore nel recupero dei task da eseguire: {e}")
             self.last_error_details = str(e)
             return []
 
@@ -1271,79 +1107,58 @@ class Database:
 
     # NUOVO METODO: Recupera e apre il documento basato su CompitoId
     def fetch_and_open_document_by_task_id(self, task_id):
-        """Recupera e apre il documento associato a un CompitoId."""
-
+        """
+        Recupera e apre il documento specifico per un compito, leggendo
+        i dati binari dalla colonna [LinkedDocument] della tabella CompitiManutenzione.
+        """
         self.last_error_details = ""
 
-        # Query fornita dall'utente. Aggiungiamo FileName e FileType necessari per l'apertura.
-        # Aggiungiamo ORDER BY per assicurarci di prendere il documento più recente se la JOIN ne producesse più di uno.
+        # --- QUERY MODIFICATA ---
+        # Seleziona direttamente il documento binario dalla riga del compito specifico.
         query = """
-                select emd.DocumentSource, emd.FileName, emd.FileType
-                from Traceability_rs.eqp.EquipmentMantainanceDocs emd
-                         left join Traceability_rs.eqp.CompitiManutenzione CM \
-                                   on cm.ProgrammedInterventionId = emd.ProgrammedInterventionId
-                where cm.compitoid = ?
-                -- Potresti voler aggiungere AND emd.DateOut IS NULL se vuoi mostrare solo documenti attivi
-                ORDER BY emd.DateSys DESC
+                SELECT LinkedDocument
+                FROM eqp.CompitiManutenzione
+                WHERE CompitoId = ?; \
                 """
         try:
             self.cursor.execute(query, task_id)
-            # Usiamo fetchone() per prendere solo il primo risultato (il più recente)
             row = self.cursor.fetchone()
 
-            if row and row.DocumentSource:
-                binary_data = row.DocumentSource
+            # Controlla che la riga esista e che il campo LinkedDocument non sia vuoto
+            if row and row.LinkedDocument:
+                binary_data = row.LinkedDocument
 
-                # --- Logica Gestione File Temporaneo (Robusta) ---
+                # --- Logica per il file temporaneo (con nome generico) ---
+                # Poiché non abbiamo il nome/tipo file, usiamo un default.
+                file_extension = '.pdf'  # Assumiamo PDF come default
+                temp_prefix = f"task_{task_id}_documento_"
 
-                # 1. Determina estensione e prefisso
-                file_extension = row.FileType if row.FileType else os.path.splitext(row.FileName)[1]
-                if not file_extension:
-                    print(f"Attenzione: Estensione mancante per task ID {task_id}. Usando default .pdf")
-                    file_extension = '.pdf'  # Default ragionevole
-
-                if not file_extension.startswith('.'):
-                    file_extension = '.' + file_extension
-
-                temp_prefix = "task_doc_"
-                if row.FileName:
-                    # Pulisce il nome del file (rimuove caratteri non sicuri) per usarlo come prefisso
-                    safe_name = re.sub(r'[^\w\-]', '_', os.path.splitext(row.FileName)[0])
-                    temp_prefix = safe_name[:50] + "_"
-
-                # 2. Crea e scrivi file temporaneo
-                # delete=False è necessario affinché il programma esterno possa aprirlo
                 temp_file = tempfile.NamedTemporaryFile(prefix=temp_prefix, delete=False, suffix=file_extension)
                 temp_file.write(binary_data)
-                temp_file.close()  # Chiudi handle Python per permettere apertura esterna
+                temp_file.close()
 
-                print(f"Apertura documento per compito ID {task_id}: {temp_file.name}")
+                print(f"Apertura documento specifico per compito ID {task_id}: {temp_file.name}")
 
-                # 3. Apertura File (Cross-platform)
+                # Apertura del file cross-platform
                 try:
                     if sys.platform == "win32":
-                        # Metodo per Windows (es. apre con Adobe Reader o Word/Excel predefinito)
                         os.startfile(temp_file.name)
                     else:
-                        # Fallback per macOS e Linux
                         opener = "open" if sys.platform == "darwin" else "xdg-open"
                         subprocess.call([opener, temp_file.name])
+                    return True
                 except Exception as open_e:
-                    self.last_error_details = f"Errore OS nell'apertura del file: {open_e}"
+                    self.last_error_details = f"Errore del sistema operativo nell'apertura del file: {open_e}"
                     return False
-
-                return True
             else:
-                # Caso in cui la query non restituisce risultati (nessun documento collegato)
-                self.last_error_details = f"Nessun documento trovato associato al compito ID {task_id}."
+                self.last_error_details = f"Nessun documento specifico trovato per il compito ID {task_id}."
                 return False
 
         except pyodbc.Error as e:
-            print(f"Errore durante il recupero del documento dal DB per task ID {task_id}: {e}")
+            print(f"Errore DB durante il recupero del documento specifico per il task ID {task_id}: {e}")
             self.last_error_details = f"Errore Database: {e}"
             return False
         except Exception as e:
-            # Gestione errori (es. permessi scrittura file temporaneo)
             print(f"Errore imprevisto durante la gestione del file temporaneo: {e}")
             self.last_error_details = f"Errore Applicazione (File System): {e}"
             return False
@@ -1776,6 +1591,14 @@ class App(tk.Tk):
             # Chiama la funzione corretta in maintenance_gui, passando l'utente autenticato
             maintenance_gui.open_fill_templates(self, self.db, self.lang, authenticated_user)
 
+    def open_add_maintenance_tasks_with_login(self):
+        """Richiede il login e poi apre la finestra per aggiungere nuovi task."""
+        login_form = LoginWindow(self, self.db, self.lang)
+        self.wait_window(login_form)
+        authenticated_user = login_form.authenticated_user_name
+        if authenticated_user:
+            maintenance_gui.open_add_maintenance_tasks(self, self.db, self.lang, authenticated_user)
+
 
     def __init__(self):
         super().__init__()
@@ -1811,37 +1634,71 @@ class App(tk.Tk):
 
     def check_version(self):
         """
-        Controlla la versione dell'applicazione contro il database.
-        Restituisce False se l'aggiornamento è obbligatorio, altrimenti True.
+        Controlla se l'app è eseguita dalla sorgente, poi verifica la versione
+        e, se necessario, lancia l'updater.
+        Restituisce False se l'app deve chiudersi, altrimenti True.
         """
         try:
-            # Usa sys.executable, che punta sempre al file .exe in un'app compilata.
             app_name = os.path.basename(sys.executable)
-
             print(f"Nome eseguibile rilevato: {app_name}")
-            latest_version = self.db.fetch_latest_version(app_name)
 
-            # Se non troviamo una versione nel DB, procediamo per non bloccare l'utente
-            if latest_version is None:
-                print(f"Nessuna versione trovata nel database per '{app_name}'. Controllo saltato.")
+            version_info = self.db.fetch_latest_version_info(app_name)
+
+            if not version_info or not version_info.Version or not version_info.MainPath:
+                print("Informazioni di versione non trovate o incomplete nel DB. Controllo saltato.")
                 return True
 
-            # Confronta la versione attuale con quella del DB
-            if latest_version != APP_VERSION:
-                # Le versioni non corrispondono, mostra un errore e blocca l'app
-                title = self.lang.get("upgrade_required_title", "Aggiornamento Obbligatorio")
-                # Assicurati che il messaggio di traduzione usi {0} e {1} per la formattazione se si usa .format()
-                message = self.lang.get("force_upgrade_message", "Versione attuale: {0}. Versione richiesta: {1}. Aggiornare l'applicazione.", APP_VERSION, latest_version)
+            # --- NUOVO CONTROLLO DI SICUREZZA ---
+            # Normalizza entrambi i percorsi per un confronto affidabile
+            source_path = os.path.normpath(version_info.MainPath)
+            current_path = os.path.normpath(os.path.dirname(sys.executable))
 
-                messagebox.showerror(title, message)
-                return False  # Indica che l'app deve chiudersi
+            if source_path.lower() == current_path.lower():
+                # L'utente sta eseguendo il programma dalla cartella sorgente!
+                title = self.lang.get("error_running_from_source_title", "Esecuzione non Permessa")
+                message = self.lang.get(
+                    "error_running_from_source_message",
+                    "L'applicazione non può essere eseguita direttamente dal percorso sorgente sul server.\n\n"
+                    "Si prega di lanciare la copia installata localmente."
+                )
+                messagebox.showerror(title, message, parent=self)
 
-            # Le versioni corrispondono, tutto ok
+                # Chiudi l'applicazione
+                self.db.disconnect()
+                self.destroy()
+                return False  # Ferma l'esecuzione
+            # --- FINE NUOVO CONTROLLO ---
+
+            # Se il controllo di sicurezza è superato, procede con il controllo della versione...
+            if is_update_needed(APP_VERSION, version_info.Version):
+                title = self.lang.get("upgrade_required_title", "Aggiornamento Richiesto")
+                message = self.lang.get(
+                    "force_upgrade_message",
+                    "È disponibile una nuova versione ({0}). La versione attuale è obsoleta ({1}).\n\n"
+                    "Il programma si chiuderà per avviare l'aggiornamento automatico.",
+                    version_info.Version, APP_VERSION
+                )
+                messagebox.showinfo(title, message, parent=self)
+
+                destination = os.path.dirname(sys.executable)
+                exe_name = os.path.basename(sys.executable)
+                updater_path = os.path.join(destination, "updater.exe")
+
+                if not os.path.exists(updater_path):
+                    messagebox.showerror("Errore Critico", "File updater.exe non trovato! Impossibile aggiornare.",
+                                         parent=self)
+                    return False
+
+                subprocess.Popen([updater_path, source_path, destination, exe_name])
+
+                self.db.disconnect()
+                self.destroy()
+                return False
+
             print(f"Versione applicazione ({APP_VERSION}) aggiornata.")
             return True
 
         except Exception as e:
-            # In caso di qualsiasi errore, non blocchiamo l'utente
             print(f"Errore imprevisto durante il controllo versione: {e}")
             return True
 
@@ -1918,16 +1775,15 @@ class App(tk.Tk):
 
         # Sottomenu Documenti Manutenzione
         docs_submenu = tk.Menu(self.maintenance_menu, tearoff=0)
-        # Questo apre la finestra semplificata (richiede login)
-        docs_submenu.add_command(label=self.lang.get('submenu_add_maint_doc'),
-                                 command=self.open_add_maint_doc_with_login)
-        docs_submenu.add_command(label=self.lang.get('submenu_edit_maint_doc'),
-                                 command=self.open_edit_maint_doc_with_login)
-        docs_submenu.add_command(label=self.lang.get('submenu_view_maint_doc'),
+        docs_submenu.add_command(label=self.lang.get('submenu_manage_maint_task', "Gestione Task di Manutenzione"),
+                                 command=self.open_add_maintenance_tasks_with_login)
+        docs_submenu.add_command(label=self.lang.get('submenu_view_maint_doc', 'Visualizza Documenti dei Task'),
+                                 # Etichetta aggiornata
                                  command=lambda: maintenance_gui.open_search_maintenance_doc(self, self.db, self.lang,
                                                                                              mode='view'))
-        self.maintenance_menu.add_cascade(label=self.lang.get('submenu_maintenance_docs'), menu=docs_submenu)
-
+        self.maintenance_menu.add_cascade(
+            label=self.lang.get('submenu_maintenance_tasks_header', 'Task di Manutenzione'),
+            menu=docs_submenu)  # Etichetta aggiornata
         # Altre voci
         #self.maintenance_menu.add_command(label=self.lang.get('submenu_fill_templates'),
         #                                  command=lambda: maintenance_gui.open_fill_templates(self, self.db, self.lang))
@@ -1987,25 +1843,6 @@ class App(tk.Tk):
         view_form.transient(self)
         view_form.grab_set()
         self.wait_window(view_form)
-
-    # Lanciatori Manutenzione (con Login Obbligatorio dove richiesto)
-    def open_add_maint_doc_with_login(self):
-        # Questo garantisce il requisito di login per l'inserimento documenti importanti.
-        login_form = LoginWindow(self, self.db, self.lang)
-        self.wait_window(login_form)
-        authenticated_user = login_form.authenticated_user_name
-        if authenticated_user:
-            # Chiama la funzione nel modulo maintenance_gui.py (che aprirà la finestra semplificata)
-            maintenance_gui.open_add_maintenance_doc(self, self.db, self.lang, authenticated_user)
-
-    def open_edit_maint_doc_with_login(self):
-        login_form = LoginWindow(self, self.db, self.lang)
-        self.wait_window(login_form)
-        authenticated_user = login_form.authenticated_user_name
-        if authenticated_user:
-            # La finestra di ricerca gestirà il resto
-            maintenance_gui.open_search_maintenance_doc(self, self.db, self.lang, mode='edit',
-                                                        user_name=authenticated_user)
 
     def open_add_machine_with_login(self):
         """Apre la finestra di login e, se l'autenticazione ha successo, apre la finestra per aggiungere una macchina."""

@@ -4,8 +4,8 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import traceback
 from datetime import datetime
-
-# Email Configuration (Assuming Office 365)
+#l'account con Vandewiele non funziona, ho creato un utente fittivo per poter usare gmail.
+#con questo utente funziona
 #SMTP_SERVER = "vandewiele-com.mail.protection.outlook.com"
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587

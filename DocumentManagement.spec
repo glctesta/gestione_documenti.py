@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('logo.png', '.'), ('logo.ico', '.'), ('DejaVuSans.ttf', '.'), ('DejaVuSans-Bold.ttf', '.')],
+    datas=[('updater.exe', '.'), ('logo.png', '.'), ('logo.ico', '.'), ('DejaVuSans.ttf', '.'), ('DejaVuSans-Bold.ttf', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
