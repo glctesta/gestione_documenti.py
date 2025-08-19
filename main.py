@@ -21,7 +21,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.4.1"  # Versione aggiornata
+APP_VERSION = "1.4.2"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
 # --- CONFIGURAZIONE DATABASE ---
@@ -510,8 +510,13 @@ class Database:
             return False
 
     def disconnect(self):
-        if self.cursor: self.cursor.close()
-        if self.conn: self.conn.close()
+        """Closes the cursor and connection safely, preventing errors if called multiple times."""
+        if self.cursor:
+            self.cursor.close()
+            self.cursor = None  # Set to None after closing
+        if self.conn:
+            self.conn.close()
+            self.conn = None  # Set to None after closing
 
         # NUOVO METODO: Cerca documenti esistenti attivi che corrispondono ai parametri
 
@@ -1580,6 +1585,25 @@ class ViewDocumentForm(tk.Toplevel):
 
 class App(tk.Tk):
     """Classe principale dell'applicazione."""
+
+    def _save_language_setting(self, lang_code):
+        """Salva la lingua corrente nel file di configurazione."""
+        try:
+            with open("lang.conf", "w") as f:
+                f.write(lang_code)
+        except Exception as e:
+            print(f"Impossibile salvare le impostazioni della lingua: {e}")
+
+    def _load_language_setting(self):
+        """Carica la lingua dal file di configurazione, se esiste."""
+        try:
+            with open("lang.conf", "r") as f:
+                return f.read().strip()
+        except FileNotFoundError:
+            return 'it'  # Lingua di default se il file non esiste
+        except Exception as e:
+            print(f"Impossibile leggere le impostazioni della lingua: {e}")
+            return 'it'  # Ritorna al default in caso di errore
     # NUOVO METODO LANCIATORE: Gestisce il requisito di login obbligatorio
     def open_fill_templates_with_login(self):
         """Apre la finestra di compilazione schede, richiedendo prima il login."""
@@ -1742,28 +1766,24 @@ class App(tk.Tk):
         self.language_menu.add_command(label="English", command=lambda: self._change_language('en'))
         self.language_menu.add_command(label="Română", command=lambda: self._change_language('ro'))
 
+    # In main.py, dentro la classe App
+
     def update_texts(self):
         """Aggiorna tutti i testi della UI principale."""
         self.title(self.lang.get('app_title'))
 
-        # Menu Documenti
+        # Pulisce e ricrea il Menu Documenti (Produzione)
         self.document_menu.delete(0, 'end')
         self.document_menu.add_command(label=self.lang.get('menu_insert_doc'), command=self.open_insert_form)
         self.document_menu.add_command(label=self.lang.get('menu_view_doc'), command=self.open_view_form)
         self.document_menu.add_separator()
         self.document_menu.add_command(label=self.lang.get('menu_quit'), command=self._on_closing)
 
-        # Aggiorna le etichette dei menu principali (usando indici 1, 2, 3)
-        try:
-            self.menubar.entryconfig(1, label=self.lang.get('menu_documents'))
-        except tk.TclError:
-            pass # Gestione errore se il menu non è ancora pronto
+        # --- CORREZIONE PRINCIPALE QUI ---
+        # Pulisce il Menu Manutenzione prima di ricrearlo
+        self.maintenance_menu.delete(0, 'end')
 
-        # Menu Manutenzione
-        #self.maintenance_menu.delete(0, 'end')
-        #self.maintenance_menu.add_command(label=self.lang.get('submenu_fill_templates'),
-        #                           command=self.open_fill_templates_with_login)
-        # Sottomenu Gestione Macchine
+        # Ricrea Sottomenu Gestione Macchine
         machine_submenu = tk.Menu(self.maintenance_menu, tearoff=0)
         machine_submenu.add_command(label=self.lang.get('submenu_add_machine'),
                                     command=self.open_add_machine_with_login)
@@ -1773,45 +1793,38 @@ class App(tk.Tk):
                                     command=lambda: maintenance_gui.open_view_machines(self, self.db, self.lang))
         self.maintenance_menu.add_cascade(label=self.lang.get('submenu_machines'), menu=machine_submenu)
 
-        # Sottomenu Documenti Manutenzione
-        docs_submenu = tk.Menu(self.maintenance_menu, tearoff=0)
-        docs_submenu.add_command(label=self.lang.get('submenu_manage_maint_task', "Gestione Task di Manutenzione"),
-                                 command=self.open_add_maintenance_tasks_with_login)
-        docs_submenu.add_command(label=self.lang.get('submenu_view_maint_doc', 'Visualizza Documenti dei Task'),
-                                 # Etichetta aggiornata
-                                 command=lambda: maintenance_gui.open_search_maintenance_doc(self, self.db, self.lang,
-                                                                                             mode='view'))
+        # Ricrea Sottomenu Task di Manutenzione
+        tasks_submenu = tk.Menu(self.maintenance_menu, tearoff=0)
+        tasks_submenu.add_command(label=self.lang.get('submenu_manage_maint_task', "Gestione Task di Manutenzione"),
+                                  command=self.open_add_maintenance_tasks_with_login)
         self.maintenance_menu.add_cascade(
-            label=self.lang.get('submenu_maintenance_tasks_header', 'Task di Manutenzione'),
-            menu=docs_submenu)  # Etichetta aggiornata
-        # Altre voci
-        #self.maintenance_menu.add_command(label=self.lang.get('submenu_fill_templates'),
-        #                                  command=lambda: maintenance_gui.open_fill_templates(self, self.db, self.lang))
+            label=self.lang.get('submenu_maintenance_tasks_header', 'Task di Manutenzione'), menu=tasks_submenu)
+
+        # Ricrea le altre voci del menu Manutenzione
         self.maintenance_menu.add_command(label=self.lang.get('submenu_fill_templates'),
                                           command=self.open_fill_templates_with_login)
         self.maintenance_menu.add_command(label=self.lang.get('submenu_reports'),
                                           command=lambda: maintenance_gui.open_reports(self, self.db, self.lang))
 
-        try:
-            self.menubar.entryconfig(2, label=self.lang.get('menu_maintenance'))
-        except tk.TclError:
-            pass
-
-        # Menu Help
+        # Pulisce e ricrea il Menu Help
         self.help_menu.delete(0, 'end')
         self.help_menu.add_cascade(label=self.lang.get('menu_language'), menu=self.language_menu)
         about_menu_label = f"{self.lang.get('menu_about')} {APP_VERSION}"
         self.help_menu.add_command(label=about_menu_label, command=self._show_about)
 
+        # Aggiorna le etichette dei menu principali
         try:
+            self.menubar.entryconfig(1, label=self.lang.get('menu_documents'))
+            self.menubar.entryconfig(2, label=self.lang.get('menu_maintenance'))
             self.menubar.entryconfig(3, label=self.lang.get('menu_help'))
         except tk.TclError:
             pass
 
     def _change_language(self, lang_code):
-        """Cambia la lingua e aggiorna la UI."""
+        """Cambia la lingua, aggiorna la UI e salva l'impostazione."""
         self.lang.set_language(lang_code)
         self.update_texts()
+        self._save_language_setting(lang_code)
 
 
     def _show_about(self):
