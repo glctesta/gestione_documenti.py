@@ -1151,24 +1151,32 @@ class FillTemplateWindow(tk.Toplevel):
         if self.request_button:
             self.request_button.config(state='disabled')
 
-    # !!! METODO MANCANTE CHE CAUSAVA L'ERRORE !!!
     def _on_equipment_select(self, event=None):
         self._reset_plan_and_tasks()
         equipment_id = self.equipments_data.get(self.equipment_var.get())
 
         if equipment_id:
-            # Chiama il metodo DB per la Query 1
+            # Chiama il metodo del DB per recuperare i piani disponibili
             plans = self.db.fetch_available_maintenance_plans(equipment_id)
+
             if plans:
-                # Mappiamo il testo descrittivo a una tupla (PianoManutenzioneId, ProgrammedInterventionId)
-                self.plans_data = {row.TimingDescriprion: (row.PianoManutenzioneId, row.ProgrammedInterventionId) for
-                                   row in plans}
+                # Mappa i dati e popola la lista del combobox
+                self.plans_data = {
+                    row.TimingDescriprion: (getattr(row, 'PianoManutenzioneId', None), row.ProgrammedInterventionId) for
+                    row in plans}
                 self.plan_combo['values'] = list(self.plans_data.keys())
+
+                # --- RIGA MANCANTE, AGGIUNTA QUI ---
+                # Riattiva il combobox per renderlo selezionabile
                 self.plan_combo.config(state='readonly')
+
             else:
-                messagebox.showinfo(self.lang.get('info_title'), self.lang.get('info_no_plans_available',
-                                                                               "Nessun piano di manutenzione disponibile o tutti i compiti sono già stati eseguiti per questa macchina."),
-                                    parent=self)
+                messagebox.showinfo(
+                    self.lang.get('info_title', "Info"),
+                    self.lang.get('info_no_plans_available',
+                                  "Nessun piano di manutenzione disponibile o tutti i compiti sono già stati eseguiti per questa macchina."),
+                    parent=self
+                )
 
     # In maintenance_gui.py, dentro la classe FillTemplateWindow
 
