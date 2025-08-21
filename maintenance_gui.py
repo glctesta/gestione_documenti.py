@@ -41,25 +41,30 @@ except ImportError:
 class MaintenanceReportWindow(tk.Toplevel):
     """Finestra per la generazione di report sulle manutenzioni."""
 
-    def __init__(self, parent, db, lang):
-        super().__init__(parent)
-        self.db = db
-        self.lang = lang
-        self.parent_app = parent
-        self.report_data = []  # Memorizza i dati dell'ultima ricerca
+    class MaintenanceReportWindow(tk.Toplevel):
+        def __init__(self, parent, db, lang):
+            super().__init__(parent)
+            self.db = db
+            self.lang = lang
+            self.parent_app = parent
+            self.report_data = []
 
-        self.title(self.lang.get('maintenance_report_title', "Report Manutenzioni"))
-        self.geometry("1200x700")
-        self.transient(parent)
+            self.title(self.lang.get('maintenance_report_title', "Report Manutenzioni"))
+            self.geometry("1200x700")
+            self.transient(parent)
 
-        # Dati e variabili per i filtri
-        self.equipments_data = {}
-        self.equipment_var = tk.StringVar()
-        self.maintainer_var = tk.StringVar()
-        self.date_var = tk.StringVar()
+            # Dati e variabili per i filtri
+            self.equipments_data = {}
+            self.equipment_var = tk.StringVar()
+            self.maintainer_var = tk.StringVar()
+            self.date_var = tk.StringVar()
 
-        self._create_widgets()
-        self._load_filters()
+            # NUOVO: Liste per la ricerca dinamica
+            self.all_equipment_names_report = []
+            self.all_maintainer_names_report = []
+
+            self._create_widgets()
+            self._load_filters()
 
     def _create_widgets(self):
         # Frame principale
@@ -74,18 +79,19 @@ class MaintenanceReportWindow(tk.Toplevel):
         filter_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
 
         ttk.Label(filter_frame, text=self.lang.get('select_machine_label')).grid(row=0, column=0, padx=5, pady=5)
-        self.equipment_combo = ttk.Combobox(filter_frame, textvariable=self.equipment_var, state='readonly', width=30)
+        self.equipment_combo = ttk.Combobox(filter_frame, textvariable=self.equipment_var, state='normal', width=30)
         self.equipment_combo.grid(row=0, column=1, padx=5, pady=5)
+        self.equipment_combo.bind('<KeyRelease>', self._filter_report_equipment)
 
         ttk.Label(filter_frame, text=self.lang.get('maintainer_label', "Manutentore:")).grid(row=0, column=2, padx=5,
                                                                                              pady=5)
-        self.maintainer_combo = ttk.Combobox(filter_frame, textvariable=self.maintainer_var, state='readonly', width=30)
+        self.maintainer_combo = ttk.Combobox(filter_frame, textvariable=self.maintainer_var, state='normal', width=30)
         self.maintainer_combo.grid(row=0, column=3, padx=5, pady=5)
+        self.maintainer_combo.bind('<KeyRelease>', self._filter_report_maintainer)
 
+        # Il combobox delle date rimane readonly perché la ricerca non è utile qui
         ttk.Label(filter_frame, text=self.lang.get('date_label', "Data:")).grid(row=0, column=4, padx=5, pady=5)
         self.date_combo = ttk.Combobox(filter_frame, textvariable=self.date_var, state='readonly', width=15)
-        self.date_combo.grid(row=0, column=5, padx=5, pady=5)
-
         search_button = ttk.Button(filter_frame, text=self.lang.get('search_button', "Cerca"),
                                    command=self._perform_search)
         search_button.grid(row=0, column=6, padx=20, pady=5)
@@ -130,15 +136,16 @@ class MaintenanceReportWindow(tk.Toplevel):
         # Carica Macchine
         all_equipments_text = self.lang.get('all_equipments_filter', "TUTTI I MACCHINARI")
         equipments = self.db.fetch_all_equipments()
-        self.equipments_data = {f"{row.InternalName or 'N/D'} [{row.SerialNumber}]": row.EquipmentId for row in
-                                equipments}
-        self.equipment_combo['values'] = [all_equipments_text] + sorted(list(self.equipments_data.keys()))
+        self.equipments_data = {f"{row.InternalName or 'N/D'} [{row.SerialNumber}]": row.EquipmentId for row in equipments}
+        self.all_equipment_names_report = [all_equipments_text] + sorted(list(self.equipments_data.keys()))
+        self.equipment_combo['values'] = self.all_equipment_names_report
         self.equipment_var.set(all_equipments_text)
 
         # Carica Manutentori
         all_maintainers_text = self.lang.get('all_maintainers_filter', "TUTTI I MANUTENTORI")
         maintainers = self.db.fetch_report_maintainers()
-        self.maintainer_combo['values'] = [all_maintainers_text] + maintainers
+        self.all_maintainer_names_report = [all_maintainers_text] + maintainers
+        self.maintainer_combo['values'] = self.all_maintainer_names_report
         self.maintainer_var.set(all_maintainers_text)
 
         # Carica Date
@@ -146,6 +153,26 @@ class MaintenanceReportWindow(tk.Toplevel):
         dates = self.db.fetch_report_dates()
         self.date_combo['values'] = [all_dates_text] + [d.strftime('%Y-%m-%d') for d in dates]
         self.date_var.set(all_dates_text)
+
+    def _filter_report_equipment(self, event):
+        typed_text = self.equipment_var.get().lower()
+        if not typed_text:
+            self.equipment_combo['values'] = self.all_equipment_names_report
+            return
+        # Assicura che "TUTTI" sia sempre un'opzione
+        all_options = self.all_equipment_names_report[1:]
+        filtered_list = [name for name in all_options if typed_text in name.lower()]
+        self.equipment_combo['values'] = [self.all_equipment_names_report[0]] + filtered_list
+
+    def _filter_report_maintainer(self, event):
+        typed_text = self.maintainer_var.get().lower()
+        if not typed_text:
+            self.maintainer_combo['values'] = self.all_maintainer_names_report
+            return
+        # Assicura che "TUTTI" sia sempre un'opzione
+        all_options = self.all_maintainer_names_report[1:]
+        filtered_list = [name for name in all_options if typed_text in name.lower()]
+        self.maintainer_combo['values'] = [self.all_maintainer_names_report[0]] + filtered_list
 
     def _clear_filters(self):
         self.equipment_var.set(self.equipment_combo['values'][0])
@@ -1004,36 +1031,115 @@ class MaintenanceDocsWindow(tk.Toplevel):
 class FillTemplateWindow(tk.Toplevel):
     """Finestra per la compilazione delle schede di manutenzione."""
 
-    def __init__(self, parent, db, lang, user_name):
-        super().__init__(parent)
-        self.db = db
-        self.lang = lang
-        self.user_name = user_name
-        self.start_time = None  # Variabile per memorizzare l'ora di inizio (Requisito)
+    # In maintenance_gui.py
 
-        self.title(lang.get('submenu_fill_templates'))
-        self.geometry("950x600")  # Dimensione adeguata per visualizzare i compiti
-        self.transient(parent)
-        self.grab_set()
+    class FillTemplateWindow(tk.Toplevel):
+        """Finestra per la compilazione delle schede di manutenzione."""
 
-        # Dati e variabili
-        self.equipments_data = {}
-        self.plans_data = {}  # Mappa il testo del piano a (PianoManutenzioneId, ProgrammedInterventionId)
-        # Memorizza gli ID (CompitoId) dei compiti spuntati
-        self.completed_tasks = set()
+        def __init__(self, parent, db, lang, user_name):
+            super().__init__(parent)
+            self.db = db
+            self.lang = lang
+            self.user_name = user_name
+            self.start_time = None
 
-        self.equipment_var = tk.StringVar()
-        self.plan_var = tk.StringVar()
+            self.title(lang.get('submenu_fill_templates'))
+            self.geometry("950x600")
+            self.transient(parent)
+            self.grab_set()
 
-        # Inizializzazione widget (per sicurezza)
-        self.tasks_tree = None
-        self.notes_text = None
-        self.save_button = None
-        self.request_button = None
-        self.plan_combo = None
+            self.equipments_data = {}
+            self.plans_data = {}
+            self.completed_tasks = set()
 
-        self._create_widgets()
-        self._load_equipments()
+            # Lista per la ricerca dinamica
+            self.all_equipment_names = []
+
+            self.equipment_var = tk.StringVar()
+            self.plan_var = tk.StringVar()
+
+            self._create_widgets()
+            self._load_equipments()
+
+        def _create_widgets(self):
+            frame = ttk.Frame(self, padding="15")
+            frame.pack(fill=tk.BOTH, expand=True)
+
+            selection_frame = ttk.Frame(frame)
+            selection_frame.pack(fill=tk.X, pady=10)
+
+            ttk.Label(selection_frame, text=self.lang.get('select_machine_label')).pack(side=tk.LEFT, padx=5)
+            # MODIFICATO: state='normal' per permettere la scrittura
+            self.equipment_combo = ttk.Combobox(selection_frame, textvariable=self.equipment_var, state='normal',
+                                                width=40)
+            self.equipment_combo.pack(side=tk.LEFT, padx=5)
+            self.equipment_combo.bind("<<ComboboxSelected>>", self._on_equipment_select)
+            # NUOVO: Associa la pressione dei tasti alla funzione di filtro
+            self.equipment_combo.bind('<KeyRelease>', self._filter_equipment_combo)
+
+            ttk.Label(selection_frame, text=self.lang.get('select_maintenance_plan', "Seleziona Piano:")).pack(
+                side=tk.LEFT, padx=5)
+            self.plan_combo = ttk.Combobox(selection_frame, textvariable=self.plan_var, state='disabled', width=40)
+            self.plan_combo.pack(side=tk.LEFT, padx=5)
+            self.plan_combo.bind("<<ComboboxSelected>>", self._on_plan_select)
+
+            # ... il resto del metodo _create_widgets rimane invariato ...
+            tasks_frame = ttk.LabelFrame(frame, text=self.lang.get('maintenance_tasks_label', "Compiti da Eseguire"),
+                                         padding="10")
+            tasks_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+            cols = ('check', 'name', 'category', 'description')
+            self.tasks_tree = ttk.Treeview(tasks_frame, columns=cols, show='headings')
+            self.tasks_tree.heading('check', text='☑')
+            self.tasks_tree.heading('name', text=self.lang.get('header_task_name', 'Compito'))
+            self.tasks_tree.heading('category', text=self.lang.get('header_category', 'Categoria'))
+            self.tasks_tree.heading('description', text=self.lang.get('header_description', 'Descrizione'))
+            self.tasks_tree.column('check', width=30, anchor='center', stretch=tk.NO)
+            self.tasks_tree.column('name', width=250)
+            self.tasks_tree.column('category', width=120)
+            self.tasks_tree.column('description', width=450)
+            scrollbar = ttk.Scrollbar(tasks_frame, orient=tk.VERTICAL, command=self.tasks_tree.yview)
+            self.tasks_tree.configure(yscroll=scrollbar.set)
+            self.tasks_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            self.tasks_tree.bind('<Button-1>', self._on_tree_click)
+            self.tasks_tree.bind('<Double-1>', self._on_tree_double_click)
+            notes_frame = ttk.LabelFrame(frame,
+                                         text=self.lang.get('maintenance_notes_label', "Note Generali / Osservazioni"),
+                                         padding="10")
+            notes_frame.pack(fill=tk.X, pady=5)
+            self.notes_text = tk.Text(notes_frame, height=4, wrap=tk.WORD)
+            self.notes_text.pack(fill=tk.X, expand=True, padx=5)
+            self.notes_text.config(state='disabled')
+            action_frame = ttk.Frame(frame)
+            action_frame.pack(fill=tk.X, pady=10)
+            request_button_text = self.lang.get('request_button', "Crea Richiesta (Parti/Intervento)")
+            self.request_button = ttk.Button(action_frame, text=request_button_text, command=self._open_request_window,
+                                             state='disabled')
+            self.request_button.pack(side=tk.LEFT, padx=5)
+            self.save_button = ttk.Button(action_frame,
+                                          text=self.lang.get('save_completed_tasks', "Salva Compiti Eseguiti"),
+                                          command=self._save_logs, state='disabled')
+            self.save_button.pack(side=tk.RIGHT, padx=5)
+
+        def _load_equipments(self):
+            equipments = self.db.fetch_all_equipments()
+            if equipments:
+                self.equipments_data = {f"{row.InternalName or 'N/D'} [{row.SerialNumber}]": row.EquipmentId for row in
+                                        equipments}
+                # NUOVO: Salva la lista completa per la ricerca
+                self.all_equipment_names = sorted(list(self.equipments_data.keys()))
+                self.equipment_combo['values'] = self.all_equipment_names
+
+        # NUOVO: Funzione per filtrare il combobox delle macchine
+        def _filter_equipment_combo(self, event):
+            typed_text = self.equipment_var.get().lower()
+            if not typed_text:
+                self.equipment_combo['values'] = self.all_equipment_names
+                return
+            filtered_list = [name for name in self.all_equipment_names if typed_text in name.lower()]
+            self.equipment_combo['values'] = filtered_list
+
+        # ... gli altri metodi della classe (_on_equipment_select, _on_plan_select, etc.) rimangono invariati ...
 
     def _create_widgets(self):
         frame = ttk.Frame(self, padding="15")
@@ -1045,11 +1151,12 @@ class FillTemplateWindow(tk.Toplevel):
 
         # 1. Selezione Macchina
         ttk.Label(selection_frame, text=self.lang.get('select_machine_label')).pack(side=tk.LEFT, padx=5)
-        self.equipment_combo = ttk.Combobox(selection_frame, textvariable=self.equipment_var, state='readonly',
-                                            width=40)
+        # MODIFICATO: state='normal' per permettere la scrittura
+        self.equipment_combo = ttk.Combobox(selection_frame, textvariable=self.equipment_var, state='normal', width=40)
         self.equipment_combo.pack(side=tk.LEFT, padx=5)
-        # Il binding che causava l'errore (ora punta al metodo corretto definito sotto)
         self.equipment_combo.bind("<<ComboboxSelected>>", self._on_equipment_select)
+        # NUOVO: Associa la pressione dei tasti alla funzione di filtro
+        self.equipment_combo.bind('<KeyRelease>', self._filter_equipment_combo)
 
         # 2. Selezione Piano Manutenzione
         ttk.Label(selection_frame, text=self.lang.get('select_maintenance_plan', "Seleziona Piano:")).pack(side=tk.LEFT,
@@ -1116,12 +1223,20 @@ class FillTemplateWindow(tk.Toplevel):
         self.save_button.pack(side=tk.RIGHT, padx=5)
 
     def _load_equipments(self):
-        # (Invariato)
         equipments = self.db.fetch_all_equipments()
         if equipments:
-            self.equipments_data = {f"{row.InternalName or 'N/D'} [{row.SerialNumber}]": row.EquipmentId for row in
-                                    equipments}
-            self.equipment_combo['values'] = list(self.equipments_data.keys())
+            self.equipments_data = {f"{row.InternalName or 'N/D'} [{row.SerialNumber}]": row.EquipmentId for row in equipments}
+            # NUOVO: Salva la lista completa per la ricerca
+            self.all_equipment_names = sorted(list(self.equipments_data.keys()))
+            self.equipment_combo['values'] = self.all_equipment_names
+
+    def _filter_equipment_combo(self, event):
+        typed_text = self.equipment_var.get().lower()
+        if not typed_text:
+            self.equipment_combo['values'] = self.all_equipment_names
+            return
+        filtered_list = [name for name in self.all_equipment_names if typed_text in name.lower()]
+        self.equipment_combo['values'] = filtered_list
 
     def _reset_plan_and_tasks(self):
         self.plan_var.set("")

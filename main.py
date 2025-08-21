@@ -12,6 +12,8 @@ import tempfile # Assicuriamoci che tempfile sia importato (usato in fetch_and_o
 import re
 import reportlab
 from packaging import version
+import tools_gui
+import submissions_gui
 
 try:
     from PIL import Image, ImageTk
@@ -21,7 +23,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.4.3"  # Versione aggiornata
+APP_VERSION = "1.5.1"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
 # --- CONFIGURAZIONE DATABASE ---
@@ -81,6 +83,264 @@ class LanguageManager:
 
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
+
+    def authenticate_and_authorize(self, user_id, password, menu_translation_key):
+        """
+        Esegue l'autenticazione e controlla l'autorizzazione per una specifica funzione.
+        Restituisce l'intera riga del DB se l'utente e la password sono corretti, altrimenti None.
+        La riga conterrà AuthorizedUsedId (che può essere NULL se non autorizzato).
+        """
+        query = """
+                SELECT u.NomeUser, \
+                       ISNULL(e.EmployeeName + ' ' + e.EmployeeSurname, '#ND') as EmployeeName, \
+                       u.pass, \
+                       a.AuthorizedUsedId
+                FROM resetservices.dbo.tbuserkey as U
+                         INNER JOIN employee.dbo.employees as e ON e.EmployeeId = u.idanga
+                         INNER JOIN employee.dbo.EmployeeHireHistory as h ON e.EmployeeId = h.EmployeeId
+                         LEFT JOIN dbo.AutorizedUsers as a \
+                                   ON a.Employeehirehistoryid = h.EmployeeHireHistoryId AND a.TranslationKey = ?
+                WHERE h.EndWorkDate IS NULL \
+                  AND h.employeerid = 2 \
+                  AND u.Nomeuser = ? \
+                  AND u.Pass = ?; \
+                """
+        try:
+            # L'ordine dei parametri è fondamentale: TranslationKey, Nomeuser, Pass
+            self.cursor.execute(query, menu_translation_key, user_id, password)
+            return self.cursor.fetchone()
+        except pyodbc.Error as e:
+            print(f"Error during authentication/authorization: {e}")
+            self.last_error_details = str(e)
+            return None
+
+    def fetch_maintenance_cycles(self):
+        """Recupera tutti i cicli di manutenzione programmati."""
+        query = "SELECT ProgrammedInterventionId, TimingDescriprion, TimingValue FROM eqp.ProgrammedInterventions ORDER BY TimingDescriprion;"
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore nel recupero dei cicli di manutenzione: {e}")
+            return []
+
+    def check_if_cycle_is_used(self, intervention_id):
+        """Controlla se un ciclo di manutenzione è usato in almeno un log."""
+        # Un ciclo è usato se esiste un compito associato ad esso che è stato registrato in LogManutenzioni
+        query = """
+                SELECT COUNT(lm.LogId)
+                FROM eqp.LogManutenzioni lm
+                         INNER JOIN eqp.CompitiManutenzione cm ON lm.CompitoId = cm.CompitoId
+                WHERE cm.ProgrammedInterventionId = ?; \
+                """
+        try:
+            count = self.cursor.execute(query, intervention_id).fetchval()
+            return count > 0
+        except pyodbc.Error as e:
+            print(f"Errore nel controllo uso ciclo: {e}")
+            return True  # Per sicurezza, in caso di errore, si assume che sia usato
+
+    def add_new_maintenance_cycle(self, description, value):
+        """Aggiunge un nuovo ciclo di manutenzione."""
+        query = "INSERT INTO eqp.ProgrammedInterventions (TimingDescriprion, TimingValue) VALUES (?, ?);"
+        try:
+            self.cursor.execute(query, description, value)
+            self.conn.commit()
+            return True, "Ciclo aggiunto con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            return False, f"Errore database: {e}"
+
+    def update_maintenance_cycle(self, intervention_id, description, value):
+        """Aggiorna un ciclo di manutenzione esistente."""
+        query = "UPDATE eqp.ProgrammedInterventions SET TimingDescriprion = ?, TimingValue = ? WHERE ProgrammedInterventionId = ?;"
+        try:
+            self.cursor.execute(query, description, value, intervention_id)
+            self.conn.commit()
+            return True, "Ciclo aggiornato con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            return False, f"Errore database: {e}"
+
+    def delete_maintenance_cycle(self, intervention_id):
+        """Cancella un ciclo di manutenzione."""
+        query = "DELETE FROM eqp.ProgrammedInterventions WHERE ProgrammedInterventionId = ?;"
+        try:
+            self.cursor.execute(query, intervention_id)
+            self.conn.commit()
+            return True, "Ciclo cancellato con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            return False, f"Errore database: {e}"
+
+    def fetch_authorized_employees(self):
+        """Recupera la lista dei dipendenti autorizzati a fare segnalazioni."""
+        query = """
+                SELECT eh.EmployeeHireHistoryId, UPPER(e.EmployeeSurname + ' ' + e.EmployeeName) AS Employ
+                FROM employee.dbo.employees e
+                         INNER JOIN employee.dbo.EmployeeHireHistory eh \
+                                    ON e.EmployeeId = eh.EmployeeId AND eh.EndWorkDate IS NULL
+                         INNER JOIN employee.dbo.employeers er \
+                                    ON eh.EmployeerId = er.EmployeerId AND er.EmployeerFiscalCode = 'RO35713341'
+                ORDER BY UPPER(e.EmployeeSurname + ' ' + e.EmployeeName); \
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore recupero dipendenti autorizzati: {e}")
+            return []
+
+    def fetch_submission_types(self, lang_code):
+        """Recupera i tipi di segnalazione tradotti in base alla lingua selezionata."""
+        # La tabella TipiSegnalazione deve essere quella corretta, es. dbo.TipiSegnalazione
+        # Assicurati che i nomi delle tabelle e delle colonne siano corretti.
+        query = """
+                SELECT t.TipoSegnalazioneId, t.NomeTipo
+                FROM employee.dbo.TipiSegnalazione AS t
+                         INNER JOIN employee.dbo.Languages L ON t.LanguageID = l.LanguageID
+                WHERE l.LanguageAcronim = ?
+                ORDER BY t.NomeTipo; \
+                """
+        try:
+            print(f"DEBUG: Sto cercando tipi di segnalazione con il codice lingua: '{lang_code}'")
+            self.cursor.execute(query, lang_code)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore recupero tipi di segnalazione per lingua '{lang_code}': {e}")
+            self.last_error_details = str(e)
+            return []
+
+    def add_new_submission(self, type_id, title, desc, location, employee_id, attachments):
+        """Salva una nuova segnalazione e i suoi allegati in una transazione."""
+        try:
+            # 1. Inserisce la segnalazione principale e ottiene il suo ID
+            insert_submission_sql = """
+                                    INSERT INTO dbo.Segnalazioni (TipoSegnalazioneId, Titolo, Descrizione, Luogo, IdDipendente)
+                                        OUTPUT INSERTED.SegnalazioneId
+                                    VALUES (?, ?, ?, ?, ?); \
+                                    """
+            new_submission_id = self.cursor.execute(
+                insert_submission_sql, type_id, title, desc, location, employee_id
+            ).fetchval()
+
+            if not new_submission_id:
+                raise Exception("Creazione segnalazione fallita, ID non restituito.")
+
+            # 2. Se ci sono allegati, li inserisce uno per uno
+            if attachments:
+                insert_attachment_sql = """
+                                        INSERT INTO dbo.SegnalazioneAllegati (SegnalazioneId, NomeFile, DatiFile)
+                                        VALUES (?, ?, ?); \
+                                        """
+                for attachment in attachments:
+                    self.cursor.execute(insert_attachment_sql, new_submission_id, attachment['name'],
+                                        attachment['data'])
+
+            # 3. Se tutto è andato bene, conferma la transazione
+            self.conn.commit()
+            return True, "Segnalazione registrata con successo."
+
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False, f"Errore durante il salvataggio: {e}"
+
+    def fetch_brands_with_company_name(self):
+        """Recupera tutti i brand con il nome del produttore associato."""
+        query = """
+                SELECT b.EquipmentBrandId, \
+                       b.Brand, \
+                       b.BrandLogo, \
+                       s.acronimo AS CompanyName, \
+                       s.idsoc    AS CompanyId
+                FROM eqp.EquipmentBrands b \
+                         INNER JOIN \
+                     resetservices.dbo.tbsocieta s ON b.CompanyId = s.idsoc
+                ORDER BY b.Brand; \
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore nel recupero dei brand: {e}")
+            return []
+
+    def add_new_brand(self, company_id, brand_name, logo_data):
+        """Aggiunge un nuovo brand dopo aver controllato che non esista già."""
+        check_query = "SELECT COUNT(*) FROM eqp.EquipmentBrands WHERE Brand = ?;"
+        insert_query = "INSERT INTO eqp.EquipmentBrands (CompanyId, Brand, BrandLogo) VALUES (?, ?, ?);"
+        try:
+            count = self.cursor.execute(check_query, brand_name).fetchval()
+            if count > 0:
+                return False, "Errore: Esiste già un brand con questo nome."
+
+            self.cursor.execute(insert_query, company_id, brand_name, logo_data)
+            self.conn.commit()
+            return True, "Brand aggiunto con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            return False, f"Errore database: {e}"
+
+    def update_brand(self, brand_id, company_id, brand_name, logo_data):
+        """Aggiorna un brand esistente."""
+        query = """
+                UPDATE eqp.EquipmentBrands
+                SET CompanyId = ?, \
+                    Brand     = ?, \
+                    BrandLogo = ?
+                WHERE EquipmentBrandId = ?; \
+                """
+        try:
+            self.cursor.execute(query, company_id, brand_name, logo_data, brand_id)
+            self.conn.commit()
+            return True, "Brand aggiornato con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            return False, f"Errore database: {e}"
+
+    def fetch_suppliers(self):
+        """Recupera la lista dei fornitori."""
+        query = "SELECT idsoc, acronimo, nazione FROM resetservices.dbo.tbsocieta WHERE acronimo IS NOT NULL ORDER BY acronimo;"
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore nel recupero fornitori: {e}")
+            return []
+
+    def fetch_currencies(self):
+        """Recupera la lista delle valute attive."""
+        query = "SELECT IdValuta, [desc] FROM resetservices.dbo.TbValute WHERE loadexchange = 1 ORDER BY [desc];"
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore nel recupero valute: {e}")
+            return []
+
+    def add_new_supplier(self, denom_soc, nazione, cui, id_valuta):
+        """Aggiunge un nuovo fornitore dopo aver controllato che la P.IVA non esista già."""
+        # 1. Controlla se la Partita IVA (cui) esiste già
+        check_query = "SELECT COUNT(*) FROM resetservices.dbo.tbsocieta WHERE cui = ?;"
+        insert_query = """
+                       INSERT INTO resetservices.dbo.tbsocieta (DenomSoc, Nazione, cui, IdValuta, Appruved)
+                       VALUES (?, ?, ?, ?, 1); \
+                       """
+        try:
+            count = self.cursor.execute(check_query, cui).fetchval()
+            if count > 0:
+                return False, "Errore: Partita IVA già presente nel database."
+
+            # 2. Se non esiste, procedi con l'inserimento
+            self.cursor.execute(insert_query, denom_soc, nazione, cui, id_valuta)
+            self.conn.commit()
+            return True, "Fornitore aggiunto con successo."
+
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False, f"Errore database: {e}"
 
     def fetch_tasks_for_editing(self, intervention_id, equipment_id):
         """Recupera i compiti per un intervento e una macchina specifici."""
@@ -953,29 +1213,32 @@ class Database:
 
     def save_document_to_db(self, product_id, parent_phase_id, doc_name, local_file_path, revision, user_name,
                             validated_int):
-        """Legge un file PDF e lo salva come VARBINARY(MAX) nel database."""
+        """Legge un file e lo salva nel database, includendo il percorso del file originale."""
         try:
-            # 1. Leggi il file dal tuo computer in modalità binaria ('rb')
+            # 1. Leggi i dati binari del file
             with open(local_file_path, 'rb') as f:
-                pdf_binary_data = f.read()
+                binary_data = f.read()
 
-            # 2. Prepara la query di INSERT
+            # 2. Prepara la NUOVA query di INSERT, come da te specificato
+            # I nomi delle colonne 'InsertedBy' e 'InsertionDate' sono stati corretti
+            # in 'UserName' e 'Datein' per corrispondere alla tua nuova query.
             sql_insert = """
                          INSERT INTO Traceability_RS.dbo.ProductDocuments
-                         (ProductId, ParentPhaseId, documentName, DocumentRevisionNumber, DocumentData, InsertedBy,
-                          InsertionDate, Validated)
-                         VALUES (?, ?, ?, ?, ?, ?, GETDATE(), ?)
+                         (ProductId, ParentPhaseId, documentName, DocumentRevisionNumber, DocumentData, UserName,
+                          Datein, Validated, DocumentPath)
+                         VALUES (?, ?, ?, ?, ?, ?, GETDATE(), ?, ?);
                          """
 
-            # 3. Esegui la query passando i dati binari come parametro.
+            # 3. Esegui la query passando anche il nuovo parametro 'local_file_path'
             self.cursor.execute(sql_insert,
                                 product_id,
                                 parent_phase_id,
                                 doc_name,
                                 revision,
-                                pdf_binary_data,  # Dati del file
+                                binary_data,  # Dati del file
                                 user_name,
-                                validated_int)
+                                validated_int,
+                                local_file_path)  # <-- NUOVO PARAMETRO AGGIUNTO
             self.conn.commit()
             return True
 
@@ -1171,13 +1434,17 @@ class Database:
 # --- CLASSI INTERFACCIA UTENTE (GUI) ---
 
 class LoginWindow(tk.Toplevel):
-    """Finestra di autenticazione per l'utente."""
+    """Finestra per raccogliere le credenziali dell'utente."""
 
     def __init__(self, master, db_handler, lang_manager):
         super().__init__(master)
-        self.db = db_handler
+        self.db = db_handler  # Manteniamo db e lang per i testi tradotti
         self.lang = lang_manager
-        self.authenticated_user_name = None
+
+        # Attributi per restituire i risultati
+        self.user_id = None
+        self.password = None
+        self.clicked_login = False
 
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
         self.transient(master)
@@ -1185,36 +1452,31 @@ class LoginWindow(tk.Toplevel):
 
         self._create_widgets()
         self.update_texts()
-
-        # "Lega" l'evento <Return> (Invio) all'intera finestra.
         self.bind('<Return>', self._attempt_login_event)
 
     def _create_widgets(self):
+        # ... questo metodo rimane ESATTAMENTE invariato ...
         self.geometry("350x200")
         frame = ttk.Frame(self, padding="10")
         frame.pack(fill=tk.BOTH, expand=True)
-
         self.user_id_label = ttk.Label(frame)
         self.user_id_label.grid(row=0, column=0, padx=5, pady=10, sticky="w")
         self.user_id_entry = ttk.Entry(frame, width=30)
         self.user_id_entry.grid(row=0, column=1, padx=5, pady=10)
-
         self.password_label = ttk.Label(frame)
         self.password_label.grid(row=1, column=0, padx=5, pady=10, sticky="w")
         self.password_entry = ttk.Entry(frame, show="*", width=30)
         self.password_entry.grid(row=1, column=1, padx=5, pady=10)
-
         button_frame = ttk.Frame(frame)
         button_frame.grid(row=2, column=0, columnspan=2, pady=(15, 0))
         self.login_button = ttk.Button(button_frame, command=self._attempt_login)
         self.login_button.pack(side=tk.LEFT, padx=10)
         self.cancel_button = ttk.Button(button_frame, command=self._on_cancel)
         self.cancel_button.pack(side=tk.LEFT, padx=10)
-
         self.user_id_entry.focus_set()
 
     def update_texts(self):
-        """Aggiorna i testi della UI in base alla lingua corrente."""
+        # ... questo metodo rimane ESATTAMENTE invariato ...
         self.title(self.lang.get('login_title'))
         self.user_id_label.config(text=self.lang.get('login_user_id'))
         self.password_label.config(text=self.lang.get('login_password'))
@@ -1222,26 +1484,25 @@ class LoginWindow(tk.Toplevel):
         self.cancel_button.config(text=self.lang.get('login_cancel_button'))
 
     def _attempt_login_event(self, event=None):
-        """Funzione chiamata dall'evento 'bind' per poi chiamare la logica di login."""
         self._attempt_login()
 
     def _attempt_login(self):
+        # --- LOGICA MODIFICATA ---
+        # Ora la finestra si limita a raccogliere i dati
         user_id = self.user_id_entry.get()
         password = self.password_entry.get()
         if not user_id or not password:
             messagebox.showerror(self.lang.get('login_title'), self.lang.get('login_error_credentials'), parent=self)
             return
 
-        employee_name = self.db.authenticate_user(user_id, password)
-        if employee_name:
-            self.authenticated_user_name = employee_name
-            self.destroy()
-        else:
-            messagebox.showerror(self.lang.get('login_title'), self.lang.get('login_auth_failed'), parent=self)
-            self.password_entry.delete(0, tk.END)
+        self.user_id = user_id
+        self.password = password
+        self.clicked_login = True
+        self.destroy()  # Chiude la finestra
 
     def _on_cancel(self):
-        self.authenticated_user_name = None
+        # L'utente ha chiuso la finestra senza premere login
+        self.clicked_login = False
         self.destroy()
 
 
@@ -1586,6 +1847,120 @@ class ViewDocumentForm(tk.Toplevel):
 class App(tk.Tk):
     """Classe principale dell'applicazione."""
 
+    def open_insert_form(self):
+        """Apre la finestra di inserimento documenti dopo un login semplice."""
+
+        def action(user_name):
+            # Crea e mostra la finestra di inserimento
+            form = InsertDocumentForm(self, self.db, user_name, self.lang)
+            form.grab_set()
+
+        self._execute_simple_login(action_callback=action)
+
+    def open_view_form(self):
+        """Apre la finestra per visualizzare i documenti di produzione."""
+        view_form = ViewDocumentForm(self, self.db, self.lang)
+        view_form.transient(self)
+        view_form.grab_set()
+        self.wait_window(view_form)
+
+    def _execute_simple_login(self, action_callback):
+        """
+        Gestisce il processo di login semplice per le funzioni non ristrette.
+        :param action_callback: La funzione da eseguire in caso di successo.
+                                Riceverà il nome dell'utente come argomento.
+        """
+        login_form = LoginWindow(self, self.db, self.lang)
+        self.wait_window(login_form)
+
+        if not login_form.clicked_login:
+            return
+
+        user_id = login_form.user_id
+        password = login_form.password
+
+        # Esegue l'autenticazione standard
+        employee_name = self.db.authenticate_user(user_id, password)
+
+        if employee_name:
+            # Successo: esegue l'azione richiesta passando il nome utente
+            action_callback(employee_name)
+        else:
+            # Fallimento: mostra l'errore
+            messagebox.showerror(self.lang.get('login_title'), self.lang.get('login_auth_failed'), parent=self)
+
+    def _execute_authorized_action(self, menu_translation_key, action_callback):
+        """
+        Gestisce il processo di login e autorizzazione per un'azione.
+        :param menu_translation_key: La chiave di traduzione del menu per il controllo permessi.
+        :param action_callback: La funzione da eseguire in caso di successo.
+        """
+        login_form = LoginWindow(self, self.db, self.lang)
+        self.wait_window(login_form)
+
+        # Procede solo se l'utente ha premuto "Login"
+        if not login_form.clicked_login:
+            return
+
+        user_id = login_form.user_id
+        password = login_form.password
+
+        # Controlla autenticazione e autorizzazione
+        auth_result = self.db.authenticate_and_authorize(user_id, password, menu_translation_key)
+
+        if auth_result is None:
+            # Caso 1: Username o Password errati
+            messagebox.showerror(self.lang.get('login_title'), self.lang.get('login_auth_failed'), parent=self)
+        elif auth_result.AuthorizedUsedId is None:
+            # Caso 2: Utente valido, ma NON autorizzato per questa funzione
+            messagebox.showwarning(self.lang.get('auth_access_denied_title', "Accesso Negato"),
+                                   self.lang.get('auth_access_denied_message',
+                                                 "Non si dispone delle autorizzazioni necessarie per accedere a questa funzione."),
+                                   parent=self)
+        else:
+            # Caso 3: Successo! Esegue l'azione
+            action_callback()
+
+    def open_maint_cycles_manager_with_login(self):
+        self._execute_authorized_action(
+            menu_translation_key='submenu_maint_cycles',
+            action_callback=lambda: tools_gui.open_maint_cycles_manager(self, self.db, self.lang)
+        )
+
+    def open_new_submission_form(self):
+        """Apre la finestra di inserimento nuova segnalazione (senza login)."""
+        submissions_gui.open_new_submission_form(self, self.db, self.lang)
+
+    def open_brands_manager_with_login(self):
+        """Richiede il login e poi apre la finestra di gestione dei brand."""
+        login_form = LoginWindow(self, self.db, self.lang)
+        self.wait_window(login_form)
+        authenticated_user = login_form.authenticated_user_name
+        if authenticated_user:
+            tools_gui.open_brands_manager(self, self.db, self.lang)
+
+    def open_add_maintenance_tasks_with_login(self):
+        """Richiede il login e poi apre la finestra per aggiungere nuovi task."""
+        login_form = LoginWindow(self, self.db, self.lang)
+        self.wait_window(login_form)
+        authenticated_user = login_form.authenticated_user_name
+        if authenticated_user:
+            maintenance_gui.open_add_maintenance_tasks(self, self.db, self.lang, authenticated_user)
+
+    def open_suppliers_manager_with_login(self):
+        self._execute_authorized_action(
+            menu_translation_key='submenu_suppliers',
+            action_callback=lambda: tools_gui.open_suppliers_manager(self, self.db, self.lang)
+        )
+
+    def open_suppliers_manager(self):
+        """Apre la finestra di gestione dei fornitori."""
+        login_form = LoginWindow(self, self.db, self.lang)
+        self.wait_window(login_form)
+        authenticated_user = login_form.authenticated_user_name
+        if authenticated_user:
+            tools_gui.open_suppliers_manager(self, self.db, self.lang)
+
     def _save_language_setting(self, lang_code):
         """Salva la lingua corrente nel file di configurazione."""
         try:
@@ -1615,17 +1990,11 @@ class App(tk.Tk):
             # Chiama la funzione corretta in maintenance_gui, passando l'utente autenticato
             maintenance_gui.open_fill_templates(self, self.db, self.lang, authenticated_user)
 
-    def open_add_maintenance_tasks_with_login(self):
-        """Richiede il login e poi apre la finestra per aggiungere nuovi task."""
-        login_form = LoginWindow(self, self.db, self.lang)
-        self.wait_window(login_form)
-        authenticated_user = login_form.authenticated_user_name
-        if authenticated_user:
-            maintenance_gui.open_add_maintenance_tasks(self, self.db, self.lang, authenticated_user)
 
 
     def __init__(self):
         super().__init__()
+        self.should_exit = False # <-- AGGIUNGI QUESTA RIGA
         self.geometry("800x600")
 
         # Inizializza il database e la connessione
@@ -1641,10 +2010,10 @@ class App(tk.Tk):
 
         # 1. Controlla la versione del software
         if self.check_version() is False:
-            # Se il controllo fallisce, disconnetti e distruggi la finestra prima di uscire.
-            self.db.disconnect()
-            self.destroy()
-            return  # Interrompe l'inizializzazione
+            # The check_version method already handles disconnecting the DB
+            # and destroying the window. We just need to stop the __init__
+            # method from continuing.
+            return
 
         self.logo_label = None
         self.authenticated_user_for_maintenance = None # Variabile di appoggio per modifiche macchine
@@ -1672,8 +2041,6 @@ class App(tk.Tk):
                 print("Informazioni di versione non trovate o incomplete nel DB. Controllo saltato.")
                 return True
 
-            # --- NUOVO CONTROLLO DI SICUREZZA ---
-            # Normalizza entrambi i percorsi per un confronto affidabile
             source_path = os.path.normpath(version_info.MainPath)
             current_path = os.path.normpath(os.path.dirname(sys.executable))
 
@@ -1688,10 +2055,11 @@ class App(tk.Tk):
                 messagebox.showerror(title, message, parent=self)
 
                 # Chiudi l'applicazione
+                subprocess.Popen([updater_path, source_path, destination, exe_name])
                 self.db.disconnect()
                 self.destroy()
-                return False  # Ferma l'esecuzione
-            # --- FINE NUOVO CONTROLLO ---
+                self.should_exit = True  # <-- AGGIUNGI QUESTA RIGA
+                return False
 
             # Se il controllo di sicurezza è superato, procede con il controllo della versione...
             if is_update_needed(APP_VERSION, version_info.Version):
@@ -1744,23 +2112,27 @@ class App(tk.Tk):
 
     # --- GESTIONE MENU E LINGUA ---
 
+    # In main.py, inside the App class
+
     def _create_menu(self):
         self.menubar = tk.Menu(self)
         self.config(menu=self.menubar)
 
-        # Menu Documenti
+        # Crea i contenitori vuoti per ogni menu
         self.document_menu = tk.Menu(self.menubar, tearoff=0)
-        self.menubar.add_cascade(menu=self.document_menu)
-
-        # Menu Manutenzione
         self.maintenance_menu = tk.Menu(self.menubar, tearoff=0)
-        self.menubar.add_cascade(menu=self.maintenance_menu)
-
-        # Menu Help
+        self.submissions_menu = tk.Menu(self.menubar, tearoff=0)  # Menu Segnalazioni
+        self.tools_menu = tk.Menu(self.menubar, tearoff=0)  # Menu Strumenti
         self.help_menu = tk.Menu(self.menubar, tearoff=0)
+
+        # Aggiunge ogni menu come una "cascata" separata alla barra principale
+        self.menubar.add_cascade(menu=self.document_menu)
+        self.menubar.add_cascade(menu=self.maintenance_menu)
+        self.menubar.add_cascade(menu=self.submissions_menu)
+        self.menubar.add_cascade(menu=self.tools_menu)
         self.menubar.add_cascade(menu=self.help_menu)
 
-        # Sottomenu Lingua
+        # Il sottomenu della lingua è un caso speciale, perché è una cascata DENTRO il menu Aiuto
         self.language_menu = tk.Menu(self.help_menu, tearoff=0)
         self.language_menu.add_command(label="Italiano", command=lambda: self._change_language('it'))
         self.language_menu.add_command(label="English", command=lambda: self._change_language('en'))
@@ -1805,6 +2177,23 @@ class App(tk.Tk):
                                           command=self.open_fill_templates_with_login)
         self.maintenance_menu.add_command(label=self.lang.get('submenu_reports'),
                                           command=lambda: maintenance_gui.open_reports(self, self.db, self.lang))
+        # Menu segnalazioni
+        self.submissions_menu.delete(0, 'end')
+        self.submissions_menu.add_command(label=self.lang.get('submenu_new_submission', "Nuova Segnalazione"),
+                                          command=self.open_new_submission_form)
+        self.submissions_menu.add_command(label=self.lang.get('submenu_view_submissions', "Visualizza Segnalazioni"),
+                                          state="disabled")
+
+        #crea il menu suppliers
+        self.tools_menu.delete(0, 'end')
+        self.tools_menu.add_command(label=self.lang.get('submenu_suppliers', "Produttori"),
+                                    command=self.open_suppliers_manager)
+        self.tools_menu.add_command(label=self.lang.get('submenu_brands', "Brand"),
+                                    command=self.open_brands_manager_with_login)
+        #self.tools_menu.add_command(label=self.lang.get('submenu_brands', "Brand"),
+        #                            state="disabled")  # Disabilitato per ora
+        self.tools_menu.add_command(label=self.lang.get('submenu_maint_cycles', "Cicli Manutenzione"),
+                                    command=self.open_maint_cycles_manager_with_login)
 
         # Pulisce e ricrea il Menu Help
         self.help_menu.delete(0, 'end')
@@ -1816,7 +2205,9 @@ class App(tk.Tk):
         try:
             self.menubar.entryconfig(1, label=self.lang.get('menu_documents'))
             self.menubar.entryconfig(2, label=self.lang.get('menu_maintenance'))
-            self.menubar.entryconfig(3, label=self.lang.get('menu_help'))
+            self.menubar.entryconfig(3, label=self.lang.get('menu_submissions', "Segnalazioni"))
+            self.menubar.entryconfig(4, label=self.lang.get('menu_tools', "Strumenti"))  # NUOVO
+            self.menubar.entryconfig(5, label=self.lang.get('menu_help'))
         except tk.TclError:
             pass
 
@@ -1841,21 +2232,10 @@ class App(tk.Tk):
         )
 
     # Lanciatori Documenti Produzione
-    def open_insert_form(self):
-        login_form = LoginWindow(self, self.db, self.lang)
-        self.wait_window(login_form)
-        authenticated_user = login_form.authenticated_user_name
-        if authenticated_user:
-            insert_form = InsertDocumentForm(self, self.db, authenticated_user, self.lang)
-            insert_form.transient(self)
-            insert_form.grab_set()
-            self.wait_window(insert_form)
-
-    def open_view_form(self):
-        view_form = ViewDocumentForm(self, self.db, self.lang)
-        view_form.transient(self)
-        view_form.grab_set()
-        self.wait_window(view_form)
+    def open_add_machine_with_login(self):
+        self._execute_simple_login(
+            action_callback=lambda user_name: maintenance_gui.open_add_machine(self, self.db, self.lang)
+        )
 
     def open_add_machine_with_login(self):
         """Apre la finestra di login e, se l'autenticazione ha successo, apre la finestra per aggiungere una macchina."""
@@ -1866,31 +2246,16 @@ class App(tk.Tk):
             maintenance_gui.open_add_machine(self, self.db, self.lang)
 
     def open_edit_machine_with_login(self):
-        """Apre la finestra di login e, se l'autenticazione ha successo, apre la finestra per modificare una macchina."""
-        login_form = LoginWindow(self, self.db, self.lang)
-        self.wait_window(login_form)
-        authenticated_user = login_form.authenticated_user_name
-        if authenticated_user:
-            # Salva temporaneamente l'utente per passarlo alla finestra di modifica tramite maintenance_gui
-            self.authenticated_user_for_maintenance = authenticated_user
+        def action(user_name):
+            self.authenticated_user_for_maintenance = user_name
             maintenance_gui.open_edit_machine(self, self.db, self.lang)
 
-
+        self._execute_simple_login(action_callback=action)
 
     def open_fill_templates_with_login(self):
-        """Apre la finestra di compilazione schede, richiedendo prima il login."""
-        # Assicurati che LoginWindow sia definita in main.py
-        # 1. Mostra la finestra di Login (LoginWindow deve essere definita in main.py)
-        login_form = LoginWindow(self, self.db, self.lang)
-        self.wait_window(login_form)
-
-        # 2. Recupera il nome utente se l'autenticazione ha successo
-        authenticated_user = login_form.authenticated_user_name
-
-        # 3. Se autenticato, apri la finestra di compilazione passando il nome utente
-        if authenticated_user:
-            # Chiama la funzione corretta in maintenance_gui, passando l'utente autenticato
-            maintenance_gui.open_fill_templates(self, self.db, self.lang, authenticated_user)
+        self._execute_simple_login(
+            action_callback=lambda user_name: maintenance_gui.open_fill_templates(self, self.db, self.lang, user_name)
+        )
 
     def _on_closing(self):
         if messagebox.askokcancel(self.lang.get('quit_title', "Quit"), self.lang.get('quit_message', "Do you want to quit?")):
@@ -1899,6 +2264,5 @@ class App(tk.Tk):
 
 if __name__ == "__main__":
     app = App()
-    # Esegui il mainloop solo se la finestra esiste (cioè se la connessione DB e il check versione sono riusciti)
-    if app.winfo_exists():
+    if not app.should_exit:
         app.mainloop()
