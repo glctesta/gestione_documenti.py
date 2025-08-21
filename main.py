@@ -14,7 +14,8 @@ import reportlab
 from packaging import version
 import tools_gui
 import submissions_gui
-
+import general_docs_gui
+import permissions_gui
 try:
     from PIL import Image, ImageTk
 
@@ -23,7 +24,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.5.1"  # Versione aggiornata
+APP_VERSION = "1.5.3"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
 # --- CONFIGURAZIONE DATABASE ---
@@ -83,6 +84,196 @@ class LanguageManager:
 
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
+
+    def fetch_user_permissions(self, employee_hire_history_id):
+        """Recupera i permessi attivi per un dato dipendente."""
+        query = """
+                SELECT a.AuthorizedUsedId, ap.TranslationValue + ' [' + ap.LanguageCode + ']' AS MenuKey
+                FROM Employee.dbo.employees e
+                         INNER JOIN employee.dbo.EmployeeHireHistory h ON h.EmployeeId = e.EmployeeId
+                         LEFT JOIN Traceability_rs.dbo.AutorizedUsers a \
+                                   ON h.EmployeeHireHistoryId = a.EmployeeHireHistoryId
+                         LEFT JOIN traceability_rs.dbo.AppTranslations ap ON ap.TranslationKey = a.TranslationKey
+                WHERE h.EmployeeHireHistoryId = ? \
+                  AND a.DateOut IS NULL; \
+                """
+        try:
+            self.cursor.execute(query, employee_hire_history_id)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_available_permissions(self, employee_hire_history_id):
+        """Recupera i menu a cui un utente NON è ancora abilitato."""
+        query = """
+                SELECT a.Translationkey, a.translationvalue
+                FROM AppTranslations a
+                WHERE a.LanguageCode = 'it'             -- O 'en', la lingua base per le chiavi
+                  AND a.TranslationKey LIKE 'submenu_%' -- Seleziona solo chiavi di sottomenu
+                  AND NOT EXISTS (SELECT 1 \
+                                  FROM AutorizedUsers \
+                                  WHERE TranslationKey = a.TranslationKey \
+                                    AND EmployeeHireHistoryId = ? \
+                                    AND DateOut IS NULL)
+                ORDER BY a.TranslationKey; \
+                """
+        try:
+            self.cursor.execute(query, employee_hire_history_id)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def grant_permission(self, employee_hire_history_id, translation_key):
+        """Assegna un permesso a un utente."""
+        query = "INSERT INTO AutorizedUsers (EmployeeHireHistoryId, TranslationKey) VALUES (?, ?);"
+        try:
+            self.cursor.execute(query, employee_hire_history_id, translation_key)
+            self.conn.commit()
+            return True
+        except pyodbc.Error:
+            self.conn.rollback()
+            return False
+
+    def revoke_permission(self, authorized_user_id):
+        """Revoca un permesso (soft delete)."""
+        query = "UPDATE AutorizedUsers SET DateOut = GETDATE() WHERE AuthorizedUsedId = ?;"
+        try:
+            self.cursor.execute(query, authorized_user_id)
+            self.conn.commit()
+            return True
+        except pyodbc.Error:
+            self.conn.rollback()
+            return False
+
+    def check_if_doc_type_is_used(self, category_id):
+        """Controlla se una categoria di documenti è usata in almeno un documento."""
+        query = "SELECT COUNT(DocumentoId) FROM dbo.DocumentiGenerali WHERE CategoriaId = ?;"
+        try:
+            count = self.cursor.execute(query, category_id).fetchval()
+            return count > 0
+        except pyodbc.Error as e:
+            print(f"Errore nel controllo uso categoria: {e}")
+            return True  # Per sicurezza, in caso di errore, si assume che sia usata
+
+    def add_new_doc_type(self, name, key):
+        """Aggiunge una nuova categoria di documenti."""
+        query = "INSERT INTO dbo.DocCategorie (NomeCategoria, TranslationKey) VALUES (?, ?);"
+        try:
+            self.cursor.execute(query, name, key)
+            self.conn.commit()
+            return True, "Tipo documento aggiunto con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            # Gestisce l'errore di chiave duplicata
+            if 'UNIQUE KEY' in str(e):
+                return False, "Errore: Esiste già un tipo con questo nome o chiave di traduzione."
+            return False, f"Errore database: {e}"
+
+    def update_doc_type(self, category_id, name, key):
+        """Aggiorna una categoria di documenti esistente."""
+        query = "UPDATE dbo.DocCategorie SET NomeCategoria = ?, TranslationKey = ? WHERE CategoriaId = ?;"
+        try:
+            self.cursor.execute(query, name, key, category_id)
+            self.conn.commit()
+            return True, "Tipo documento aggiornato con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            if 'UNIQUE KEY' in str(e):
+                return False, "Errore: Esiste già un tipo con questo nome o chiave di traduzione."
+            return False, f"Errore database: {e}"
+
+    def delete_doc_type(self, category_id):
+        """Cancella una categoria di documenti."""
+        query = "DELETE FROM dbo.DocCategorie WHERE CategoriaId = ?;"
+        try:
+            self.cursor.execute(query, category_id)
+            self.conn.commit()
+            return True, "Tipo documento cancellato con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            return False, f"Errore database: {e}"
+
+    def fetch_doc_categories(self):
+        """Recupera tutte le categorie di documenti generali per il menu."""
+        query = "SELECT CategoriaId, NomeCategoria, TranslationKey FROM dbo.DocCategorie ORDER BY CategoriaId;"
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore recupero categorie documenti: {e}")
+            return []
+
+    def fetch_general_documents(self, category_id):
+        """Recupera i metadati dei documenti per una data categoria."""
+        query = "SELECT DocumentoId, Titolo, Versione, DataCaricamento, CaricatoDa FROM dbo.DocumentiGenerali WHERE CategoriaId = ? ORDER BY Titolo;"
+        try:
+            self.cursor.execute(query, category_id)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_single_general_document(self, document_id):
+        """Recupera tutti i dati di un singolo documento, inclusi i dati binari."""
+        query = "SELECT * FROM dbo.DocumentiGenerali WHERE DocumentoId = ?;"
+        try:
+            self.cursor.execute(query, document_id)
+            return self.cursor.fetchone()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return None
+
+    def add_general_document(self, category_id, title, desc, version, file_name, data, user):
+        """Aggiunge un nuovo documento generale."""
+        query = """
+                INSERT INTO dbo.DocumentiGenerali (CategoriaId, Titolo, Descrizione, Versione, NomeFile, DatiFile, \
+                                                   CaricatoDa)
+                VALUES (?, ?, ?, ?, ?, ?, ?); \
+                """
+        try:
+            self.cursor.execute(query, category_id, title, desc, version, file_name, data, user)
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+
+    def update_general_document(self, doc_id, title, desc, version, file_name, data, user):
+        """Aggiorna un documento generale esistente."""
+        query = """
+                UPDATE dbo.DocumentiGenerali
+                SET Titolo          = ?, \
+                    Descrizione     = ?, \
+                    Versione        = ?, \
+                    NomeFile        = ?, \
+                    DatiFile        = ?, \
+                    CaricatoDa      = ?, \
+                    DataCaricamento = GETDATE()
+                WHERE DocumentoId = ?; \
+                """
+        try:
+            self.cursor.execute(query, title, desc, version, file_name, data, user, doc_id)
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+
+    def delete_general_document(self, doc_id):
+        """Cancella un documento generale."""
+        query = "DELETE FROM dbo.DocumentiGenerali WHERE DocumentoId = ?;"
+        try:
+            self.cursor.execute(query, doc_id)
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
 
     def authenticate_and_authorize(self, user_id, password, menu_translation_key):
         """
@@ -1149,6 +1340,27 @@ class Database:
         except pyodbc.Error:
             return []
 
+    def fetch_phases_with_documents_for_product(self, product_id):
+        """
+        Recupera solo le fasi di produzione che contengono almeno un documento
+        per un dato ID prodotto.
+        """
+        # Query ottimizzata per restituire una lista pulita di fasi
+        query = """
+                SELECT DISTINCT pp.IDParentPhase, pp.ParentPhaseName
+                FROM dbo.ProductDocuments p
+                         INNER JOIN dbo.ParentPhases pp ON p.ParentPhaseId = pp.IDParentPhase
+                WHERE p.ProductId = ?
+                ORDER BY pp.ParentPhaseName; \
+                """
+        try:
+            self.cursor.execute(query, product_id)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"Errore nel recupero delle fasi con documenti: {e}")
+            self.last_error_details = str(e)
+            return []
+
     def fetch_parent_phases(self, id_product):
         query = """
                 SELECT distinct pf.IDParentPhase, pf.ParentPhaseName + IIF(pp.IDProduct IS NULL, '*', '') AS Phase
@@ -1799,12 +2011,20 @@ class ViewDocumentForm(tk.Toplevel):
 
         product_id = self.products_data.get(self.product_var.get())
         if product_id:
-            parent_phases = self.db.fetch_parent_phases(product_id)
+            # --- RIGA MODIFICATA ---
+            # Ora chiama il nuovo metodo per ottenere solo le fasi con documenti
+            parent_phases = self.db.fetch_phases_with_documents_for_product(product_id)
+            # --- FINE MODIFICA ---
+
             if parent_phases:
-                self.parent_phases_data = {p.Phase: p.IDParentPhase for p in parent_phases}
+                # La logica per popolare il combobox rimane la stessa
+                self.parent_phases_data = {p.ParentPhaseName: p.IDParentPhase for p in parent_phases}
                 self.parent_phase_combo.config(state="readonly", values=list(self.parent_phases_data.keys()))
             else:
-                messagebox.showerror(self.lang.get('app_title'), self.lang.get('error_no_phases_found'), parent=self)
+                # Questo messaggio ora significa che non ci sono documenti per questo prodotto
+                messagebox.showwarning(self.lang.get('app_title'), self.lang.get('warn_no_document_found_for_product',
+                                                                                 "Nessun documento trovato per il prodotto selezionato."),
+                                       parent=self)
 
     def _on_phase_select(self, event=None):
         """Popola la lista dei documenti."""
@@ -1846,6 +2066,48 @@ class ViewDocumentForm(tk.Toplevel):
 
 class App(tk.Tk):
     """Classe principale dell'applicazione."""
+
+    def open_add_maintenance_tasks_with_login(self):
+        """Richiede il login e poi apre la finestra per aggiungere/gestire i task."""
+        # This action modifies data, so it requires a simple login.
+        self._execute_simple_login(
+            action_callback=lambda user_name: maintenance_gui.open_add_maintenance_tasks(self, self.db, self.lang, user_name)
+        )
+
+    def open_manage_permissions_with_login(self):
+        self._execute_authorized_action(
+            menu_translation_key='submenu_permissions',  # Chiave per accedere alla gestione
+            action_callback=lambda: permissions_gui.open_manage_permissions_window(self, self.db, self.lang)
+        )
+
+    def open_view_permissions_with_login(self):
+        self._execute_authorized_action(
+            menu_translation_key='submenu_permissions',  # Stessa chiave, per ora
+            action_callback=lambda: permissions_gui.open_view_permissions_window(self, self.db, self.lang)
+        )
+
+    def open_doc_types_manager_with_login(self):
+        """Richiede il login e poi apre la finestra di gestione dei tipi di documento."""
+        # Nota: usiamo una nuova chiave 'submenu_doc_types' per un eventuale permesso dedicato
+        self._execute_authorized_action(
+            menu_translation_key='submenu_doc_types',
+            action_callback=lambda: tools_gui.open_doc_types_manager(self, self.db, self.lang)
+        )
+
+    def _open_general_docs_viewer(self, category_id, category_name):
+        """Apre la finestra di visualizzazione dei documenti in modalità SOLA LETTURA (senza login)."""
+        # L'utente non è loggato, quindi passiamo None come user_name
+        general_docs_gui.open_general_docs_viewer(
+            self, self.db, self.lang, category_id, category_name, user_name=None, view_only=True
+        )
+
+    def _open_general_docs_viewer_with_login(self, category_id, category_name):
+        """Richiede il login e poi apre la finestra di GESTIONE (lettura/scrittura)."""
+        self._execute_simple_login(
+            action_callback=lambda user_name: general_docs_gui.open_general_docs_viewer(
+                self, self.db, self.lang, category_id, category_name, user_name, view_only=False
+            )
+        )
 
     def open_insert_form(self):
         """Apre la finestra di inserimento documenti dopo un login semplice."""
@@ -1939,13 +2201,6 @@ class App(tk.Tk):
         if authenticated_user:
             tools_gui.open_brands_manager(self, self.db, self.lang)
 
-    def open_add_maintenance_tasks_with_login(self):
-        """Richiede il login e poi apre la finestra per aggiungere nuovi task."""
-        login_form = LoginWindow(self, self.db, self.lang)
-        self.wait_window(login_form)
-        authenticated_user = login_form.authenticated_user_name
-        if authenticated_user:
-            maintenance_gui.open_add_maintenance_tasks(self, self.db, self.lang, authenticated_user)
 
     def open_suppliers_manager_with_login(self):
         self._execute_authorized_action(
@@ -1990,37 +2245,36 @@ class App(tk.Tk):
             # Chiama la funzione corretta in maintenance_gui, passando l'utente autenticato
             maintenance_gui.open_fill_templates(self, self.db, self.lang, authenticated_user)
 
-
-
     def __init__(self):
         super().__init__()
-        self.should_exit = False # <-- AGGIUNGI QUESTA RIGA
+        self.should_exit = False  # Flag to control shutdown
         self.geometry("800x600")
 
-        # Inizializza il database e la connessione
+        # Inizializza il database
         self.db = Database(DB_CONN_STR)
         if not self.db.connect():
-            # Mostra l'errore se la connessione fallisce all'avvio
-            messagebox.showerror("Database Error", f"Impossibile connettersi al database.\n\nDetails: {self.db.last_error_details}")
+            messagebox.showerror("Database Error",
+                                 f"Impossibile connettersi al database.\n\nDetails: {self.db.last_error_details}")
             self.destroy()
+            self.should_exit = True
             return
 
-        # Inizializza il gestore delle lingue
+        # Carica la lingua salvata
+        initial_lang = self._load_language_setting()
         self.lang = LanguageManager(self.db)
+        self.lang.set_language(initial_lang)
+        self.doc_categories = self.db.fetch_doc_categories()
 
-        # 1. Controlla la versione del software
+        # Controlla la versione (e se l'app deve chiudersi)
         if self.check_version() is False:
-            # The check_version method already handles disconnecting the DB
-            # and destroying the window. We just need to stop the __init__
-            # method from continuing.
+            # check_version already handles shutdown, we just need to stop __init__
             return
 
         self.logo_label = None
-        self.authenticated_user_for_maintenance = None # Variabile di appoggio per modifiche macchine
+        self.authenticated_user_for_maintenance = None
         self._create_widgets()
         self._create_menu()
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
-
         self.update_texts()
 
     # --- METODI DI SUPPORTO ALL'INIZIALIZZAZIONE ---
@@ -2033,8 +2287,6 @@ class App(tk.Tk):
         """
         try:
             app_name = os.path.basename(sys.executable)
-            print(f"Nome eseguibile rilevato: {app_name}")
-
             version_info = self.db.fetch_latest_version_info(app_name)
 
             if not version_info or not version_info.Version or not version_info.MainPath:
@@ -2045,7 +2297,6 @@ class App(tk.Tk):
             current_path = os.path.normpath(os.path.dirname(sys.executable))
 
             if source_path.lower() == current_path.lower():
-                # L'utente sta eseguendo il programma dalla cartella sorgente!
                 title = self.lang.get("error_running_from_source_title", "Esecuzione non Permessa")
                 message = self.lang.get(
                     "error_running_from_source_message",
@@ -2053,15 +2304,11 @@ class App(tk.Tk):
                     "Si prega di lanciare la copia installata localmente."
                 )
                 messagebox.showerror(title, message, parent=self)
-
-                # Chiudi l'applicazione
-                subprocess.Popen([updater_path, source_path, destination, exe_name])
                 self.db.disconnect()
                 self.destroy()
-                self.should_exit = True  # <-- AGGIUNGI QUESTA RIGA
+                self.should_exit = True  # Set the flag
                 return False
 
-            # Se il controllo di sicurezza è superato, procede con il controllo della versione...
             if is_update_needed(APP_VERSION, version_info.Version):
                 title = self.lang.get("upgrade_required_title", "Aggiornamento Richiesto")
                 message = self.lang.get(
@@ -2079,12 +2326,15 @@ class App(tk.Tk):
                 if not os.path.exists(updater_path):
                     messagebox.showerror("Errore Critico", "File updater.exe non trovato! Impossibile aggiornare.",
                                          parent=self)
+                    self.db.disconnect()
+                    self.destroy()
+                    self.should_exit = True  # Set the flag
                     return False
 
                 subprocess.Popen([updater_path, source_path, destination, exe_name])
-
                 self.db.disconnect()
                 self.destroy()
+                self.should_exit = True  # Set the flag
                 return False
 
             print(f"Versione applicazione ({APP_VERSION}) aggiornata.")
@@ -2120,6 +2370,7 @@ class App(tk.Tk):
 
         # Crea i contenitori vuoti per ogni menu
         self.document_menu = tk.Menu(self.menubar, tearoff=0)
+        self.general_docs_menu = tk.Menu(self.menubar, tearoff=0)
         self.maintenance_menu = tk.Menu(self.menubar, tearoff=0)
         self.submissions_menu = tk.Menu(self.menubar, tearoff=0)  # Menu Segnalazioni
         self.tools_menu = tk.Menu(self.menubar, tearoff=0)  # Menu Strumenti
@@ -2127,6 +2378,7 @@ class App(tk.Tk):
 
         # Aggiunge ogni menu come una "cascata" separata alla barra principale
         self.menubar.add_cascade(menu=self.document_menu)
+        self.menubar.add_cascade(menu=self.general_docs_menu)
         self.menubar.add_cascade(menu=self.maintenance_menu)
         self.menubar.add_cascade(menu=self.submissions_menu)
         self.menubar.add_cascade(menu=self.tools_menu)
@@ -2140,19 +2392,37 @@ class App(tk.Tk):
 
     # In main.py, dentro la classe App
 
+    # In main.py, dentro la classe App
+
     def update_texts(self):
-        """Aggiorna tutti i testi della UI principale."""
+        """Aggiorna tutti i testi della UI principale, ricostruendo tutti i menu."""
         self.title(self.lang.get('app_title'))
 
-        # Pulisce e ricrea il Menu Documenti (Produzione)
+        # 1. Menu Documenti (Produzione)
         self.document_menu.delete(0, 'end')
         self.document_menu.add_command(label=self.lang.get('menu_insert_doc'), command=self.open_insert_form)
         self.document_menu.add_command(label=self.lang.get('menu_view_doc'), command=self.open_view_form)
         self.document_menu.add_separator()
         self.document_menu.add_command(label=self.lang.get('menu_quit'), command=self._on_closing)
 
-        # --- CORREZIONE PRINCIPALE QUI ---
-        # Pulisce il Menu Manutenzione prima di ricrearlo
+        # 2. Menu Documenti Generali (costruito dinamicamente)
+        self.general_docs_menu.delete(0, 'end')
+        if self.doc_categories:
+            for category in self.doc_categories:
+                category_submenu = tk.Menu(self.general_docs_menu, tearoff=0)
+                category_name = self.lang.get(category.TranslationKey, category.NomeCategoria)
+                self.general_docs_menu.add_cascade(label=category_name, menu=category_submenu)
+
+                cmd_edit = lambda cid=category.CategoriaId, cname=category_name: \
+                    self._open_general_docs_viewer_with_login(cid, cname)
+                category_submenu.add_command(label=self.lang.get('submenu_add_edit', "Aggiungi/Modifica"),
+                                             command=cmd_edit)
+
+                cmd_view = lambda cid=category.CategoriaId, cname=category_name: \
+                    self._open_general_docs_viewer(cid, cname)
+                category_submenu.add_command(label=self.lang.get('submenu_view', "Visualizza"), command=cmd_view)
+
+        # 3. Menu Manutenzione (con ricostruzione dei sottomenu)
         self.maintenance_menu.delete(0, 'end')
 
         # Ricrea Sottomenu Gestione Macchine
@@ -2167,35 +2437,58 @@ class App(tk.Tk):
 
         # Ricrea Sottomenu Task di Manutenzione
         tasks_submenu = tk.Menu(self.maintenance_menu, tearoff=0)
-        tasks_submenu.add_command(label=self.lang.get('submenu_manage_maint_task', "Gestione Task di Manutenzione"),
-                                  command=self.open_add_maintenance_tasks_with_login)
+        tasks_submenu.add_command(
+            label=self.lang.get('submenu_manage_maint_task', "Gestione Task di Manutenzione"),
+            command=self.open_add_maintenance_tasks_with_login
+        )
         self.maintenance_menu.add_cascade(
-            label=self.lang.get('submenu_maintenance_tasks_header', 'Task di Manutenzione'), menu=tasks_submenu)
-
+            label=self.lang.get('submenu_maintenance_tasks_header', 'Task di Manutenzione'),
+            menu=tasks_submenu
+        )
         # Ricrea le altre voci del menu Manutenzione
         self.maintenance_menu.add_command(label=self.lang.get('submenu_fill_templates'),
                                           command=self.open_fill_templates_with_login)
         self.maintenance_menu.add_command(label=self.lang.get('submenu_reports'),
                                           command=lambda: maintenance_gui.open_reports(self, self.db, self.lang))
-        # Menu segnalazioni
+
+        # 4. Menu Segnalazioni
         self.submissions_menu.delete(0, 'end')
         self.submissions_menu.add_command(label=self.lang.get('submenu_new_submission', "Nuova Segnalazione"),
                                           command=self.open_new_submission_form)
         self.submissions_menu.add_command(label=self.lang.get('submenu_view_submissions', "Visualizza Segnalazioni"),
                                           state="disabled")
 
-        #crea il menu suppliers
+        # 5. Menu Strumenti
         self.tools_menu.delete(0, 'end')
+
+        # Sottomenu Autorizzazioni
+        self.permissions_submenu = tk.Menu(self.tools_menu, tearoff=0)
+        self.tools_menu.add_cascade(label=self.lang.get('submenu_permissions', "Autorizzazioni"),
+                                    menu=self.permissions_submenu)
+        self.permissions_submenu.delete(0, 'end')
+        self.permissions_submenu.add_command(
+            label=self.lang.get('submenu_special_permissions', "Autorizzazioni Speciali"),
+            command=self.open_manage_permissions_with_login)
+        self.permissions_submenu.add_command(label=self.lang.get('submenu_data_entry', "Inserimento Dati"),
+                                             state="disabled")
+        self.permissions_submenu.add_command(label=self.lang.get('submenu_program_use', "Utilizzo Programma"),
+                                             state="disabled")
+        self.permissions_submenu.add_command(
+            label=self.lang.get('submenu_view_permissions', "Visualizza Autorizzazioni"),
+            command=self.open_view_permissions_with_login)
+        self.tools_menu.add_separator()
+
+        # Altre voci del menu Strumenti
         self.tools_menu.add_command(label=self.lang.get('submenu_suppliers', "Produttori"),
-                                    command=self.open_suppliers_manager)
+                                    command=self.open_suppliers_manager_with_login)
         self.tools_menu.add_command(label=self.lang.get('submenu_brands', "Brand"),
                                     command=self.open_brands_manager_with_login)
-        #self.tools_menu.add_command(label=self.lang.get('submenu_brands', "Brand"),
-        #                            state="disabled")  # Disabilitato per ora
         self.tools_menu.add_command(label=self.lang.get('submenu_maint_cycles', "Cicli Manutenzione"),
                                     command=self.open_maint_cycles_manager_with_login)
+        self.tools_menu.add_command(label=self.lang.get('submenu_doc_types', "Aggiungi Tipo Documento"),
+                                    command=self.open_doc_types_manager_with_login)
 
-        # Pulisce e ricrea il Menu Help
+        # 6. Menu Help
         self.help_menu.delete(0, 'end')
         self.help_menu.add_cascade(label=self.lang.get('menu_language'), menu=self.language_menu)
         about_menu_label = f"{self.lang.get('menu_about')} {APP_VERSION}"
@@ -2203,14 +2496,14 @@ class App(tk.Tk):
 
         # Aggiorna le etichette dei menu principali
         try:
-            self.menubar.entryconfig(1, label=self.lang.get('menu_documents'))
-            self.menubar.entryconfig(2, label=self.lang.get('menu_maintenance'))
-            self.menubar.entryconfig(3, label=self.lang.get('menu_submissions', "Segnalazioni"))
-            self.menubar.entryconfig(4, label=self.lang.get('menu_tools', "Strumenti"))  # NUOVO
-            self.menubar.entryconfig(5, label=self.lang.get('menu_help'))
+            self.menubar.entryconfig(1, label=self.lang.get('menu_documents', "Documenti di Produzione"))
+            self.menubar.entryconfig(2, label=self.lang.get('menu_general_docs', "Documenti Generali"))
+            self.menubar.entryconfig(3, label=self.lang.get('menu_maintenance'))
+            self.menubar.entryconfig(4, label=self.lang.get('menu_submissions', "Segnalazioni"))
+            self.menubar.entryconfig(5, label=self.lang.get('menu_tools', "Strumenti"))
+            self.menubar.entryconfig(6, label=self.lang.get('menu_help'))
         except tk.TclError:
             pass
-
     def _change_language(self, lang_code):
         """Cambia la lingua, aggiorna la UI e salva l'impostazione."""
         self.lang.set_language(lang_code)

@@ -38,385 +38,34 @@ except ImportError:
     PIL_AVAILABLE = False
 
 
-class MaintenanceReportWindow(tk.Toplevel):
-    """Finestra per la generazione di report sulle manutenzioni."""
-
-    class MaintenanceReportWindow(tk.Toplevel):
-        def __init__(self, parent, db, lang):
-            super().__init__(parent)
-            self.db = db
-            self.lang = lang
-            self.parent_app = parent
-            self.report_data = []
-
-            self.title(self.lang.get('maintenance_report_title', "Report Manutenzioni"))
-            self.geometry("1200x700")
-            self.transient(parent)
-
-            # Dati e variabili per i filtri
-            self.equipments_data = {}
-            self.equipment_var = tk.StringVar()
-            self.maintainer_var = tk.StringVar()
-            self.date_var = tk.StringVar()
-
-            # NUOVO: Liste per la ricerca dinamica
-            self.all_equipment_names_report = []
-            self.all_maintainer_names_report = []
-
-            self._create_widgets()
-            self._load_filters()
-
-    def _create_widgets(self):
-        # Frame principale
-        main_frame = ttk.Frame(self, padding="10")
-        main_frame.pack(fill=tk.BOTH, expand=True)
-        main_frame.rowconfigure(1, weight=1)
-        main_frame.columnconfigure(0, weight=1)
-
-        # Frame per i filtri
-        filter_frame = ttk.LabelFrame(main_frame, text=self.lang.get('search_filters_label', "Filtri di Ricerca"),
-                                      padding="10")
-        filter_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-
-        ttk.Label(filter_frame, text=self.lang.get('select_machine_label')).grid(row=0, column=0, padx=5, pady=5)
-        self.equipment_combo = ttk.Combobox(filter_frame, textvariable=self.equipment_var, state='normal', width=30)
-        self.equipment_combo.grid(row=0, column=1, padx=5, pady=5)
-        self.equipment_combo.bind('<KeyRelease>', self._filter_report_equipment)
-
-        ttk.Label(filter_frame, text=self.lang.get('maintainer_label', "Manutentore:")).grid(row=0, column=2, padx=5,
-                                                                                             pady=5)
-        self.maintainer_combo = ttk.Combobox(filter_frame, textvariable=self.maintainer_var, state='normal', width=30)
-        self.maintainer_combo.grid(row=0, column=3, padx=5, pady=5)
-        self.maintainer_combo.bind('<KeyRelease>', self._filter_report_maintainer)
-
-        # Il combobox delle date rimane readonly perché la ricerca non è utile qui
-        ttk.Label(filter_frame, text=self.lang.get('date_label', "Data:")).grid(row=0, column=4, padx=5, pady=5)
-        self.date_combo = ttk.Combobox(filter_frame, textvariable=self.date_var, state='readonly', width=15)
-        search_button = ttk.Button(filter_frame, text=self.lang.get('search_button', "Cerca"),
-                                   command=self._perform_search)
-        search_button.grid(row=0, column=6, padx=20, pady=5)
-        clear_button = ttk.Button(filter_frame, text=self.lang.get('clear_filters_button', "Pulisci"),
-                                  command=self._clear_filters)
-        clear_button.grid(row=0, column=7, padx=5, pady=5)
-
-        # Frame per i risultati (Treeview)
-        results_frame = ttk.Frame(main_frame)
-        results_frame.grid(row=1, column=0, sticky="nsew")
-        results_frame.rowconfigure(0, weight=1)
-        results_frame.columnconfigure(0, weight=1)
-
-        self.cols = ('Row', 'EmployeeName', 'NomeCompito', 'EquipmentName', 'DescrizioneCompito', 'DataIntervento',
-                     'InizioOraIntervento', 'FineIntervento', 'DurataInterventoInMin')
-        self.tree = ttk.Treeview(results_frame, columns=self.cols, show='headings')
-
-        # Definisci le intestazioni e le larghezze
-        headers = ["#", "Manutentore", "Compito", "Macchina", "Descrizione", "Data", "Inizio", "Fine", "Durata (Min)"]
-        widths = [40, 150, 200, 150, 250, 80, 60, 60, 80]
-        for col, head, w in zip(self.cols, headers, widths):
-            self.tree.heading(col, text=head)
-            self.tree.column(col, width=w, stretch=tk.NO)
-
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        scrollbar = ttk.Scrollbar(results_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
-        scrollbar.grid(row=0, column=1, sticky="ns")
-
-        # Frame per i pulsanti di export
-        export_frame = ttk.Frame(main_frame)
-        export_frame.grid(row=2, column=0, sticky="e", pady=(10, 0))
-
-        self.pdf_button = ttk.Button(export_frame, text=self.lang.get('generate_pdf_button', "Genera PDF"),
-                                     command=self._generate_pdf, state="disabled")
-        self.pdf_button.pack(side=tk.LEFT, padx=5)
-        self.excel_button = ttk.Button(export_frame, text=self.lang.get('generate_excel_button', "Genera Excel"),
-                                       command=self._generate_excel, state="disabled")
-        self.excel_button.pack(side=tk.LEFT)
-
-    def _load_filters(self):
-        # Carica Macchine
-        all_equipments_text = self.lang.get('all_equipments_filter', "TUTTI I MACCHINARI")
-        equipments = self.db.fetch_all_equipments()
-        self.equipments_data = {f"{row.InternalName or 'N/D'} [{row.SerialNumber}]": row.EquipmentId for row in equipments}
-        self.all_equipment_names_report = [all_equipments_text] + sorted(list(self.equipments_data.keys()))
-        self.equipment_combo['values'] = self.all_equipment_names_report
-        self.equipment_var.set(all_equipments_text)
-
-        # Carica Manutentori
-        all_maintainers_text = self.lang.get('all_maintainers_filter', "TUTTI I MANUTENTORI")
-        maintainers = self.db.fetch_report_maintainers()
-        self.all_maintainer_names_report = [all_maintainers_text] + maintainers
-        self.maintainer_combo['values'] = self.all_maintainer_names_report
-        self.maintainer_var.set(all_maintainers_text)
-
-        # Carica Date
-        all_dates_text = self.lang.get('all_dates_filter', "TUTTE LE DATE")
-        dates = self.db.fetch_report_dates()
-        self.date_combo['values'] = [all_dates_text] + [d.strftime('%Y-%m-%d') for d in dates]
-        self.date_var.set(all_dates_text)
-
-    def _filter_report_equipment(self, event):
-        typed_text = self.equipment_var.get().lower()
-        if not typed_text:
-            self.equipment_combo['values'] = self.all_equipment_names_report
-            return
-        # Assicura che "TUTTI" sia sempre un'opzione
-        all_options = self.all_equipment_names_report[1:]
-        filtered_list = [name for name in all_options if typed_text in name.lower()]
-        self.equipment_combo['values'] = [self.all_equipment_names_report[0]] + filtered_list
-
-    def _filter_report_maintainer(self, event):
-        typed_text = self.maintainer_var.get().lower()
-        if not typed_text:
-            self.maintainer_combo['values'] = self.all_maintainer_names_report
-            return
-        # Assicura che "TUTTI" sia sempre un'opzione
-        all_options = self.all_maintainer_names_report[1:]
-        filtered_list = [name for name in all_options if typed_text in name.lower()]
-        self.maintainer_combo['values'] = [self.all_maintainer_names_report[0]] + filtered_list
-
-    def _clear_filters(self):
-        self.equipment_var.set(self.equipment_combo['values'][0])
-        self.maintainer_var.set(self.maintainer_combo['values'][0])
-        self.date_var.set(self.date_combo['values'][0])
-        self.tree.delete(*self.tree.get_children())
-        self.report_data = []
-        self.pdf_button.config(state="disabled")
-        self.excel_button.config(state="disabled")
-
-    def _perform_search(self):
-        self.tree.delete(*self.tree.get_children())
-
-        # Recupera valori dai filtri
-        eq_selection = self.equipment_var.get()
-        maint_selection = self.maintainer_var.get()
-        date_selection = self.date_var.get()
-
-        equipment_id = self.equipments_data.get(eq_selection)
-        maintainer_name = maint_selection if maint_selection != self.lang.get('all_maintainers_filter',
-                                                                              "TUTTI I MANUTENTORI") else None
-        maintenance_date = date_selection if date_selection != self.lang.get('all_dates_filter',
-                                                                             "TUTTE LE DATE") else None
-
-        self.report_data = self.db.search_maintenance_report(equipment_id, maintenance_date, maintainer_name)
-
-        if self.report_data:
-            for row in self.report_data:
-                self.tree.insert("", "end", values=tuple(row))
-            self.pdf_button.config(state="normal")
-            self.excel_button.config(state="normal")
-        else:
-            messagebox.showinfo(self.lang.get('info_title', "Info"),
-                                self.lang.get('info_no_data_found', "Nessun dato trovato con i filtri selezionati."),
-                                parent=self)
-            self.pdf_button.config(state="disabled")
-            self.excel_button.config(state="disabled")
-
-    def _generate_title(self):
-        """Crea il titolo dinamico per i report."""
-        macchina = self.equipment_var.get()
-        data = self.date_var.get()
-        manutentore = self.maintainer_var.get()
-
-        if macchina == self.lang.get('all_equipments_filter', "TUTTI I MACCHINARI"):
-            macchina = "per TUTTI I MACCHINARI DELLA FABBRICA"
-        else:
-            macchina = f"per il macchinario {macchina}"
-
-        if data == self.lang.get('all_dates_filter', "TUTTE LE DATE"):
-            data = "per TUTTE LE DATE"
-        else:
-            data = f"del {data}"
-
-        if manutentore == self.lang.get('all_maintainers_filter', "TUTTI I MANUTENTORI"):
-            manutentore = "da TUTTI I MANUTENTORI"
-        else:
-            manutentore = f"da {manutentore}"
-
-        return f"Rapporto Manutenzioni {macchina} {data} {manutentore}"
-
-    # In maintenance_gui.py, dentro la classe MaintenanceReportWindow
-    # In maintenance_gui.py, dentro la classe MaintenanceReportWindow
-
-    def _generate_title(self):
-        """Crea il titolo del report formattato su più righe."""
-        macchina_selection = self.equipment_var.get()
-        data_selection = self.date_var.get()
-        manutentore_selection = self.maintainer_var.get()
-
-        # Linea 1: Titolo principale
-        linea1 = "Rapporto Manutenzioni"
-
-        # Linea 2: Filtro macchina
-        if macchina_selection == self.lang.get('all_equipments_filter', "TUTTI I MACCHINARI"):
-            linea2 = "per Tutti i Macchinari della Fabbrica"
-        else:
-            linea2 = f"per il Macchinario: {macchina_selection}"
-
-        # Linea 3: Filtri data e manutentore
-        parti_linea3 = []
-        if data_selection != self.lang.get('all_dates_filter', "TUTTE LE DATE"):
-            parti_linea3.append(f"del {data_selection}")
-
-        if manutentore_selection != self.lang.get('all_maintainers_filter', "TUTTI I MANUTENTORI"):
-            parti_linea3.append(f"eseguite da {manutentore_selection}")
-
-        linea3 = " ".join(parti_linea3)
-
-        # Restituisce una lista di righe, filtrando eventuali righe vuote
-        return [line for line in [linea1, linea2, linea3] if line]
-
-    def _generate_pdf(self):
-        if not self.report_data: return
-        file_path = filedialog.asksaveasfilename(
-            defaultextension=".pdf",
-            filetypes=[("PDF Documents", "*.pdf")],
-            title="Salva Report PDF"
-        )
-        if not file_path: return
-
-        try:
-            pdfmetrics.registerFont(TTFont('DejaVuSans', 'DejaVuSans.ttf'))
-            pdfmetrics.registerFont(TTFont('DejaVuSans-Bold', 'DejaVuSans-Bold.ttf'))
-        except Exception as e:
-            messagebox.showerror("Errore Font",
-                                 "File dei font non trovati (es. DejaVuSans.ttf).\n"
-                                 "Assicurati che siano nella stessa cartella del programma.", parent=self)
-            return
-
-        c = canvas.Canvas(file_path, pagesize=landscape(A4))
-        width, height = landscape(A4)
-
-        if os.path.exists("logo.png"):
-            c.drawImage("logo.png", 40, height - 90, width=100, preserveAspectRatio=True, mask='auto')
-
-        # --- PARTE MODIFICATA: Disegna il titolo su più righe ---
-        title_lines = self._generate_title()
-        y_position = height - 50  # Posizione verticale di partenza
-
-        # Disegna la prima riga (titolo principale) in grassetto e più grande
-        c.setFont("DejaVuSans-Bold", 16)
-        c.drawCentredString(width / 2.0, y_position, title_lines[0])
-        y_position -= 20  # Spazio dopo il titolo principale
-
-        # Disegna le righe successive più piccole
-        c.setFont("DejaVuSans", 11)
-        for i in range(1, len(title_lines)):
-            c.drawCentredString(width / 2.0, y_position, title_lines[i])
-            y_position -= 15  # Spazio tra le righe secondarie
-
-        # Spazio per la data di generazione
-        c.setFont("DejaVuSans", 8)
-        c.drawCentredString(width / 2.0, y_position - 5, f"Generato il: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
-        # --- FINE PARTE MODIFICATA ---
-
-        # Il resto del codice per la tabella rimane invariato...
-        styles = getSampleStyleSheet()
-        style_body = styles['BodyText']
-        style_body.fontName = 'DejaVuSans'
-        style_body.fontSize = 7
-        style_header = styles['BodyText']
-        style_header.fontName = 'DejaVuSans-Bold'
-        style_header.fontSize = 8
-
-        headers = [Paragraph(h, style_header) for h in
-                   ["#", "Manutentore", "Compito", "Macchina", "Descrizione", "Data", "Inizio", "Fine", "Durata"]]
-        data_as_paragraphs = [[Paragraph(str(cell), style_body) for cell in row] for row in self.report_data]
-        table_data = [headers] + data_as_paragraphs
-
-        available_width = width - 80
-        colWidths = [
-            available_width * 0.04, available_width * 0.15, available_width * 0.20,
-            available_width * 0.14, available_width * 0.26, available_width * 0.06,
-            available_width * 0.05, available_width * 0.05, available_width * 0.05
-        ]
-
-        table = Table(table_data, colWidths=colWidths)
-        table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.darkgrey),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('FONTNAME', (0, 0), (-1, 0), 'DejaVuSans-Bold'),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
-            ('TOPPADDING', (0, 0), (-1, 0), 10),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#F0F0F0')),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
-            ('LEFTPADDING', (0, 0), (-1, -1), 3),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 3),
-        ]))
-
-        table.wrapOn(c, width, height)
-        _, table_height = table.wrap(0, 0)
-        # Calcola la posizione della tabella in base alla nuova posizione del titolo
-        table.drawOn(c, 40, y_position - table_height - 20)
-
-        c.save()
-        messagebox.showinfo("Successo", f"PDF salvato con successo in:\n{file_path}", parent=self)
-
-    def _generate_excel(self):
-        if not self.report_data: return
-
-        # Crea la directory se non esiste
-        temp_dir = "C:\\temp"
-        try:
-            os.makedirs(temp_dir, exist_ok=True)
-        except OSError as e:
-            messagebox.showerror("Errore", f"Impossibile creare la directory {temp_dir}:\n{e}", parent=self)
-            return
-
-        # Crea un nome file univoco
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_path = os.path.join(temp_dir, f"report_manutenzioni_{timestamp}.xlsx")
-
-        try:
-            workbook = openpyxl.Workbook()
-            sheet = workbook.active
-            sheet.title = "Report Manutenzioni"
-
-            # Scrivi gli header
-            headers = ["#", "Manutentore", "Compito", "Macchina", "Descrizione", "Data Intervento", "Ora Inizio",
-                       "Ora Fine", "Durata (Min)"]
-            sheet.append(headers)
-
-            # Scrivi i dati
-            for row_data in self.report_data:
-                sheet.append(list(row_data))
-
-            workbook.save(file_path)
-            messagebox.showinfo("Successo", f"File Excel salvato con successo in:\n{file_path}", parent=self)
-
-        except Exception as e:
-            messagebox.showerror("Errore", f"Impossibile generare il file Excel:\n{e}", parent=self)
 
 class AddMachineWindow(tk.Toplevel):
     """Finestra per aggiungere una nuova macchina."""
 
     def __init__(self, parent, db, lang):
         super().__init__(parent)
+
+        # Le altre variabili vengono usate solo da questa classe
         self.db = db
         self.lang = lang
+        self.parent_app = parent
+        self.report_data = []
 
-        self.title(self.lang.get('submenu_add_machine'))
-        self.geometry("550x450")  # Aumentata leggermente l'altezza per il logo
+        self.title(self.lang.get('maintenance_report_title', "Report Manutenzioni"))
+        self.geometry("1200x700")
         self.transient(parent)
-        self.grab_set()
 
-        # Dati per i combobox
-        self.brands_data = {}
-        self.types_data = {}
-        self.phases_data = {}
+        # Dati e variabili per i filtri
+        self.equipments_data = {}
+        self.equipment_var = tk.StringVar()
+        self.maintainer_var = tk.StringVar()
+        self.date_var = tk.StringVar()
 
-        # Variabili di controllo
-        self.brand_var = tk.StringVar()
-        self.type_var = tk.StringVar()
-        self.phase_var = tk.StringVar()
-        self.serial_var = tk.StringVar()
-        self.internal_name_var = tk.StringVar()
-        self.year_var = tk.StringVar()
-        self.inventory_var = tk.StringVar()
+        self.all_equipment_names_report = []
+        self.all_maintainer_names_report = []
 
         self._create_widgets()
-        self._load_combobox_data()
+        self._load_filters()
 
     def _create_widgets(self):
         """Crea e posiziona i widget nella finestra."""
@@ -1001,14 +650,6 @@ class MachineDetailsWindow(tk.Toplevel):
             messagebox.showerror(self.lang.get('error_title'), f"{self.lang.get('pdf_generated_error')}\n\n{e}",
                                  parent=self)
 
-# --- Funzioni Launcher aggiornate/nuove ---
-def open_add_maintenance_doc(parent, db, lang, user_name):
-    AddMaintenanceDocWindow(parent, db, lang, user_name)
-
-
-def open_search_maintenance_doc(parent, db, lang, mode, user_name=None):
-    # Questa è una finestra segnaposto per la logica di ricerca
-    SearchMaintDocsWindow(parent, db, lang, mode, user_name)
 
 
 # ... le altre funzioni launcher rimangono invariate ...
@@ -1028,118 +669,43 @@ class MaintenanceDocsWindow(tk.Toplevel):
         self.grab_set()
 
 
+    # In maintenance_gui.py
+
+# Nel file maintenance_gui.py
+# Assicurati di avere questi import all'inizio del file:
+from datetime import datetime
+from tkinter import messagebox
+import richieste_intervento
+# ... e gli altri import di tkinter ...
+
 class FillTemplateWindow(tk.Toplevel):
     """Finestra per la compilazione delle schede di manutenzione."""
 
-    # In maintenance_gui.py
+    def __init__(self, parent, db, lang, user_name):
+        # Passa solo 'parent' alla classe superiore
+        super().__init__(parent)
 
-    class FillTemplateWindow(tk.Toplevel):
-        """Finestra per la compilazione delle schede di manutenzione."""
+        # Le altre variabili vengono assegnate a questa classe
+        self.db = db
+        self.lang = lang
+        self.user_name = user_name
+        self.start_time = None
 
-        def __init__(self, parent, db, lang, user_name):
-            super().__init__(parent)
-            self.db = db
-            self.lang = lang
-            self.user_name = user_name
-            self.start_time = None
+        self.title(lang.get('submenu_fill_templates'))
+        self.geometry("950x600")
+        self.transient(parent)
+        self.grab_set()
 
-            self.title(lang.get('submenu_fill_templates'))
-            self.geometry("950x600")
-            self.transient(parent)
-            self.grab_set()
+        self.equipments_data = {}
+        self.plans_data = {}
+        self.completed_tasks = set()
+        self.all_equipment_names = []
 
-            self.equipments_data = {}
-            self.plans_data = {}
-            self.completed_tasks = set()
+        self.equipment_var = tk.StringVar()
+        self.plan_var = tk.StringVar()
 
-            # Lista per la ricerca dinamica
-            self.all_equipment_names = []
-
-            self.equipment_var = tk.StringVar()
-            self.plan_var = tk.StringVar()
-
-            self._create_widgets()
-            self._load_equipments()
-
-        def _create_widgets(self):
-            frame = ttk.Frame(self, padding="15")
-            frame.pack(fill=tk.BOTH, expand=True)
-
-            selection_frame = ttk.Frame(frame)
-            selection_frame.pack(fill=tk.X, pady=10)
-
-            ttk.Label(selection_frame, text=self.lang.get('select_machine_label')).pack(side=tk.LEFT, padx=5)
-            # MODIFICATO: state='normal' per permettere la scrittura
-            self.equipment_combo = ttk.Combobox(selection_frame, textvariable=self.equipment_var, state='normal',
-                                                width=40)
-            self.equipment_combo.pack(side=tk.LEFT, padx=5)
-            self.equipment_combo.bind("<<ComboboxSelected>>", self._on_equipment_select)
-            # NUOVO: Associa la pressione dei tasti alla funzione di filtro
-            self.equipment_combo.bind('<KeyRelease>', self._filter_equipment_combo)
-
-            ttk.Label(selection_frame, text=self.lang.get('select_maintenance_plan', "Seleziona Piano:")).pack(
-                side=tk.LEFT, padx=5)
-            self.plan_combo = ttk.Combobox(selection_frame, textvariable=self.plan_var, state='disabled', width=40)
-            self.plan_combo.pack(side=tk.LEFT, padx=5)
-            self.plan_combo.bind("<<ComboboxSelected>>", self._on_plan_select)
-
-            # ... il resto del metodo _create_widgets rimane invariato ...
-            tasks_frame = ttk.LabelFrame(frame, text=self.lang.get('maintenance_tasks_label', "Compiti da Eseguire"),
-                                         padding="10")
-            tasks_frame.pack(fill=tk.BOTH, expand=True, pady=5)
-            cols = ('check', 'name', 'category', 'description')
-            self.tasks_tree = ttk.Treeview(tasks_frame, columns=cols, show='headings')
-            self.tasks_tree.heading('check', text='☑')
-            self.tasks_tree.heading('name', text=self.lang.get('header_task_name', 'Compito'))
-            self.tasks_tree.heading('category', text=self.lang.get('header_category', 'Categoria'))
-            self.tasks_tree.heading('description', text=self.lang.get('header_description', 'Descrizione'))
-            self.tasks_tree.column('check', width=30, anchor='center', stretch=tk.NO)
-            self.tasks_tree.column('name', width=250)
-            self.tasks_tree.column('category', width=120)
-            self.tasks_tree.column('description', width=450)
-            scrollbar = ttk.Scrollbar(tasks_frame, orient=tk.VERTICAL, command=self.tasks_tree.yview)
-            self.tasks_tree.configure(yscroll=scrollbar.set)
-            self.tasks_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-            self.tasks_tree.bind('<Button-1>', self._on_tree_click)
-            self.tasks_tree.bind('<Double-1>', self._on_tree_double_click)
-            notes_frame = ttk.LabelFrame(frame,
-                                         text=self.lang.get('maintenance_notes_label', "Note Generali / Osservazioni"),
-                                         padding="10")
-            notes_frame.pack(fill=tk.X, pady=5)
-            self.notes_text = tk.Text(notes_frame, height=4, wrap=tk.WORD)
-            self.notes_text.pack(fill=tk.X, expand=True, padx=5)
-            self.notes_text.config(state='disabled')
-            action_frame = ttk.Frame(frame)
-            action_frame.pack(fill=tk.X, pady=10)
-            request_button_text = self.lang.get('request_button', "Crea Richiesta (Parti/Intervento)")
-            self.request_button = ttk.Button(action_frame, text=request_button_text, command=self._open_request_window,
-                                             state='disabled')
-            self.request_button.pack(side=tk.LEFT, padx=5)
-            self.save_button = ttk.Button(action_frame,
-                                          text=self.lang.get('save_completed_tasks', "Salva Compiti Eseguiti"),
-                                          command=self._save_logs, state='disabled')
-            self.save_button.pack(side=tk.RIGHT, padx=5)
-
-        def _load_equipments(self):
-            equipments = self.db.fetch_all_equipments()
-            if equipments:
-                self.equipments_data = {f"{row.InternalName or 'N/D'} [{row.SerialNumber}]": row.EquipmentId for row in
-                                        equipments}
-                # NUOVO: Salva la lista completa per la ricerca
-                self.all_equipment_names = sorted(list(self.equipments_data.keys()))
-                self.equipment_combo['values'] = self.all_equipment_names
-
-        # NUOVO: Funzione per filtrare il combobox delle macchine
-        def _filter_equipment_combo(self, event):
-            typed_text = self.equipment_var.get().lower()
-            if not typed_text:
-                self.equipment_combo['values'] = self.all_equipment_names
-                return
-            filtered_list = [name for name in self.all_equipment_names if typed_text in name.lower()]
-            self.equipment_combo['values'] = filtered_list
-
-        # ... gli altri metodi della classe (_on_equipment_select, _on_plan_select, etc.) rimangono invariati ...
+        self._create_widgets()
+        self._load_equipments()
 
     def _create_widgets(self):
         frame = ttk.Frame(self, padding="15")
@@ -1149,59 +715,43 @@ class FillTemplateWindow(tk.Toplevel):
         selection_frame = ttk.Frame(frame)
         selection_frame.pack(fill=tk.X, pady=10)
 
-        # 1. Selezione Macchina
         ttk.Label(selection_frame, text=self.lang.get('select_machine_label')).pack(side=tk.LEFT, padx=5)
-        # MODIFICATO: state='normal' per permettere la scrittura
         self.equipment_combo = ttk.Combobox(selection_frame, textvariable=self.equipment_var, state='normal', width=40)
         self.equipment_combo.pack(side=tk.LEFT, padx=5)
         self.equipment_combo.bind("<<ComboboxSelected>>", self._on_equipment_select)
-        # NUOVO: Associa la pressione dei tasti alla funzione di filtro
         self.equipment_combo.bind('<KeyRelease>', self._filter_equipment_combo)
 
-        # 2. Selezione Piano Manutenzione
-        ttk.Label(selection_frame, text=self.lang.get('select_maintenance_plan', "Seleziona Piano:")).pack(side=tk.LEFT,
-                                                                                                           padx=5)
+        ttk.Label(selection_frame, text=self.lang.get('select_maintenance_plan', "Seleziona Piano:")).pack(side=tk.LEFT, padx=5)
         self.plan_combo = ttk.Combobox(selection_frame, textvariable=self.plan_var, state='disabled', width=40)
         self.plan_combo.pack(side=tk.LEFT, padx=5)
         self.plan_combo.bind("<<ComboboxSelected>>", self._on_plan_select)
 
         # --- Sezione Compiti (Center) ---
-        tasks_frame = ttk.LabelFrame(frame, text=self.lang.get('maintenance_tasks_label', "Compiti da Eseguire"),
-                                     padding="10")
+        tasks_frame = ttk.LabelFrame(frame, text=self.lang.get('maintenance_tasks_label', "Compiti da Eseguire"), padding="10")
         tasks_frame.pack(fill=tk.BOTH, expand=True, pady=5)
 
-        # Treeview per i compiti con checkbox simulati
         cols = ('check', 'name', 'category', 'description')
         self.tasks_tree = ttk.Treeview(tasks_frame, columns=cols, show='headings')
-
-        # Configurazione colonne
         self.tasks_tree.heading('check', text='☑')
         self.tasks_tree.heading('name', text=self.lang.get('header_task_name', 'Compito'))
         self.tasks_tree.heading('category', text=self.lang.get('header_category', 'Categoria'))
         self.tasks_tree.heading('description', text=self.lang.get('header_description', 'Descrizione'))
-
         self.tasks_tree.column('check', width=30, anchor='center', stretch=tk.NO)
         self.tasks_tree.column('name', width=250)
         self.tasks_tree.column('category', width=120)
         self.tasks_tree.column('description', width=450)
 
-        # Scrollbar
         scrollbar = ttk.Scrollbar(tasks_frame, orient=tk.VERTICAL, command=self.tasks_tree.yview)
         self.tasks_tree.configure(yscroll=scrollbar.set)
-
         self.tasks_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Gestione click e doppio click
         self.tasks_tree.bind('<Button-1>', self._on_tree_click)
         self.tasks_tree.bind('<Double-1>', self._on_tree_double_click)
 
         # --- Sezione Note (Bottom-Center) ---
-        notes_frame = ttk.LabelFrame(frame,
-                                     text=self.lang.get('maintenance_notes_label', "Note Generali / Osservazioni"),
-                                     padding="10")
+        notes_frame = ttk.LabelFrame(frame, text=self.lang.get('maintenance_notes_label', "Note Generali / Osservazioni"), padding="10")
         notes_frame.pack(fill=tk.X, pady=5)
-
         self.notes_text = tk.Text(notes_frame, height=4, wrap=tk.WORD)
         self.notes_text.pack(fill=tk.X, expand=True, padx=5)
         self.notes_text.config(state='disabled')
@@ -1210,23 +760,17 @@ class FillTemplateWindow(tk.Toplevel):
         action_frame = ttk.Frame(frame)
         action_frame.pack(fill=tk.X, pady=10)
 
-        # Pulsante Richiesta
         request_button_text = self.lang.get('request_button', "Crea Richiesta (Parti/Intervento)")
-        self.request_button = ttk.Button(action_frame, text=request_button_text, command=self._open_request_window,
-                                         state='disabled')
+        self.request_button = ttk.Button(action_frame, text=request_button_text, command=self._open_request_window, state='disabled')
         self.request_button.pack(side=tk.LEFT, padx=5)
 
-        # Pulsante Salva
-        self.save_button = ttk.Button(action_frame,
-                                      text=self.lang.get('save_completed_tasks', "Salva Compiti Eseguiti"),
-                                      command=self._save_logs, state='disabled')
+        self.save_button = ttk.Button(action_frame, text=self.lang.get('save_completed_tasks', "Salva Compiti Eseguiti"), command=self._save_logs, state='disabled')
         self.save_button.pack(side=tk.RIGHT, padx=5)
 
     def _load_equipments(self):
         equipments = self.db.fetch_all_equipments()
         if equipments:
             self.equipments_data = {f"{row.InternalName or 'N/D'} [{row.SerialNumber}]": row.EquipmentId for row in equipments}
-            # NUOVO: Salva la lista completa per la ricerca
             self.all_equipment_names = sorted(list(self.equipments_data.keys()))
             self.equipment_combo['values'] = self.all_equipment_names
 
@@ -1246,204 +790,109 @@ class FillTemplateWindow(tk.Toplevel):
         self._reset_tasks()
 
     def _reset_tasks(self):
-        # Controllo difensivo: Assicurati che i widget esistano prima di accedervi
         if self.tasks_tree:
             for i in self.tasks_tree.get_children():
                 self.tasks_tree.delete(i)
-
         self.completed_tasks = set()
         self.start_time = None
-
         if self.save_button:
             self.save_button.config(state='disabled')
-
-        # Pulisci e disabilita il campo note e il pulsante richiesta
         if self.notes_text:
             self.notes_text.config(state='normal')
             self.notes_text.delete('1.0', tk.END)
             self.notes_text.config(state='disabled')
-
         if self.request_button:
             self.request_button.config(state='disabled')
 
     def _on_equipment_select(self, event=None):
         self._reset_plan_and_tasks()
-        equipment_id = self.equipments_data.get(self.equipment_var.get())
+        equipment_selection = self.equipment_var.get()
+        equipment_id = self.equipments_data.get(equipment_selection)
 
         if equipment_id:
-            # Chiama il metodo del DB per recuperare i piani disponibili
             plans = self.db.fetch_available_maintenance_plans(equipment_id)
-
             if plans:
-                # Mappa i dati e popola la lista del combobox
-                self.plans_data = {
-                    row.TimingDescriprion: (getattr(row, 'PianoManutenzioneId', None), row.ProgrammedInterventionId) for
-                    row in plans}
+                self.plans_data = {row.TimingDescriprion: (getattr(row, 'PianoManutenzioneId', None), row.ProgrammedInterventionId) for row in plans}
                 self.plan_combo['values'] = list(self.plans_data.keys())
-
-                # --- RIGA MANCANTE, AGGIUNTA QUI ---
-                # Riattiva il combobox per renderlo selezionabile
                 self.plan_combo.config(state='readonly')
-
             else:
-                messagebox.showinfo(
-                    self.lang.get('info_title', "Info"),
-                    self.lang.get('info_no_plans_available',
-                                  "Nessun piano di manutenzione disponibile o tutti i compiti sono già stati eseguiti per questa macchina."),
-                    parent=self
-                )
-
-    # In maintenance_gui.py, dentro la classe FillTemplateWindow
+                messagebox.showinfo(self.lang.get('info_title', "Info"), self.lang.get('info_no_plans_available', "Nessun piano di manutenzione disponibile..."), parent=self)
 
     def _on_plan_select(self, event=None):
         self._reset_tasks()
         plan_selection = self.plan_var.get()
-
-        # --- PARTE MODIFICATA ---
-        # Recuperiamo anche l'ID della macchina attualmente selezionata
         equipment_selection = self.equipment_var.get()
         equipment_id = self.equipments_data.get(equipment_selection)
 
         if plan_selection and equipment_id and plan_selection in self.plans_data:
-            # Recupera ProgrammedInterventionId
             _, programmed_intervention_id = self.plans_data[plan_selection]
-
             self.start_time = datetime.now()
-            print(f"Inizio compilazione scheda alle: {self.start_time}")
-
-            # Chiama il metodo DB passando ENTRAMBI i parametri
             tasks = self.db.fetch_maintenance_tasks(programmed_intervention_id, equipment_id)
-            # --- FINE PARTE MODIFICATA ---
-
             if tasks:
                 for task in tasks:
-                    task_id = task.CompitoId
-                    self.tasks_tree.insert('', tk.END, iid=task_id,
-                                           values=("", task.NomeCompito, task.Categoria, task.DescrizioneCompito))
-                # Abilita i pulsanti
+                    self.tasks_tree.insert('', tk.END, iid=task.CompitoId, values=("", task.NomeCompito, task.Categoria, task.DescrizioneCompito))
                 self.save_button.config(state='normal')
                 self.notes_text.config(state='normal')
                 self.request_button.config(state='normal')
             else:
-                messagebox.showwarning(self.lang.get('warning_title', "Attenzione"),
-                                       self.lang.get('warn_no_tasks_found', "Nessun compito trovato per questo piano."),
-                                       parent=self)
+                messagebox.showwarning(self.lang.get('warning_title', "Attenzione"), self.lang.get('warn_no_tasks_found', "Nessun compito trovato..."), parent=self)
 
     def _on_tree_click(self, event):
-        # Gestisce il click per simulare un checkbox nella Treeview
         region = self.tasks_tree.identify("region", event.x, event.y)
         column = self.tasks_tree.identify_column(event.x)
-
-        # Controlla se il click è avvenuto su una cella e nella prima colonna (#1, che è 'check')
         if region == "cell" and column == "#1":
             item_iid = self.tasks_tree.identify_row(event.y)
             if item_iid:
                 try:
                     task_id = int(item_iid)
-                except ValueError:
-                    return
-
-                # Inverti lo stato del checkbox
+                except ValueError: return
                 if task_id in self.completed_tasks:
                     self.completed_tasks.remove(task_id)
                     self.tasks_tree.set(item_iid, 'check', "")
                 else:
                     self.completed_tasks.add(task_id)
-                    self.tasks_tree.set(item_iid, 'check', "✔")  # Carattere Unicode ✔
+                    self.tasks_tree.set(item_iid, 'check', "✔")
 
     def _on_tree_double_click(self, event):
-        """Gestisce il doppio click su un compito per aprire il documento associato."""
-
         item_iid = self.tasks_tree.focus()
-
-        if not item_iid:
-            return
-
-        # Evita l'esecuzione se si fa doppio click sulla colonna checkbox
+        if not item_iid: return
         column = self.tasks_tree.identify_column(event.x)
-        if column == "#1":
-            return
-
+        if column == "#1": return
         try:
             task_id = int(item_iid)
-        except ValueError:
-            return
-
-        print(f"Richiesta apertura documento per CompitoId: {task_id}")
-
-        # Chiama il metodo DB (definito in main.py)
+        except ValueError: return
         success = self.db.fetch_and_open_document_by_task_id(task_id)
-
         if not success:
-            error_msg = self.lang.get('error_opening_task_document',
-                                      "Impossibile aprire il documento associato al compito.")
-
+            error_msg = self.lang.get('error_opening_task_document', "Impossibile aprire il documento...")
             if hasattr(self.db, 'last_error_details') and self.db.last_error_details:
                 error_msg += f"\n\n{self.db.last_error_details}"
-
             messagebox.showwarning(self.lang.get('warning_title'), error_msg, parent=self)
 
     def _open_request_window(self):
-        # Recupera le informazioni necessarie sulla macchina corrente
         equipment_name = self.equipment_var.get()
         equipment_id = self.equipments_data.get(equipment_name)
-
         if not equipment_id:
-            # Questo non dovrebbe succedere se il pulsante è abilitato solo dopo la selezione del piano
             messagebox.showerror(self.lang.get('error_title'), "Errore interno: ID macchina non trovato.", parent=self)
             return
-
-        # Chiama il launcher nel nuovo modulo 'richieste_intervento.py'
-        richieste_intervento.open_request_window(
-            parent=self,
-            db=self.db,
-            lang=self.lang,
-            user_name=self.user_name,
-            equipment_id=equipment_id,
-            equipment_name=equipment_name
-        )
+        richieste_intervento.open_request_window(parent=self, db=self.db, lang=self.lang, user_name=self.user_name, equipment_id=equipment_id, equipment_name=equipment_name)
 
     def _save_logs(self):
         if not self.completed_tasks:
-            messagebox.showwarning(self.lang.get('warning_title'), self.lang.get('warn_no_tasks_completed',
-                                                                                 "Nessun compito selezionato come completato."),
-                                   parent=self)
+            messagebox.showwarning(self.lang.get('warning_title', "Nessun compito selezionato..."), parent=self)
             return
-
         equipment_id = self.equipments_data.get(self.equipment_var.get())
         if not equipment_id or not self.start_time:
-            messagebox.showerror(self.lang.get('error_title'),
-                                 "Errore interno: Dati macchina o ora di inizio mancanti.", parent=self)
+            messagebox.showerror(self.lang.get('error_title'), "Errore interno: Dati macchina o ora di inizio mancanti.", parent=self)
             return
-
-        # Recupera le note dal widget Text
         notes_content = self.notes_text.get("1.0", tk.END).strip()
-
-        # Chiedi conferma
-        confirm_msg = self.lang.get('confirm_save_logs_message', "Salvare i log per {0} compiti?").format(
-            len(self.completed_tasks))
-
+        confirm_msg = self.lang.get('confirm_save_logs_message', "Salvare i log per {0} compiti?").format(len(self.completed_tasks))
         if messagebox.askyesno(self.lang.get('confirm_save_title', "Conferma Salvataggio"), confirm_msg, parent=self):
-
-            # Chiama il metodo DB per salvare i log in batch
-            success = self.db.log_completed_tasks(
-                equipment_id=equipment_id,
-                user_name=self.user_name,
-                completed_task_ids=list(self.completed_tasks),
-                start_time=self.start_time,
-                notes=notes_content  # Passaggio delle note
-            )
-
+            success = self.db.log_completed_tasks(equipment_id=equipment_id, user_name=self.user_name, completed_task_ids=list(self.completed_tasks), start_time=self.start_time, notes=notes_content)
             if success:
-                messagebox.showinfo(self.lang.get('success_title'),
-                                    self.lang.get('info_logs_saved_success', "Log manutenzione salvati con successo."),
-                                    parent=self)
-                # Resetta la selezione corrente e aggiorna la lista piani disponibili
+                messagebox.showinfo(self.lang.get('success_title', "Successo"), self.lang.get('info_logs_saved_success', "Log manutenzione salvati..."), parent=self)
                 self._on_equipment_select()
             else:
                 messagebox.showerror(self.lang.get('error_title'), self.db.last_error_details, parent=self)
-
-
 # AGGIORNA la funzione launcher in maintenance_gui.py per accettare user_name
 # Sostituisci la vecchia definizione di open_fill_templates con questa:
 def open_fill_templates(parent, db, lang, user_name=None):
@@ -1499,9 +948,6 @@ def open_fill_templates(parent, db, lang, user_name=None):
 
 
 
-def open_reports(parent, db, lang):
-    # Sostituisce la vecchia finestra segnaposto con quella nuova
-    MaintenanceReportWindow(parent, db, lang)
 
 
 class AddTaskRowDialog(tk.Toplevel):
@@ -1805,7 +1251,12 @@ class AddMaintenanceTasksWindow(tk.Toplevel):
         else:
             messagebox.showerror("Errori durante il Salvataggio", "\n".join(errors))
 
+# --- Funzioni Launcher aggiornate/nuove ---
+def open_add_maintenance_doc(parent, db, lang, user_name):
+    MaintenanceDocsWindow(parent, db, lang, user_name)
 
-# Aggiungi questa nuova funzione launcher al file
-def open_add_maintenance_tasks(parent, db, lang, user_name):
-    AddMaintenanceTasksWindow(parent, db, lang, user_name)
+def open_reports(parent, db, lang):
+    # Sostituisce la vecchia finestra segnaposto con quella nuova
+    ReportsWindow(parent, db, lang)
+
+

@@ -158,6 +158,146 @@ class MaintCyclesManagerWindow(tk.Toplevel):
 def open_maint_cycles_manager(parent, db, lang):
     MaintCyclesManagerWindow(parent, db, lang)
 
+
+class DocTypesManagerWindow(tk.Toplevel):
+    """Finestra per la gestione dei Tipi di Documento Generale."""
+
+    def __init__(self, parent, db, lang):
+        super().__init__(parent)
+        self.db = db
+        self.lang = lang
+        self.title(lang.get('doc_types_title', "Gestione Tipi Documento"))
+        self.geometry("800x400")
+
+        self.current_type_id = None
+        self.doc_types_list = []
+
+        self.name_var = tk.StringVar()
+        self.key_var = tk.StringVar()
+
+        self._create_widgets()
+        self._load_types()
+
+    # In tools_gui.py, inside the DocTypesManagerWindow class
+
+    def _create_widgets(self):
+        main_frame = ttk.Frame(self, padding="10")
+        main_frame.pack(fill="both", expand=True)
+        main_frame.rowconfigure(0, weight=1)
+        main_frame.columnconfigure(0, weight=1)
+        main_frame.columnconfigure(1, weight=1)
+
+        # Lista Tipi (Sinistra)
+        list_frame = ttk.LabelFrame(main_frame, text=self.lang.get('doc_types_list_label', "Lista Tipi Documento"))
+        list_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        list_frame.rowconfigure(0, weight=1)
+        list_frame.columnconfigure(0, weight=1)
+
+        cols = ('name', 'key')
+        self.tree = ttk.Treeview(list_frame, columns=cols, show="headings")
+        self.tree.heading('name', text=self.lang.get('type_name_label', "Nome Tipo"))
+        self.tree.heading('key', text=self.lang.get('translation_key_label', "Chiave Traduzione"))
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        self.tree.bind("<<TreeviewSelect>>", self._on_type_select)
+
+        # Form (Destra)
+        form_frame = ttk.LabelFrame(main_frame, text=self.lang.get('details_label', "Dettagli"))
+        form_frame.grid(row=0, column=1, sticky="nsew")
+        form_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(form_frame, text=self.lang.get('type_name_label', "Nome Tipo (*):")).grid(row=0, column=0, sticky="w",
+                                                                                            padx=5, pady=5)
+        self.name_entry = ttk.Entry(form_frame, textvariable=self.name_var)
+        self.name_entry.grid(row=0, column=1, sticky="ew", padx=5)
+
+        ttk.Label(form_frame, text=self.lang.get('translation_key_label', "Chiave Traduzione (*):")).grid(row=1,
+                                                                                                          column=0,
+                                                                                                          sticky="w",
+                                                                                                          padx=5,
+                                                                                                          pady=5)
+        self.key_entry = ttk.Entry(form_frame, textvariable=self.key_var)
+        self.key_entry.grid(row=1, column=1, sticky="ew", padx=5)
+
+        btn_frame = ttk.Frame(form_frame)
+        btn_frame.grid(row=2, column=0, columnspan=2, pady=20)
+        ttk.Button(btn_frame, text=self.lang.get('new_button', "Nuovo"), command=self._clear_form).pack(side="left",
+                                                                                                        padx=5)
+        ttk.Button(btn_frame, text=self.lang.get('save_button', "Salva"), command=self._save).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text=self.lang.get('delete_button', "Cancella"), command=self._delete).pack(side="left",
+                                                                                                          padx=5)
+
+    def _load_types(self):
+        self.tree.delete(*self.tree.get_children())
+        # fetch_doc_categories esiste già e fa quello che ci serve
+        self.doc_types_list = self.db.fetch_doc_categories()
+        for doc_type in self.doc_types_list:
+            self.tree.insert("", "end", iid=doc_type.CategoriaId,
+                             values=(doc_type.NomeCategoria, doc_type.TranslationKey))
+
+    def _on_type_select(self, event=None):
+        selected_item = self.tree.focus()
+        if not selected_item: return
+
+        self.current_type_id = int(selected_item)
+        selected_type = next((t for t in self.doc_types_list if t.CategoriaId == self.current_type_id), None)
+        if not selected_type: return
+
+        self.name_var.set(selected_type.NomeCategoria)
+        self.key_var.set(selected_type.TranslationKey)
+
+    def _clear_form(self):
+        self.tree.selection_set([])
+        self.current_type_id = None
+        self.name_var.set("")
+        self.key_var.set("")
+        self.name_entry.focus_set()
+
+    def _save(self):
+        name = self.name_var.get().strip()
+        key = self.key_var.get().strip()
+        if not name or not key:
+            messagebox.showerror("Dati Mancanti", "Nome Tipo e Chiave Traduzione sono obbligatori.", parent=self)
+            return
+
+        if self.current_type_id:  # UPDATE
+            if self.db.check_if_doc_type_is_used(self.current_type_id):
+                messagebox.showerror("Operazione non permessa",
+                                     "Impossibile modificare un tipo di documento già in uso.", parent=self)
+                return
+            success, message = self.db.update_doc_type(self.current_type_id, name, key)
+        else:  # INSERT
+            success, message = self.db.add_new_doc_type(name, key)
+
+        if success:
+            messagebox.showinfo("Successo", message, parent=self)
+            self._load_types()
+            self._clear_form()
+        else:
+            messagebox.showerror("Errore", message, parent=self)
+
+    def _delete(self):
+        if not self.current_type_id:
+            messagebox.showwarning("Nessuna Selezione", "Selezionare un tipo da cancellare.", parent=self)
+            return
+
+        if self.db.check_if_doc_type_is_used(self.current_type_id):
+            messagebox.showerror("Operazione non permessa", "Impossibile cancellare un tipo di documento già in uso.",
+                                 parent=self)
+            return
+
+        if messagebox.askyesno("Conferma Cancellazione", "Sei sicuro di voler cancellare questo tipo di documento?"):
+            success, message = self.db.delete_doc_type(self.current_type_id)
+            if success:
+                messagebox.showinfo("Successo", message, parent=self)
+                self._load_types()
+                self._clear_form()
+            else:
+                messagebox.showerror("Errore", message, parent=self)
+
+
+def open_doc_types_manager(parent, db, lang):
+    DocTypesManagerWindow(parent, db, lang)
+
 class BrandsManagerWindow(tk.Toplevel):
     """Finestra per la gestione dei Brand (CRUD)."""
 
