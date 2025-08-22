@@ -407,7 +407,7 @@ class Database:
         try:
             # 1. Inserisce la segnalazione principale e ottiene il suo ID
             insert_submission_sql = """
-                                    INSERT INTO dbo.Segnalazioni (TipoSegnalazioneId, Titolo, Descrizione, Luogo, IdDipendente)
+                                    INSERT INTO Employee.dbo.Segnalazioni (TipoSegnalazioneId, Titolo, Descrizione, Luogo, IdDipendente)
                                         OUTPUT INSERTED.SegnalazioneId
                                     VALUES (?, ?, ?, ?, ?); \
                                     """
@@ -421,7 +421,7 @@ class Database:
             # 2. Se ci sono allegati, li inserisce uno per uno
             if attachments:
                 insert_attachment_sql = """
-                                        INSERT INTO dbo.SegnalazioneAllegati (SegnalazioneId, NomeFile, DatiFile)
+                                        INSERT INTO Employee.dbo.SegnalazioneAllegati (SegnalazioneId, NomeFile, DatiFile)
                                         VALUES (?, ?, ?); \
                                         """
                 for attachment in attachments:
