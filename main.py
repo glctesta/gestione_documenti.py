@@ -1,3 +1,4 @@
+from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 # Corretto l'import per coerenza
@@ -24,7 +25,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.5.3"  # Versione aggiornata
+APP_VERSION = "1.5.5"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
 # --- CONFIGURAZIONE DATABASE ---
@@ -418,7 +419,15 @@ class Database:
             if not new_submission_id:
                 raise Exception("Creazione segnalazione fallita, ID non restituito.")
 
-            # 2. Se ci sono allegati, li inserisce uno per uno
+            # 2. Inserisce il record nella tabella delle verifiche con stato 5 - da analizzare
+            insert_status_sql = """
+                            INSERT INTO Employee.dbo.SegnalazioneStati
+                                (SegnalazioneId, SegnalazioniTipoStatoId, Nota, OperatoDa)
+                            VALUES (?, 5, 'Trigger after insert', 'System'); \
+                             """
+            self.cursor.execute(insert_status_sql, new_submission_id)
+
+            # 3. Se ci sono allegati, li inserisce uno per uno
             if attachments:
                 insert_attachment_sql = """
                                         INSERT INTO Employee.dbo.SegnalazioneAllegati (SegnalazioneId, NomeFile, DatiFile)
@@ -2067,6 +2076,15 @@ class ViewDocumentForm(tk.Toplevel):
 class App(tk.Tk):
     """Classe principale dell'applicazione."""
 
+    def _update_clock(self):
+        """Aggiorna l'etichetta dell'orologio ogni secondo."""
+        # Formato: Giorno/Mese/Anno Ora:Minuti:Secondi
+        now_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        self.clock_label.config(text=now_str)
+
+        # Richiama se stessa dopo 1000 millisecondi (1 secondo)
+        self.clock_label.after(1000, self._update_clock)
+
     def open_add_maintenance_tasks_with_login(self):
         """Richiede il login e poi apre la finestra per aggiungere/gestire i task."""
         # This action modifies data, so it requires a simple login.
@@ -2234,7 +2252,7 @@ class App(tk.Tk):
         except Exception as e:
             print(f"Impossibile leggere le impostazioni della lingua: {e}")
             return 'it'  # Ritorna al default in caso di errore
-    # NUOVO METODO LANCIATORE: Gestisce il requisito di login obbligatorio
+
     def open_fill_templates_with_login(self):
         """Apre la finestra di compilazione schede, richiedendo prima il login."""
         # Assicurati che LoginWindow sia definita in main.py
@@ -2276,6 +2294,7 @@ class App(tk.Tk):
         self._create_menu()
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
         self.update_texts()
+        self._update_clock()  # Avvia l'orologio
 
     # --- METODI DI SUPPORTO ALL'INIZIALIZZAZIONE ---
 
@@ -2345,11 +2364,18 @@ class App(tk.Tk):
             return True
 
     def _create_widgets(self):
+        # --- Barra Superiore per l'Orologio ---
+        header_frame = ttk.Frame(self)
+        header_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(5, 0))
+
+        self.clock_label = ttk.Label(header_frame, font=("Helvetica", 9))
+        self.clock_label.pack(side=tk.RIGHT)  # Allinea l'orologio a destra
+
+        # --- Logo Centrale (invariato) ---
         if not PIL_AVAILABLE:
             print("Pillow non è installato. Impossibile visualizzare il logo.")
             return
         try:
-            # Assicurati che logo.png sia nella stessa directory dell'eseguibile
             image = Image.open("logo.png")
             image.thumbnail((250, 250))
             self.logo_image = ImageTk.PhotoImage(image)
