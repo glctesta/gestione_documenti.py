@@ -946,6 +946,9 @@ def open_fill_templates(parent, db, lang, user_name=None):
         # Fallback di sicurezza nel caso venga chiamata erroneamente senza utente
         print("Errore: Tentativo di aprire Compilazione Schede senza autenticazione.")
 
+def open_add_maintenance_tasks(parent, db, lang, user_name):
+    """Launcher function to create and show the AddMaintenanceTasksWindow."""
+    AddMaintenanceTasksWindow(parent, db, lang, user_name)
 
 
 
@@ -1026,12 +1029,6 @@ class AddTaskRowDialog(tk.Toplevel):
         self.task_name = self.name_var.get().strip()
         self.destroy()
 
-
-# In maintenance_gui.py
-
-# In maintenance_gui.py
-
-# ... (gli altri tuoi import e la classe AddTaskRowDialog rimangono invariati) ...
 
 class AddMaintenanceTasksWindow(tk.Toplevel):
     """
