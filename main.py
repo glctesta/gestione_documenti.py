@@ -17,6 +17,8 @@ import tools_gui
 import submissions_gui
 import general_docs_gui
 import permissions_gui
+import materials_gui
+
 try:
     from PIL import Image, ImageTk
 
@@ -85,6 +87,114 @@ class LanguageManager:
 
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
+
+    def fetch_all_materials(self):
+        """Recupera tutti i materiali dal catalogo."""
+        query = "SELECT SparePartMaterialId, MaterialPartNumber, MaterialCode FROM eqp.SparePartMaterials ORDER BY MaterialCode;"
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e); return []
+
+    def fetch_single_material(self, material_id):
+        """Recupera tutti i dati di un singolo materiale."""
+        query = "SELECT * FROM eqp.SparePartMaterials WHERE SparePartMaterialId = ?;"
+        try:
+            self.cursor.execute(query, material_id)
+            return self.cursor.fetchone()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e); return None
+
+    def add_material(self, part_number, code, description, catalog_data):
+        """Aggiunge un nuovo materiale e restituisce il suo ID."""
+        query = """
+                INSERT INTO eqp.SparePartMaterials (MaterialPartNumber, MaterialCode, MaterialDescription, CatalogDetail)
+                    OUTPUT INSERTED.SparePartMaterialId
+                VALUES (?, ?, ?, ?); \
+                """
+        try:
+            new_id = self.cursor.execute(query, part_number, code, description, catalog_data).fetchval()
+            self.conn.commit()
+            return True, new_id
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False, str(e)
+
+    def update_material(self, material_id, part_number, code, description, catalog_data):
+        """Aggiorna un materiale esistente."""
+        query = """
+                UPDATE eqp.SparePartMaterials
+                SET MaterialPartNumber  = ?, \
+                    MaterialCode        = ?, \
+                    MaterialDescription = ?, \
+                    CatalogDetail       = ?
+                WHERE SparePartMaterialId = ?; \
+                """
+        try:
+            self.cursor.execute(query, part_number, code, description, catalog_data, material_id)
+            self.conn.commit()
+            return True, "Aggiornato."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False, str(e)
+
+    def delete_material(self, material_id):
+        """Cancella un materiale. La cancellazione a cascata (ON DELETE CASCADE) rimuoverà i link."""
+        query = "DELETE FROM eqp.SparePartMaterials WHERE SparePartMaterialId = ?;"
+        try:
+            self.cursor.execute(query, material_id)
+            self.conn.commit()
+            return True, "Cancellato."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False, str(e)
+
+    def fetch_linked_equipment(self, material_id):
+        """Recupera gli ID delle macchine collegate a un materiale."""
+        query = "SELECT EquipmentId FROM eqp.SparePartParents WHERE SparePartMaterialId = ?;"
+        try:
+            self.cursor.execute(query, material_id)
+            return [row.EquipmentId for row in self.cursor.fetchall()]
+        except pyodbc.Error as e:
+            self.last_error_details = str(e); return []
+
+    def update_material_links(self, material_id, equipment_ids):
+        """Sincronizza i collegamenti tra un materiale e le macchine."""
+        try:
+            # 1. Cancella tutti i vecchi collegamenti per questo materiale
+            self.cursor.execute("DELETE FROM eqp.SparePartParents WHERE SparePartMaterialId = ?", material_id)
+
+            # 2. Inserisce i nuovi collegamenti, se ce ne sono
+            if equipment_ids:
+                insert_query = "INSERT INTO eqp.SparePartParents (SparePartMaterialId, EquipmentId) VALUES (?, ?);"
+                params = [(material_id, eq_id) for eq_id in equipment_ids]
+                self.cursor.executemany(insert_query, params)
+
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+
+    def fetch_materials_for_equipment(self, equipment_id):
+        """Recupera tutti i materiali collegati a una specifica macchina."""
+        query = """
+                SELECT m.MaterialPartNumber, m.MaterialCode, m.MaterialDescription
+                FROM eqp.SparePartMaterials m
+                         INNER JOIN eqp.SparePartParents l ON m.SparePartMaterialId = l.SparePartMaterialId
+                WHERE l.EquipmentId = ?
+                ORDER BY m.MaterialCode; \
+                """
+        try:
+            self.cursor.execute(query, equipment_id)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e); return []
 
     def fetch_user_permissions(self, employee_hire_history_id):
         """Recupera i permessi attivi per un dato dipendente."""
@@ -2400,6 +2510,9 @@ class App(tk.Tk):
         self.maintenance_menu = tk.Menu(self.menubar, tearoff=0)
         self.submissions_menu = tk.Menu(self.menubar, tearoff=0)  # Menu Segnalazioni
         self.tools_menu = tk.Menu(self.menubar, tearoff=0)  # Menu Strumenti
+        self.permissions_submenu = tk.Menu(self.tools_menu, tearoff=0)
+        # --- Aggiungi questo sottomenu ---
+        self.materials_submenu = tk.Menu(self.tools_menu, tearoff=0)
         self.help_menu = tk.Menu(self.menubar, tearoff=0)
 
         # Aggiunge ogni menu come una "cascata" separata alla barra principale
@@ -2513,6 +2626,12 @@ class App(tk.Tk):
                                     command=self.open_maint_cycles_manager_with_login)
         self.tools_menu.add_command(label=self.lang.get('submenu_doc_types', "Aggiungi Tipo Documento"),
                                     command=self.open_doc_types_manager_with_login)
+        self.tools_menu.add_cascade(label=self.lang.get('menu_materials', "Materiali"), menu=self.materials_submenu)
+        self.materials_submenu.delete(0, 'end')
+        self.materials_submenu.add_command(label=self.lang.get('submenu_manage', "Gestione"),
+                                           command=self.open_manage_materials_with_login)
+        self.materials_submenu.add_command(label=self.lang.get('submenu_view', "Visualizza"),
+                                           command=self.open_view_materials_with_login)
 
         # 6. Menu Help
         self.help_menu.delete(0, 'end')
@@ -2554,6 +2673,16 @@ class App(tk.Tk):
     def open_add_machine_with_login(self):
         self._execute_simple_login(
             action_callback=lambda user_name: maintenance_gui.open_add_machine(self, self.db, self.lang)
+        )
+
+    def open_manage_materials_with_login(self):
+        self._execute_simple_login(
+            action_callback=lambda user_name: materials_gui.open_manage_materials(self, self.db, self.lang, user_name)
+        )
+
+    def open_view_materials_with_login(self):
+        self._execute_simple_login(
+            action_callback=lambda user_name: materials_gui.open_view_materials(self, self.db, self.lang, user_name)
         )
 
     def open_add_machine_with_login(self):
