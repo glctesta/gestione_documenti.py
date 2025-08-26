@@ -14,8 +14,12 @@ except ImportError:
     PIL_AVAILABLE = False
 
 
+# In materials_gui.py
+
 class ManageMaterialsWindow(tk.Toplevel):
-    """Finestra per la gestione completa dei materiali e dei loro collegamenti."""
+    """Finestra per la gestione completa dei materiali e dei loro collegamenti alle macchine."""
+
+    # In materials_gui.py, dentro la classe ManageMaterialsWindow
 
     def __init__(self, parent, db, lang, user_name):
         super().__init__(parent)
@@ -26,77 +30,89 @@ class ManageMaterialsWindow(tk.Toplevel):
         self.geometry("1000x600")
 
         self.current_material_id = None
-        self.all_equipment = []  # Lista di tuple (id, nome)
+        self.all_equipment = []
         self.catalog_binary_data = None
         self.catalog_file_name = None
 
+        # --- CORREZIONE: Inizializzazione delle variabili Tkinter mancanti ---
+        self.part_number_var = tk.StringVar()
+        self.code_var = tk.StringVar()
+        self.catalog_name_var = tk.StringVar()
+        self.search_code_var = tk.StringVar()
+        self.search_desc_var = tk.StringVar()
+        # --- FINE CORREZIONE ---
+
         self._create_widgets()
         self._load_all_data()
+
+    # In materials_gui.py, dentro la classe ManageMaterialsWindow
 
     def _create_widgets(self):
         main_frame = ttk.Frame(self, padding="10")
         main_frame.pack(fill="both", expand=True)
         main_frame.rowconfigure(0, weight=1)
-        main_frame.columnconfigure(0, weight=2)
-        main_frame.columnconfigure(1, weight=3)
+        main_frame.columnconfigure(0, weight=2)  # Colonna sinistra per la lista
+        main_frame.columnconfigure(1, weight=3)  # Colonna destra per i dettagli
 
-        # Pannello Sinistro: Lista Materiali
+        # --- Pannello Sinistro: Lista Materiali (invariato) ---
         list_frame = ttk.LabelFrame(main_frame, text="Materiali")
         list_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        list_frame.rowconfigure(0, weight=1)
+        list_frame.rowconfigure(1, weight=1)
         list_frame.columnconfigure(0, weight=1)
+
+        filter_area = ttk.Frame(list_frame, padding=5)
+        filter_area.grid(row=0, column=0, sticky="ew")
+        filter_area.columnconfigure(1, weight=1)
+        ttk.Label(filter_area, text="Codice/Nome:").grid(row=0, column=0, padx=(0, 5))
+        search_code_entry = ttk.Entry(filter_area, textvariable=self.search_code_var)
+        search_code_entry.grid(row=0, column=1, sticky="ew")
+        ttk.Label(filter_area, text="Descrizione:").grid(row=1, column=0, padx=(0, 5))
+        search_desc_entry = ttk.Entry(filter_area, textvariable=self.search_desc_var)
+        search_desc_entry.grid(row=1, column=1, sticky="ew", pady=(0, 5))
+        search_button = ttk.Button(filter_area, text="Cerca", command=self._load_materials)
+        search_button.grid(row=0, column=2, rowspan=2, padx=5)
 
         cols = ('part_number', 'code')
         self.tree = ttk.Treeview(list_frame, columns=cols, show="headings")
         self.tree.heading('part_number', text="Codice Articolo")
         self.tree.heading('code', text="Nome Materiale")
-        self.tree.grid(row=0, column=0, sticky="nsew")
+        self.tree.grid(row=1, column=0, sticky="nsew")
         self.tree.bind("<<TreeviewSelect>>", self._on_material_select)
 
-        # Pannello Destro: Dettagli e Collegamenti
-        right_panel = ttk.Frame(main_frame)
-        right_panel.grid(row=0, column=1, sticky="nsew")
-        right_panel.rowconfigure(0, weight=1)
-        right_panel.columnconfigure(0, weight=1)
+        # --- Pannello Destro: Form Unica (MODIFICATO) ---
+        # Rimosso il Notebook, usiamo un unico LabelFrame
+        form_frame = ttk.LabelFrame(main_frame, text="Dettagli e Collegamenti")
+        form_frame.grid(row=0, column=1, sticky="nsew")
+        form_frame.columnconfigure(1, weight=1)
+        form_frame.rowconfigure(4, weight=1)  # Permette alla lista macchine di espandersi
 
-        notebook = ttk.Notebook(right_panel)
-        notebook.pack(fill="both", expand=True)
-
-        # Tab 1: Dettagli
-        details_frame = ttk.Frame(notebook, padding="10")
-        notebook.add(details_frame, text="Dettagli Materiale")
-        details_frame.columnconfigure(1, weight=1)
-
-        self.part_number_var = tk.StringVar()
-        self.code_var = tk.StringVar()
-        self.catalog_name_var = tk.StringVar()
-
-        ttk.Label(details_frame, text="Codice Articolo (*):").grid(row=0, column=0, sticky="w", padx=5, pady=3)
-        self.part_number_entry = ttk.Entry(details_frame, textvariable=self.part_number_var)
+        # Campi per i dettagli del materiale
+        ttk.Label(form_frame, text="Codice Articolo (*):").grid(row=0, column=0, sticky="w", padx=5, pady=3)
+        self.part_number_entry = ttk.Entry(form_frame, textvariable=self.part_number_var)
         self.part_number_entry.grid(row=0, column=1, sticky="ew", padx=5, pady=3)
 
-        ttk.Label(details_frame, text="Nome Materiale:").grid(row=1, column=0, sticky="w", padx=5, pady=3)
-        ttk.Entry(details_frame, textvariable=self.code_var).grid(row=1, column=1, sticky="ew", padx=5, pady=3)
+        ttk.Label(form_frame, text="Nome Materiale:").grid(row=1, column=0, sticky="w", padx=5, pady=3)
+        ttk.Entry(form_frame, textvariable=self.code_var).grid(row=1, column=1, sticky="ew", padx=5, pady=3)
 
-        ttk.Label(details_frame, text="Descrizione:").grid(row=2, column=0, sticky="nw", padx=5, pady=3)
-        self.desc_text = tk.Text(details_frame, height=5, wrap=tk.WORD)
+        ttk.Label(form_frame, text="Descrizione:").grid(row=2, column=0, sticky="nw", padx=5, pady=3)
+        self.desc_text = tk.Text(form_frame, height=4, wrap=tk.WORD)
         self.desc_text.grid(row=2, column=1, sticky="ew", padx=5, pady=3)
 
-        ttk.Label(details_frame, text="Documento Catalogo:").grid(row=3, column=0, sticky="w", padx=5, pady=10)
-        ttk.Button(details_frame, text="Allega/Sostituisci...", command=self._attach_file).grid(row=3, column=1,
-                                                                                                sticky="w", padx=5)
-        ttk.Label(details_frame, textvariable=self.catalog_name_var).grid(row=4, column=1, sticky="w", padx=5)
+        ttk.Label(form_frame, text="Documento Catalogo:").grid(row=3, column=0, sticky="w", padx=5, pady=5)
+        doc_frame = ttk.Frame(form_frame)
+        doc_frame.grid(row=3, column=1, sticky="ew", padx=5)
+        ttk.Button(doc_frame, text="Allega...", command=self._attach_file).pack(side="left")
+        ttk.Label(doc_frame, textvariable=self.catalog_name_var).pack(side="left", padx=5)
 
-        # Tab 2: Macchinari
-        links_frame = ttk.Frame(notebook, padding="10")
-        notebook.add(links_frame, text="Macchinari Collegati")
-        links_frame.rowconfigure(0, weight=1)
-        links_frame.columnconfigure(0, weight=1)
-
-        self.equipment_listbox = tk.Listbox(links_frame, selectmode="extended")
+        # Lista Macchine collegate (ora direttamente sotto i dettagli)
+        link_frame = ttk.LabelFrame(form_frame, text="Macchinari Collegati")
+        link_frame.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=5, pady=10)
+        link_frame.rowconfigure(0, weight=1)
+        link_frame.columnconfigure(0, weight=1)
+        self.equipment_listbox = tk.Listbox(link_frame, selectmode="extended")
         self.equipment_listbox.grid(row=0, column=0, sticky="nsew")
 
-        # Pulsanti Azione
+        # Pulsanti Azione in fondo alla finestra principale
         btn_frame = ttk.Frame(self)
         btn_frame.pack(fill="x", padx=10, pady=(5, 10), anchor="e")
         ttk.Button(btn_frame, text="Nuovo", command=self._clear_form).pack(side="right", padx=5)
@@ -105,13 +121,25 @@ class ManageMaterialsWindow(tk.Toplevel):
 
     def _load_all_data(self):
         """Carica tutti i dati necessari all'avvio della finestra."""
-        # Carica tutti i materiali per la lista a sinistra
+        self._load_materials()
+        self._load_equipment_listbox()
+
+    def _load_materials(self):
+        """Carica i materiali nella lista usando i filtri."""
         self.tree.delete(*self.tree.get_children())
-        self.materials_list = self.db.fetch_all_materials()
+
+        # Legge i valori dai campi di ricerca
+        code_filter = self.search_code_var.get()
+        desc_filter = self.search_desc_var.get()
+
+        # Chiama il nuovo metodo del database con i filtri
+        self.materials_list = self.db.search_materials(code_filter, desc_filter)
+
         for mat in self.materials_list:
             self.tree.insert("", "end", iid=mat.SparePartMaterialId, values=(mat.MaterialPartNumber, mat.MaterialCode))
 
-        # Carica tutte le macchine per la lista di selezione
+    def _load_equipment_listbox(self):
+        # ... (Questo metodo rimane invariato)
         self.equipment_listbox.delete(0, tk.END)
         all_equipment_raw = self.db.fetch_all_equipments()
         self.all_equipment = [(eq.EquipmentId, f"{eq.InternalName or ''} [{eq.SerialNumber}]") for eq in
@@ -124,7 +152,6 @@ class ManageMaterialsWindow(tk.Toplevel):
         if not selected_item: return
         self.current_material_id = int(selected_item)
 
-        # Carica dettagli del materiale selezionato
         mat_data = self.db.fetch_single_material(self.current_material_id)
         if not mat_data: return
 
@@ -134,8 +161,11 @@ class ManageMaterialsWindow(tk.Toplevel):
         self.desc_text.insert("1.0", mat_data.MaterialDescription or "")
 
         self.catalog_binary_data = mat_data.CatalogDetail
-        self.catalog_file_name = "Documento presente" if self.catalog_binary_data else "Nessun documento"
-        self.catalog_name_var.set(self.catalog_file_name)
+
+        # --- CORREZIONE QUI ---
+        # Non chiamiamo più una funzione inesistente. Mostriamo un testo generico.
+        doc_display_name = "Documento presente" if self.catalog_binary_data else "Nessun documento"
+        self.catalog_name_var.set(doc_display_name)
 
         # Seleziona le macchine collegate nella listbox
         self.equipment_listbox.selection_clear(0, tk.END)
@@ -144,6 +174,7 @@ class ManageMaterialsWindow(tk.Toplevel):
             if eq_id in linked_ids:
                 self.equipment_listbox.selection_set(i)
 
+    # ... tutti gli altri metodi (_clear_form, _attach_file, _save, _delete) rimangono invariati ...
     def _clear_form(self):
         self.tree.selection_set([])
         self.current_material_id = None
@@ -157,7 +188,6 @@ class ManageMaterialsWindow(tk.Toplevel):
         self.part_number_entry.focus_set()
 
     def _attach_file(self):
-
         path = filedialog.askopenfilename(parent=self)
         if not path: return
         self.catalog_file_name = os.path.basename(path)
@@ -165,37 +195,48 @@ class ManageMaterialsWindow(tk.Toplevel):
         with open(path, 'rb') as f:
             self.catalog_binary_data = f.read()
 
+    # In materials_gui.py, dentro la classe ManageMaterialsWindow
+
     def _save(self):
         part_number = self.part_number_var.get().strip().replace(',', ' ')
         code = self.code_var.get().strip().replace(',', ' ')
         desc = self.desc_text.get("1.0", tk.END).strip().replace(',', ' ')
+
         if not part_number:
             messagebox.showerror("Dati Mancanti", "Il Codice Articolo è obbligatorio.", parent=self)
             return
 
-        code = self.code_var.get().strip()
-        desc = self.desc_text.get("1.0", tk.END).strip()
-
-        # Recupera gli ID delle macchine selezionate
         selected_indices = self.equipment_listbox.curselection()
         selected_equipment_ids = [self.all_equipment[i][0] for i in selected_indices]
 
+        doc_name_to_save = self.catalog_file_name if self.catalog_binary_data else None
+
         if self.current_material_id:  # UPDATE
-            success, msg = self.db.update_material(self.current_material_id, part_number, code, desc,
-                                                   self.catalog_binary_data)
+            success, msg_or_id = self.db.update_material(
+                self.current_material_id, part_number, code, desc,
+                self.catalog_binary_data, doc_name_to_save, self.user_name
+            )
             if success:
-                self.db.update_material_links(self.current_material_id, selected_equipment_ids)
+                self.db.update_material_links(self.current_material_id, selected_equipment_ids, self.user_name)
         else:  # INSERT
-            success, new_id = self.db.add_material(part_number, code, desc, self.catalog_binary_data)
+            success, msg_or_id = self.db.add_material(
+                part_number, code, desc, self.catalog_binary_data, doc_name_to_save, self.user_name
+            )
             if success:
-                self.db.update_material_links(new_id, selected_equipment_ids)
+                new_id = msg_or_id
+                self.db.update_material_links(new_id, selected_equipment_ids, self.user_name)
 
         if success:
             messagebox.showinfo("Successo", "Dati salvati con successo.", parent=self)
             self._load_all_data()
             self._clear_form()
         else:
-            messagebox.showerror("Errore", "Salvataggio fallito.", parent=self)
+            # Se il messaggio è una chiave di traduzione, la traduciamo
+            if msg_or_id == "error_duplicate_material":
+                error_message = self.lang.get(msg_or_id, "Errore: duplicato.")
+            else:
+                error_message = f"Salvataggio fallito: {msg_or_id}"
+            messagebox.showerror("Errore", error_message, parent=self)
 
     def _delete(self):
         if not self.current_material_id:

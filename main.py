@@ -27,7 +27,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.5.7"  # Versione aggiornata
+APP_VERSION = "1.5.8"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
 # --- CONFIGURAZIONE DATABASE ---
@@ -88,14 +88,25 @@ class LanguageManager:
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
 
-    def fetch_all_materials(self):
-        """Recupera tutti i materiali dal catalogo."""
-        query = "SELECT SparePartMaterialId, MaterialPartNumber, MaterialCode FROM eqp.SparePartMaterials ORDER BY MaterialCode;"
+    def search_materials(self, code_filter, desc_filter):
+        """Cerca i materiali in base a filtri per codice/nome e descrizione."""
+        query = """
+                SELECT SparePartMaterialId, MaterialPartNumber, MaterialCode, MaterialDescription
+                FROM eqp.SparePartMaterials
+                WHERE (MaterialPartNumber LIKE ? OR MaterialCode LIKE ?)
+                  AND MaterialDescription LIKE ?
+                ORDER BY MaterialCode; \
+                """
         try:
-            self.cursor.execute(query)
+            # I parametri % per il LIKE vengono aggiunti qui
+            code_param = f"%{code_filter}%"
+            desc_param = f"%{desc_filter}%"
+
+            self.cursor.execute(query, code_param, code_param, desc_param)
             return self.cursor.fetchall()
         except pyodbc.Error as e:
-            self.last_error_details = str(e); return []
+            self.last_error_details = str(e)
+            return []
 
     def fetch_single_material(self, material_id):
         """Recupera tutti i dati di un singolo materiale."""
@@ -106,34 +117,44 @@ class Database:
         except pyodbc.Error as e:
             self.last_error_details = str(e); return None
 
-    def add_material(self, part_number, code, description, catalog_data):
-        """Aggiunge un nuovo materiale e restituisce il suo ID."""
+    def add_material(self, part_number, code, description, catalog_data, doc_name, user_name):
+        """Aggiunge un nuovo materiale, includendo l'utente che ha eseguito l'operazione."""
         query = """
-                INSERT INTO eqp.SparePartMaterials (MaterialPartNumber, MaterialCode, MaterialDescription, CatalogDetail)
+                INSERT INTO eqp.SparePartMaterials
+                (MaterialPartNumber, MaterialCode, MaterialDescription, CatalogDetail, CatalogFileName, [User])
                     OUTPUT INSERTED.SparePartMaterialId
-                VALUES (?, ?, ?, ?); \
+                VALUES (?, ?, ?, ?, ?, ?); \
                 """
         try:
-            new_id = self.cursor.execute(query, part_number, code, description, catalog_data).fetchval()
+            new_id = self.cursor.execute(query, part_number, code, description, catalog_data, doc_name,
+                                         user_name).fetchval()
             self.conn.commit()
             return True, new_id
+        except pyodbc.IntegrityError as e:
+            self.conn.rollback()
+            if 'UQ_SparePartMaterials_MaterialPartNumber' in str(e):
+                return False, "error_duplicate_material"
+            else:
+                self.last_error_details = str(e)
+                return False, str(e)
         except pyodbc.Error as e:
             self.conn.rollback()
             self.last_error_details = str(e)
             return False, str(e)
 
-    def update_material(self, material_id, part_number, code, description, catalog_data):
-        """Aggiorna un materiale esistente."""
+    def update_material(self, material_id, part_number, code, description, catalog_data, doc_name, user_name):
+        """Aggiorna un materiale esistente, includendo l'utente che ha eseguito l'operazione."""
         query = """
                 UPDATE eqp.SparePartMaterials
                 SET MaterialPartNumber  = ?, \
                     MaterialCode        = ?, \
-                    MaterialDescription = ?, \
-                    CatalogDetail       = ?
+                    MaterialDescription = ?,
+                    CatalogDetail       = ?, \
+                    CatalogFileName     = ?, [User] = ?
                 WHERE SparePartMaterialId = ?; \
                 """
         try:
-            self.cursor.execute(query, part_number, code, description, catalog_data, material_id)
+            self.cursor.execute(query, part_number, code, description, catalog_data, doc_name, user_name, material_id)
             self.conn.commit()
             return True, "Aggiornato."
         except pyodbc.Error as e:
@@ -162,16 +183,15 @@ class Database:
         except pyodbc.Error as e:
             self.last_error_details = str(e); return []
 
-    def update_material_links(self, material_id, equipment_ids):
-        """Sincronizza i collegamenti tra un materiale e le macchine."""
+    def update_material_links(self, material_id, equipment_ids, user_name):
+        """Sincronizza i collegamenti tra un materiale e le macchine, includendo l'utente."""
         try:
-            # 1. Cancella tutti i vecchi collegamenti per questo materiale
-            self.cursor.execute("DELETE FROM eqp.SparePartParents WHERE SparePartMaterialId = ?", material_id)
+            self.cursor.execute("DELETE FROM eqp.SparePartParents WHERE SparePartId = ?", material_id)
 
-            # 2. Inserisce i nuovi collegamenti, se ce ne sono
             if equipment_ids:
-                insert_query = "INSERT INTO eqp.SparePartParents (SparePartMaterialId, EquipmentId) VALUES (?, ?);"
-                params = [(material_id, eq_id) for eq_id in equipment_ids]
+                insert_query = "INSERT INTO eqp.SparePartParents (SparePartId, EquipmentId, [User]) VALUES (?, ?, ?);"
+                # Aggiunge l'utente a ogni tupla di parametri
+                params = [(material_id, eq_id, user_name) for eq_id in equipment_ids]
                 self.cursor.executemany(insert_query, params)
 
             self.conn.commit()
@@ -179,6 +199,7 @@ class Database:
         except pyodbc.Error as e:
             self.conn.rollback()
             self.last_error_details = str(e)
+            print(f"Errore durante l'aggiornamento dei link materiali: {e}")
             return False
 
     def fetch_materials_for_equipment(self, equipment_id):
@@ -2631,7 +2652,7 @@ class App(tk.Tk):
         self.materials_submenu.add_command(label=self.lang.get('submenu_manage', "Gestione"),
                                            command=self.open_manage_materials_with_login)
         self.materials_submenu.add_command(label=self.lang.get('submenu_view', "Visualizza"),
-                                           command=self.open_view_materials_with_login)
+                                           command=self.open_view_materials)
 
         # 6. Menu Help
         self.help_menu.delete(0, 'end')
@@ -2680,10 +2701,10 @@ class App(tk.Tk):
             action_callback=lambda user_name: materials_gui.open_manage_materials(self, self.db, self.lang, user_name)
         )
 
-    def open_view_materials_with_login(self):
-        self._execute_simple_login(
-            action_callback=lambda user_name: materials_gui.open_view_materials(self, self.db, self.lang, user_name)
-        )
+    def open_view_materials(self):
+        """Apre la finestra di visualizzazione materiali (senza login)."""
+        # Passiamo 'None' come user_name perché non c'è autenticazione
+        materials_gui.open_view_materials(self, self.db, self.lang, user_name=None)
 
     def open_add_machine_with_login(self):
         """Apre la finestra di login e, se l'autenticazione ha successo, apre la finestra per aggiungere una macchina."""
