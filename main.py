@@ -27,7 +27,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.5.8"  # Versione aggiornata
+APP_VERSION = "1.6.1"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
 # --- CONFIGURAZIONE DATABASE ---
@@ -87,6 +87,16 @@ class LanguageManager:
 
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
+
+    def fetch_material_document(self, material_id):
+        """Recupera i dati binari del documento per un singolo materiale."""
+        query = "SELECT CatalogDetail FROM eqp.SparePartMaterials WHERE SparePartMaterialId = ?;"
+        try:
+            self.cursor.execute(query, material_id)
+            return self.cursor.fetchone()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return None
 
     def search_materials(self, code_filter, desc_filter):
         """Cerca i materiali in base a filtri per codice/nome e descrizione."""
@@ -2549,7 +2559,8 @@ class App(tk.Tk):
         self.language_menu.add_command(label="Italiano", command=lambda: self._change_language('it'))
         self.language_menu.add_command(label="English", command=lambda: self._change_language('en'))
         self.language_menu.add_command(label="Română", command=lambda: self._change_language('ro'))
-
+        self.language_menu.add_command(label="Deutsch", command=lambda: self._change_language('de'))
+        self.language_menu.add_command(label="Svenska", command=lambda: self._change_language('sv'))
     # In main.py, dentro la classe App
 
     # In main.py, dentro la classe App
@@ -2670,11 +2681,20 @@ class App(tk.Tk):
             self.menubar.entryconfig(6, label=self.lang.get('menu_help'))
         except tk.TclError:
             pass
+
     def _change_language(self, lang_code):
-        """Cambia la lingua, aggiorna la UI e salva l'impostazione."""
+        """Cambia la lingua, aggiorna la UI, salva l'impostazione e mostra una notifica."""
         self.lang.set_language(lang_code)
         self.update_texts()
         self._save_language_setting(lang_code)
+
+        # Mostra un messaggio per informare l'utente
+        messagebox.showinfo(
+            self.lang.get('lang_change_title', "Language Changed"),
+            self.lang.get('lang_change_message',
+                          "The language has been updated. Please reopen any open windows to apply the changes."),
+            parent=self
+        )
 
 
     def _show_about(self):

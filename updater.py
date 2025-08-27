@@ -9,11 +9,11 @@ from tkinter import ttk, messagebox
 from datetime import datetime
 
 
-# La funzione di log rimane utile per il debug
 def log(message):
+    """Scrive un messaggio in un file di log per il debug."""
     log_file_path = os.path.join(os.path.expanduser("~"), "Downloads", "maintenance_app_updater.log")
     try:
-        with open(log_file_path, "a") as f:
+        with open(log_file_path, "a", encoding="utf-8") as f:
             f.write(f"{datetime.now()}: {message}\n")
     except Exception as e:
         print(f"Failed to write to log: {e}")
@@ -32,8 +32,6 @@ class UpdateProgressWindow(tk.Tk):
         self.title("Aggiornamento Applicazione")
         self.geometry("450x150")
         self.resizable(False, False)
-
-        # Centra la finestra
         self.eval('tk::PlaceWindow . center')
 
         self.progress_label = ttk.Label(self, text="Aggiornamento in corso, attendere...", font=("Helvetica", 10))
@@ -45,15 +43,13 @@ class UpdateProgressWindow(tk.Tk):
         self.file_label = ttk.Label(self, text="", font=("Helvetica", 8), foreground="grey")
         self.file_label.pack(pady=5)
 
-        # La finestra si avvia e chiama subito la funzione di aggiornamento
-        self.after(100, self.start_update)
+        self.after(200, self.start_update)
 
     def start_update(self):
         try:
-            # Diamo al programma principale il tempo di chiudersi completamente
+            log("Updater grafico avviato.")
             time.sleep(2)
 
-            # 1. Conta i file da copiare per impostare la barra di progresso
             file_list = []
             for root, _, files in os.walk(self.source_path):
                 for name in files:
@@ -61,8 +57,15 @@ class UpdateProgressWindow(tk.Tk):
 
             self.progress_bar["maximum"] = len(file_list)
 
-            # 2. Copia i file uno per uno, aggiornando la GUI
             for i, (root, name) in enumerate(file_list):
+                # --- CORREZIONE QUI ---
+                # Salta la copia del file updater.exe per evitare l'errore di permesso
+                if name.lower() == 'updater.exe':
+                    self.progress_bar["value"] = i + 1
+                    self.update_idletasks()
+                    continue  # Salta al prossimo file
+                # --- FINE CORREZIONE ---
+
                 self.file_label.config(text=f"Copia di: {name}")
 
                 source_file = os.path.join(root, name)
@@ -73,15 +76,15 @@ class UpdateProgressWindow(tk.Tk):
                 shutil.copy2(source_file, dest_dir)
 
                 self.progress_bar["value"] = i + 1
-                self.update_idletasks()  # Forza l'aggiornamento della GUI
+                self.update_idletasks()
 
-            # 3. Fine della copia
             self.progress_label.config(text="Aggiornamento completato con successo!")
             self.file_label.config(text="")
+            log("Copia file completata.")
 
-            # 4. Chiede all'utente se vuole riavviare
             if messagebox.askyesno("Riavvio", "Aggiornamento completato. Vuoi riavviare l'applicazione ora?"):
                 new_exe_path = os.path.join(self.dest_path, self.exe_name)
+                log(f"Rilancio di {new_exe_path}...")
                 subprocess.Popen([new_exe_path])
 
             self.destroy()

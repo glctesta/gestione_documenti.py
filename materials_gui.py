@@ -47,15 +47,17 @@ class ManageMaterialsWindow(tk.Toplevel):
 
     # In materials_gui.py, dentro la classe ManageMaterialsWindow
 
+    # In materials_gui.py, dentro la classe ManageMaterialsWindow
+
     def _create_widgets(self):
         main_frame = ttk.Frame(self, padding="10")
         main_frame.pack(fill="both", expand=True)
         main_frame.rowconfigure(0, weight=1)
-        main_frame.columnconfigure(0, weight=2)  # Colonna sinistra per la lista
-        main_frame.columnconfigure(1, weight=3)  # Colonna destra per i dettagli
+        main_frame.columnconfigure(0, weight=2)
+        main_frame.columnconfigure(1, weight=3)
 
-        # --- Pannello Sinistro: Lista Materiali (invariato) ---
-        list_frame = ttk.LabelFrame(main_frame, text="Materiali")
+        # Pannello Sinistro: Lista Materiali
+        list_frame = ttk.LabelFrame(main_frame, text=self.lang.get('materials_list_label', "Materiali"))
         list_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         list_frame.rowconfigure(1, weight=1)
         list_frame.columnconfigure(0, weight=1)
@@ -63,61 +65,71 @@ class ManageMaterialsWindow(tk.Toplevel):
         filter_area = ttk.Frame(list_frame, padding=5)
         filter_area.grid(row=0, column=0, sticky="ew")
         filter_area.columnconfigure(1, weight=1)
-        ttk.Label(filter_area, text="Codice/Nome:").grid(row=0, column=0, padx=(0, 5))
+        ttk.Label(filter_area, text=self.lang.get('code_name_filter_label', "Codice/Nome:")).grid(row=0, column=0,
+                                                                                                  padx=(0, 5))
         search_code_entry = ttk.Entry(filter_area, textvariable=self.search_code_var)
         search_code_entry.grid(row=0, column=1, sticky="ew")
-        ttk.Label(filter_area, text="Descrizione:").grid(row=1, column=0, padx=(0, 5))
+        ttk.Label(filter_area, text=self.lang.get('description_filter_label', "Descrizione:")).grid(row=1, column=0,
+                                                                                                    padx=(0, 5))
         search_desc_entry = ttk.Entry(filter_area, textvariable=self.search_desc_var)
         search_desc_entry.grid(row=1, column=1, sticky="ew", pady=(0, 5))
-        search_button = ttk.Button(filter_area, text="Cerca", command=self._load_materials)
+        search_button = ttk.Button(filter_area, text=self.lang.get('search_button', "Cerca"),
+                                   command=self._load_materials)
         search_button.grid(row=0, column=2, rowspan=2, padx=5)
 
         cols = ('part_number', 'code')
         self.tree = ttk.Treeview(list_frame, columns=cols, show="headings")
-        self.tree.heading('part_number', text="Codice Articolo")
-        self.tree.heading('code', text="Nome Materiale")
+        self.tree.heading('part_number', text=self.lang.get('header_part_number', "Codice Articolo"))
+        self.tree.heading('code', text=self.lang.get('header_material_name', "Nome Materiale"))
         self.tree.grid(row=1, column=0, sticky="nsew")
         self.tree.bind("<<TreeviewSelect>>", self._on_material_select)
 
-        # --- Pannello Destro: Form Unica (MODIFICATO) ---
-        # Rimosso il Notebook, usiamo un unico LabelFrame
-        form_frame = ttk.LabelFrame(main_frame, text="Dettagli e Collegamenti")
+        # Pannello Destro: Form Unica
+        form_frame = ttk.LabelFrame(main_frame,
+                                    text=self.lang.get('details_and_links_label', "Dettagli e Collegamenti"))
         form_frame.grid(row=0, column=1, sticky="nsew")
         form_frame.columnconfigure(1, weight=1)
-        form_frame.rowconfigure(4, weight=1)  # Permette alla lista macchine di espandersi
+        form_frame.rowconfigure(4, weight=1)
 
-        # Campi per i dettagli del materiale
-        ttk.Label(form_frame, text="Codice Articolo (*):").grid(row=0, column=0, sticky="w", padx=5, pady=3)
+        ttk.Label(form_frame, text=self.lang.get('part_number_label', "Codice Articolo (*):")).grid(row=0, column=0,
+                                                                                                    sticky="w", padx=5,
+                                                                                                    pady=3)
         self.part_number_entry = ttk.Entry(form_frame, textvariable=self.part_number_var)
         self.part_number_entry.grid(row=0, column=1, sticky="ew", padx=5, pady=3)
 
-        ttk.Label(form_frame, text="Nome Materiale:").grid(row=1, column=0, sticky="w", padx=5, pady=3)
+        ttk.Label(form_frame, text=self.lang.get('material_name_label', "Nome Materiale:")).grid(row=1, column=0,
+                                                                                                 sticky="w", padx=5,
+                                                                                                 pady=3)
         ttk.Entry(form_frame, textvariable=self.code_var).grid(row=1, column=1, sticky="ew", padx=5, pady=3)
 
-        ttk.Label(form_frame, text="Descrizione:").grid(row=2, column=0, sticky="nw", padx=5, pady=3)
+        ttk.Label(form_frame, text=self.lang.get('description_label_generic', "Descrizione:")).grid(row=2, column=0,
+                                                                                                    sticky="nw", padx=5,
+                                                                                                    pady=3)
         self.desc_text = tk.Text(form_frame, height=4, wrap=tk.WORD)
         self.desc_text.grid(row=2, column=1, sticky="ew", padx=5, pady=3)
 
-        ttk.Label(form_frame, text="Documento Catalogo:").grid(row=3, column=0, sticky="w", padx=5, pady=5)
+        ttk.Label(form_frame, text=self.lang.get('catalog_doc_label', "Documento Catalogo:")).grid(row=3, column=0,
+                                                                                                   sticky="w", padx=5,
+                                                                                                   pady=5)
         doc_frame = ttk.Frame(form_frame)
         doc_frame.grid(row=3, column=1, sticky="ew", padx=5)
-        ttk.Button(doc_frame, text="Allega...", command=self._attach_file).pack(side="left")
+        ttk.Button(doc_frame, text=self.lang.get('attach_button', "Allega..."), command=self._attach_file).pack(
+            side="left")
         ttk.Label(doc_frame, textvariable=self.catalog_name_var).pack(side="left", padx=5)
 
-        # Lista Macchine collegate (ora direttamente sotto i dettagli)
-        link_frame = ttk.LabelFrame(form_frame, text="Macchinari Collegati")
+        link_frame = ttk.LabelFrame(form_frame, text=self.lang.get('linked_equipment_label', "Macchinari Collegati"))
         link_frame.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=5, pady=10)
         link_frame.rowconfigure(0, weight=1)
         link_frame.columnconfigure(0, weight=1)
         self.equipment_listbox = tk.Listbox(link_frame, selectmode="extended")
         self.equipment_listbox.grid(row=0, column=0, sticky="nsew")
 
-        # Pulsanti Azione in fondo alla finestra principale
         btn_frame = ttk.Frame(self)
         btn_frame.pack(fill="x", padx=10, pady=(5, 10), anchor="e")
-        ttk.Button(btn_frame, text="Nuovo", command=self._clear_form).pack(side="right", padx=5)
-        ttk.Button(btn_frame, text="Salva", command=self._save).pack(side="right", padx=5)
-        ttk.Button(btn_frame, text="Cancella", command=self._delete).pack(side="right")
+        ttk.Button(btn_frame, text=self.lang.get('new_button', "Nuovo"), command=self._clear_form).pack(side="right",
+                                                                                                        padx=5)
+        ttk.Button(btn_frame, text=self.lang.get('save_button', "Salva"), command=self._save).pack(side="right", padx=5)
+        ttk.Button(btn_frame, text=self.lang.get('delete_button', "Cancella"), command=self._delete).pack(side="right")
 
     def _load_all_data(self):
         """Carica tutti i dati necessari all'avvio della finestra."""
@@ -271,6 +283,8 @@ class ViewMaterialsWindow(tk.Toplevel):
         self._create_widgets()
         self._load_equipments()
 
+    # In materials_gui.py, dentro la classe ViewMaterialsWindow
+
     def _create_widgets(self):
         main_frame = ttk.Frame(self, padding="10")
         main_frame.pack(fill="both", expand=True)
@@ -280,20 +294,21 @@ class ViewMaterialsWindow(tk.Toplevel):
         filter_frame = ttk.Frame(main_frame)
         filter_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         filter_frame.columnconfigure(1, weight=1)
-        ttk.Label(filter_frame, text="Seleziona Macchinario:").grid(row=0, column=0)
+        ttk.Label(filter_frame, text=self.lang.get('select_equipment_label', "Seleziona Macchinario:")).grid(row=0,
+                                                                                                             column=0)
         self.equipment_combo = ttk.Combobox(filter_frame, textvariable=self.equipment_var, state="readonly")
         self.equipment_combo.grid(row=0, column=1, sticky="ew", padx=5)
         self.equipment_combo.bind("<<ComboboxSelected>>", self._load_materials_for_equipment)
 
         cols = ('part_number', 'code', 'desc')
         self.tree = ttk.Treeview(main_frame, columns=cols, show="headings")
-        self.tree.heading('part_number', text="Codice Articolo")
-        self.tree.heading('code', text="Nome Materiale")
-        self.tree.heading('desc', text="Descrizione")
+        self.tree.heading('part_number', text=self.lang.get('header_part_number', "Codice Articolo"))
+        self.tree.heading('code', text=self.lang.get('header_material_name', "Nome Materiale"))
+        self.tree.heading('desc', text=self.lang.get('description_label_generic', "Descrizione"))
         self.tree.grid(row=1, column=0, sticky="nsew")
 
-        ttk.Button(main_frame, text="Esporta in Excel", command=self._export_to_excel).grid(row=2, column=0, sticky="e",
-                                                                                            pady=10)
+        ttk.Button(main_frame, text=self.lang.get('export_excel_button', "Esporta in Excel"),
+                   command=self._export_to_excel).grid(row=2, column=0, sticky="e", pady=10)
 
     def _load_equipments(self):
         equipments = self.db.fetch_all_equipments()
