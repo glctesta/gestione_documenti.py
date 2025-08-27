@@ -34,20 +34,15 @@ class ManageMaterialsWindow(tk.Toplevel):
         self.catalog_binary_data = None
         self.catalog_file_name = None
 
-        # --- CORREZIONE: Inizializzazione delle variabili Tkinter mancanti ---
         self.part_number_var = tk.StringVar()
         self.code_var = tk.StringVar()
         self.catalog_name_var = tk.StringVar()
         self.search_code_var = tk.StringVar()
         self.search_desc_var = tk.StringVar()
-        # --- FINE CORREZIONE ---
+        self.material_count_var = tk.StringVar()
 
         self._create_widgets()
         self._load_all_data()
-
-    # In materials_gui.py, dentro la classe ManageMaterialsWindow
-
-    # In materials_gui.py, dentro la classe ManageMaterialsWindow
 
     def _create_widgets(self):
         main_frame = ttk.Frame(self, padding="10")
@@ -56,7 +51,7 @@ class ManageMaterialsWindow(tk.Toplevel):
         main_frame.columnconfigure(0, weight=2)
         main_frame.columnconfigure(1, weight=3)
 
-        # Pannello Sinistro: Lista Materiali
+        # --- Pannello Sinistro: Lista e Filtri ---
         list_frame = ttk.LabelFrame(main_frame, text=self.lang.get('materials_list_label', "Materiali"))
         list_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         list_frame.rowconfigure(1, weight=1)
@@ -65,17 +60,24 @@ class ManageMaterialsWindow(tk.Toplevel):
         filter_area = ttk.Frame(list_frame, padding=5)
         filter_area.grid(row=0, column=0, sticky="ew")
         filter_area.columnconfigure(1, weight=1)
+
         ttk.Label(filter_area, text=self.lang.get('code_name_filter_label', "Codice/Nome:")).grid(row=0, column=0,
                                                                                                   padx=(0, 5))
         search_code_entry = ttk.Entry(filter_area, textvariable=self.search_code_var)
         search_code_entry.grid(row=0, column=1, sticky="ew")
+
         ttk.Label(filter_area, text=self.lang.get('description_filter_label', "Descrizione:")).grid(row=1, column=0,
                                                                                                     padx=(0, 5))
         search_desc_entry = ttk.Entry(filter_area, textvariable=self.search_desc_var)
         search_desc_entry.grid(row=1, column=1, sticky="ew", pady=(0, 5))
+
         search_button = ttk.Button(filter_area, text=self.lang.get('search_button', "Cerca"),
                                    command=self._load_materials)
         search_button.grid(row=0, column=2, rowspan=2, padx=5)
+
+        # --- NUOVO: Associa il tasto Invio alla ricerca ---
+        search_code_entry.bind('<Return>', lambda e: self._load_materials())
+        search_desc_entry.bind('<Return>', lambda e: self._load_materials())
 
         cols = ('part_number', 'code')
         self.tree = ttk.Treeview(list_frame, columns=cols, show="headings")
@@ -84,7 +86,10 @@ class ManageMaterialsWindow(tk.Toplevel):
         self.tree.grid(row=1, column=0, sticky="nsew")
         self.tree.bind("<<TreeviewSelect>>", self._on_material_select)
 
-        # Pannello Destro: Form Unica
+        count_label = ttk.Label(list_frame, textvariable=self.material_count_var, anchor="e")
+        count_label.grid(row=2, column=0, sticky="ew", padx=5)
+
+        # --- Pannello Destro: Form Unica (RIPRISTINATO) ---
         form_frame = ttk.LabelFrame(main_frame,
                                     text=self.lang.get('details_and_links_label', "Dettagli e Collegamenti"))
         form_frame.grid(row=0, column=1, sticky="nsew")
@@ -96,34 +101,39 @@ class ManageMaterialsWindow(tk.Toplevel):
                                                                                                     pady=3)
         self.part_number_entry = ttk.Entry(form_frame, textvariable=self.part_number_var)
         self.part_number_entry.grid(row=0, column=1, sticky="ew", padx=5, pady=3)
+        self.part_number_entry.bind('<FocusOut>', self._validate_part_number)
+        self.validation_label = ttk.Label(form_frame, text="", foreground="red", font=("Helvetica", 8))
+        self.validation_label.grid(row=0, column=2, sticky="w", padx=5)
 
         ttk.Label(form_frame, text=self.lang.get('material_name_label', "Nome Materiale:")).grid(row=1, column=0,
                                                                                                  sticky="w", padx=5,
                                                                                                  pady=3)
-        ttk.Entry(form_frame, textvariable=self.code_var).grid(row=1, column=1, sticky="ew", padx=5, pady=3)
+        ttk.Entry(form_frame, textvariable=self.code_var).grid(row=1, column=1, columnspan=2, sticky="ew", padx=5,
+                                                               pady=3)
 
         ttk.Label(form_frame, text=self.lang.get('description_label_generic', "Descrizione:")).grid(row=2, column=0,
                                                                                                     sticky="nw", padx=5,
                                                                                                     pady=3)
         self.desc_text = tk.Text(form_frame, height=4, wrap=tk.WORD)
-        self.desc_text.grid(row=2, column=1, sticky="ew", padx=5, pady=3)
+        self.desc_text.grid(row=2, column=1, columnspan=2, sticky="ew", padx=5, pady=3)
 
         ttk.Label(form_frame, text=self.lang.get('catalog_doc_label', "Documento Catalogo:")).grid(row=3, column=0,
                                                                                                    sticky="w", padx=5,
                                                                                                    pady=5)
         doc_frame = ttk.Frame(form_frame)
-        doc_frame.grid(row=3, column=1, sticky="ew", padx=5)
+        doc_frame.grid(row=3, column=1, columnspan=2, sticky="ew", padx=5)
         ttk.Button(doc_frame, text=self.lang.get('attach_button', "Allega..."), command=self._attach_file).pack(
             side="left")
         ttk.Label(doc_frame, textvariable=self.catalog_name_var).pack(side="left", padx=5)
 
         link_frame = ttk.LabelFrame(form_frame, text=self.lang.get('linked_equipment_label', "Macchinari Collegati"))
-        link_frame.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=5, pady=10)
+        link_frame.grid(row=4, column=0, columnspan=3, sticky="nsew", padx=5, pady=10)
         link_frame.rowconfigure(0, weight=1)
         link_frame.columnconfigure(0, weight=1)
         self.equipment_listbox = tk.Listbox(link_frame, selectmode="extended")
         self.equipment_listbox.grid(row=0, column=0, sticky="nsew")
 
+        # Pulsanti Azione
         btn_frame = ttk.Frame(self)
         btn_frame.pack(fill="x", padx=10, pady=(5, 10), anchor="e")
         ttk.Button(btn_frame, text=self.lang.get('new_button', "Nuovo"), command=self._clear_form).pack(side="right",
@@ -149,6 +159,10 @@ class ManageMaterialsWindow(tk.Toplevel):
 
         for mat in self.materials_list:
             self.tree.insert("", "end", iid=mat.SparePartMaterialId, values=(mat.MaterialPartNumber, mat.MaterialCode))
+        total_count = len(self.materials_list)
+        count_text = f"Totale Materiali: {total_count}"
+        self.material_count_var.set(count_text)
+
 
     def _load_equipment_listbox(self):
         # ... (Questo metodo rimane invariato)
@@ -159,7 +173,28 @@ class ManageMaterialsWindow(tk.Toplevel):
         for _, name in self.all_equipment:
             self.equipment_listbox.insert(tk.END, name)
 
+    def _validate_part_number(self, event=None):
+        """Controlla se il Codice Articolo inserito esiste già nel database."""
+        # Esegui il controllo solo se stiamo creando un NUOVO materiale
+        if self.current_material_id is not None:
+            self.validation_label.config(text="")  # Pulisce il messaggio se siamo in modifica
+            return
+
+        part_number = self.part_number_var.get().strip()
+        if not part_number:
+            self.validation_label.config(text="")  # Pulisce se il campo è vuoto
+            return
+
+        # Chiama il nuovo metodo del DB
+        is_duplicate = self.db.check_if_material_exists(part_number)
+
+        if is_duplicate:
+            self.validation_label.config(text="Codice già esistente!")
+        else:
+            self.validation_label.config(text="")
+
     def _on_material_select(self, event=None):
+        self.validation_label.config(text="")
         selected_item = self.tree.focus()
         if not selected_item: return
         self.current_material_id = int(selected_item)
@@ -186,8 +221,8 @@ class ManageMaterialsWindow(tk.Toplevel):
             if eq_id in linked_ids:
                 self.equipment_listbox.selection_set(i)
 
-    # ... tutti gli altri metodi (_clear_form, _attach_file, _save, _delete) rimangono invariati ...
     def _clear_form(self):
+        self.validation_label.config(text="")
         self.tree.selection_set([])
         self.current_material_id = None
         self.part_number_var.set("")
@@ -206,8 +241,6 @@ class ManageMaterialsWindow(tk.Toplevel):
         self.catalog_name_var.set(self.catalog_file_name)
         with open(path, 'rb') as f:
             self.catalog_binary_data = f.read()
-
-    # In materials_gui.py, dentro la classe ManageMaterialsWindow
 
     def _save(self):
         part_number = self.part_number_var.get().strip().replace(',', ' ')

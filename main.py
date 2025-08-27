@@ -5,6 +5,7 @@ from tkinter import ttk, messagebox, filedialog
 from datetime import datetime
 import pyodbc
 import os
+from PIL import Image, ImageTk, ImageOps
 import subprocess
 from collections import defaultdict
 import sys
@@ -27,7 +28,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.6.1"  # Versione aggiornata
+APP_VERSION = "1.6.2"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
 # --- CONFIGURAZIONE DATABASE ---
@@ -87,6 +88,16 @@ class LanguageManager:
 
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
+
+    def check_if_material_exists(self, part_number):
+        """Controlla se un materiale con un dato Codice Articolo esiste già. Restituisce True se esiste, altrimenti False."""
+        query = "SELECT COUNT(*) FROM eqp.SparePartMaterials WHERE MaterialPartNumber = ?;"
+        try:
+            count = self.cursor.execute(query, part_number).fetchval()
+            return count > 0
+        except pyodbc.Error as e:
+            print(f"Errore nel controllo esistenza materiale: {e}")
+            return False  # Per sicurezza, non blocchiamo l'utente in caso di errore
 
     def fetch_material_document(self, material_id):
         """Recupera i dati binari del documento per un singolo materiale."""
@@ -2216,6 +2227,121 @@ class ViewDocumentForm(tk.Toplevel):
 
 class App(tk.Tk):
     """Classe principale dell'applicazione."""
+    def __init__(self):
+        super().__init__()
+        self.should_exit = False  # Flag to control shutdown
+        self.geometry("1024x768")
+
+        # Variabili per lo slideshow
+        self.slideshow_label = None
+        self.slideshow_photo = None  # Riferimento per evitare garbage collection
+        self.image_files = []
+        self.current_image_index = 0
+        self.slideshow_interval_ms = 60000  # Default a 1 minuto
+
+        # Inizializza il database
+        self.db = Database(DB_CONN_STR)
+        if not self.db.connect():
+            messagebox.showerror("Database Error",
+                                 f"Impossibile connettersi al database.\n\nDetails: {self.db.last_error_details}")
+            self.destroy()
+            self.should_exit = True
+            return
+
+        # Carica la lingua salvata
+        initial_lang = self._load_language_setting()
+        self.lang = LanguageManager(self.db)
+        self.lang.set_language(initial_lang)
+        self.doc_categories = self.db.fetch_doc_categories()
+
+        # Controlla la versione (e se l'app deve chiudersi)
+        if self.check_version() is False:
+            # check_version already handles shutdown, we just need to stop __init__
+            return
+
+        self.logo_label = None
+        self.authenticated_user_for_maintenance = None
+        self._create_widgets()
+        self._create_menu()
+        self.protocol("WM_DELETE_WINDOW", self._on_closing)
+        self.update_texts()
+        self._update_clock()  # Avvia l'orologio
+
+        self.after(100, self._post_startup_tasks)
+
+    def _post_startup_tasks(self):
+        """Esegue compiti che richiedono che la finestra principale sia completamente inizializzata."""
+        print("DEBUG: Eseguo le operazioni post-avvio (orologio e slideshow).")
+        self._update_clock()  # Avvia l'orologio
+        self._setup_slideshow()  # Avvia la configurazione dello slideshow
+
+    def _setup_slideshow(self):
+        """Legge le impostazioni e avvia il ciclo dello slideshow, ma non disegna l'immagine."""
+        folder_path = self.db.fetch_setting('SlideshowFolderPath')
+        interval_min_str = self.db.fetch_setting('SlideshowIntervalMinutes')
+
+        if not folder_path or not os.path.isdir(folder_path):
+            self.slideshow_label.config(text="Percorso immagini non configurato o non valido.", foreground="white")
+            return
+
+        try:
+            interval_min = int(interval_min_str)
+            self.slideshow_interval_ms = interval_min * 60 * 1000
+        except (ValueError, TypeError):
+            pass  # Usa il default
+
+        valid_extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.gif')
+        try:
+            self.image_files = [
+                os.path.join(folder_path, f) for f in os.listdir(folder_path)
+                if f.lower().endswith(valid_extensions)
+            ]
+        except Exception as e:
+            print(f"Errore durante la lettura della cartella immagini: {e}")
+
+        if not self.image_files:
+            self.slideshow_label.config(text="Nessuna immagine trovata nella cartella specificata.", foreground="white")
+        else:
+            # Avvia il ciclo che cambia l'indice dell'immagine
+            self._cycle_image()
+
+    def _cycle_image(self):
+        """Cambia l'indice dell'immagine e forza un ridisegno, poi si riprogramma."""
+        if not self.image_files:
+            return
+
+        # Disegna l'immagine corrente
+        self._draw_current_image()
+
+        # Passa all'immagine successiva per il prossimo ciclo
+        self.current_image_index = (self.current_image_index + 1) % len(self.image_files)
+
+        # Pianifica il prossimo cambio di immagine
+        self.after(self.slideshow_interval_ms, self._cycle_image)
+
+    def _draw_current_image(self):
+        """Funzione dedicata a disegnare l'immagine corrente alla dimensione corretta."""
+        if not self.image_files:
+            return
+
+        image_path = self.image_files[self.current_image_index]
+
+        # Ottiene le dimensioni REALI e ATTUALI del label
+        w, h = self.slideshow_label.winfo_width(), self.slideshow_label.winfo_height()
+
+        # Se la finestra non è ancora visibile, non fare nulla. Verrà richiamata dall'evento <Configure>.
+        if w <= 1 or h <= 1:
+            return
+
+        try:
+            image = Image.open(image_path)
+            # Usa ImageOps.fit per riempire l'area senza distorcere l'immagine
+            resized_image = ImageOps.fit(image, (w, h), Image.Resampling.LANCZOS)
+
+            self.slideshow_photo = ImageTk.PhotoImage(resized_image)
+            self.slideshow_label.config(image=self.slideshow_photo)
+        except Exception as e:
+            print(f"Errore nel disegnare l'immagine {image_path}: {e}")
 
     def _update_clock(self):
         """Aggiorna l'etichetta dell'orologio ogni secondo."""
@@ -2404,38 +2530,7 @@ class App(tk.Tk):
             # Chiama la funzione corretta in maintenance_gui, passando l'utente autenticato
             maintenance_gui.open_fill_templates(self, self.db, self.lang, authenticated_user)
 
-    def __init__(self):
-        super().__init__()
-        self.should_exit = False  # Flag to control shutdown
-        self.geometry("800x600")
 
-        # Inizializza il database
-        self.db = Database(DB_CONN_STR)
-        if not self.db.connect():
-            messagebox.showerror("Database Error",
-                                 f"Impossibile connettersi al database.\n\nDetails: {self.db.last_error_details}")
-            self.destroy()
-            self.should_exit = True
-            return
-
-        # Carica la lingua salvata
-        initial_lang = self._load_language_setting()
-        self.lang = LanguageManager(self.db)
-        self.lang.set_language(initial_lang)
-        self.doc_categories = self.db.fetch_doc_categories()
-
-        # Controlla la versione (e se l'app deve chiudersi)
-        if self.check_version() is False:
-            # check_version already handles shutdown, we just need to stop __init__
-            return
-
-        self.logo_label = None
-        self.authenticated_user_for_maintenance = None
-        self._create_widgets()
-        self._create_menu()
-        self.protocol("WM_DELETE_WINDOW", self._on_closing)
-        self.update_texts()
-        self._update_clock()  # Avvia l'orologio
 
     # --- METODI DI SUPPORTO ALL'INIZIALIZZAZIONE ---
 
@@ -2505,31 +2600,36 @@ class App(tk.Tk):
             return True
 
     def _create_widgets(self):
-        # --- Barra Superiore per l'Orologio ---
-        header_frame = ttk.Frame(self)
-        header_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(5, 0))
+        # --- PRIMA: Crea la Barra di Stato Inferiore ---
+        status_bar = ttk.Frame(self, style="Card.TFrame", padding=5)
+        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
-        self.clock_label = ttk.Label(header_frame, font=("Helvetica", 9))
-        self.clock_label.pack(side=tk.RIGHT)  # Allinea l'orologio a destra
+        # Contenitore per Logo e Orologio, allineato a destra
+        bottom_right_frame = ttk.Frame(status_bar)
+        bottom_right_frame.pack(side=tk.RIGHT)
 
-        # --- Logo Centrale (invariato) ---
-        if not PIL_AVAILABLE:
-            print("Pillow non è installato. Impossibile visualizzare il logo.")
-            return
-        try:
-            image = Image.open("logo.png")
-            image.thumbnail((250, 250))
-            self.logo_image = ImageTk.PhotoImage(image)
-            self.logo_label = ttk.Label(self, image=self.logo_image)
-            self.logo_label.pack(pady=20, expand=True)
-        except FileNotFoundError:
-            print("Errore: logo.png non trovato nella cartella dell'applicazione.")
-        except Exception as e:
-            print(f"Errore durante il caricamento del logo: {e}")
+        # Logo (ora in basso a destra)
+        if PIL_AVAILABLE:
+            try:
+                image = Image.open("logo.png")
+                image.thumbnail((100, 100))
+                self.logo_image = ImageTk.PhotoImage(image)
+                self.logo_label = ttk.Label(bottom_right_frame, image=self.logo_image)
+                self.logo_label.pack()
+            except Exception as e:
+                print(f"Errore caricamento logo: {e}")
 
-    # --- GESTIONE MENU E LINGUA ---
+        # Orologio (ora sotto il logo)
+        self.clock_label = ttk.Label(bottom_right_frame, font=("Helvetica", 9), justify=tk.RIGHT)
+        self.clock_label.pack()
 
-    # In main.py, inside the App class
+        # --- DOPO: Crea l'Area Centrale per lo Slideshow ---
+        # Ora questo label si espanderà per riempire tutto lo spazio RIMANENTE
+        self.slideshow_label = ttk.Label(self, background="black")
+        self.slideshow_label.pack(fill=tk.BOTH, expand=True)
+
+        # Associa il ridimensionamento al disegno dell'immagine
+        self.slideshow_label.bind('<Configure>', lambda e: self._draw_current_image())
 
     def _create_menu(self):
         self.menubar = tk.Menu(self)
