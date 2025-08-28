@@ -1,4 +1,4 @@
-import configparser
+#import configparser
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -20,6 +20,7 @@ import submissions_gui
 import general_docs_gui
 import permissions_gui
 import materials_gui
+import operations_gui
 
 try:
     from PIL import Image, ImageTk
@@ -32,22 +33,12 @@ except ImportError:
 APP_VERSION = "1.6.3"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
-# # --- CONFIGURAZIONE DATABASE ---
-# DB_DRIVER = '{SQL Server Native Client 11.0}'
-# DB_SERVER = 'roghipsql01.vandewiele.local\\emsreset'
-# DB_DATABASE = 'Traceability_rs'
-# DB_UID = 'emsreset'
-# DB_PWD = 'E6QhqKUxHFXTbkB7eA8c9ya'
-# DB_CONN_STR = f'DRIVER={DB_DRIVER};SERVER={DB_SERVER};DATABASE={DB_DATABASE};UID={DB_UID};PWD={DB_PWD};'
-
-config = configparser.ConfigParser()
-config.read('config.ini')
-
-DB_DRIVER = config['Database']['Driver']
-DB_SERVER = config['Database']['Server']
-DB_DATABASE = config['Database']['Database']
-DB_UID = config['Database']['UID']
-DB_PWD = config['Database']['PWD']
+# --- CONFIGURAZIONE DATABASE ---
+DB_DRIVER = '{SQL Server Native Client 11.0}'
+DB_SERVER = 'roghipsql01.vandewiele.local\\emsreset'
+DB_DATABASE = 'Traceability_rs'
+DB_UID = 'emsreset'
+DB_PWD = 'E6QhqKUxHFXTbkB7eA8c9ya'
 DB_CONN_STR = f'DRIVER={DB_DRIVER};SERVER={DB_SERVER};DATABASE={DB_DATABASE};UID={DB_UID};PWD={DB_PWD};'
 
 def is_update_needed(current_ver_str, db_ver_str):
@@ -98,6 +89,117 @@ class LanguageManager:
 
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
+
+    def fetch_report_data(self, from_date, to_date, equipment_id=None, intervention_id=None):
+        """Recupera i dati dei log di manutenzione per un dato periodo e filtri opzionali."""
+        query = """
+                SELECT eq.InternalName                             AS EquipmentName, \
+                       pin.TimingDescriprion                       AS InterventionType, \
+                       cm.NomeCompito                              AS TaskName, \
+                       lm.UserName, \
+                       lm.DateStart, \
+                       lm.DateStop, \
+                       DATEDIFF(MINUTE, lm.DateStart, lm.DateStop) AS DurationInMinutes
+                FROM eqp.LogManutenzioni lm
+                         JOIN eqp.CompitiManutenzione cm ON lm.CompitoId = cm.CompitoId
+                         JOIN eqp.Equipments eq ON lm.EquipmentId = eq.EquipmentId
+                         JOIN eqp.ProgrammedInterventions pin \
+                              ON cm.ProgrammedInterventionId = pin.ProgrammedInterventionId
+                WHERE lm.DateStart >= ? \
+                  AND lm.DateStart < DATEADD(day, 1, ?) \
+                """
+        params = [from_date, to_date]
+
+        if equipment_id:
+            query += " AND eq.EquipmentId = ?"
+            params.append(equipment_id)
+
+        if intervention_id:
+            query += " AND pin.ProgrammedInterventionId = ?"
+            params.append(intervention_id)
+
+        query += " ORDER BY lm.DateStart;"
+
+        try:
+            self.cursor.execute(query, params)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_open_production_orders(self):
+        """Recupera la lista degli ordini di produzione aperti."""
+        query = """
+                SELECT o.idordine, o.po + ' [' + pf.epiccode + ']' AS OrderNumber
+                FROM ResetServices.dbo.tbordini o
+                         INNER JOIN Resetservices.dbo.tbsubordine so ON o.IdOrdine = so.IdOrdine
+                         INNER JOIN Resetservices.dbo.tbprodfin pf ON so.idpf = pf.idpf
+                         INNER JOIN resetservices.dbo.TbRegistro r \
+                                    ON o.idregistro = r.contatore AND r.idregistro IN (21, 26)
+                         LEFT JOIN resetservices.dbo.TbFattStory fs ON fs.IdPoSub = so.IdOrdStori
+                         LEFT JOIN resetservices.dbo.TbProdFinStuff Micro ON micro.Idpf = so.idpf
+                WHERE YEAR (o.dataord) >= 2025 AND micro.idpf IS NULL
+                GROUP BY o.idordine, o.po + ' [' + pf.epiccode +']', so.QtaStory, o.dataord, so.DataDeliSubOrdine
+                HAVING so.QtaStory > ISNULL(SUM (fs.QtaFaturata), 0)
+                ORDER BY o.dataord; \
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            print(f"Errore nel recupero degli ordini di produzione: {e}")
+            return []
+
+    def fetch_issue_areas(self):
+        """Recupera le aree di produzione dove può verificarsi un'interruzione."""
+        query = "SELECT IssueAreaId, IssueArea FROM ResetServices.BreakDown.IssuesAreas ORDER BY IssueArea;"
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e);
+            return []
+
+    def fetch_issue_problems(self):
+        """Recupera la lista delle possibili cause di interruzione."""
+        # Query fornita dall'utente
+        query = """
+                SELECT iup.IssueProblemId, iup.DescriptionEN, ia.IssueArea, wa.AreaName
+                FROM ResetServices.BreakDown.IssueProblems iup
+                         INNER JOIN ResetServices.BreakDown.IssuesAreas IA ON iup.IssueAreaId = ia.IssueAreaId
+                         INNER JOIN ResetServices.BreakDown.WorkingAreas WA ON wa.WorkingAreaID = iup.WorkingAreaID
+                ORDER BY ia.IssueAreaId, wa.AreaName; \
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e);
+            return []
+
+    def add_production_interruption(self, report_date, user_name, from_hour, duration, area_id, equipment_id,
+                                    problem_id, po_number, notes):
+        """Salva un nuovo record di interruzione produzione in ReportIssueLogs."""
+        query = """
+                INSERT INTO ResetServices.dbo.ReportIssueLogs
+                (DateReport, AzUserName, AzFromHour, Lost_OR_Gain, IssueAreaId, WorkingEquipmentsID, IssueProblemId, \
+                 PoNumber, AzNote)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?); \
+                """
+        try:
+            # Calcola l'ora di fine
+            start_time = datetime.strptime(from_hour, "%H:%M")
+            # end_time = start_time + timedelta(minutes=duration) # Se serve AzToHour
+
+            self.cursor.execute(query, report_date, user_name, from_hour, duration, area_id, equipment_id, problem_id,
+                                po_number, notes)
+            self.conn.commit()
+            return True, "Interruzione di produzione registrata con successo."
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False, f"Errore durante il salvataggio: {e}"
 
     def check_if_material_exists(self, part_number):
         """Controlla se un materiale con un dato Codice Articolo esiste già. Restituisce True se esiste, altrimenti False."""
@@ -2279,6 +2381,13 @@ class App(tk.Tk):
 
         self.after(100, self._post_startup_tasks)
 
+    def open_add_interruption_window(self):
+        """Apre la finestra per dichiarare un'interruzione di produzione."""
+        self._execute_simple_login(
+            action_callback=lambda user_name: operations_gui.open_add_interruption_window(self, self.db, self.lang,
+                                                                                          user_name)
+        )
+
     def _post_startup_tasks(self):
         """Esegue compiti che richiedono che la finestra principale sia completamente inizializzata."""
         print("DEBUG: Eseguo le operazioni post-avvio (orologio e slideshow).")
@@ -2496,7 +2605,6 @@ class App(tk.Tk):
         if authenticated_user:
             tools_gui.open_brands_manager(self, self.db, self.lang)
 
-
     def open_suppliers_manager_with_login(self):
         self._execute_authorized_action(
             menu_translation_key='submenu_suppliers',
@@ -2539,10 +2647,6 @@ class App(tk.Tk):
         if authenticated_user:
             # Chiama la funzione corretta in maintenance_gui, passando l'utente autenticato
             maintenance_gui.open_fill_templates(self, self.db, self.lang, authenticated_user)
-
-
-
-    # --- METODI DI SUPPORTO ALL'INIZIALIZZAZIONE ---
 
     def check_version(self):
         """
@@ -2728,10 +2832,10 @@ class App(tk.Tk):
         )
         self.declarations_submenu.delete(0, 'end')
         # Aggiungi la nuova voce
-        self.declarations_submenu.add_command(
-            label=self.lang.get('submenu_interruptions', "Interruzioni di produzione"),
-            state="disabled"
-        )
+        # self.declarations_submenu.add_command(
+        #     label=self.lang.get('submenu_interruptions', "Interruzioni di produzione"),
+        #     state="disabled"
+        # )
 
         # 3. Sottomenu "Rapporti" (all'interno di Produzione)
         self.production_submenu.add_cascade(
@@ -2740,9 +2844,10 @@ class App(tk.Tk):
         )
         self.reports_submenu.delete(0, 'end')
         # Aggiungi la nuova voce
-        self.reports_submenu.add_command(
-            label=self.lang.get('submenu_line_stoppage_reports', "Rapporti di fermo linea"),
-            state="disabled"
+        self.declarations_submenu.add_command(
+            label=self.lang.get('submenu_interruptions', "Interruzioni di produzione"),
+            command=self.open_add_interruption_window,
+            state="disabled" #disabilitato momentaneamente
         )
 
         # 4. Sottomenu "Impostazioni" (direttamente in Produzione)
@@ -2859,7 +2964,6 @@ class App(tk.Tk):
                           "The language has been updated. Please reopen any open windows to apply the changes."),
             parent=self
         )
-
 
     def _show_about(self):
         """Mostra la finestra di dialogo 'About' con le informazioni del software."""

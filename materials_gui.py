@@ -1,10 +1,22 @@
 # materials_gui.py
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox
+from tkcalendar import DateEntry
+from datetime import date
+from collections import Counter
+import tempfile
 import os
-import openpyxl
-from datetime import datetime
-import io
+
+# Import per i grafici
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+# Import per il PDF (già presenti, ma per sicurezza)
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import landscape, A4
+from reportlab.lib.units import cm
+from reportlab.platypus import Image as ReportLabImage, Table, TableStyle
+from reportlab.lib import colors
 
 try:
     from PIL import Image, ImageTk
@@ -13,8 +25,6 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
-
-# In materials_gui.py
 
 class ManageMaterialsWindow(tk.Toplevel):
     """Finestra per la gestione completa dei materiali e dei loro collegamenti alle macchine."""
@@ -391,7 +401,6 @@ class ViewMaterialsWindow(tk.Toplevel):
             messagebox.showerror("Errore Esportazione", f"Impossibile generare il file Excel:\n{e}")
 
 
-# Funzioni Launcher
 def open_manage_materials(parent, db, lang, user_name):
     ManageMaterialsWindow(parent, db, lang, user_name)
 

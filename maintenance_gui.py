@@ -1,10 +1,12 @@
 # maintenance_gui.py
-from datetime import datetime
+from datetime import datetime, date
 import tkinter as tk
 from tkinter import ttk, messagebox
 from tkinter import filedialog
 import os
 import reportlab
+from tkcalendar import DateEntry
+
 import richieste_intervento
 import openpyxl
 from datetime import datetime
@@ -17,8 +19,14 @@ from reportlab.platypus import Paragraph, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
-#import reportlab.pdfbase.ttfonts
 from reportlab.pdfbase.ttfonts import TTFont
+from datetime import datetime
+from tkinter import messagebox
+import richieste_intervento
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import cm
+from reportlab.platypus import Image as ReportLabImage
 
 # Import per ReportLab (necessari per MachineDetailsWindow)
 try:
@@ -191,9 +199,6 @@ class AddMachineWindow(tk.Toplevel):
             error_msg = self.lang.get('error_saving_machine') + f"\n\n{self.db.last_error_details}"
             messagebox.showerror(self.lang.get('error_title'), error_msg, parent=self)
 
-
-# Sostituisci la vecchia EditMachineWindow con queste due classi in maintenance_gui.py
-
 class SelectMachineToEditWindow(tk.Toplevel):
     """Finestra per selezionare quale macchina modificare."""
 
@@ -246,7 +251,6 @@ class SelectMachineToEditWindow(tk.Toplevel):
         # Apre la finestra di modifica passando tutti i parametri necessari
         EditMachineWindow(self.parent_app, self.db, self.lang, equipment_id, self.user_name)
         self.destroy()
-
 
 class EditMachineWindow(tk.Toplevel):
     """Finestra per modificare i dati di una macchina specifica."""
@@ -362,15 +366,6 @@ class EditMachineWindow(tk.Toplevel):
         else:
             error_msg = self.lang.get('error_updating_machine') + f"\n\n{self.db.last_error_details}"
             messagebox.showerror(self.lang.get('error_title'), error_msg, parent=self)
-
-
-# In maintenance_gui.py, sostituisci la vecchia ViewMachineWindow con queste due classi
-
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import cm
-from reportlab.platypus import Image as ReportLabImage
-
 
 class ViewMachineWindow(tk.Toplevel):
     """Finestra di ricerca macchine con filtri."""
@@ -508,7 +503,6 @@ class ViewMachineWindow(tk.Toplevel):
 
         equipment_id = int(selected_item)
         MachineDetailsWindow(self.parent_app, self.db, self.lang, equipment_id)
-
 
 class MachineDetailsWindow(tk.Toplevel):
     """Finestra che mostra tutte le informazioni di una singola macchina."""
@@ -650,12 +644,6 @@ class MachineDetailsWindow(tk.Toplevel):
             messagebox.showerror(self.lang.get('error_title'), f"{self.lang.get('pdf_generated_error')}\n\n{e}",
                                  parent=self)
 
-
-
-# ... le altre funzioni launcher rimangono invariate ...
-
-# --- Finestre Segnaposto per le Altre Funzionalità di Manutenzione ---
-
 class MaintenanceDocsWindow(tk.Toplevel):
     """Finestra per la gestione dei documenti di manutenzione."""
 
@@ -670,13 +658,6 @@ class MaintenanceDocsWindow(tk.Toplevel):
 
 
     # In maintenance_gui.py
-
-# Nel file maintenance_gui.py
-# Assicurati di avere questi import all'inizio del file:
-from datetime import datetime
-from tkinter import messagebox
-import richieste_intervento
-# ... e gli altri import di tkinter ...
 
 class FillTemplateWindow(tk.Toplevel):
     """Finestra per la compilazione delle schede di manutenzione."""
@@ -893,8 +874,198 @@ class FillTemplateWindow(tk.Toplevel):
                 self._on_equipment_select()
             else:
                 messagebox.showerror(self.lang.get('error_title'), self.db.last_error_details, parent=self)
-# AGGIORNA la funzione launcher in maintenance_gui.py per accettare user_name
-# Sostituisci la vecchia definizione di open_fill_templates con questa:
+
+
+# In maintenance_gui.py
+
+class MaintenanceReportWindow(tk.Toplevel):
+    """Finestra avanzata per la generazione di report di manutenzione."""
+
+    def __init__(self, parent, db, lang):
+        super().__init__(parent)
+        self.db = db
+        self.lang = lang
+        self.title(lang.get('submenu_reports', "Report Manutenzione"))
+        self.geometry("1100x700")
+
+        self.report_data = []
+        self.equipments_data = {}
+        self.cycles_data = {}
+
+        self.from_date_var = tk.StringVar(value=date.today().strftime('%d/%m/%Y'))
+        self.to_date_var = tk.StringVar(value=date.today().strftime('%d/%m/%Y'))
+        self.equipment_var = tk.StringVar()
+        self.cycle_var = tk.StringVar()
+
+        self._create_widgets()
+        self._load_filters()
+
+    def _create_widgets(self):
+        main_frame = ttk.Frame(self, padding="10")
+        main_frame.pack(fill="both", expand=True)
+        main_frame.rowconfigure(1, weight=1)
+        main_frame.columnconfigure(0, weight=1)
+
+        filter_frame = ttk.LabelFrame(main_frame, text=self.lang.get('report_filters_label', "Filtri Report"),
+                                      padding="10")
+        filter_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+
+        ttk.Label(filter_frame, text=self.lang.get('from_date_label', "Da:")).grid(row=0, column=0, padx=5)
+        DateEntry(filter_frame, width=12, date_pattern='dd/MM/yyyy', textvariable=self.from_date_var).grid(row=0,
+                                                                                                           column=1)
+
+        ttk.Label(filter_frame, text=self.lang.get('to_date_label', "A:")).grid(row=0, column=2, padx=5)
+        DateEntry(filter_frame, width=12, date_pattern='dd/MM/yyyy', textvariable=self.to_date_var).grid(row=0,
+                                                                                                         column=3)
+
+        ttk.Label(filter_frame, text=self.lang.get('machine_label', "Macchina:")).grid(row=0, column=4, padx=5)
+        self.equipment_combo = ttk.Combobox(filter_frame, textvariable=self.equipment_var, state="readonly", width=30)
+        self.equipment_combo.grid(row=0, column=5, padx=5)
+
+        ttk.Label(filter_frame, text=self.lang.get('cycle_label', "Ciclo:")).grid(row=0, column=6, padx=5)
+        self.cycle_combo = ttk.Combobox(filter_frame, textvariable=self.cycle_var, state="readonly", width=20)
+        self.cycle_combo.grid(row=0, column=7, padx=5)
+
+        ttk.Button(filter_frame, text=self.lang.get('generate_report_button', "Genera Report"),
+                   command=self._generate_report).grid(row=0, column=8, padx=20)
+        self.export_button = ttk.Button(filter_frame, text=self.lang.get('export_pdf_button', "Esporta PDF"),
+                                        command=self._export_to_pdf, state="disabled")
+        self.export_button.grid(row=0, column=9)
+
+        self.notebook = ttk.Notebook(main_frame)
+        self.notebook.grid(row=1, column=0, sticky="nsew")
+
+        summary_frame = ttk.Frame(self.notebook, padding="10")
+        self.notebook.add(summary_frame, text=self.lang.get('summary_chart_tab', "Riepilogo e Grafico"))
+        summary_frame.columnconfigure(1, weight=3)
+        summary_frame.columnconfigure(0, weight=1)
+        summary_frame.rowconfigure(0, weight=1)
+
+        kpi_frame = ttk.LabelFrame(summary_frame, text=self.lang.get('kpi_label', "Statistiche Chiave (KPI)"))
+        kpi_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        self.kpi_total_tasks = ttk.Label(kpi_frame, text="", font=("Helvetica", 11))
+        self.kpi_total_tasks.pack(pady=5, anchor="w", padx=10)
+        self.kpi_total_time = ttk.Label(kpi_frame, text="", font=("Helvetica", 11))
+        self.kpi_total_time.pack(pady=5, anchor="w", padx=10)
+        self.kpi_top_machine = ttk.Label(kpi_frame, text="", font=("Helvetica", 11), wraplength=200)
+        self.kpi_top_machine.pack(pady=5, anchor="w", padx=10)
+        self._update_kpis()
+
+        self.chart_frame = ttk.LabelFrame(summary_frame, text=self.lang.get('chart_label', "Interventi per Macchina"))
+        self.chart_frame.grid(row=0, column=1, sticky="nsew")
+
+        details_frame = ttk.Frame(self.notebook, padding="10")
+        self.notebook.add(details_frame, text=self.lang.get('details_tab', "Dati di Dettaglio"))
+        details_frame.rowconfigure(0, weight=1)
+        details_frame.columnconfigure(0, weight=1)
+
+        cols = ('machine', 'intervention', 'task', 'user', 'start', 'stop', 'duration')
+        self.tree = ttk.Treeview(details_frame, columns=cols, show="headings")
+        self.tree.heading('machine', text=self.lang.get('header_machine', "Macchina"))
+        self.tree.heading('intervention', text=self.lang.get('header_intervention', "Tipo Intervento"))
+        self.tree.heading('task', text=self.lang.get('header_task', "Compito"))
+        self.tree.heading('user', text=self.lang.get('header_user', "Eseguito Da"))
+        self.tree.heading('start', text=self.lang.get('header_start', "Inizio"))
+        self.tree.heading('stop', text=self.lang.get('header_stop', "Fine"))
+        self.tree.heading('duration', text=self.lang.get('header_duration', "Durata (min)"))
+        self.tree.pack(side="left", fill="both", expand=True)
+
+        scrollbar = ttk.Scrollbar(details_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+
+    def _load_filters(self):
+        all_text = self.lang.get('all_filter_option', "TUTTI")
+
+        equipments = self.db.fetch_all_equipments()
+        self.equipments_data = {f"{r.InternalName or ''} [{r.SerialNumber}]": r.EquipmentId for r in equipments}
+        self.equipment_combo['values'] = [all_text] + sorted(list(self.equipments_data.keys()))
+        self.equipment_var.set(all_text)
+
+        cycles = self.db.fetch_maintenance_cycles()
+        self.cycles_data = {c.TimingDescriprion: c.ProgrammedInterventionId for c in cycles}
+        self.cycle_combo['values'] = [all_text] + sorted(list(self.cycles_data.keys()))
+        self.cycle_var.set(all_text)
+
+    def _generate_report(self):
+        from_date = self.from_date_var.get()
+        to_date = self.to_date_var.get()
+        if not from_date or not to_date:
+            messagebox.showerror(self.lang.get('error_title', "Errore"),
+                                 self.lang.get('error_date_range', "Selezionare un intervallo di date valido."))
+            return
+
+        all_text = self.lang.get('all_filter_option', "TUTTI")
+        equipment_id = self.equipments_data.get(
+            self.equipment_var.get()) if self.equipment_var.get() != all_text else None
+        cycle_id = self.cycles_data.get(self.cycle_var.get()) if self.cycle_var.get() != all_text else None
+
+        self.report_data = self.db.fetch_report_data(from_date, to_date, equipment_id, cycle_id)
+
+        # --- MESSAGGIO DI AVVISO PER DATI MANCANTI ---
+        if not self.report_data:
+            messagebox.showinfo(self.lang.get('info_title', "Info"),
+                                self.lang.get('info_no_data_found', "Nessun dato trovato per i filtri selezionati."))
+            self.export_button.config(state="disabled")
+        else:
+            self.export_button.config(state="normal")
+
+        self._update_kpis()
+        self._update_details_table()
+        self._update_chart()
+
+    def _update_kpis(self):
+        kpi1_label = self.lang.get('kpi_total_interventions', "Interventi totali:")
+        kpi2_label = self.lang.get('kpi_total_time', "Tempo totale (ore):")
+        kpi3_label = self.lang.get('kpi_top_machine', "Macchina con più interventi:")
+
+        if not self.report_data:
+            self.kpi_total_tasks.config(text=f"{kpi1_label} 0")
+            self.kpi_total_time.config(text=f"{kpi2_label} 0.0")
+            self.kpi_top_machine.config(text=f"{kpi3_label} N/D")
+            return
+
+        total_tasks = len(self.report_data)
+        total_minutes = sum(row.DurationInMinutes for row in self.report_data)
+        total_hours = round(total_minutes / 60.0, 2)
+        machine_counts = Counter(row.EquipmentName for row in self.report_data)
+        top_machine = machine_counts.most_common(1)[0][0] if machine_counts else "N/D"
+
+        self.kpi_total_tasks.config(text=f"{kpi1_label} {total_tasks}")
+        self.kpi_total_time.config(text=f"{kpi2_label} {total_hours}")
+        self.kpi_top_machine.config(text=f"{kpi3_label} {top_machine}")
+
+    def _update_details_table(self):
+        self.tree.delete(*self.tree.get_children())
+        for row in self.report_data:
+            self.tree.insert("", "end", values=(
+                row.EquipmentName, row.InterventionType, row.TaskName, row.UserName,
+                row.DateStart.strftime('%Y-%m-%d %H:%M'),
+                row.DateStop.strftime('%Y-%m-%d %H:%M'),
+                row.DurationInMinutes
+            ))
+
+    def _update_chart(self):
+        for widget in self.chart_frame.winfo_children():
+            widget.destroy()
+        if not self.report_data: return
+        machine_counts = Counter(row.EquipmentName for row in self.report_data)
+        labels = list(machine_counts.keys())
+        values = list(machine_counts.values())
+        fig = plt.figure(figsize=(7, 5))
+        ax = fig.add_subplot(111)
+        ax.bar(labels, values, color='skyblue')
+        ax.set_ylabel(self.lang.get('chart_y_axis', 'Numero di Interventi'))
+        ax.set_title(self.lang.get('chart_title', 'Interventi di Manutenzione per Macchina'))
+        plt.setp(ax.get_xticklabels(), rotation=30, horizontalalignment='right')
+        fig.tight_layout()
+        canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+    def _export_to_pdf(self):
+        messagebox.showinfo("Info", "Funzionalità di esportazione PDF in sviluppo.")
+
 def open_fill_templates(parent, db, lang, user_name=None):
     # Controlla se user_name è stato fornito (dovrebbe esserlo se chiamato tramite login da App)
     if user_name:
@@ -903,40 +1074,19 @@ def open_fill_templates(parent, db, lang, user_name=None):
         # Fallback di sicurezza nel caso venga chiamata erroneamente senza utente
         print("Errore: Tentativo di aprire Compilazione Schede senza autenticazione.")
 
-
-class ReportsWindow(tk.Toplevel):
-    """Finestra per la generazione di report."""
-
-    def __init__(self, parent, db, lang):
-        super().__init__(parent)
-        self.title(lang.get('submenu_reports'))
-        self.geometry("700x500")
-        ttk.Label(self, text="Finestra Generazione Report - In Sviluppo", font=("Helvetica", 16)).pack(pady=50, padx=20)
-        self.transient(parent)
-        self.grab_set()
-
-
-# --- Funzioni "Launcher" per aprire le finestre dal menu principale ---
-
 def open_add_machine(parent, db, lang):
     AddMachineWindow(parent, db, lang)
-
-
-# Modifica questa funzione in maintenance_gui.py
 
 def open_edit_machine(parent, db, lang):
     # L'utente autenticato viene passato qui
     user_name = parent.authenticated_user_for_maintenance # Dovremo aggiungere questa variabile
     SelectMachineToEditWindow(parent, db, lang, user_name)
 
-
 def open_view_machines(parent, db, lang):
     ViewMachineWindow(parent, db, lang)
 
-
 def open_maintenance_docs(parent, db, lang):
     MaintenanceDocsWindow(parent, db, lang)
-
 
 def open_fill_templates(parent, db, lang, user_name=None):
     # Controlla se user_name è stato fornito (dovrebbe esserlo se chiamato tramite login da App)
@@ -949,9 +1099,6 @@ def open_fill_templates(parent, db, lang, user_name=None):
 def open_add_maintenance_tasks(parent, db, lang, user_name):
     """Launcher function to create and show the AddMaintenanceTasksWindow."""
     AddMaintenanceTasksWindow(parent, db, lang, user_name)
-
-
-
 
 class AddTaskRowDialog(tk.Toplevel):
     """Dialogo modale per inserire o MODIFICARE i dettagli di un singolo task."""
@@ -1028,7 +1175,6 @@ class AddTaskRowDialog(tk.Toplevel):
             return
         self.task_name = self.name_var.get().strip()
         self.destroy()
-
 
 class AddMaintenanceTasksWindow(tk.Toplevel):
     """
@@ -1248,12 +1394,11 @@ class AddMaintenanceTasksWindow(tk.Toplevel):
         else:
             messagebox.showerror("Errori durante il Salvataggio", "\n".join(errors))
 
-# --- Funzioni Launcher aggiornate/nuove ---
 def open_add_maintenance_doc(parent, db, lang, user_name):
     MaintenanceDocsWindow(parent, db, lang, user_name)
 
 def open_reports(parent, db, lang):
     # Sostituisce la vecchia finestra segnaposto con quella nuova
-    ReportsWindow(parent, db, lang)
+    MaintenanceReportWindow(parent, db, lang)
 
 
