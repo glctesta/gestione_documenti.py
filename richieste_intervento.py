@@ -15,90 +15,90 @@ import subprocess
 
 # In richieste_intervento.py
 
-class AddNewSparePartWindow(tk.Toplevel):
-    """Finestra per aggiungere un nuovo materiale di ricambio al catalogo."""
-
-    def __init__(self, parent, db, lang):
-        super().__init__(parent)
-        self.db = db
-        self.lang = lang
-        self.new_part_id = None
-
-        # Usa il gestore della lingua per il titolo
-        self.title(self.lang.get('add_new_material_title', "Aggiungi Nuovo Materiale"))
-        self.geometry("500x300")
-        self.transient(parent)
-        self.grab_set()
-
-        self.part_number_var = tk.StringVar()
-        self.code_var = tk.StringVar()
-        self._create_widgets()
-
-    def _create_widgets(self):
-        frame = ttk.Frame(self, padding="15")
-        frame.pack(fill=tk.BOTH, expand=True)
-        frame.columnconfigure(1, weight=1)
-
-        # Usa il gestore della lingua per tutte le etichette
-        ttk.Label(frame, text=self.lang.get('material_part_number_label', "Codice Materiale (*):")).grid(row=0,
-                                                                                                         column=0,
-                                                                                                         sticky=tk.W,
-                                                                                                         pady=5)
-        self.part_number_entry = ttk.Entry(frame, textvariable=self.part_number_var)
-        self.part_number_entry.grid(row=0, column=1, sticky=tk.EW, pady=5)
-
-        ttk.Label(frame, text=self.lang.get('material_code_label', "Nome Materiale:")).grid(row=1, column=0,
-                                                                                            sticky=tk.W, pady=5)
-        self.code_entry = ttk.Entry(frame, textvariable=self.code_var)
-        self.code_entry.grid(row=1, column=1, sticky=tk.EW, pady=5)
-
-        ttk.Label(frame, text=self.lang.get('material_description_label', "Descrizione:")).grid(row=2, column=0,
-                                                                                                sticky=tk.NW, pady=5)
-        self.description_text = tk.Text(frame, height=5, wrap=tk.WORD)
-        self.description_text.grid(row=2, column=1, sticky=tk.EW, pady=5)
-
-        button_frame = ttk.Frame(frame)
-        button_frame.grid(row=3, column=1, sticky=tk.E, pady=(20, 0))
-
-        # Usa il gestore della lingua per i pulsanti
-        ttk.Button(button_frame, text=self.lang.get('save_button', "Salva"), command=self._save_new_part).pack(
-            side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text=self.lang.get('cancel_button', "Annulla"), command=self.destroy).pack(
-            side=tk.LEFT)
-
-        self.part_number_entry.focus_set()
-
-    def _save_new_part(self):
-        # ... (questo metodo rimane invariato)
-        part_number = self.part_number_var.get().strip()
-        code = self.code_var.get().strip()
-        description = self.description_text.get("1.0", tk.END).strip()
-
-        if not part_number:
-            messagebox.showerror(self.lang.get('error_title', "Errore"),
-                                 self.lang.get('error_part_number_required', "Il Codice Materiale è obbligatorio."),
-                                 parent=self)
-            return
-
-        new_id = self.db.add_new_spare_part(part_number, code, description)
-
-        if new_id:
-            messagebox.showinfo(self.lang.get('success_title', "Successo"),
-                                self.lang.get('info_new_part_saved', "Nuovo materiale salvato con successo."),
-                                parent=self)
-            self.new_part_id = new_id
-            self.destroy()
-        else:
-            messagebox.showerror(self.lang.get('error_title', "Errore"),
-                                 self.lang.get('error_saving_part',
-                                               "Impossibile salvare il nuovo materiale.") + f"\n\n{self.db.last_error_details}",
-                                 parent=self)
-
-# In richiese_intervento.py
-
-# In richieste_intervento.py
-
-# In richieste_intervento.py
+# class AddNewSparePartWindow(tk.Toplevel):
+#     """Finestra per aggiungere un nuovo materiale di ricambio al catalogo."""
+#
+#     def __init__(self, parent, db, lang):
+#         super().__init__(parent)
+#         self.db = db
+#         self.lang = lang
+#         self.new_part_id = None
+#
+#         # Usa il gestore della lingua per il titolo
+#         self.title(self.lang.get('add_new_material_title', "Aggiungi Nuovo Materiale"))
+#         self.geometry("500x300")
+#         self.transient(parent)
+#         self.grab_set()
+#
+#         self.part_number_var = tk.StringVar()
+#         self.code_var = tk.StringVar()
+#         self._create_widgets()
+#
+#     def _create_widgets(self):
+#         frame = ttk.Frame(self, padding="15")
+#         frame.pack(fill=tk.BOTH, expand=True)
+#         frame.columnconfigure(1, weight=1)
+#
+#         # Usa il gestore della lingua per tutte le etichette
+#         ttk.Label(frame, text=self.lang.get('material_part_number_label', "Codice Materiale (*):")).grid(row=0,
+#                                                                                                          column=0,
+#                                                                                                          sticky=tk.W,
+#                                                                                                          pady=5)
+#         self.part_number_entry = ttk.Entry(frame, textvariable=self.part_number_var)
+#         self.part_number_entry.grid(row=0, column=1, sticky=tk.EW, pady=5)
+#
+#         ttk.Label(frame, text=self.lang.get('material_code_label', "Nome Materiale:")).grid(row=1, column=0,
+#                                                                                             sticky=tk.W, pady=5)
+#         self.code_entry = ttk.Entry(frame, textvariable=self.code_var)
+#         self.code_entry.grid(row=1, column=1, sticky=tk.EW, pady=5)
+#
+#         ttk.Label(frame, text=self.lang.get('material_description_label', "Descrizione:")).grid(row=2, column=0,
+#                                                                                                 sticky=tk.NW, pady=5)
+#         self.description_text = tk.Text(frame, height=5, wrap=tk.WORD)
+#         self.description_text.grid(row=2, column=1, sticky=tk.EW, pady=5)
+#
+#         button_frame = ttk.Frame(frame)
+#         button_frame.grid(row=3, column=1, sticky=tk.E, pady=(20, 0))
+#
+#         # Usa il gestore della lingua per i pulsanti
+#         ttk.Button(button_frame, text=self.lang.get('save_button', "Salva"), command=self._save_new_part).pack(
+#             side=tk.LEFT, padx=5)
+#         ttk.Button(button_frame, text=self.lang.get('cancel_button', "Annulla"), command=self.destroy).pack(
+#             side=tk.LEFT)
+#
+#         self.part_number_entry.focus_set()
+#
+#     def _save_new_part(self):
+#         # ... (questo metodo rimane invariato)
+#         part_number = self.part_number_var.get().strip()
+#         code = self.code_var.get().strip()
+#         description = self.description_text.get("1.0", tk.END).strip()
+#
+#         if not part_number:
+#             messagebox.showerror(self.lang.get('error_title', "Errore"),
+#                                  self.lang.get('error_part_number_required', "Il Codice Materiale è obbligatorio."),
+#                                  parent=self)
+#             return
+#
+#         new_id = self.db.add_new_spare_part(part_number, code, description)
+#
+#         if new_id:
+#             messagebox.showinfo(self.lang.get('success_title', "Successo"),
+#                                 self.lang.get('info_new_part_saved', "Nuovo materiale salvato con successo."),
+#                                 parent=self)
+#             self.new_part_id = new_id
+#             self.destroy()
+#         else:
+#             messagebox.showerror(self.lang.get('error_title', "Errore"),
+#                                  self.lang.get('error_saving_part',
+#                                                "Impossibile salvare il nuovo materiale.") + f"\n\n{self.db.last_error_details}",
+#                                  parent=self)
+#
+# # In richiese_intervento.py
+#
+# # In richieste_intervento.py
+#
+# # In richieste_intervento.py
 
 class RequestWindow(tk.Toplevel):
     """Finestra per richiedere parti di ricambio o interventi."""
@@ -147,13 +147,13 @@ class RequestWindow(tk.Toplevel):
         self.spare_parts_combo.bind('<KeyRelease>', self._filter_spare_parts_combo)
         self.spare_parts_combo.bind("<<ComboboxSelected>>", self._on_part_selected)
 
-        new_part_button = ttk.Button(part_frame, text=self.lang.get('new_material_button', "Nuovo..."),
-                                     command=self._open_add_new_part_window)
-        new_part_button.grid(row=0, column=1, padx=5)
+        # new_part_button = ttk.Button(part_frame, text=self.lang.get('new_material_button', "Nuovo..."),
+        #                              command=self._open_add_new_part_window)
+        # new_part_button.grid(row=0, column=1, padx=5)
 
         self.view_doc_button = ttk.Button(part_frame, text="Visualizza Doc.", command=self._open_material_document,
                                           state="disabled")
-        self.view_doc_button.grid(row=0, column=2, padx=5)
+        self.view_doc_button.grid(row=0, column=1, padx=5)
 
         ttk.Label(main_frame, text=self.lang.get('quantity_label', "Quantità:")).grid(row=2, column=0, sticky=tk.W,
                                                                                       padx=5, pady=5)
@@ -246,12 +246,12 @@ class RequestWindow(tk.Toplevel):
         except Exception as e:
             messagebox.showerror("Errore", f"Impossibile aprire il documento: {e}", parent=self)
 
-    def _open_add_new_part_window(self):
-        add_window = AddNewSparePartWindow(self, self.db, self.lang)
-        self.wait_window(add_window)
-        newly_created_id = add_window.new_part_id
-        if newly_created_id:
-            self._load_spare_parts(select_id=newly_created_id)
+    # def _open_add_new_part_window(self):
+    #     add_window = AddNewSparePartWindow(self, self.db, self.lang)
+    #     self.wait_window(add_window)
+    #     newly_created_id = add_window.new_part_id
+    #     if newly_created_id:
+    #         self._load_spare_parts(select_id=newly_created_id)
 
     def _save_request(self):
         """Valida i dati del form e li salva nel database."""

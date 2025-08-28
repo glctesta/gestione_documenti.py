@@ -1,3 +1,4 @@
+import configparser
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -10,7 +11,7 @@ import subprocess
 from collections import defaultdict
 import sys
 import maintenance_gui
-import tempfile # Assicuriamoci che tempfile sia importato (usato in fetch_and_open_document)
+import tempfile
 import re
 import reportlab
 from packaging import version
@@ -28,17 +29,26 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.6.2"  # Versione aggiornata
+APP_VERSION = "1.6.3"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
-# --- CONFIGURAZIONE DATABASE ---
-DB_DRIVER = '{SQL Server Native Client 11.0}'
-DB_SERVER = 'roghipsql01.vandewiele.local\\emsreset'
-DB_DATABASE = 'Traceability_rs'
-DB_UID = 'emsreset'
-DB_PWD = 'E6QhqKUxHFXTbkB7eA8c9ya'
-DB_CONN_STR = f'DRIVER={DB_DRIVER};SERVER={DB_SERVER};DATABASE={DB_DATABASE};UID={DB_UID};PWD={DB_PWD};'
+# # --- CONFIGURAZIONE DATABASE ---
+# DB_DRIVER = '{SQL Server Native Client 11.0}'
+# DB_SERVER = 'roghipsql01.vandewiele.local\\emsreset'
+# DB_DATABASE = 'Traceability_rs'
+# DB_UID = 'emsreset'
+# DB_PWD = 'E6QhqKUxHFXTbkB7eA8c9ya'
+# DB_CONN_STR = f'DRIVER={DB_DRIVER};SERVER={DB_SERVER};DATABASE={DB_DATABASE};UID={DB_UID};PWD={DB_PWD};'
 
+config = configparser.ConfigParser()
+config.read('config.ini')
+
+DB_DRIVER = config['Database']['Driver']
+DB_SERVER = config['Database']['Server']
+DB_DATABASE = config['Database']['Database']
+DB_UID = config['Database']['UID']
+DB_PWD = config['Database']['PWD']
+DB_CONN_STR = f'DRIVER={DB_DRIVER};SERVER={DB_SERVER};DATABASE={DB_DATABASE};UID={DB_UID};PWD={DB_PWD};'
 
 def is_update_needed(current_ver_str, db_ver_str):
     """Confronta due stringhe di versione (es. '1.4.0') in modo sicuro."""
@@ -2635,35 +2645,44 @@ class App(tk.Tk):
         self.menubar = tk.Menu(self)
         self.config(menu=self.menubar)
 
-        # Crea i contenitori vuoti per ogni menu
+        # Crea i contenitori vuoti per ogni menu principale
         self.document_menu = tk.Menu(self.menubar, tearoff=0)
         self.general_docs_menu = tk.Menu(self.menubar, tearoff=0)
+        self.operations_menu = tk.Menu(self.menubar, tearoff=0)
         self.maintenance_menu = tk.Menu(self.menubar, tearoff=0)
-        self.submissions_menu = tk.Menu(self.menubar, tearoff=0)  # Menu Segnalazioni
-        self.tools_menu = tk.Menu(self.menubar, tearoff=0)  # Menu Strumenti
-        self.permissions_submenu = tk.Menu(self.tools_menu, tearoff=0)
-        # --- Aggiungi questo sottomenu ---
-        self.materials_submenu = tk.Menu(self.tools_menu, tearoff=0)
+        self.submissions_menu = tk.Menu(self.menubar, tearoff=0)
+        self.tools_menu = tk.Menu(self.menubar, tearoff=0)
         self.help_menu = tk.Menu(self.menubar, tearoff=0)
 
-        # Aggiunge ogni menu come una "cascata" separata alla barra principale
+        # --- SOTTOMENU DI OPERATIONS (Ordine Corretto) ---
+        # 1. Crea il sottomenu genitore "Produzione"
+        self.production_submenu = tk.Menu(self.operations_menu, tearoff=0)
+
+        # 2. ORA crea i sottomenu figli, usando production_submenu come genitore
+        self.declarations_submenu = tk.Menu(self.production_submenu, tearoff=0)
+        self.reports_submenu = tk.Menu(self.production_submenu, tearoff=0)
+        # --- FINE CORREZIONE ---
+
+        # Sottomenu di Strumenti
+        self.permissions_submenu = tk.Menu(self.tools_menu, tearoff=0)
+        self.materials_submenu = tk.Menu(self.tools_menu, tearoff=0)
+
+        # Aggiunge ogni menu principale alla barra
         self.menubar.add_cascade(menu=self.document_menu)
         self.menubar.add_cascade(menu=self.general_docs_menu)
+        self.menubar.add_cascade(menu=self.operations_menu)
         self.menubar.add_cascade(menu=self.maintenance_menu)
         self.menubar.add_cascade(menu=self.submissions_menu)
         self.menubar.add_cascade(menu=self.tools_menu)
         self.menubar.add_cascade(menu=self.help_menu)
 
-        # Il sottomenu della lingua è un caso speciale, perché è una cascata DENTRO il menu Aiuto
+        # Il sottomenu della lingua è un caso speciale, dentro il menu Aiuto
         self.language_menu = tk.Menu(self.help_menu, tearoff=0)
         self.language_menu.add_command(label="Italiano", command=lambda: self._change_language('it'))
         self.language_menu.add_command(label="English", command=lambda: self._change_language('en'))
         self.language_menu.add_command(label="Română", command=lambda: self._change_language('ro'))
         self.language_menu.add_command(label="Deutsch", command=lambda: self._change_language('de'))
         self.language_menu.add_command(label="Svenska", command=lambda: self._change_language('sv'))
-    # In main.py, dentro la classe App
-
-    # In main.py, dentro la classe App
 
     def update_texts(self):
         """Aggiorna tutti i testi della UI principale, ricostruendo tutti i menu."""
@@ -2693,7 +2712,51 @@ class App(tk.Tk):
                     self._open_general_docs_viewer(cid, cname)
                 category_submenu.add_command(label=self.lang.get('submenu_view', "Visualizza"), command=cmd_view)
 
-        # 3. Menu Manutenzione (con ricostruzione dei sottomenu)
+        # 3. Menu Operazioni
+        self.operations_menu.delete(0, 'end')
+        # 1. Sottomenu "Produzione"
+        self.operations_menu.add_cascade(
+            label=self.lang.get('submenu_production_ops', "Produzione"),
+            menu=self.production_submenu
+        )
+        self.production_submenu.delete(0, 'end')
+
+        # 2. Sottomenu "Dichiarazioni" (all'interno di Produzione)
+        self.production_submenu.add_cascade(
+            label=self.lang.get('submenu_declarations', "Dichiarazioni"),
+            menu=self.declarations_submenu
+        )
+        self.declarations_submenu.delete(0, 'end')
+        # Aggiungi la nuova voce
+        self.declarations_submenu.add_command(
+            label=self.lang.get('submenu_interruptions', "Interruzioni di produzione"),
+            state="disabled"
+        )
+
+        # 3. Sottomenu "Rapporti" (all'interno di Produzione)
+        self.production_submenu.add_cascade(
+            label=self.lang.get('submenu_reports_prod', "Rapporti"),
+            menu=self.reports_submenu
+        )
+        self.reports_submenu.delete(0, 'end')
+        # Aggiungi la nuova voce
+        self.reports_submenu.add_command(
+            label=self.lang.get('submenu_line_stoppage_reports', "Rapporti di fermo linea"),
+            state="disabled"
+        )
+
+        # 4. Sottomenu "Impostazioni" (direttamente in Produzione)
+        self.production_submenu.add_command(
+            label=self.lang.get('submenu_settings_prod', "Impostazioni"),
+            state="disabled"
+        )
+
+        # 5. Aggiunge le altre voci al menu Operations principale
+        self.operations_menu.add_separator()  # Separatore opzionale
+        self.operations_menu.add_command(label=self.lang.get('submenu_materials_ops', "Materiali"), state="disabled")
+        self.operations_menu.add_command(label=self.lang.get('submenu_hr', "Risorse Umane"), state="disabled")
+        # --- FINE MODIFICA ---
+        # 4. Menu Manutenzione (con ricostruzione dei sottomenu)
         self.maintenance_menu.delete(0, 'end')
 
         # Ricrea Sottomenu Gestione Macchine
@@ -2775,10 +2838,11 @@ class App(tk.Tk):
         try:
             self.menubar.entryconfig(1, label=self.lang.get('menu_documents', "Documenti di Produzione"))
             self.menubar.entryconfig(2, label=self.lang.get('menu_general_docs', "Documenti Generali"))
-            self.menubar.entryconfig(3, label=self.lang.get('menu_maintenance'))
-            self.menubar.entryconfig(4, label=self.lang.get('menu_submissions', "Segnalazioni"))
-            self.menubar.entryconfig(5, label=self.lang.get('menu_tools', "Strumenti"))
-            self.menubar.entryconfig(6, label=self.lang.get('menu_help'))
+            self.menubar.entryconfig(3, label=self.lang.get('menu_operations', "Operations"))
+            self.menubar.entryconfig(4, label=self.lang.get('menu_maintenance'))
+            self.menubar.entryconfig(5, label=self.lang.get('menu_submissions', "Segnalazioni"))
+            self.menubar.entryconfig(6, label=self.lang.get('menu_tools', "Strumenti"))
+            self.menubar.entryconfig(7, label=self.lang.get('menu_help'))
         except tk.TclError:
             pass
 
