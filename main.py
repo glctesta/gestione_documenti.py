@@ -49,6 +49,69 @@ def is_update_needed(current_ver_str, db_ver_str):
         # Fallback a un confronto di stringhe semplice in caso di errore
         return db_ver_str > current_ver_str
 
+def fetch_working_areas(self):
+    """Recupera le Aree di Lavoro principali."""
+    query = "SELECT [WorkingAreaID], [AreaName] FROM [ResetServices].[BreakDown].[WorkingAreas] ORDER BY AreaName;"
+    try:
+        self.cursor.execute(query)
+        return self.cursor.fetchall()
+    except pyodbc.Error as e: self.last_error_details = str(e); return []
+
+def fetch_working_sub_areas(self, working_area_id):
+    """Recupera le Sotto-Aree in base all'Area di Lavoro selezionata."""
+    query = """
+        SELECT [WorkingSubAreaID], [AreaSubName] 
+        FROM [ResetServices].[BreakDown].[WorkingSubAreas]
+        WHERE [WorkingAreaID] = ? ORDER BY AreaSubName;
+    """
+    try:
+        self.cursor.execute(query, working_area_id)
+        return self.cursor.fetchall()
+    except pyodbc.Error as e: self.last_error_details = str(e); return []
+
+def fetch_working_lines(self, working_area_id, sub_area_id):
+    """Recupera le Linee in base all'Area e Sotto-Area selezionate."""
+    query = """
+        SELECT DISTINCT wl.WorkingLineID, WL.WorkingLineName 
+        FROM [ResetServices].[BreakDown].[WorkingAreas] AS WA 
+        INNER JOIN [ResetServices].[BreakDown].WorkingSubAreas WSA ON WA.WorkingAreaID = WSA.WorkingAreaID 
+        INNER JOIN [ResetServices].[BreakDown].WorkingLines AS WL ON WSA.WorkingSubAreaID = WL.WorkingSubAreaID 
+        WHERE WA.WorkingAreaID = ? AND WSA.workingsubareaid = ? 
+        ORDER BY wl.WorkingLineName;
+    """
+    try:
+        self.cursor.execute(query, working_area_id, sub_area_id)
+        return self.cursor.fetchall()
+    except pyodbc.Error as e: self.last_error_details = str(e); return []
+
+def fetch_production_orders_for_breakdown(self):
+    """Recupera gli ordini di produzione per la selezione."""
+    query = """
+        SELECT o.IdOrdine, o.po + ' [' + pf.epiccode +']' as OrderNumber
+        FROM ResetServices.dbo.tbordini o 
+        INNER JOIN Resetservices.dbo.tbsubordine so on o.IdOrdine=so.IdOrdine 
+        INNER JOIN Resetservices.dbo.tbprodfin pf on so.idpf=pf.idpf 
+        INNER JOIN resetservices.dbo.TbRegistro r on o.idregistro=r.contatore and r.idregistro in (21, 26)
+        LEFT JOIN resetservices.dbo.TbFattStory fs on fs.IdPoSub=so.IdOrdStori
+        LEFT JOIN resetservices.dbo.TbProdFinStuff Micro on micro.Idpf=so.idpf 
+        WHERE year(o.dataord) >= 2025 and micro.idpf is null
+        GROUP BY o.idordine, o.po + ' [' + pf.epiccode +']', so.QtaStory, o.dataord, so.DataDeliSubOrdine
+        HAVING so.QtaStory > isnull(sum(fs.QtaFaturata) ,0)
+        ORDER BY o.dataord DESC;
+    """
+    try:
+        self.cursor.execute(query)
+        return self.cursor.fetchall()
+    except pyodbc.Error as e: self.last_error_details = str(e); return []
+
+def fetch_issue_areas(self):
+    """Recupera le aree problematiche (es. Meccanica, Elettrica)."""
+    query = "SELECT [IssueAreaId], [IssueArea] FROM [ResetServices].[BreakDown].[IssuesAreas] ORDER BY [IssueArea];"
+    try:
+        self.cursor.execute(query)
+        return self.cursor.fetchall()
+    except pyodbc.Error as e: self.last_error_details = str(e); return []
+
 class LanguageManager:
     """Gestisce le traduzioni e la lingua corrente dell'applicazione."""
 
@@ -89,6 +152,76 @@ class LanguageManager:
 
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
+
+    def fetch_working_areas(self):
+        """Recupera le Aree di Lavoro principali."""
+        query = "SELECT [WorkingAreaID], [AreaName] FROM [ResetServices].[BreakDown].[WorkingAreas] ORDER BY AreaName;"
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"ERRORE SQL in fetch_working_areas: {e}")
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_working_sub_areas(self, working_area_id):
+        """Recupera le Sotto-Aree in base all'Area di Lavoro selezionata."""
+        query = """
+                SELECT [WorkingSubAreaID], [AreaSubName]
+                FROM [ResetServices].[BreakDown].[WorkingSubAreas]
+                WHERE [WorkingAreaID] = ? \
+                ORDER BY AreaSubName; \
+                """
+        try:
+            self.cursor.execute(query, working_area_id)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"ERRORE SQL in fetch_working_sub_areas: {e}")
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_working_lines(self, working_area_id, sub_area_id):
+        """Recupera le Linee in base all'Area e Sotto-Area selezionate."""
+        query = """
+                SELECT DISTINCT wl.WorkingLineID, WL.WorkingLineName
+                FROM [ResetServices].[BreakDown].[WorkingAreas] AS WA
+                    INNER JOIN [ResetServices].[BreakDown].WorkingSubAreas WSA \
+                ON WA.WorkingAreaID = WSA.WorkingAreaID
+                    INNER JOIN [ResetServices].[BreakDown].WorkingLines AS WL ON WSA.WorkingSubAreaID = WL.WorkingSubAreaID
+                WHERE WA.WorkingAreaID = ? AND WSA.workingsubareaid = ?
+                ORDER BY wl.WorkingLineName; \
+                """
+        try:
+            self.cursor.execute(query, working_area_id, sub_area_id)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"ERRORE SQL in fetch_working_lines: {e}")
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_production_orders_for_breakdown(self):
+        """Recupera la lista degli ordini di produzione aperti."""
+        query = """
+                SELECT o.IdOrdine, o.po + ' [' + pf.epiccode + ']' as OrderNumber
+                FROM ResetServices.dbo.tbordini o
+                         INNER JOIN Resetservices.dbo.tbsubordine so on o.IdOrdine = so.IdOrdine
+                         INNER JOIN Resetservices.dbo.tbprodfin pf on so.idpf = pf.idpf
+                         INNER JOIN resetservices.dbo.TbRegistro r \
+                                    on o.idregistro = r.contatore and r.idregistro in (21, 26)
+                         LEFT JOIN resetservices.dbo.TbFattStory fs on fs.IdPoSub = so.IdOrdStori
+                         LEFT JOIN resetservices.dbo.TbProdFinStuff Micro on micro.Idpf = so.idpf
+                WHERE year (o.dataord) >= YEAR (GETDATE()) and micro.idpf is null
+                GROUP BY o.idordine, o.po + ' [' + pf.epiccode +']', so.QtaStory, o.dataord, so.DataDeliSubOrdine
+                HAVING so.QtaStory > isnull(sum (fs.QtaFaturata), 0)
+                ORDER BY o.dataord DESC; \
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            print(f"ERRORE SQL in fetch_production_orders_for_breakdown: {e}")
+            return []
 
     def fetch_report_data(self, from_date, to_date, equipment_id=None, intervention_id=None):
         """Recupera i dati dei log di manutenzione per un dato periodo e filtri opzionali."""
@@ -151,49 +284,111 @@ class Database:
             print(f"Errore nel recupero degli ordini di produzione: {e}")
             return []
 
-    def fetch_issue_areas(self):
-        """Recupera le aree di produzione dove può verificarsi un'interruzione."""
-        query = "SELECT IssueAreaId, IssueArea FROM ResetServices.BreakDown.IssuesAreas ORDER BY IssueArea;"
-        try:
-            self.cursor.execute(query)
-            return self.cursor.fetchall()
-        except pyodbc.Error as e:
-            self.last_error_details = str(e);
-            return []
-
-    def fetch_issue_problems(self):
-        """Recupera la lista delle possibili cause di interruzione."""
-        # Query fornita dall'utente
+    def fetch_issue_problems_by_subarea(self, sub_area_id):
+        """Recupera i problemi/eventi specifici per una Sotto-Area."""
+        # CORREZIONE 1: Nome tabella da '...PerLines' a '...PerLine'
+        # CORREZIONE 2: Nome colonna da 'bdl.IusseProblemId' a 'bdl.IssueProblemId'
         query = """
-                SELECT iup.IssueProblemId, iup.DescriptionEN, ia.IssueArea, wa.AreaName
-                FROM ResetServices.BreakDown.IssueProblems iup
-                         INNER JOIN ResetServices.BreakDown.IssuesAreas IA ON iup.IssueAreaId = ia.IssueAreaId
-                         INNER JOIN ResetServices.BreakDown.WorkingAreas WA ON wa.WorkingAreaID = iup.WorkingAreaID
-                ORDER BY ia.IssueAreaId, wa.AreaName; \
+                SELECT ip.IssueProblemId, ip.DescriptionEN
+                FROM ResetServices.BreakDown.IssueProblemsPerLines AS BDL
+                         INNER JOIN ResetServices.BreakDown.IssueProblems AS ip ON ip.IssueProblemId = bdl.IusseProblemId
+                WHERE BDL.WorkingSubAreaId = ?
+                GROUP BY ip.IssueProblemId, ip.DescriptionEN; \
                 """
         try:
+            print(
+                f"DEBUG: La query per 'Evento/Problema' viene eseguita con il parametro WorkingSubAreaId = {sub_area_id}")
+            self.cursor.execute(query, sub_area_id)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            print(f"ERRORE SQL in fetch_issue_problems_by_subarea: {e}")
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_issue_areas(self):
+        """Recupera le aree problematiche (es. Meccanica, Elettrica)."""
+        query = "SELECT [IssueAreaId], [IssueArea] FROM [ResetServices].[BreakDown].[IssuesAreas] ORDER BY [IssueArea];"
+        try:
             self.cursor.execute(query)
             return self.cursor.fetchall()
         except pyodbc.Error as e:
-            self.last_error_details = str(e);
+            print(f"ERRORE SQL in fetch_issue_areas: {e}")
+            self.last_error_details = str(e)
             return []
 
-    def add_production_interruption(self, report_date, user_name, from_hour, duration, area_id, equipment_id,
-                                    problem_id, po_number, notes):
+    def fetch_issue_problems(self, working_area_id, issue_area_id, sub_area_id):
+        """
+        Recupera i problemi/eventi seguendo ESATTAMENTE la logica VBA fornita.
+        """
+        # Query per contare i problemi specifici per la linea/sotto-area
+        # Ho corretto i typo 'IusseProblemId' in 'IssueProblemId' e 'PerLines' in 'PerLine'
+        count_query = """
+                      SELECT COUNT(BDL.IssueProblemsPerLineId)
+                      FROM ResetServices.BreakDown.IssueProblemsPerLines AS BDL
+                      WHERE BDL.WorkingSubAreaId = ?; \
+                      """
+        try:
+            count = self.cursor.execute(count_query, sub_area_id).fetchval()
+            print(f"DEBUG: Conteggio problemi specifici per SubAreaID {sub_area_id}: {count}")
+
+            if count == 0:
+                # NESSUN problema specifico -> Esegui la query GENERICA
+                print("DEBUG: Eseguo la query GENERICA.")
+                final_query = """
+                              SELECT IP.IssueProblemId, \
+                                     '[' + IP.Code + '] ' + IP.DescriptionEN AS IssueDescription, \
+                                     IP.MandatoryExplication
+                              FROM ResetServices.BreakDown.IssueProblems AS IP
+                                       INNER JOIN ResetServices.BreakDown.IssuesAreas AS IA ON IA.IssueAreaId = IP.IssueAreaId
+                                       INNER JOIN ResetServices.BreakDown.WorkingAreas AS WA ON IP.WorkingAreaID = WA.WorkingAreaID
+                              WHERE (WA.WorkingAreaID = ?) \
+                                AND (IP.IssueAreaId = ?) \
+                                AND (IP.DateOut IS NULL); \
+                              """
+                params = (working_area_id, issue_area_id)
+            else:
+                # TROVATI problemi specifici -> Esegui la query SPECIFICA
+                print("DEBUG: Eseguo la query SPECIFICA.")
+                final_query = """
+                              SELECT IP.IssueProblemId, \
+                                     '[' + IP.Code + '] ' + IP.DescriptionEN AS IssueDescription, \
+                                     IP.MandatoryExplication
+                              FROM ResetServices.BreakDown.IssueProblems AS IP
+                                       INNER JOIN ResetServices.BreakDown.IssuesAreas AS IA ON IA.IssueAreaId = IP.IssueAreaId
+                                       INNER JOIN ResetServices.BreakDown.WorkingAreas AS WA ON IP.WorkingAreaID = WA.WorkingAreaID
+                                       INNER JOIN ResetServices.BreakDown.IssueProblemsPerLines AS BDL \
+                                                  on ip.IssueProblemId = bdl.IusseProblemId
+                              WHERE (WA.WorkingAreaID = ?) \
+                                AND (IP.IssueAreaId = ?) \
+                                AND (IP.DateOut IS NULL); \
+                              """
+                params = (working_area_id, issue_area_id)
+
+            self.cursor.execute(final_query, params)
+            return self.cursor.fetchall()
+
+        except pyodbc.Error as e:
+            print(f"ERRORE SQL in fetch_issue_problems: {e}")
+            self.last_error_details = str(e)
+            return []
+    def add_production_interruption(self, params):
         """Salva un nuovo record di interruzione produzione in ReportIssueLogs."""
         query = """
-                INSERT INTO ResetServices.dbo.ReportIssueLogs
-                (DateReport, AzUserName, AzFromHour, Lost_OR_Gain, IssueAreaId, WorkingEquipmentsID, IssueProblemId, \
-                 PoNumber, AzNote)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?); \
+                INSERT INTO ResetServices.[BreakDown].[ReportIssueLogs] ([DateReport], [HourReport], [UserName], [IssueAreaId], [ \
+                                                            WorkingAreaID],
+                    [WorkingLineID], [WorkingSubAreaID], [IssueProblemId], [FromHour], [ToHour],
+                    [Lost_OR_Gain], [Hours], [PoNumber], [ProductCode], [Note], [ActionPlan]) \
+                VALUES (?, GETDATE(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?); \
                 """
         try:
-            # Calcola l'ora di fine
-            start_time = datetime.strptime(from_hour, "%H:%M")
-            # end_time = start_time + timedelta(minutes=duration) # Se serve AzToHour
-
-            self.cursor.execute(query, report_date, user_name, from_hour, duration, area_id, equipment_id, problem_id,
-                                po_number, notes)
+            self.cursor.execute(query,
+                                params['report_date'], params['user_name'], params['issue_area_id'],
+                                params['working_area_id'],
+                                params['line_id'], params['sub_area_id'], params['problem_id'], params['from_hour'],
+                                params['to_hour'],
+                                params['lost_gain'], params['hours'], params['po_number'], params['product_code'],
+                                params['note'], params['action_plan']
+                                )
             self.conn.commit()
             return True, "Interruzione di produzione registrata con successo."
         except Exception as e:
@@ -822,6 +1017,7 @@ class Database:
             print(f"Errore nel recupero dei task per la modifica: {e}")
             self.last_error_details = str(e)
             return []
+
     def update_maintenance_task(self, task_id, equipment_id, category, task_name, description, document_data):
         """Aggiorna un compito di manutenzione esistente, incluso l'EquipmentId."""
         query = """
@@ -859,8 +1055,6 @@ class Database:
             self.conn.rollback()
             self.last_error_details = str(e)
             return False
-
-
 
     def fetch_maintenance_interventions(self):
         """Recupera i tipi di intervento di manutenzione per la selezione."""
@@ -1014,7 +1208,6 @@ class Database:
             self.last_error_details = str(e)
             return None
 
-    # NUOVO METODO: Recupera impostazioni (es. email recipients)
     def fetch_setting(self, attribute_name):
         """Recupera un valore dalla tabella Settings."""
         query = "select [value] from traceability_rs.dbo.Settings where atribute = ?;"
@@ -1056,7 +1249,6 @@ class Database:
             self.last_error_details = str(e)
             return None
 
-    # (Assicurati che questo metodo esista o sostituisci quello precedente se presente)
     def insert_spare_part_request(self, equipment_id, spare_part_id, quantity, notes, requested_by):
         """Inserisce una nuova richiesta di parti di ricambio o intervento."""
         query = """
@@ -1074,10 +1266,6 @@ class Database:
             self.last_error_details = str(e)
             return False
 
-    # NUOVO METODO: Recupera le parti di ricambio/servizi disponibili
-    # (Assicurati che questo metodo esista o sostituisci quello precedente se presente)
-
-    # NUOVO METODO: Recupera e apre il documento basato su CompitoId
     def fetch_and_open_document_by_task_id(self, task_id):
         """Recupera e apre il documento associato a un CompitoId."""
 
@@ -1172,26 +1360,22 @@ class Database:
             self.last_error_details = str(e)
             return []
 
-
-
-
-    # NUOVO METODO: Recupera le parti di ricambio/servizi disponibili
-    def fetch_spare_parts(self):
-        """Recupera la lista di parti di ricambio e servizi disponibili."""
-        # ATTENZIONE: Questa query assume i nomi delle colonne (SparePartMaterialId, MaterialPartNumber, PartCode, Description).
-        # Modificala se i nomi reali nella tua tabella eqp.SparePartMaterials sono diversi.
-        query = """
-                SELECT SparePartMaterialId, MaterialPartNumber, MaterialCode, MaterialDescription
-                FROM eqp.SparePartMaterials
-                ORDER BY MaterialPartNumber \
-                """
-        try:
-            self.cursor.execute(query)
-            return self.cursor.fetchall()
-        except pyodbc.Error as e:
-            print(f"Errore nel recupero parti di ricambio: {e}")
-            self.last_error_details = str(e)
-            return []
+    # def fetch_spare_parts(self):
+    #     """Recupera la lista di parti di ricambio e servizi disponibili."""
+    #     # ATTENZIONE: Questa query assume i nomi delle colonne (SparePartMaterialId, MaterialPartNumber, PartCode, Description).
+    #     # Modificala se i nomi reali nella tua tabella eqp.SparePartMaterials sono diversi.
+    #     query = """
+    #             SELECT SparePartMaterialId, MaterialPartNumber, MaterialCode, MaterialDescription
+    #             FROM eqp.SparePartMaterials
+    #             ORDER BY MaterialPartNumber \
+    #             """
+    #     try:
+    #         self.cursor.execute(query)
+    #         return self.cursor.fetchall()
+    #     except pyodbc.Error as e:
+    #         print(f"Errore nel recupero parti di ricambio: {e}")
+    #         self.last_error_details = str(e)
+    #         return []
 
     # NUOVO METODO: Inserisce la richiesta nella tabella eqp.RequestSpareParts
     def insert_spare_part_request(self, equipment_id, spare_part_id, quantity, notes, requested_by):
@@ -2381,6 +2565,13 @@ class App(tk.Tk):
 
         self.after(100, self._post_startup_tasks)
 
+    def open_add_interruption_window_with_login(self):
+        """Apre la finestra per dichiarare un'interruzione di produzione."""
+        self._execute_simple_login(
+            action_callback=lambda user_name: operations_gui.open_add_interruption_window(self, self.db, self.lang,
+                                                                                          user_name)
+        )
+
     def open_add_interruption_window(self):
         """Apre la finestra per dichiarare un'interruzione di produzione."""
         self._execute_simple_login(
@@ -2831,11 +3022,12 @@ class App(tk.Tk):
             menu=self.declarations_submenu
         )
         self.declarations_submenu.delete(0, 'end')
-        # Aggiungi la nuova voce
-        # self.declarations_submenu.add_command(
-        #     label=self.lang.get('submenu_interruptions', "Interruzioni di produzione"),
-        #     state="disabled"
-        # )
+        # Popola il sottomenu "Dichiarazioni"
+        self.declarations_submenu.delete(0, 'end')
+        self.declarations_submenu.add_command(
+            label=self.lang.get('submenu_interruptions', "Interruzioni di produzione"),
+            command=self.open_add_interruption_window_with_login  # Collega la nuova funzione
+        )
 
         # 3. Sottomenu "Rapporti" (all'interno di Produzione)
         self.production_submenu.add_cascade(
