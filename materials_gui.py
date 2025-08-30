@@ -1,35 +1,39 @@
-# materials_gui.py
+# maintenance_gui.py
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
+
+import openpyxl
 from tkcalendar import DateEntry
-from datetime import date
+from datetime import datetime, date
 from collections import Counter
 import tempfile
 import os
+import sys
+import subprocess
+import io
+import richieste_intervento
+
+# Import per le immagini
+try:
+    from PIL import Image, ImageTk
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
 
 # Import per i grafici
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-# Import per il PDF (già presenti, ma per sicurezza)
+# Import per il PDF
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import landscape, A4
 from reportlab.lib.units import cm
-from reportlab.platypus import Image as ReportLabImage, Table, TableStyle
+from reportlab.platypus import Paragraph, Image as ReportLabImage, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
-
-try:
-    from PIL import Image, ImageTk
-
-    PIL_AVAILABLE = True
-except ImportError:
-    PIL_AVAILABLE = False
-
 
 class ManageMaterialsWindow(tk.Toplevel):
     """Finestra per la gestione completa dei materiali e dei loro collegamenti alle macchine."""
-
-    # In materials_gui.py, dentro la classe ManageMaterialsWindow
 
     def __init__(self, parent, db, lang, user_name):
         super().__init__(parent)

@@ -1,26 +1,26 @@
 #import configparser
-from datetime import datetime
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-# Corretto l'import per coerenza
-from datetime import datetime
-import pyodbc
 import os
-from PIL import Image, ImageTk, ImageOps
-import subprocess
-from collections import defaultdict
-import sys
-import maintenance_gui
-import tempfile
 import re
-import reportlab
+import subprocess
+import sys
+import tempfile
+import tkinter as tk
+from collections import defaultdict
+# Corretto l'import per coerenza
+from datetime import datetime, timedelta
+from tkinter import ttk, messagebox, filedialog
+import random
+import pyodbc
+from PIL import Image, ImageTk, ImageOps, ImageDraw, ImageFont
 from packaging import version
-import tools_gui
-import submissions_gui
+
 import general_docs_gui
-import permissions_gui
+import maintenance_gui
 import materials_gui
 import operations_gui
+import permissions_gui
+import submissions_gui
+import tools_gui
 
 try:
     from PIL import Image, ImageTk
@@ -30,7 +30,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.6.3"  # Versione aggiornata
+APP_VERSION = "1.6.4"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
 # --- CONFIGURAZIONE DATABASE ---
@@ -152,6 +152,101 @@ class LanguageManager:
 
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
+
+    def fetch_all_active_employees_birthdays(self):
+        """Recupera nome, cognome e data di nascita di tutti i dipendenti attivi."""
+        query = """
+                SELECT E.EmployeeName, E.EmployeeSurname, E.EmployeeBirthDate
+                FROM employee.dbo.employees E
+                         INNER JOIN employee.dbo.EmployeeHireHistory H ON E.EmployeeId = H.EmployeeId
+                WHERE H.EMPLOYEERID = 2 \
+                  AND H.EndWorkDate IS NULL \
+                  AND E.EmployeeBirthDate IS NOT NULL; \
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_equipments_for_timing(self):
+        """Recupera i macchinari con il loro brand."""
+        query = """
+                SELECT e.EquipmentId, e.InternalName + ' [' + b.Brand + ']' AS EquipmentName
+                FROM eqp.Equipments e
+                         INNER JOIN eqp.EquipmentBrands b ON e.BrandId = b.EquipmentBrandId
+                ORDER BY e.InternalName + ' [' + b.Brand + ']'; \
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e); return []
+
+    def open_maintenance_times_with_login(self):
+        """Apre la finestra per gestire i tempi di manutenzione."""
+        self._execute_simple_login(
+            action_callback=lambda user_name: tools_gui.open_maintenance_times_manager(self, self.db, self.lang,
+                                                                                       user_name)
+        )
+
+    def fetch_tasks_for_timing(self, equipment_id, intervention_id):
+        """Recupera i compiti di manutenzione con i relativi tempi."""
+        # NOTA: Ho aggiunto cmt.CompitoManutenzioneTimingId alla SELECT perché è necessario per l'UPDATE.
+        query = """
+                SELECT am.CompitoId, \
+                       am.NomeCompito, \
+                       am.DescrizioneCompito, \
+                       am.PdfRiferiment, \
+                       cmt.TimingMinutes, \
+                       cmt.CompitoManutenzioneTimingId
+                FROM [Traceability_RS].[eqp].[CompitiManutenzione] am
+                    INNER JOIN eqp.ProgrammedInterventions pr \
+                ON pr.ProgrammedInterventionId = am.ProgrammedInterventionId
+                    INNER JOIN eqp.Equipments e ON e.EquipmentId = am.EquipmentId
+                    LEFT JOIN eqp.CompitiManutenzioneTiming cmt ON cmt.compitoid = am.CompitoId AND cmt.dateend IS NULL
+                WHERE e.EquipmentId = ? AND pr.ProgrammedInterventionId = ?
+                ORDER BY pr.Ordineprn, am.CompitoId; \
+                """
+        try:
+            self.cursor.execute(query, equipment_id, intervention_id)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e); return []
+
+    def update_task_pdf_reference(self, task_id, pdf_reference):
+        """Aggiorna solo il campo PdfRiferiment per un dato compito."""
+        query = "UPDATE [Traceability_RS].[eqp].[CompitiManutenzione] SET PdfRiferiment = ? WHERE compitoid = ?;"
+        try:
+            self.cursor.execute(query, pdf_reference, task_id)
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+
+    def update_task_timing(self, task_id, new_minutes, old_timing_id):
+        """Aggiorna il tempo di manutenzione (chiude il vecchio record e inserisce il nuovo)."""
+        try:
+            # 1. Se esiste un vecchio record di timing, lo chiude impostando la DateEnd
+            if old_timing_id:
+                update_query = "UPDATE [Traceability_RS].[eqp].CompitiManutenzioneTiming SET Dateend = GETDATE() WHERE CompitoManutenzioneTimingId = ?;"
+                self.cursor.execute(update_query, old_timing_id)
+
+            # 2. Se è stato fornito un nuovo valore in minuti, lo inserisce
+            if new_minutes is not None and new_minutes != '':
+                insert_query = "INSERT INTO EQP.CompitiManutenzioneTiming (compitoid, TimingMinutes) VALUES (?, ?);"
+                self.cursor.execute(insert_query, task_id, new_minutes)
+
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+
 
     def fetch_working_areas(self):
         """Recupera le Aree di Lavoro principali."""
@@ -2534,6 +2629,18 @@ class App(tk.Tk):
         self.image_files = []
         self.current_image_index = 0
         self.slideshow_interval_ms = 60000  # Default a 1 minuto
+        self.slideshow_job_id = None
+
+        # --- NUOVE VARIABILI PER IL FLASHING ---
+        self.birthday_flash_job_id = None
+        self.birthday_stop_job_id = None
+        # --- NUOVE VARIABILI PER LA SCRITTA SCORREVOLE ---
+        self.scrolling_job_id = None
+        self.scrolling_text = ""
+        self.scrolling_position = 0
+        # Lista di colori vivaci per l'effetto
+        self.flash_colors = ["#FFD700", "#FF4500", "#1E90FF", "#32CD32", "#FF69B4", "#9400D3"]
+        # --- FINE ---
 
         # Inizializza il database
         self.db = Database(DB_CONN_STR)
@@ -2565,11 +2672,160 @@ class App(tk.Tk):
 
         self.after(100, self._post_startup_tasks)
 
+    def _flash_birthday_message(self, message):
+        """Crea un effetto flashing con cambio colore per il messaggio di auguri."""
+        # Se il testo è attualmente visibile, lo nasconde
+        if self.birthday_label.cget("text"):
+            self.birthday_label.config(text="")
+        else:
+            # Altrimenti, lo mostra con un nuovo colore casuale
+            random_color = random.choice(self.flash_colors)
+            self.birthday_label.config(text=message, foreground=random_color)
+
+        # Ripianifica se stessa dopo 750 millisecondi (circa 3/4 di secondo)
+        self.birthday_flash_job_id = self.after(750, lambda: self._flash_birthday_message(message))
+
+    def _check_for_birthdays(self):
+        """Controlla i compleanni e avvia l'avviso appropriato (fisso o scorrevole)."""
+        # Ferma sempre un eventuale avviso precedente
+        self._stop_birthday_display()
+        if hasattr(self, 'birthday_label'):
+            self.birthday_label.config(text="")
+
+        try:
+            # ... (la logica per leggere le impostazioni e trovare i compleanni rimane invariata)
+            pre_alert_days = int(self.db.fetch_setting('Sys_BirthDay_Prealler'))
+            post_alert_days = int(self.db.fetch_setting('Sys_BirthDay_PostAllert'))
+            image_path = os.path.join(
+                self.db.fetch_setting('Sys_Pics_Directory'),
+                self.db.fetch_setting('Sys_BirthDay_Allert')
+            )
+        except (ValueError, TypeError, AttributeError):
+            return False
+        if not image_path or not os.path.isfile(image_path): return False
+        today = datetime.now().date()
+        employees = self.db.fetch_all_active_employees_birthdays()
+        celebrating = []
+        for emp in employees:
+            bday = emp.EmployeeBirthDate
+            bday_this_year = bday.replace(year=today.year)
+            if timedelta(days=0) <= bday_this_year - today <= timedelta(days=pre_alert_days):
+                celebrating.append(emp)
+            elif timedelta(days=0) <= today - bday_this_year <= timedelta(days=post_alert_days):
+                celebrating.append(emp)
+
+        # --- LOGICA MODIFICATA ---
+        if len(celebrating) == 1:
+            # Caso 1: Un solo festeggiato -> Testo lampeggiante
+            employee = celebrating[0]
+            message = f"LA MULȚI ANI {employee.EmployeeName.upper()} ({employee.EmployeeSurname.upper()}) !!!"
+            self._display_special_image(image_path, message)
+            self._flash_birthday_message(message)
+            duration_ms = 3 * 60 * 1000
+            self.birthday_stop_job_id = self.after(duration_ms, self._stop_birthday_display)
+            return True
+
+        elif len(celebrating) > 1:
+            # Caso 2: Più festeggiati -> Testo scorrevole
+            messages = [f"LA MULȚI ANI {emp.EmployeeName.upper()} ({emp.EmployeeSurname.upper()}) !!!" for emp in
+                        celebrating]
+            # Unisce i messaggi con un separatore visivo
+            full_message = "    •••    ".join(messages)
+
+            self._display_special_image(image_path, "Compleanni di Oggi!")  # Un messaggio generico sull'immagine
+            self._start_scrolling_message(full_message)
+            duration_ms = 3 * 60 * 1000
+            self.birthday_stop_job_id = self.after(duration_ms, self._stop_birthday_display)
+            return True
+
+        return False
+
+    def _start_scrolling_message(self, message):
+        """Prepara e avvia l'animazione della scritta scorrevole."""
+        # Aggiunge spazi alla fine per creare un loop fluido
+        self.scrolling_text = message + " " * 20
+        self.scrolling_position = 0
+
+        # Cambia il colore del testo per una migliore visibilità
+        self.birthday_label.config(foreground="#FFD700")  # Colore oro
+
+        # Avvia il primo frame dell'animazione
+        self._scroll_text()
+
+    def _scroll_text(self):
+        """Esegue un singolo passo dell'animazione di scrolling."""
+        # Crea il testo da visualizzare ruotando la stringa originale
+        display_text = self.scrolling_text[self.scrolling_position:] + self.scrolling_text[:self.scrolling_position]
+        self.birthday_label.config(text=display_text)
+
+        # Incrementa la posizione per il prossimo frame
+        self.scrolling_position += 1
+        if self.scrolling_position >= len(self.scrolling_text):
+            self.scrolling_position = 0
+
+        # Ripianifica il prossimo frame dopo 150 millisecondi
+        self.scrolling_job_id = self.after(150, self._scroll_text)
+
+    def _stop_birthday_display(self):
+        """Ferma TUTTI gli avvisi di compleanno e ripristina lo slideshow normale."""
+        print("DEBUG: Fine avviso compleanno. Ripristino slideshow normale.")
+
+        # Ferma il ciclo del testo lampeggiante, se attivo
+        if self.birthday_flash_job_id:
+            self.after_cancel(self.birthday_flash_job_id)
+            self.birthday_flash_job_id = None
+
+        # Ferma il ciclo del testo scorrevole, se attivo
+        if self.scrolling_job_id:
+            self.after_cancel(self.scrolling_job_id)
+            self.scrolling_job_id = None
+
+        # Pulisce l'etichetta degli auguri e ripristina il colore
+        if hasattr(self, 'birthday_label'):
+            self.birthday_label.config(text="", foreground="black")
+
+        # Rimuove l'immagine speciale e riavvia lo slideshow standard
+        self._setup_slideshow()
+
+    def _display_special_image(self, image_path, text):
+        """Carica un'immagine, ci scrive sopra del testo e la visualizza."""
+        try:
+            if self.slideshow_job_id:
+                self.after_cancel(self.slideshow_job_id)
+
+            image = Image.open(image_path)
+            w, h = self.slideshow_label.winfo_width(), self.slideshow_label.winfo_height()
+            if w <= 1 or h <= 1:
+                self.after(200, lambda: self._display_special_image(image_path, text))
+                return
+
+            draw = ImageDraw.Draw(image)
+            font = ImageFont.truetype("arial.ttf", 48)
+            text_bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = text_bbox[2] - text_bbox[0]
+            text_height = text_bbox[3] - text_bbox[1]
+            position = ((image.width - text_width) / 2, (image.height - text_height) * 0.85)
+
+            draw.text(position, text, font=font, fill="white", stroke_width=2, stroke_fill="black")
+            resized_image = ImageOps.fit(image, (w, h), Image.Resampling.LANCZOS)
+            self.slideshow_photo = ImageTk.PhotoImage(resized_image)
+            self.slideshow_label.config(image=self.slideshow_photo)
+        except Exception as e:
+            print(f"ERRORE: Impossibile visualizzare l'immagine speciale: {e}")
+            self._setup_slideshow()
+
     def open_add_interruption_window_with_login(self):
         """Apre la finestra per dichiarare un'interruzione di produzione."""
         self._execute_simple_login(
             action_callback=lambda user_name: operations_gui.open_add_interruption_window(self, self.db, self.lang,
                                                                                           user_name)
+        )
+
+    def open_maintenance_times_with_login(self):
+        """Apre la finestra per gestire i tempi di manutenzione."""
+        self._execute_simple_login(
+            action_callback=lambda user_name: tools_gui.open_maintenance_times_manager(self, self.db, self.lang,
+                                                                                       user_name)
         )
 
     def open_add_interruption_window(self):
@@ -2581,12 +2837,15 @@ class App(tk.Tk):
 
     def _post_startup_tasks(self):
         """Esegue compiti che richiedono che la finestra principale sia completamente inizializzata."""
-        print("DEBUG: Eseguo le operazioni post-avvio (orologio e slideshow).")
-        self._update_clock()  # Avvia l'orologio
-        self._setup_slideshow()  # Avvia la configurazione dello slideshow
+        self._update_clock()
+
+        # Controlla prima i compleanni. Se ne trova uno, non avvia lo slideshow.
+        is_birthday = self._check_for_birthdays()
+        if not is_birthday:
+            self._setup_slideshow()
 
     def _setup_slideshow(self):
-        """Legge le impostazioni e avvia il ciclo dello slideshow, ma non disegna l'immagine."""
+        """Legge le impostazioni e avvia il ciclo dello slideshow."""
         folder_path = self.db.fetch_setting('SlideshowFolderPath')
         interval_min_str = self.db.fetch_setting('SlideshowIntervalMinutes')
 
@@ -2598,7 +2857,7 @@ class App(tk.Tk):
             interval_min = int(interval_min_str)
             self.slideshow_interval_ms = interval_min * 60 * 1000
         except (ValueError, TypeError):
-            pass  # Usa il default
+            pass
 
         valid_extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.gif')
         try:
@@ -2612,42 +2871,34 @@ class App(tk.Tk):
         if not self.image_files:
             self.slideshow_label.config(text="Nessuna immagine trovata nella cartella specificata.", foreground="white")
         else:
-            # Avvia il ciclo che cambia l'indice dell'immagine
             self._cycle_image()
 
     def _cycle_image(self):
-        """Cambia l'indice dell'immagine e forza un ridisegno, poi si riprogramma."""
+        """Cambia l'indice dell'immagine, la disegna e si riprogramma."""
         if not self.image_files:
             return
 
-        # Disegna l'immagine corrente
         self._draw_current_image()
-
-        # Passa all'immagine successiva per il prossimo ciclo
         self.current_image_index = (self.current_image_index + 1) % len(self.image_files)
 
-        # Pianifica il prossimo cambio di immagine
-        self.after(self.slideshow_interval_ms, self._cycle_image)
+        # --- CORREZIONE QUI ---
+        # Salva l'ID del prossimo ciclo per poterlo annullare
+        self.slideshow_job_id = self.after(self.slideshow_interval_ms, self._cycle_image)
 
-    def _draw_current_image(self):
+    def _draw_current_image(self, event=None):  # Aggiunto 'event=None' per la compatibilità con bind
         """Funzione dedicata a disegnare l'immagine corrente alla dimensione corretta."""
         if not self.image_files:
             return
 
         image_path = self.image_files[self.current_image_index]
-
-        # Ottiene le dimensioni REALI e ATTUALI del label
         w, h = self.slideshow_label.winfo_width(), self.slideshow_label.winfo_height()
 
-        # Se la finestra non è ancora visibile, non fare nulla. Verrà richiamata dall'evento <Configure>.
         if w <= 1 or h <= 1:
             return
 
         try:
             image = Image.open(image_path)
-            # Usa ImageOps.fit per riempire l'area senza distorcere l'immagine
             resized_image = ImageOps.fit(image, (w, h), Image.Resampling.LANCZOS)
-
             self.slideshow_photo = ImageTk.PhotoImage(resized_image)
             self.slideshow_label.config(image=self.slideshow_photo)
         except Exception as e:
@@ -2928,6 +3179,11 @@ class App(tk.Tk):
         self.clock_label = ttk.Label(bottom_right_frame, font=("Helvetica", 9), justify=tk.RIGHT)
         self.clock_label.pack()
 
+        # --- NUOVA ETICHETTA PER GLI AUGURI (al centro) ---
+        self.birthday_label = ttk.Label(status_bar, text="", font=("Helvetica", 10, "bold"), anchor="center")
+        # Questo pack fa sì che l'etichetta si espanda per riempire lo spazio centrale
+        self.birthday_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
         # --- DOPO: Crea l'Area Centrale per lo Slideshow ---
         # Ora questo label si espanderà per riempire tutto lo spazio RIMANENTE
         self.slideshow_label = ttk.Label(self, background="black")
@@ -3091,6 +3347,8 @@ class App(tk.Tk):
 
         # 5. Menu Strumenti
         self.tools_menu.delete(0, 'end')
+        self.tools_menu.add_command(label=self.lang.get('submenu_maint_times', "Tempi Manutenzione"),
+                                    command=self.open_maintenance_times_with_login)
 
         # Sottomenu Autorizzazioni
         self.permissions_submenu = tk.Menu(self.tools_menu, tearoff=0)
@@ -3109,6 +3367,8 @@ class App(tk.Tk):
             command=self.open_view_permissions_with_login)
         self.tools_menu.add_separator()
 
+
+
         # Altre voci del menu Strumenti
         self.tools_menu.add_command(label=self.lang.get('submenu_suppliers', "Produttori"),
                                     command=self.open_suppliers_manager_with_login)
@@ -3118,7 +3378,10 @@ class App(tk.Tk):
                                     command=self.open_maint_cycles_manager_with_login)
         self.tools_menu.add_command(label=self.lang.get('submenu_doc_types', "Aggiungi Tipo Documento"),
                                     command=self.open_doc_types_manager_with_login)
+
         self.tools_menu.add_cascade(label=self.lang.get('menu_materials', "Materiali"), menu=self.materials_submenu)
+        self.tools_menu.add_command(label=self.lang.get('submenu_maint_times', "Tempi Manutenzione"),
+                                    command=self.open_maintenance_times_with_login)
         self.materials_submenu.delete(0, 'end')
         self.materials_submenu.add_command(label=self.lang.get('submenu_manage', "Gestione"),
                                            command=self.open_manage_materials_with_login)
@@ -3170,7 +3433,6 @@ class App(tk.Tk):
             parent=self
         )
 
-    # Lanciatori Documenti Produzione
     def open_add_machine_with_login(self):
         self._execute_simple_login(
             action_callback=lambda user_name: maintenance_gui.open_add_machine(self, self.db, self.lang)

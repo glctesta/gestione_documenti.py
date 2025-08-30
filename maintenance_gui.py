@@ -5,7 +5,11 @@ from tkinter import ttk, messagebox
 from tkinter import filedialog
 import os
 import reportlab
+from matplotlib import pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from tkcalendar import DateEntry
+from collections import Counter
+
 
 import richieste_intervento
 import openpyxl
@@ -988,21 +992,33 @@ class MaintenanceReportWindow(tk.Toplevel):
         self.cycle_var.set(all_text)
 
     def _generate_report(self):
-        from_date = self.from_date_var.get()
-        to_date = self.to_date_var.get()
-        if not from_date or not to_date:
+        from_date_str = self.from_date_var.get()
+        to_date_str = self.to_date_var.get()
+
+        if not from_date_str or not to_date_str:
             messagebox.showerror(self.lang.get('error_title', "Errore"),
                                  self.lang.get('error_date_range', "Selezionare un intervallo di date valido."))
             return
+
+        # --- CORREZIONE: Converti le stringhe in oggetti data ---
+        try:
+            # Il formato '%d/%m/%Y' deve corrispondere a quello del DateEntry
+            from_date_obj = datetime.strptime(from_date_str, '%d/%m/%Y').date()
+            to_date_obj = datetime.strptime(to_date_str, '%d/%m/%Y').date()
+        except ValueError:
+            messagebox.showerror(self.lang.get('error_title', "Errore"),
+                                 self.lang.get('error_invalid_date_format', "Il formato della data non è valido."))
+            return
+        # --- FINE CORREZIONE ---
 
         all_text = self.lang.get('all_filter_option', "TUTTI")
         equipment_id = self.equipments_data.get(
             self.equipment_var.get()) if self.equipment_var.get() != all_text else None
         cycle_id = self.cycles_data.get(self.cycle_var.get()) if self.cycle_var.get() != all_text else None
 
-        self.report_data = self.db.fetch_report_data(from_date, to_date, equipment_id, cycle_id)
+        # Passa gli oggetti data, non più le stringhe
+        self.report_data = self.db.fetch_report_data(from_date_obj, to_date_obj, equipment_id, cycle_id)
 
-        # --- MESSAGGIO DI AVVISO PER DATI MANCANTI ---
         if not self.report_data:
             messagebox.showinfo(self.lang.get('info_title', "Info"),
                                 self.lang.get('info_no_data_found', "Nessun dato trovato per i filtri selezionati."))

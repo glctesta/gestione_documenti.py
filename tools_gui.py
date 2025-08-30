@@ -599,5 +599,167 @@ class SuppliersManagerWindow(tk.Toplevel):
             self._load_suppliers()  # Ricarica la lista se un nuovo fornitore è stato aggiunto
 
 
+class MaintenanceTimesManagerWindow(tk.Toplevel):
+    """Finestra per gestire i tempi standard di manutenzione."""
+
+    def __init__(self, parent, db, lang, user_name):
+        super().__init__(parent)
+        self.db = db
+        self.lang = lang
+        self.user_name = user_name
+        self.title(lang.get('maint_times_title', "Gestione Tempi Manutenzione"))
+        self.geometry("1000x600")
+
+        self.equipments_data = {}
+        self.cycles_data = {}
+        self.tasks_data = {}  # Per conservare i dati completi della riga selezionata
+
+        self.equipment_var = tk.StringVar()
+        self.cycle_var = tk.StringVar()
+        self.pdf_ref_var = tk.StringVar()
+        self.timing_var = tk.StringVar()
+
+        self._create_widgets()
+        self._load_filters()
+
+    def _create_widgets(self):
+        main_frame = ttk.Frame(self, padding="10")
+        main_frame.pack(fill="both", expand=True)
+        main_frame.rowconfigure(1, weight=1)
+        main_frame.columnconfigure(0, weight=1)
+
+        # Filtri
+        filter_frame = ttk.LabelFrame(main_frame, text="Filtri", padding="10")
+        filter_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=5)
+        filter_frame.columnconfigure(1, weight=1)
+        filter_frame.columnconfigure(3, weight=1)
+
+        ttk.Label(filter_frame, text="Macchinario:").grid(row=0, column=0, sticky="w", padx=5)
+        self.equipment_combo = ttk.Combobox(filter_frame, textvariable=self.equipment_var, state="readonly")
+        self.equipment_combo.grid(row=0, column=1, sticky="ew", padx=5)
+        self.equipment_combo.bind("<<ComboboxSelected>>", self._on_filter_change)
+
+        ttk.Label(filter_frame, text="Ciclo di Manutenzione:").grid(row=0, column=2, sticky="w", padx=5)
+        self.cycle_combo = ttk.Combobox(filter_frame, textvariable=self.cycle_var, state="readonly")
+        self.cycle_combo.grid(row=0, column=3, sticky="ew", padx=5)
+        self.cycle_combo.bind("<<ComboboxSelected>>", self._on_filter_change)
+
+        # Contenuto
+        content_frame = ttk.Frame(main_frame)
+        content_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=10)
+        content_frame.rowconfigure(0, weight=1)
+        content_frame.columnconfigure(0, weight=3)  # Lista
+        content_frame.columnconfigure(1, weight=2)  # Dettagli
+
+        # Lista Task (Sinistra)
+        cols = ('task', 'desc')
+        self.tree = ttk.Treeview(content_frame, columns=cols, show="headings")
+        self.tree.heading('task', text="Nome Compito")
+        self.tree.heading('desc', text="Descrizione")
+        self.tree.pack(side="left", fill="both", expand=True)
+        self.tree.bind("<<TreeviewSelect>>", self._on_task_select)
+
+        # Form Dettagli (Destra)
+        details_frame = ttk.LabelFrame(content_frame, text="Dettagli", padding="15")
+        details_frame.pack(side="right", fill="y", padx=(10, 0))
+        details_frame.columnconfigure(0, weight=1)
+
+        ttk.Label(details_frame, text="Riferimento PDF:").pack(anchor="w")
+        self.pdf_ref_entry = ttk.Entry(details_frame, textvariable=self.pdf_ref_var, state="disabled")
+        self.pdf_ref_entry.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(details_frame, text="Tempo Standard (minuti):").pack(anchor="w")
+        self.timing_entry = ttk.Entry(details_frame, textvariable=self.timing_var, state="disabled")
+        self.timing_entry.pack(fill="x")
+
+        self.save_button = ttk.Button(details_frame, text="Salva Modifiche", command=self._save_changes,
+                                      state="disabled")
+        self.save_button.pack(pady=20)
+
+    def _load_filters(self):
+        equipments = self.db.fetch_equipments_for_timing()
+        if equipments:
+            self.equipments_data = {eq.EquipmentName: eq.EquipmentId for eq in equipments}
+            self.equipment_combo['values'] = sorted(list(self.equipments_data.keys()))
+
+        cycles = self.db.fetch_maintenance_cycles()
+        if cycles:
+            self.cycles_data = {c.TimingDescriprion: c.ProgrammedInterventionId for c in cycles}
+            self.cycle_combo['values'] = sorted(list(self.cycles_data.keys()))
+
+    def _on_filter_change(self, event=None):
+        equipment_id = self.equipments_data.get(self.equipment_var.get())
+        cycle_id = self.cycles_data.get(self.cycle_var.get())
+
+        self.tree.delete(*self.tree.get_children())
+        self._clear_details_form()
+
+        if equipment_id and cycle_id:
+            tasks = self.db.fetch_tasks_for_timing(equipment_id, cycle_id)
+            self.tasks_data.clear()
+            for task in tasks:
+                self.tree.insert("", "end", iid=task.CompitoId, values=(task.NomeCompito, task.DescrizioneCompito))
+                self.tasks_data[task.CompitoId] = task  # Salva tutti i dati della riga
+
+    def _on_task_select(self, event=None):
+        selected_item = self.tree.focus()
+        if not selected_item:
+            self._clear_details_form()
+            return
+
+        task_id = int(selected_item)
+        task_data = self.tasks_data.get(task_id)
+        if not task_data: return
+
+        self.pdf_ref_var.set(task_data.PdfRiferiment or "")
+        self.timing_var.set(task_data.TimingMinutes or "")
+
+        self.pdf_ref_entry.config(state="normal")
+        self.timing_entry.config(state="normal")
+        self.save_button.config(state="normal")
+
+    def _clear_details_form(self):
+        self.pdf_ref_var.set("")
+        self.timing_var.set("")
+        self.pdf_ref_entry.config(state="disabled")
+        self.timing_entry.config(state="disabled")
+        self.save_button.config(state="disabled")
+
+    def _save_changes(self):
+        selected_item = self.tree.focus()
+        if not selected_item: return
+
+        task_id = int(selected_item)
+        task_data = self.tasks_data.get(task_id)
+
+        new_pdf_ref = self.pdf_ref_var.get().strip()
+        new_timing_str = self.timing_var.get().strip()
+
+        try:
+            # Convalida che il timing sia un numero, se inserito
+            if new_timing_str:
+                float(new_timing_str)
+        except ValueError:
+            messagebox.showerror("Errore", "Il tempo standard deve essere un numero.", parent=self)
+            return
+
+        # 1. Aggiorna riferimento PDF
+        pdf_success = self.db.update_task_pdf_reference(task_id, new_pdf_ref)
+
+        # 2. Aggiorna il timing
+        timing_success = self.db.update_task_timing(task_id, new_timing_str, task_data.CompitoManutenzioneTimingId)
+
+        if pdf_success and timing_success:
+            messagebox.showinfo("Successo", "Dati aggiornati con successo.", parent=self)
+            self._on_filter_change()  # Ricarica la lista per mostrare i dati aggiornati
+        else:
+            messagebox.showerror("Errore",
+                                 f"Si è verificato un errore durante il salvataggio:\n{self.db.last_error_details}",
+                                 parent=self)
+
+
+def open_maintenance_times_manager(parent, db, lang, user_name):
+    MaintenanceTimesManagerWindow(parent, db, lang, user_name)
+
 def open_suppliers_manager(parent, db, lang):
     SuppliersManagerWindow(parent, db, lang)
