@@ -1265,7 +1265,12 @@ class BrandManagerWindow(tk.Toplevel):
         self.brand_entry.focus_set()
 
     def _load_logo(self):
-        if not PIL_AVAILABLE: return
+        """Apre una finestra di dialogo per selezionare un file immagine."""
+        if not PIL_AVAILABLE:
+            messagebox.showwarning("Libreria Mancante",
+                                   "La libreria Pillow non è installata. Impossibile caricare immagini.")
+            return
+
         file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.png;*.jpg;*.jpeg;*.bmp")])
         if file_path:
             with open(file_path, 'rb') as f:
@@ -1273,10 +1278,11 @@ class BrandManagerWindow(tk.Toplevel):
             self._display_logo()
 
     def _display_logo(self):
+        """Mostra un'anteprima del logo caricato."""
         if self.logo_binary_data and PIL_AVAILABLE:
             try:
                 image = Image.open(io.BytesIO(self.logo_binary_data))
-                image = image.convert("RGB")  # Converte per evitare problemi con PNG
+                image = image.convert("RGB")
                 image.thumbnail((150, 150))
                 self.logo_photo = ImageTk.PhotoImage(image)
                 self.logo_label.config(image=self.logo_photo, text="")

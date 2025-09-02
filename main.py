@@ -153,6 +153,16 @@ class LanguageManager:
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
 
+    def fetch_supplier_sites(self):
+        """Recupera i fornitori/compagnie dalla tabella Sites."""
+        query = "SELECT [IDSite], [SiteName] FROM [Traceability_RS].[dbo].[Sites] WHERE isSupplier = 1 ORDER BY SiteName;"
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
     def fetch_all_sites(self):
         """Recupera tutti i siti/compagnie per la gestione."""
         query = "SELECT IDSite, SiteName, SiteAddress, SiteVat, SiteCountry, Logo FROM dbo.Sites where isnull(IsSupplier,0) = 1 ORDER BY SiteName;"

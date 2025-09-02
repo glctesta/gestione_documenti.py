@@ -852,6 +852,19 @@ class CompanyManagerWindow(tk.Toplevel):
         for site in self.sites_list:
             self.tree.insert("", "end", iid=site.IDSite, values=(site.SiteName, site.SiteCountry, site.SiteVat))
 
+    def _load_logo(self):
+        """Apre una finestra di dialogo per selezionare un file immagine."""
+        if not PIL_AVAILABLE:
+            messagebox.showwarning("Libreria Mancante",
+                                   "La libreria Pillow non è installata. Impossibile caricare immagini.")
+            return
+
+        file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.png;*.jpg;*.jpeg;*.bmp")])
+        if file_path:
+            with open(file_path, 'rb') as f:
+                self.logo_binary_data = f.read()
+            self._display_logo()
+
     def _on_site_select(self, event=None):
         selected_item = self.tree.focus()
         if not selected_item: return
@@ -879,18 +892,15 @@ class CompanyManagerWindow(tk.Toplevel):
         self.name_entry.focus_set()
 
     def _display_logo(self):
+        """Mostra un'anteprima del logo caricato."""
         if self.logo_binary_data and PIL_AVAILABLE:
             try:
                 image = Image.open(io.BytesIO(self.logo_binary_data))
-                # --- CORREZIONE QUI: Converte l'immagine in RGB ---
-                # Questo risolve i problemi con la trasparenza dei file PNG
                 image = image.convert("RGB")
-
                 image.thumbnail((150, 150))
                 self.logo_photo = ImageTk.PhotoImage(image)
                 self.logo_label.config(image=self.logo_photo, text="")
             except Exception as e:
-                # Aggiungiamo un print per vedere l'errore esatto nel terminale
                 print(f"ERRORE caricamento logo: {e}")
                 self.logo_label.config(image="", text=self.lang.get('logo_error_text', "Errore logo"))
         else:
