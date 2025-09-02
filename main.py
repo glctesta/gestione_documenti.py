@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from tkinter import ttk, messagebox, filedialog
 import random
 import pyodbc
-from PIL import Image, ImageTk, ImageOps, ImageDraw, ImageFont
+from PIL import ImageOps, ImageDraw, ImageFont
 from packaging import version
 
 import general_docs_gui
@@ -30,7 +30,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.6.4"  # Versione aggiornata
+APP_VERSION = "1.6.5"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
 # --- CONFIGURAZIONE DATABASE ---
@@ -153,6 +153,190 @@ class LanguageManager:
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
 
+    def fetch_shipping_plan_items(self, shipping_date):
+        """Recupera le righe del piano di spedizione già salvate per una data specifica."""
+        query = "SELECT * FROM dbo.ShippingPlanItems WHERE ShippingDate = ?;"
+        try:
+            self.cursor.execute(query, shipping_date)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def update_xls_sheet_name(self, file_type_id, sheet_name):
+        """Aggiorna il nome del foglio di lavoro per un dato tipo di file."""
+        query = "UPDATE dbo.XlsFileTypes SET SheetName = ? WHERE FileTypeId = ?;"
+        try:
+            self.cursor.execute(query, sheet_name, file_type_id)
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+
+    def fetch_xls_file_types(self):
+        """Recupera i tipi di file configurabili per l'import."""
+        query = "SELECT FileTypeId, FileTypeName, TranslationKey FROM dbo.XlsFileTypes ORDER BY FileTypeName;"
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e); return []
+
+    def fetch_xls_mappings(self, file_type_id):
+        """
+        Recupera la mappatura delle colonne E il nome del foglio di lavoro
+        per un dato tipo di file.
+        """
+        query = """
+            SELECT 
+                m.MappingId, m.FieldName, m.ColumnLetter, m.StartRow, t.SheetName
+            FROM 
+                dbo.XlsColumnMappings m
+            INNER JOIN 
+                dbo.XlsFileTypes t ON m.FileTypeId = t.FileTypeId
+            WHERE 
+                m.FileTypeId = ?;
+        """
+        try:
+            results = self.cursor.execute(query, file_type_id).fetchall()
+            if not results:
+                return {}, None
+
+            # Estrae il nome del foglio (sarà lo stesso per tutte le righe)
+            sheet_name = results[0].SheetName
+
+            # Costruisce il dizionario della mappatura
+            mappings = {}
+            for row in results:
+                mappings[row.FieldName] = {'id': row.MappingId, 'col': row.ColumnLetter, 'row': row.StartRow}
+
+            return mappings, sheet_name
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return {}, None
+
+    def update_xls_mapping(self, mapping_id, column_letter, start_row):
+        """Aggiorna una singola riga di mappatura."""
+        query = "UPDATE dbo.XlsColumnMappings SET ColumnLetter = ?, StartRow = ? WHERE MappingId = ?;"
+        try:
+            self.cursor.execute(query, column_letter, start_row, mapping_id)
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+
+    def fetch_shipping_plan_items(self, shipping_date):
+        """Recupera le righe del piano di spedizione per una data specifica."""
+        query = "SELECT * FROM dbo.ShippingPlanItems WHERE ShippingDate = ?;"
+        try:
+            self.cursor.execute(query, shipping_date)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e); return []
+
+    def save_shipping_plan_items(self, plan_data_list):
+        """Esegue un'operazione di UPSERT (Update/Insert) per i dati del piano."""
+        if not plan_data_list: return True, "Nessun dato da salvare."
+        try:
+            # Prepara le query
+            update_sql = """
+                UPDATE dbo.ShippingPlanItems 
+                SET OriginalQty = ?, ModifiedQty = ?, Note = ?, Status = ?, LastUpdated = GETDATE(), UpdatedBy = ?
+                WHERE ItemId = ?;
+            """
+            insert_sql = """
+                INSERT INTO dbo.ShippingPlanItems (ShippingDate, OrderNumber, ProductCode, OriginalQty, ModifiedQty, Note, Status, UpdatedBy)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            """
+
+            for item in plan_data_list:
+                if item.get('id'):  # Se ha un ID, è un UPDATE
+                    params = (item['original_qty'], item['modified_qty'], item['note'], item['status'], item['user'],
+                              item['id'])
+                    self.cursor.execute(update_sql, params)
+                else:  # Altrimenti è un INSERT
+                    params = (item['shipping_date'], item['order'], item['product'], item['original_qty'],
+                              item['modified_qty'], item['note'], item['status'], item['user'])
+                    self.cursor.execute(insert_sql, params)
+
+            self.conn.commit()
+            return True, "Piano di spedizione salvato con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False, f"Errore durante il salvataggio: {e}"
+
+    def fetch_shipping_settings(self):
+        """Recupera tutte le impostazioni di spedizione attive."""
+        query = "SELECT [ShippingSettingId], [DayOfWeek], [ShippingType] FROM [Traceability_RS].[dbo].[ShippingSettings] WHERE dateend IS NULL ORDER BY dayofweek;"
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def save_backlog_report(self, user_name, general_note, excel_data, notes_list):
+        """Salva il report di backlog, il file excel e le note in una transazione."""
+        try:
+            # 1. Inserisce il log principale e ottiene il nuovo ID
+            insert_log_sql = "INSERT INTO dbo.BackLogs (UserLog, Note) OUTPUT INSERTED.BackLogId VALUES (?, ?);"
+            new_log_id = self.cursor.execute(insert_log_sql, user_name, general_note).fetchval()
+            if not new_log_id: raise Exception("Creazione BackLog fallita.")
+
+            # 2. Inserisce i dati binari del file Excel
+            insert_data_sql = "INSERT INTO dbo.BackLogData (BackLogId, ExcelDataFile) VALUES (?, ?);"
+            self.cursor.execute(insert_data_sql, new_log_id, excel_data)
+
+            # 3. Inserisce tutte le note specifiche per riga
+            if notes_list:
+                insert_notes_sql = "INSERT INTO dbo.BackLogNotes (BackLogId, ExcelRowNumber, Note) VALUES (?, ?, ?);"
+                params = [(new_log_id, row_num, note) for row_num, note in notes_list]
+                self.cursor.executemany(insert_notes_sql, params)
+
+            self.conn.commit()
+            return True, "Report di backlog salvato con successo nel database."
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False, f"Errore durante il salvataggio nel database: {e}"
+
+    def add_shipping_setting(self, day_of_week, shipping_type):
+        """Aggiunge una nuova impostazione di spedizione dopo aver controllato i duplicati."""
+        # 1. Controlla se esiste già un'impostazione identica e attiva
+        check_query = """
+            SELECT COUNT(*) FROM [dbo].[ShippingSettings]
+            WHERE DayOfWeek = ? AND ShippingType = ? AND DateEnd IS NULL;
+        """
+        insert_query = "INSERT INTO [dbo].[ShippingSettings] (DayOfWeek, ShippingType) VALUES (?, ?);"
+        try:
+            count = self.cursor.execute(check_query, day_of_week, shipping_type).fetchval()
+            if count > 0:
+                return False, "Errore: Esiste già un''impostazione identica per questo giorno e tipo di spedizione."
+
+            # 2. Se non esiste, procedi con l'inserimento
+            self.cursor.execute(insert_query, day_of_week, shipping_type)
+            self.conn.commit()
+            return True, "Impostazione aggiunta con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            return False, f"Errore database: {e}"
+
+    def delete_shipping_setting(self, setting_id):
+        """Esegue un soft delete di un'impostazione di spedizione impostando DateEnd."""
+        query = "UPDATE [dbo].[ShippingSettings] SET DateEnd = GETDATE() WHERE ShippingSettingId = ?;"
+        try:
+            self.cursor.execute(query, setting_id)
+            self.conn.commit()
+            return True, "Impostazione cancellata con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            return False, f"Errore database: {e}"
+
     def fetch_all_active_employees_birthdays(self):
         """Recupera nome, cognome e data di nascita di tutti i dipendenti attivi."""
         query = """
@@ -246,7 +430,6 @@ class Database:
             self.conn.rollback()
             self.last_error_details = str(e)
             return False
-
 
     def fetch_working_areas(self):
         """Recupera le Aree di Lavoro principali."""
@@ -466,6 +649,7 @@ class Database:
             print(f"ERRORE SQL in fetch_issue_problems: {e}")
             self.last_error_details = str(e)
             return []
+
     def add_production_interruption(self, params):
         """Salva un nuovo record di interruzione produzione in ReportIssueLogs."""
         query = """
@@ -1498,8 +1682,6 @@ class Database:
         self.cursor = None
         self.last_error_details = ""
 
-    # --- METODI DI CONNESSIONE ---
-
     def connect(self):
         try:
             # Usiamo autocommit=False per gestire le transazioni manualmente (commit/rollback)
@@ -1598,7 +1780,6 @@ class Database:
             self.last_error_details = f"Errore Applicazione (File System): {e}"
             return False
 
-    # NUOVO METODO: Recupera gli interventi programmati usando la query fornita dall'utente
     def fetch_programmed_interventions(self):
         """Recupera tutti gli interventi programmati (Tipi di manutenzione)."""
         query = """
@@ -1649,8 +1830,6 @@ class Database:
             self.last_error_details = str(e)
             print(f"Errore SQL nella transazione replace_maintenance_document: {e}")
             return False
-
-    # --- METODI GESTIONE MACCHINE ---
 
     def search_equipments(self, filters):
         """
@@ -1782,8 +1961,6 @@ class Database:
             print(f"Errore durante l'aggiornamento della macchina: {e}")
             return False
 
-    # --- METODI DATI DI SUPPORTO (Brand, Tipi, Fasi) ---
-
     def fetch_brands(self):
         """Recupera tutti i brand delle macchine."""
         query = "SELECT EquipmentBrandId, Brand FROM eqp.EquipmentBrands ORDER BY Brand;"
@@ -1832,8 +2009,6 @@ class Database:
             print(f"Errore durante l'inserimento della macchina: {e}")
             return False
 
-    # --- METODI PER TRADUZIONI E AUTENTICAZIONE ---
-
     def fetch_translations(self):
         query = "SELECT LanguageCode, TranslationKey, TranslationValue FROM Traceability_rs.dbo.AppTranslations;"
         try:
@@ -1858,8 +2033,6 @@ class Database:
         except pyodbc.Error as e:
             print(f"Error during authentication: {e}")
             return None
-
-    # --- METODI PER DOCUMENTI DI PRODUZIONE (Non Manutenzione) ---
 
     def fetch_products(self):
         query = """
@@ -2016,8 +2189,6 @@ class Database:
             print(self.last_error_details)
             return False
 
-    # --- METODO GESTIONE VERSIONI ---
-
     def fetch_latest_version_info(self, software_name):
         """
         Recupera la versione più recente e il percorso di aggiornamento per un dato software.
@@ -2030,8 +2201,6 @@ class Database:
             print(f"Errore durante il recupero della versione del software: {e}")
             return None
 
-
-    # NUOVO METODO: Query 1 - Recupera Piani di Manutenzione Disponibili per una macchina
     def fetch_available_maintenance_plans(self, equipment_id):
         """Recupera i piani di manutenzione disponibili per una macchina, basandosi sui compiti assegnati."""
         # La logica per determinare se un piano è "scaduto" è complessa e la manteniamo,
@@ -2065,11 +2234,6 @@ class Database:
             print(f"Errore nel recupero piani manutenzione: {e}")
             self.last_error_details = str(e)
             return []
-
-    # NUOVO METODO: Query 2 - Recupera Compiti per un Piano di Manutenzione
-    # In main.py, dentro la classe Database
-
-    # In main.py, dentro la classe Database
 
     def fetch_maintenance_tasks(self, programmed_intervention_id, equipment_id):
         query = """
@@ -2105,7 +2269,6 @@ class Database:
             self.last_error_details = str(e)
             return []
 
-    # NUOVO METODO: Salva i log dei compiti completati
     def log_completed_tasks(self, equipment_id, user_name, completed_task_ids, start_time, notes=""):
         """Inserisce record in LogManutenzioni per i compiti completati in una transazione batch."""
         if not completed_task_ids:
@@ -2137,7 +2300,6 @@ class Database:
             self.last_error_details = str(e)
             return False
 
-    # NUOVO METODO: Recupera e apre il documento basato su CompitoId
     def fetch_and_open_document_by_task_id(self, task_id):
         """
         Recupera e apre il documento specifico per un compito, leggendo
@@ -2194,8 +2356,6 @@ class Database:
             print(f"Errore imprevisto durante la gestione del file temporaneo: {e}")
             self.last_error_details = f"Errore Applicazione (File System): {e}"
             return False
-
-# --- CLASSI INTERFACCIA UTENTE (GUI) ---
 
 class LoginWindow(tk.Toplevel):
     """Finestra per raccogliere le credenziali dell'utente."""
@@ -2268,7 +2428,6 @@ class LoginWindow(tk.Toplevel):
         # L'utente ha chiuso la finestra senza premere login
         self.clicked_login = False
         self.destroy()
-
 
 class InsertDocumentForm(tk.Toplevel):
     """Finestra di inserimento documenti (di Produzione)."""
@@ -2481,7 +2640,6 @@ class InsertDocumentForm(tk.Toplevel):
         self.validated_var.set(False)
         self.file_entry.config(state="readonly")
 
-
 class ViewDocumentForm(tk.Toplevel):
     """Finestra per visualizzare un documento (di Produzione)."""
 
@@ -2615,7 +2773,6 @@ class ViewDocumentForm(tk.Toplevel):
         if not success:
              messagebox.showerror(self.lang.get('error_title', "Errore"), "Impossibile aprire il documento.", parent=self)
 
-
 class App(tk.Tk):
     """Classe principale dell'applicazione."""
     def __init__(self):
@@ -2671,6 +2828,34 @@ class App(tk.Tk):
         self._update_clock()  # Avvia l'orologio
 
         self.after(100, self._post_startup_tasks)
+
+    def open_xls_settings_with_login(self):
+        """Apre la finestra per configurare la mappatura dei file Excel."""
+        self._execute_authorized_action(  # Usiamo il login con permessi
+            menu_translation_key='submenu_shipping_settings',  # Riusiamo questo permesso
+            action_callback=lambda: operations_gui.open_xls_settings_window(self, self.db, self.lang, None)
+        )
+
+    def open_shipping_settings_with_login(self):
+        """Apre la finestra per gestire le impostazioni di spedizione."""
+        self._execute_authorized_action(  # Usiamo il login con permessi
+            menu_translation_key='submenu_shipping_settings',
+            action_callback=lambda: operations_gui.open_shipping_settings_window(self, self.db, self.lang, None)
+        )
+
+    def open_shipping_window_with_login(self):
+        """Apre la finestra per il caricamento del report spedizioni."""
+        self._execute_simple_login(
+            action_callback=lambda user_name: operations_gui.open_shipping_report_window(self, self.db, self.lang,
+                                                                                         user_name)
+        )
+
+    def open_shipping_report_window_with_login(self):
+        """Apre la finestra per il caricamento del report spedizioni dopo un login semplice."""
+        self._execute_simple_login(
+            action_callback=lambda user_name: operations_gui.open_shipping_report_window(self, self.db, self.lang,
+                                                                                         user_name)
+        )
 
     def _flash_birthday_message(self, message):
         """Crea un effetto flashing con cambio colore per il messaggio di auguri."""
@@ -2767,10 +2952,7 @@ class App(tk.Tk):
         self.scrolling_job_id = self.after(150, self._scroll_text)
 
     def _stop_birthday_display(self):
-        """Ferma TUTTI gli avvisi di compleanno e ripristina lo slideshow normale."""
-        print("DEBUG: Fine avviso compleanno. Ripristino slideshow normale.")
 
-        # Ferma il ciclo del testo lampeggiante, se attivo
         if self.birthday_flash_job_id:
             self.after_cancel(self.birthday_flash_job_id)
             self.birthday_flash_job_id = None
@@ -3212,7 +3394,7 @@ class App(tk.Tk):
         # 2. ORA crea i sottomenu figli, usando production_submenu come genitore
         self.declarations_submenu = tk.Menu(self.production_submenu, tearoff=0)
         self.reports_submenu = tk.Menu(self.production_submenu, tearoff=0)
-        # --- FINE CORREZIONE ---
+        self.operativity_submenu = tk.Menu(self.reports_submenu, tearoff=0)
 
         # Sottomenu di Strumenti
         self.permissions_submenu = tk.Menu(self.tools_menu, tearoff=0)
@@ -3297,12 +3479,54 @@ class App(tk.Tk):
             command=self.open_add_interruption_window,
             state="disabled" #disabilitato momentaneamente
         )
+        # 3.1 Aggiunge il nuovo sottomenu "Operativita'"
+        self.reports_submenu.add_cascade(
+            label=self.lang.get('submenu_operativity', "Operativita'"),
+            menu=self.operativity_submenu
+        )
+        # 3.2 Popola il sottomenu "Operativita'"
+        self.operativity_submenu.delete(0, 'end')
+        # self.operativity_submenu.add_command(
+        #     label=self.lang.get('submenu_shipping', "Spedizioni"),
+        #     command=self.open_shipping_window_with_login
+        #)
+        # 3.2.1 Crea il sottomenu di Spedizioni
+        shipping_submenu = tk.Menu(self.operativity_submenu, tearoff=0)
+        self.operativity_submenu.add_cascade(
+            label=self.lang.get('submenu_shipping', "Spedizioni"),
+            menu=shipping_submenu
+        )
+        shipping_submenu.delete(0, 'end')
+
+        # 3.2.2 Popola il sottomenu Spedizioni
+        shipping_submenu.add_command(
+            label=self.lang.get('upload_report_label', "Carica Report"),
+            #command=self.open_shipping_window_with_login
+            command=self.open_shipping_report_window_with_login
+        )
+        shipping_submenu.add_command(
+            label=self.lang.get('submenu_shipping_settings', "Impostazioni Spedizione"),
+            command=self.open_shipping_settings_with_login
+        )
+
+        shipping_submenu.add_command(
+            label=self.lang.get('submenu_xls_settings', "Impostazioni XLS"),
+            command=self.open_xls_settings_with_login
+        )
 
         # 4. Sottomenu "Impostazioni" (direttamente in Produzione)
         self.production_submenu.add_command(
             label=self.lang.get('submenu_settings_prod', "Impostazioni"),
             state="disabled"
         )
+
+
+        # Aggiunge la voce originale, ora separata
+        self.reports_submenu.add_command(
+            label=self.lang.get('submenu_line_stoppage_reports', "Rapporti di fermo linea"),
+            state="disabled"
+        )
+
 
         # 5. Aggiunge le altre voci al menu Operations principale
         self.operations_menu.add_separator()  # Separatore opzionale
@@ -3434,6 +3658,7 @@ class App(tk.Tk):
         )
 
     def open_add_machine_with_login(self):
+        """Apre la finestra per aggiungere una macchina dopo un login semplice."""
         self._execute_simple_login(
             action_callback=lambda user_name: maintenance_gui.open_add_machine(self, self.db, self.lang)
         )
@@ -3463,9 +3688,10 @@ class App(tk.Tk):
 
         self._execute_simple_login(action_callback=action)
 
-    def open_fill_templates_with_login(self):
+    def open_add_machine_with_login(self):
+        """Apre la finestra per aggiungere una macchina dopo un login semplice."""
         self._execute_simple_login(
-            action_callback=lambda user_name: maintenance_gui.open_fill_templates(self, self.db, self.lang, user_name)
+            action_callback=lambda user_name: maintenance_gui.open_add_machine(self, self.db, self.lang)
         )
 
     def _on_closing(self):

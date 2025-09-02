@@ -55,29 +55,23 @@ class AddMachineWindow(tk.Toplevel):
     """Finestra per aggiungere una nuova macchina."""
 
     def __init__(self, parent, db, lang):
+        # CORREZIONE: Passa solo 'parent' alla classe superiore
         super().__init__(parent)
-
-        # Le altre variabili vengono usate solo da questa classe
         self.db = db
         self.lang = lang
-        self.parent_app = parent
-        self.report_data = []
 
-        self.title(self.lang.get('maintenance_report_title', "Report Manutenzioni"))
-        self.geometry("1200x700")
+        self.title(self.lang.get('submenu_add_machine'))
+        self.geometry("550x450")
         self.transient(parent)
+        self.grab_set()
 
-        # Dati e variabili per i filtri
-        self.equipments_data = {}
-        self.equipment_var = tk.StringVar()
-        self.maintainer_var = tk.StringVar()
-        self.date_var = tk.StringVar()
-
-        self.all_equipment_names_report = []
-        self.all_maintainer_names_report = []
+        self.brands_data, self.types_data, self.phases_data = {}, {}, {}
+        self.brand_var, self.type_var, self.phase_var = tk.StringVar(), tk.StringVar(), tk.StringVar()
+        self.serial_var, self.internal_name_var = tk.StringVar(), tk.StringVar()
+        self.year_var, self.inventory_var = tk.StringVar(), tk.StringVar()
 
         self._create_widgets()
-        self._load_filters()
+        self._load_combobox_data()
 
     def _create_widgets(self):
         """Crea e posiziona i widget nella finestra."""
