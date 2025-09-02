@@ -10,7 +10,7 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill
 import io
 import shipping_processor # Importa il nuovo modulo
-
+from tkinter import simpledialog
 
 class ShippingReportWindow(tk.Toplevel):
     """Finestra per caricare ed elaborare il report delle spedizioni."""
@@ -607,40 +607,47 @@ class ShippingReportWindow(tk.Toplevel):
         self.save_db_button.grid(row=4, column=0, sticky="e", pady=10)
 
     def _configure_styles(self):
+        """Configura gli stili per colorare le righe della Treeview."""
         style = ttk.Style()
         style.map("Treeview")
+        # Colora le righe modificate in giallo
         style.configure("modified.Treeview", background="#FFFACD")
+        # Colora le righe rimosse in rosa
         style.configure("removed.Treeview", background="#FFC0CB")
+        # Colora le righe nuove in verde
         style.configure("new.Treeview", background="#D4EDDA")
 
     def _load_plan(self):
-        # 1. Trova il prossimo giorno di spedizione
+        # 1. Recupera le impostazioni di spedizione (giorni validi)
         settings = self.db.fetch_shipping_settings()
-        next_date, error = shipping_processor.find_next_shipping_day(settings)
-        if error:
-            messagebox.showerror(self.lang.get('error_settings_title', "Errore Impostazioni"), error, parent=self)
-            return
-        self.shipping_date = next_date
 
-        # --- CORREZIONE QUI ---
-        # 2. Carica i dati GIA' SALVATI per quella data dal DB per il confronto
-        db_data = self.db.fetch_shipping_plan_items(self.shipping_date)
-        # --- FINE CORREZIONE ---
+        # 2. Recupera la configurazione del file Excel (nome del foglio, ecc.)
+        mappings, sheet_name = self.db.fetch_xls_mappings(file_type_id=1)
+        if not mappings or not sheet_name:
+            messagebox.showerror(self.lang.get('error_config_title'), self.lang.get('error_config_message'),
+                                 parent=self)
+            return
+        xls_config = {'mappings': mappings, 'sheet_name': sheet_name}
 
         # 3. Chiede il file all'utente
         file_path = filedialog.askopenfilename(filetypes=[("Excel Files", "*.xlsx")])
         if not file_path: return
 
-        # 4. Elabora e confronta i dati del file con quelli del DB
-        # Assicurati che xls_config e user_name siano passati correttamente
-        # (per ora, passiamo una config vuota se non la usi ancora attivamente)
-        data, summary, error = shipping_processor.process_shipping_plan(file_path, settings, db_data, self.user_name)
+        # 4. Carica i dati GIA' SALVATI dal DB per il confronto
+        # NOTA: Per ora, carichiamo tutti i dati. In futuro potremmo filtrare per data.
+        db_data = self.db.fetch_shipping_plan_items(datetime.now().date())
+
+        # 5. Chiama la funzione del processore passando TUTTI gli argomenti
+        data, summary, error = shipping_processor.process_shipping_file(
+            file_path, settings, db_data, self.user_name, xls_config
+        )
 
         if error:
             messagebox.showerror(self.lang.get('error_processing_title', "Errore Elaborazione"), error, parent=self)
             return
 
-        # 5. Salva i dati e aggiorna la UI
+        # 6. Salva i dati e aggiorna la UI
+        self.shipping_date = datetime.strptime(summary['next_ship_date'], '%d/%m/%Y').date()
         self.plan_data = data
         self.summary_data = summary
         self.initial_plan_state = json.dumps(self.plan_data, sort_keys=True, default=str)

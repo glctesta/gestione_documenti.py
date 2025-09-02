@@ -3,22 +3,17 @@ import pandas as pd
 from datetime import datetime
 
 
-def process_shipping_file(file_path, shipping_settings, xls_config):
+def process_shipping_file(file_path, shipping_settings, db_data, user_name, xls_config):
     """
-    Analizza il file Excel con una logica di parsing avanzata che gestisce
-    sia le date come testo sia come oggetti datetime nativi di Excel,
-    scansionando tutte le colonne per la massima compatibilità.
+    Analizza il file Excel, lo confronta con i dati del DB e assegna uno stato a ogni riga.
     """
     try:
-        # 1. Estrae la configurazione (nome del foglio)
         sheet_name = xls_config.get('sheet_name')
         if not sheet_name:
             return None, None, "Nome del foglio di lavoro non configurato nelle Impostazioni XLS."
 
-        # 2. Carica il file Excel
         df = pd.read_excel(file_path, sheet_name=sheet_name, header=0)
 
-        # 3. Ottieni i giorni di spedizione "Normale" configurati
         if not shipping_settings:
             return None, None, "Nessuna impostazione di spedizione trovata."
         shipping_days = [s.DayOfWeek for s in shipping_settings if
@@ -26,58 +21,77 @@ def process_shipping_file(file_path, shipping_settings, xls_config):
         if not shipping_days:
             return None, None, "Nessun giorno di spedizione di tipo 'Normale' è stato configurato."
 
-        # 4. Trova la colonna con la data di spedizione corretta
         today = datetime.now().date()
         target_date_col_name = None
         shipping_date = None
 
-        # Itera su TUTTE le colonne del file
         for col_name in df.columns:
             try:
                 col_date = None
-                # --- LOGICA DI CONVERSIONE ROBUSTA ---
-                # Tentativo 1: L'intestazione è già un oggetto data/ora?
                 if isinstance(col_name, datetime):
                     col_date = col_name.date()
-                # Tentativo 2: Prova a interpretarlo come stringa
                 else:
-                    # errors='coerce' trasforma in 'NaT' (Not a Time) tutto ciò che non capisce
                     col_date_obj = pd.to_datetime(str(col_name), errors='coerce')
                     if not pd.isna(col_date_obj):
                         col_date = col_date_obj.date()
 
-                # Se la conversione non ha prodotto una data, salta alla colonna successiva
                 if not col_date:
                     continue
-                # --- FINE LOGICA ROBUSTA ---
 
-                col_weekday = col_date.weekday() + 1  # 1=Lunedì
+                col_weekday = col_date.weekday() + 1
 
-                # Cerca la prima data che soddisfa entrambe le condizioni
                 if col_date >= today and col_weekday in shipping_days:
                     target_date_col_name = col_name
                     shipping_date = col_date
-                    break  # Trovata la colonna, esci dal ciclo
+                    break
             except (ValueError, TypeError, AttributeError):
-                continue  # Ignora le colonne che non sono date in nessun formato
+                continue
 
         if not target_date_col_name:
-            return None, None, "Nessuna data di spedizione valida (uguale o successiva a oggi e configurata) trovata nelle colonne del file Excel."
+            return None, None, "Nessuna data di spedizione valida trovata nel file Excel."
 
-        # 5. Elabora i dati per la colonna trovata
         df_shipping = df[pd.to_numeric(df[target_date_col_name], errors='coerce').fillna(0) > 0].copy()
 
-        if df_shipping.empty:
-            summary = {'next_ship_date': shipping_date.strftime('%d/%m/%Y'), 'total_orders': 0, 'total_quantity': 0}
-            return [], summary, None
-
         processed_data = []
+        db_items_map = {(str(item.OrderNumber), str(item.ProductCode)): item for item in db_data}
+        file_keys_processed = set()
+
         for index, row in df_shipping.iterrows():
-            processed_data.append({
-                'id': None, 'shipping_date': shipping_date, 'order': str(row.iloc[4]),
-                'product': str(row.iloc[3]), 'original_qty': int(row[target_date_col_name]),
-                'modified_qty': None, 'note': "", 'status': 'status_new', 'user': "System"
-            })
+            order = str(row.iloc[4])
+            product = str(row.iloc[3])
+            key = (order, product)
+            file_keys_processed.add(key)
+
+            original_qty = int(row[target_date_col_name])
+            db_item = db_items_map.get(key)
+
+            item_data = {
+                'id': None, 'shipping_date': shipping_date, 'order': order, 'product': product,
+                'original_qty': original_qty, 'modified_qty': None, 'note': "",
+                'status': 'status_new', 'user': user_name
+            }
+
+            if db_item:
+                item_data['id'] = db_item.ItemId
+                item_data['note'] = db_item.Note or ""
+                item_data['modified_qty'] = db_item.ModifiedQty
+                item_data['status'] = 'status_confirmed'
+
+                db_qty = db_item.ModifiedQty if db_item.ModifiedQty is not None else db_item.OriginalQty
+                if db_qty != original_qty:
+                    item_data['status'] = 'status_modified_by_plan'
+
+            processed_data.append(item_data)
+
+        for db_item in db_data:
+            key = (str(db_item.OrderNumber), str(db_item.ProductCode))
+            if key not in file_keys_processed:
+                processed_data.append({
+                    'id': db_item.ItemId, 'shipping_date': shipping_date, 'order': db_item.OrderNumber,
+                    'product': db_item.ProductCode, 'original_qty': db_item.OriginalQty,
+                    'modified_qty': db_item.ModifiedQty, 'note': db_item.Note,
+                    'status': 'status_removed_by_plan', 'user': user_name
+                })
 
         summary = {
             'next_ship_date': shipping_date.strftime('%d/%m/%Y'),
@@ -88,4 +102,4 @@ def process_shipping_file(file_path, shipping_settings, xls_config):
         return processed_data, summary, None
 
     except Exception as e:
-        return None, None, f"Errore GRAVE durante l'elaborazione del file Excel: {e}"
+        return None, None, f"Errore durante l'elaborazione del file Excel: {e}"
