@@ -87,6 +87,54 @@ class ShippingReportWindow(tk.Toplevel):
                                          command=self._save_to_db, state="disabled")
         self.save_db_button.grid(row=4, column=0, sticky="e", pady=10)
 
+    def _load_plan(self):
+        # 1. Trova la prossima data di spedizione
+        settings = self.db.fetch_shipping_settings()
+        next_date, error = shipping_processor.find_next_shipping_day(settings)
+        if error:
+            messagebox.showerror("Errore Impostazioni", error, parent=self)
+            return
+        self.shipping_date = next_date
+
+        # 2. Controlla se esistono già dati salvati per questa data
+        db_data = self.db.fetch_shipping_plan_items(self.shipping_date)
+
+        should_load_from_excel = True
+        if db_data:
+            dialog = AskReloadPlanDialog(self, self.lang)
+            self.wait_window(dialog)
+
+            if dialog.result == 'db':
+                should_load_from_excel = False
+            elif dialog.result is None:  # L'utente ha chiuso la finestra
+                return
+
+        # 3. Procedi in base alla scelta dell'utente
+        if should_load_from_excel:
+            file_path = filedialog.askopenfilename(filetypes=[("Excel Files", "*.xlsx")])
+            if not file_path: return
+
+            data, error = shipping_processor.process_shipping_plan(file_path, self.shipping_date, db_data,
+                                                                   self.user_name)
+            if error:
+                messagebox.showerror("Errore Elaborazione", error, parent=self)
+                return
+            self.plan_data = data
+        else:
+            # L'utente ha scelto di usare i dati del DB, li carichiamo
+            self.plan_data = []
+            for item in db_data:
+                self.plan_data.append({
+                    'id': item.ItemId, 'shipping_date': item.ShippingDate,
+                    'order': item.OrderNumber, 'product': item.ProductCode,
+                    'original_qty': item.OriginalQty, 'modified_qty': item.ModifiedQty,
+                    'note': item.Note, 'status': item.Status, 'user': item.UpdatedBy
+                })
+
+        # Salva uno "snapshot" dei dati appena caricati per il confronto futuro
+        self.initial_plan_state = json.dumps(self.plan_data, sort_keys=True, default=str)
+        self._update_ui()
+
     def _configure_styles(self):
         style = ttk.Style()
         style.map("Treeview")
@@ -870,6 +918,42 @@ class XlsSettingsWindow(tk.Toplevel):
             messagebox.showinfo("Successo", "Impostazioni salvate.", parent=self)
         except Exception as e:
             messagebox.showerror("Errore", f"Impossibile salvare.\n\nDettaglio: {e}", parent=self)
+
+
+class AskReloadPlanDialog(tk.Toplevel):
+    """Dialogo per chiedere all'utente se ricaricare da Excel o usare i dati del DB."""
+
+    def __init__(self, parent, lang):
+        super().__init__(parent)
+        self.transient(parent)
+        self.grab_set()
+        self.title(lang.get('plan_already_exists_title', "Piano Esistente"))
+        self.result = None  # 'excel' o 'db'
+
+        main_frame = ttk.Frame(self, padding="20")
+        main_frame.pack(expand=True, fill="both")
+
+        message = lang.get('plan_already_exists_message',
+                           "Un piano per la prossima data di spedizione è già salvato nel database.\n\n"
+                           "Vuoi ricaricare i dati dal file Excel (sovrascrivendo le modifiche manuali)\n"
+                           "o continuare a lavorare con il piano già salvato?")
+        ttk.Label(main_frame, text=message, justify=tk.LEFT).pack(pady=10)
+
+        btn_frame = ttk.Frame(main_frame)
+        btn_frame.pack(pady=10)
+
+        ttk.Button(btn_frame, text=lang.get('reload_from_excel_btn', "Ricarica da Excel"),
+                   command=self._use_excel).pack(side="left", padx=10)
+        ttk.Button(btn_frame, text=lang.get('use_saved_plan_btn', "Usa Piano Salvato"),
+                   command=self._use_db).pack(side="left", padx=10)
+
+    def _use_excel(self):
+        self.result = 'excel'
+        self.destroy()
+
+    def _use_db(self):
+        self.result = 'db'
+        self.destroy()
 
 def open_xls_settings_window(parent, db, lang, user_name):
     XlsSettingsWindow(parent, db, lang, user_name)
