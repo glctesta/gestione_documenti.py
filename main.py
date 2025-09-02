@@ -153,8 +153,154 @@ class LanguageManager:
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
 
+    def fetch_all_sites(self):
+        """Recupera tutti i siti/compagnie per la gestione."""
+        query = "SELECT IDSite, SiteName, SiteAddress, SiteVat, SiteCountry, Logo FROM dbo.Sites where isnull(IsSupplier,0) = 1 ORDER BY SiteName;"
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def add_new_site(self, name, address, vat, country, logo):
+        """Aggiunge una nuova compagnia."""
+        query = "INSERT INTO dbo.Sites (SiteName, SiteAddress, SiteVat, SiteCountry, Logo) VALUES (?, ?, ?, ?, ?);"
+        try:
+            self.cursor.execute(query, name, address, vat, country, logo)
+            self.conn.commit()
+            return True, "Compagnia aggiunta con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            if 'UNIQUE' in str(e) or 'duplicate' in str(e):
+                return False, "Errore: Esiste già una compagnia con questo nome o Partita IVA."
+            return False, f"Errore database: {e}"
+
+    def update_site(self, site_id, name, address, vat, country, logo):
+        """Aggiorna una compagnia esistente."""
+        query = "UPDATE dbo.Sites SET SiteName=?, SiteAddress=?, SiteVat=?, SiteCountry=?, Logo=? WHERE IDSite=?;"
+        try:
+            self.cursor.execute(query, name, address, vat, country, logo, site_id)
+            self.conn.commit()
+            return True, "Compagnia aggiornata con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            return False, f"Errore database: {e}"
+
+    def delete_site(self, site_id):
+        """Cancella una compagnia (da usare con cautela)."""
+        # Aggiungere un controllo per verificare se il sito è usato in altre tabelle prima di cancellare
+        query = "DELETE FROM dbo.Sites WHERE IDSite = ?;"
+        try:
+            self.cursor.execute(query, site_id)
+            self.conn.commit()
+            return True, "Compagnia cancellata con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            return False, f"Errore database: {e}"
+
+    def fetch_all_sites(self):
+        """Recupera tutti i siti/compagnie per la gestione."""
+        query = "SELECT IDSite, SiteName, SiteAddress, SiteVat, SiteCountry, Logo FROM dbo.Sites ORDER BY SiteName;"
+        try:
+            self.cursor.execute(query)
+            results = self.cursor.fetchall()
+
+            # --- DEBUG: Stampa il numero di risultati ---
+            print(f"DEBUG: La query fetch_all_sites ha restituito {len(results)} compagnie.")
+
+            return results
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_brands_with_company_name(self):
+        """Recupera tutti i brand con il nome del fornitore associato."""
+        query = """
+            SELECT 
+                b.EquipmentBrandId, 
+                b.Brand, 
+                b.BrandLogo, 
+                s.SiteName AS CompanyName, -- Usa un alias esplicito
+                s.IDSite AS CompanyId
+            FROM eqp.EquipmentBrands b
+            LEFT JOIN dbo.Sites s ON b.CompanyId = s.IDSite
+            ORDER BY b.Brand;
+        """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def check_if_brand_is_used(self, brand_id):
+        """Controlla se un brand è utilizzato in almeno una macchina."""
+        query = "SELECT COUNT(*) FROM eqp.Equipments WHERE BrandId = ?;"
+        try:
+            count = self.cursor.execute(query, brand_id).fetchval()
+            return count > 0
+        except pyodbc.Error:
+            return True  # Per sicurezza, in caso di errore, si assume che sia usato
+
+    def add_new_brand(self, brand_name, company_id, logo_data):
+        """Aggiunge un nuovo brand."""
+        query = "INSERT INTO eqp.EquipmentBrands (Brand, CompanyId, BrandLogo) VALUES (?, ?, ?);"
+        try:
+            # Assicura che company_id sia None se non è un numero valido
+            company_id_to_save = int(company_id) if company_id is not None else None
+            self.cursor.execute(query, brand_name, company_id_to_save, logo_data)
+            self.conn.commit()
+            return True, "Brand aggiunto con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            if 'UNIQUE' in str(e) or 'duplicate' in str(e):
+                return False, "Errore: Esiste già un brand con questo nome."
+            return False, f"Errore database: {e}"
+
+    def update_brand(self, brand_id, brand_name, company_id, logo_data):
+        """Aggiorna un brand esistente."""
+        query = "UPDATE eqp.EquipmentBrands SET Brand = ?, CompanyId = ?, BrandLogo = ? WHERE EquipmentBrandId = ?;"
+        try:
+            company_id_to_save = int(company_id) if company_id is not None else None
+            self.cursor.execute(query, brand_name, company_id_to_save, logo_data, brand_id)
+            self.conn.commit()
+            return True, "Brand aggiornato con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            return False, f"Errore database: {e}"
+
+    def delete_brand(self, brand_id):
+        """Cancella un brand."""
+        query = "DELETE FROM eqp.EquipmentBrands WHERE EquipmentBrandId = ?;"
+        try:
+            self.cursor.execute(query, brand_id)
+            self.conn.commit()
+            return True, "Brand cancellato con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            return False, f"Errore database: {e}"
+
+    def execute_missing_action_report(self):
+        """Esegue la stored procedure per il report delle manutenzioni mancanti."""
+        try:
+            # La sintassi per chiamare una stored procedure che restituisce risultati
+            sql = "{CALL eqp.sp_CheckMaintenanceStatus}"
+            self.cursor.execute(sql)
+            results = self.cursor.fetchall()
+
+            # Recupera anche le intestazioni delle colonne per l'Excel
+            headers = [column[0] for column in self.cursor.description]
+
+            return results, headers, None
+        except pyodbc.Error as e:
+            error_message = f"Errore durante l'esecuzione della stored procedure: {e}"
+            self.last_error_details = str(e)
+            return None, None, error_message
+
     def fetch_shipping_plan_items(self, shipping_date):
-        """Recupera le righe del piano di spedizione già salvate per una data specifica."""
+        """Recupera le righe del piano di spedizione per una data specifica."""
+        # --- CORREZIONE QUI: Aggiunta la clausola WHERE ---
         query = "SELECT * FROM dbo.ShippingPlanItems WHERE ShippingDate = ?;"
         try:
             self.cursor.execute(query, shipping_date)
@@ -1204,33 +1350,27 @@ class Database:
             print(f"Errore nel recupero dei brand: {e}")
             return []
 
-    def add_new_brand(self, company_id, brand_name, logo_data):
-        """Aggiunge un nuovo brand dopo aver controllato che non esista già."""
-        check_query = "SELECT COUNT(*) FROM eqp.EquipmentBrands WHERE Brand = ?;"
-        insert_query = "INSERT INTO eqp.EquipmentBrands (CompanyId, Brand, BrandLogo) VALUES (?, ?, ?);"
+    def add_new_brand(self, brand_name, company_id, logo_data):
+        """Aggiunge un nuovo brand."""
+        query = "INSERT INTO eqp.EquipmentBrands (Brand, CompanyId, BrandLogo) VALUES (?, ?, ?);"
         try:
-            count = self.cursor.execute(check_query, brand_name).fetchval()
-            if count > 0:
-                return False, "Errore: Esiste già un brand con questo nome."
-
-            self.cursor.execute(insert_query, company_id, brand_name, logo_data)
+            # Assicura che company_id sia None se non è un numero valido
+            company_id_to_save = int(company_id) if company_id is not None else None
+            self.cursor.execute(query, brand_name, company_id_to_save, logo_data)
             self.conn.commit()
             return True, "Brand aggiunto con successo."
         except pyodbc.Error as e:
             self.conn.rollback()
+            if 'UNIQUE' in str(e) or 'duplicate' in str(e):
+                return False, "Errore: Esiste già un brand con questo nome."
             return False, f"Errore database: {e}"
 
-    def update_brand(self, brand_id, company_id, brand_name, logo_data):
+    def update_brand(self, brand_id, brand_name, company_id, logo_data):
         """Aggiorna un brand esistente."""
-        query = """
-                UPDATE eqp.EquipmentBrands
-                SET CompanyId = ?, \
-                    Brand     = ?, \
-                    BrandLogo = ?
-                WHERE EquipmentBrandId = ?; \
-                """
+        query = "UPDATE eqp.EquipmentBrands SET Brand = ?, CompanyId = ?, BrandLogo = ? WHERE EquipmentBrandId = ?;"
         try:
-            self.cursor.execute(query, company_id, brand_name, logo_data, brand_id)
+            company_id_to_save = int(company_id) if company_id is not None else None
+            self.cursor.execute(query, brand_name, company_id_to_save, logo_data, brand_id)
             self.conn.commit()
             return True, "Brand aggiornato con successo."
         except pyodbc.Error as e:
@@ -2829,6 +2969,23 @@ class App(tk.Tk):
 
         self.after(100, self._post_startup_tasks)
 
+    def open_company_manager_with_login(self):
+        """Apre la finestra di gestione delle compagnie dopo il login."""
+        self._execute_simple_login(
+            action_callback=lambda user_name: tools_gui.open_company_manager(self, self.db, self.lang, user_name)
+        )
+
+    def open_brand_manager_with_login(self):
+        """Apre la finestra di gestione dei brand dopo il login."""
+        self._execute_simple_login(
+            action_callback=lambda user_name: maintenance_gui.open_brand_manager(self, self.db, self.lang, user_name)
+        )
+
+    def open_missing_action_report(self):
+        """Esegue il report Missing Action e lo esporta in Excel."""
+        # Chiama direttamente la funzione per generare il report, senza login
+        maintenance_gui.generate_missing_action_report(self, self.db, self.lang)
+
     def open_xls_settings_with_login(self):
         """Apre la finestra per configurare la mappatura dei file Excel."""
         self._execute_authorized_action(  # Usiamo il login con permessi
@@ -3421,14 +3578,14 @@ class App(tk.Tk):
         """Aggiorna tutti i testi della UI principale, ricostruendo tutti i menu."""
         self.title(self.lang.get('app_title'))
 
-        # 1. Menu Documenti (Produzione)
+        # --- 1. Menu Documenti (Produzione) ---
         self.document_menu.delete(0, 'end')
         self.document_menu.add_command(label=self.lang.get('menu_insert_doc'), command=self.open_insert_form)
         self.document_menu.add_command(label=self.lang.get('menu_view_doc'), command=self.open_view_form)
         self.document_menu.add_separator()
         self.document_menu.add_command(label=self.lang.get('menu_quit'), command=self._on_closing)
 
-        # 2. Menu Documenti Generali (costruito dinamicamente)
+        # --- 2. Menu Documenti Generali ---
         self.general_docs_menu.delete(0, 'end')
         if self.doc_categories:
             for category in self.doc_categories:
@@ -3438,181 +3595,127 @@ class App(tk.Tk):
 
                 cmd_edit = lambda cid=category.CategoriaId, cname=category_name: \
                     self._open_general_docs_viewer_with_login(cid, cname)
-                category_submenu.add_command(label=self.lang.get('submenu_add_edit', "Aggiungi/Modifica"),
-                                             command=cmd_edit)
+
+                category_submenu.add_command(
+                    label=self.lang.get('submenu_add_edit', "Aggiungi/Modifica"),
+                    command=cmd_edit
+                )
 
                 cmd_view = lambda cid=category.CategoriaId, cname=category_name: \
                     self._open_general_docs_viewer(cid, cname)
-                category_submenu.add_command(label=self.lang.get('submenu_view', "Visualizza"), command=cmd_view)
 
-        # 3. Menu Operazioni
+                category_submenu.add_command(
+                    label=self.lang.get('submenu_view', "Visualizza"),
+                    command=cmd_view
+                )
+        # --- 3. Menu Operations ---
         self.operations_menu.delete(0, 'end')
-        # 1. Sottomenu "Produzione"
-        self.operations_menu.add_cascade(
-            label=self.lang.get('submenu_production_ops', "Produzione"),
-            menu=self.production_submenu
-        )
+        self.operations_menu.add_cascade(label=self.lang.get('submenu_production_ops', "Produzione"),
+                                         menu=self.production_submenu)
         self.production_submenu.delete(0, 'end')
-
-        # 2. Sottomenu "Dichiarazioni" (all'interno di Produzione)
-        self.production_submenu.add_cascade(
-            label=self.lang.get('submenu_declarations', "Dichiarazioni"),
-            menu=self.declarations_submenu
-        )
-        self.declarations_submenu.delete(0, 'end')
-        # Popola il sottomenu "Dichiarazioni"
+        self.production_submenu.add_cascade(label=self.lang.get('submenu_declarations', "Dichiarazioni"),
+                                            menu=self.declarations_submenu)
         self.declarations_submenu.delete(0, 'end')
         self.declarations_submenu.add_command(
             label=self.lang.get('submenu_interruptions', "Interruzioni di produzione"),
-            command=self.open_add_interruption_window_with_login  # Collega la nuova funzione
-        )
-
-        # 3. Sottomenu "Rapporti" (all'interno di Produzione)
-        self.production_submenu.add_cascade(
-            label=self.lang.get('submenu_reports_prod', "Rapporti"),
-            menu=self.reports_submenu
-        )
+            command=self.open_add_interruption_window_with_login)
+        self.production_submenu.add_cascade(label=self.lang.get('submenu_reports_prod', "Rapporti"),
+                                            menu=self.reports_submenu)
         self.reports_submenu.delete(0, 'end')
-        # Aggiungi la nuova voce
-        self.declarations_submenu.add_command(
-            label=self.lang.get('submenu_interruptions', "Interruzioni di produzione"),
-            command=self.open_add_interruption_window,
-            state="disabled" #disabilitato momentaneamente
-        )
-        # 3.1 Aggiunge il nuovo sottomenu "Operativita'"
-        self.reports_submenu.add_cascade(
-            label=self.lang.get('submenu_operativity', "Operativita'"),
-            menu=self.operativity_submenu
-        )
-        # 3.2 Popola il sottomenu "Operativita'"
+        self.reports_submenu.add_cascade(label=self.lang.get('submenu_operativity', "Operativita'"),
+                                         menu=self.operativity_submenu)
         self.operativity_submenu.delete(0, 'end')
-        # self.operativity_submenu.add_command(
-        #     label=self.lang.get('submenu_shipping', "Spedizioni"),
-        #     command=self.open_shipping_window_with_login
-        #)
-        # 3.2.1 Crea il sottomenu di Spedizioni
         shipping_submenu = tk.Menu(self.operativity_submenu, tearoff=0)
-        self.operativity_submenu.add_cascade(
-            label=self.lang.get('submenu_shipping', "Spedizioni"),
-            menu=shipping_submenu
-        )
+        self.operativity_submenu.add_cascade(label=self.lang.get('submenu_shipping', "Spedizioni"),
+                                             menu=shipping_submenu)
         shipping_submenu.delete(0, 'end')
-
-        # 3.2.2 Popola il sottomenu Spedizioni
-        shipping_submenu.add_command(
-            label=self.lang.get('upload_report_label', "Carica Report"),
-            #command=self.open_shipping_window_with_login
-            command=self.open_shipping_report_window_with_login
-        )
-        shipping_submenu.add_command(
-            label=self.lang.get('submenu_shipping_settings', "Impostazioni Spedizione"),
-            command=self.open_shipping_settings_with_login
-        )
-
-        shipping_submenu.add_command(
-            label=self.lang.get('submenu_xls_settings', "Impostazioni XLS"),
-            command=self.open_xls_settings_with_login
-        )
-
-        # 4. Sottomenu "Impostazioni" (direttamente in Produzione)
-        self.production_submenu.add_command(
-            label=self.lang.get('submenu_settings_prod', "Impostazioni"),
-            state="disabled"
-        )
-
-
-        # Aggiunge la voce originale, ora separata
+        shipping_submenu.add_command(label=self.lang.get('upload_report_label', "Carica Report"),
+                                     command=self.open_shipping_report_window_with_login)
+        shipping_submenu.add_command(label=self.lang.get('submenu_shipping_settings', "Impostazioni Spedizione"),
+                                     command=self.open_shipping_settings_with_login)
+        shipping_submenu.add_command(label=self.lang.get('submenu_xls_settings', "Impostazioni XLS"),
+                                     command=self.open_xls_settings_with_login)
         self.reports_submenu.add_command(
-            label=self.lang.get('submenu_line_stoppage_reports', "Rapporti di fermo linea"),
-            state="disabled"
-        )
-
-
-        # 5. Aggiunge le altre voci al menu Operations principale
-        self.operations_menu.add_separator()  # Separatore opzionale
+            label=self.lang.get('submenu_line_stoppage_reports', "Rapporti di fermo linea"), state="disabled")
+        self.production_submenu.add_command(label=self.lang.get('submenu_settings_prod', "Impostazioni"),
+                                            state="disabled")
+        self.operations_menu.add_separator()
         self.operations_menu.add_command(label=self.lang.get('submenu_materials_ops', "Materiali"), state="disabled")
         self.operations_menu.add_command(label=self.lang.get('submenu_hr', "Risorse Umane"), state="disabled")
-        # --- FINE MODIFICA ---
-        # 4. Menu Manutenzione (con ricostruzione dei sottomenu)
+
+        # --- 4. Menu Manutenzione ---
         self.maintenance_menu.delete(0, 'end')
 
-        # Ricrea Sottomenu Gestione Macchine
+        # Sottomenu Gestione Macchine
         machine_submenu = tk.Menu(self.maintenance_menu, tearoff=0)
+        self.maintenance_menu.add_cascade(label=self.lang.get('submenu_machines'), menu=machine_submenu)
         machine_submenu.add_command(label=self.lang.get('submenu_add_machine'),
                                     command=self.open_add_machine_with_login)
         machine_submenu.add_command(label=self.lang.get('submenu_edit_machine'),
                                     command=self.open_edit_machine_with_login)
         machine_submenu.add_command(label=self.lang.get('submenu_view_machines'),
                                     command=lambda: maintenance_gui.open_view_machines(self, self.db, self.lang))
-        self.maintenance_menu.add_cascade(label=self.lang.get('submenu_machines'), menu=machine_submenu)
+        machine_submenu.add_separator()
+        machine_submenu.add_command(label=self.lang.get('submenu_brand_management', "Gestione Brand"),
+                                    command=self.open_brand_manager_with_login)
+        # --- POSIZIONE CORRETTA PER "GESTIONE COMPAGNIE" ---
+        machine_submenu.add_command(label=self.lang.get('submenu_company_management', "Gestione Compagnie"),
+                                    command=self.open_company_manager_with_login)
 
-        # Ricrea Sottomenu Task di Manutenzione
+        # Sottomenu Task di Manutenzione
         tasks_submenu = tk.Menu(self.maintenance_menu, tearoff=0)
-        tasks_submenu.add_command(
-            label=self.lang.get('submenu_manage_maint_task', "Gestione Task di Manutenzione"),
-            command=self.open_add_maintenance_tasks_with_login
-        )
         self.maintenance_menu.add_cascade(
-            label=self.lang.get('submenu_maintenance_tasks_header', 'Task di Manutenzione'),
-            menu=tasks_submenu
-        )
-        # Ricrea le altre voci del menu Manutenzione
+            label=self.lang.get('submenu_maintenance_tasks_header', 'Task di Manutenzione'), menu=tasks_submenu)
+        tasks_submenu.add_command(label=self.lang.get('submenu_manage_maint_task', "Gestione Task di Manutenzione"),
+                                  command=self.open_add_maintenance_tasks_with_login)
+
+        # Voci principali del menu Manutenzione
         self.maintenance_menu.add_command(label=self.lang.get('submenu_fill_templates'),
                                           command=self.open_fill_templates_with_login)
-        self.maintenance_menu.add_command(label=self.lang.get('submenu_reports'),
+        self.maintenance_menu.add_separator()
+        self.maintenance_menu.add_command(label=self.lang.get('submenu_reports', "Report Panoramica"),
                                           command=lambda: maintenance_gui.open_reports(self, self.db, self.lang))
+        self.maintenance_menu.add_command(label=self.lang.get('submenu_missing_action', "Missing Action Report"),
+                                          command=self.open_missing_action_report)
 
-        # 4. Menu Segnalazioni
+        # --- 5. Menu Segnalazioni ---
         self.submissions_menu.delete(0, 'end')
         self.submissions_menu.add_command(label=self.lang.get('submenu_new_submission', "Nuova Segnalazione"),
                                           command=self.open_new_submission_form)
         self.submissions_menu.add_command(label=self.lang.get('submenu_view_submissions', "Visualizza Segnalazioni"),
                                           state="disabled")
 
-        # 5. Menu Strumenti
+        # --- 6. Menu Strumenti ---
         self.tools_menu.delete(0, 'end')
-        self.tools_menu.add_command(label=self.lang.get('submenu_maint_times', "Tempi Manutenzione"),
-                                    command=self.open_maintenance_times_with_login)
-
-        # Sottomenu Autorizzazioni
-        self.permissions_submenu = tk.Menu(self.tools_menu, tearoff=0)
         self.tools_menu.add_cascade(label=self.lang.get('submenu_permissions', "Autorizzazioni"),
                                     menu=self.permissions_submenu)
         self.permissions_submenu.delete(0, 'end')
         self.permissions_submenu.add_command(
             label=self.lang.get('submenu_special_permissions', "Autorizzazioni Speciali"),
             command=self.open_manage_permissions_with_login)
-        self.permissions_submenu.add_command(label=self.lang.get('submenu_data_entry', "Inserimento Dati"),
-                                             state="disabled")
-        self.permissions_submenu.add_command(label=self.lang.get('submenu_program_use', "Utilizzo Programma"),
-                                             state="disabled")
         self.permissions_submenu.add_command(
             label=self.lang.get('submenu_view_permissions', "Visualizza Autorizzazioni"),
             command=self.open_view_permissions_with_login)
+
         self.tools_menu.add_separator()
-
-
-
-        # Altre voci del menu Strumenti
-        self.tools_menu.add_command(label=self.lang.get('submenu_suppliers', "Produttori"),
-                                    command=self.open_suppliers_manager_with_login)
-        self.tools_menu.add_command(label=self.lang.get('submenu_brands', "Brand"),
-                                    command=self.open_brands_manager_with_login)
-        self.tools_menu.add_command(label=self.lang.get('submenu_maint_cycles', "Cicli Manutenzione"),
-                                    command=self.open_maint_cycles_manager_with_login)
-        self.tools_menu.add_command(label=self.lang.get('submenu_doc_types', "Aggiungi Tipo Documento"),
-                                    command=self.open_doc_types_manager_with_login)
-
         self.tools_menu.add_cascade(label=self.lang.get('menu_materials', "Materiali"), menu=self.materials_submenu)
-        self.tools_menu.add_command(label=self.lang.get('submenu_maint_times', "Tempi Manutenzione"),
-                                    command=self.open_maintenance_times_with_login)
         self.materials_submenu.delete(0, 'end')
         self.materials_submenu.add_command(label=self.lang.get('submenu_manage', "Gestione"),
                                            command=self.open_manage_materials_with_login)
         self.materials_submenu.add_command(label=self.lang.get('submenu_view', "Visualizza"),
                                            command=self.open_view_materials)
 
-        # 6. Menu Help
+        self.tools_menu.add_separator()
+        self.tools_menu.add_command(label=self.lang.get('submenu_suppliers', "Produttori"),
+                                    command=self.open_suppliers_manager_with_login)
+        self.tools_menu.add_command(label=self.lang.get('submenu_maint_cycles', "Cicli Manutenzione"),
+                                    command=self.open_maint_cycles_manager_with_login)
+        self.tools_menu.add_command(label=self.lang.get('submenu_doc_types', "Aggiungi Tipo Documento"),
+                                    command=self.open_doc_types_manager_with_login)
+        self.tools_menu.add_command(label=self.lang.get('submenu_maint_times', "Tempi Manutenzione"),
+                                    command=self.open_maintenance_times_with_login)
+
+        # --- 7. Menu Help ---
         self.help_menu.delete(0, 'end')
         self.help_menu.add_cascade(label=self.lang.get('menu_language'), menu=self.language_menu)
         about_menu_label = f"{self.lang.get('menu_about')} {APP_VERSION}"

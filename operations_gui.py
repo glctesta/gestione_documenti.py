@@ -1,299 +1,14 @@
 # operations_gui.py
 import tkinter as tk
-import json
-import pyodbc
+from tkinter import ttk, messagebox, filedialog, simpledialog
 from tkcalendar import DateEntry
 from datetime import datetime, timedelta
-from tkinter import ttk, messagebox, filedialog
-import os
+#import os
+import json
 import openpyxl
 from openpyxl.styles import Font, PatternFill
 import io
-import shipping_processor # Importa il nuovo modulo
-from tkinter import simpledialog
-
-class ShippingReportWindow(tk.Toplevel):
-    """Finestra per caricare ed elaborare il report delle spedizioni."""
-
-    def __init__(self, parent, db, lang, user_name):
-        super().__init__(parent)
-        self.db = db
-        self.lang = lang
-        self.user_name = user_name
-        self.title(self.lang.get('shipping_management_title', "Gestione e Analisi Spedizioni"))
-        self.geometry("1200x750")
-
-        self.shipping_date = None
-        self.plan_data = []
-        self.initial_plan_state = ""
-        self.summary_data = {}
-
-        self._create_widgets()
-        self._configure_styles()
-
-    def _create_widgets(self):
-        main_frame = ttk.Frame(self, padding="10")
-        main_frame.pack(fill="both", expand=True)
-        main_frame.rowconfigure(2, weight=1)
-        main_frame.columnconfigure(0, weight=1)
-
-        action_frame = ttk.LabelFrame(main_frame, text=self.lang.get('main_actions_label', "Azioni Principali"))
-        action_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        ttk.Button(action_frame, text=self.lang.get('load_plan_btn', "1. Carica Piano Spedizioni (.xlsx)"),
-                   command=self._load_plan).pack(side="left", padx=10, pady=5)
-        ttk.Button(action_frame, text=self.lang.get('load_actuals_btn', "2. Carica Consuntivo Spedizioni (.xlsx)"),
-                   state="disabled").pack(side="left", padx=10, pady=5)
-        ttk.Button(action_frame, text=self.lang.get('create_analytics_btn', "Crea Report Analitico"),
-                   state="disabled").pack(side="left", padx=10, pady=5)
-
-        summary_frame = ttk.LabelFrame(main_frame, text=self.lang.get('next_shipping_summary_label',
-                                                                      "Riepilogo Prossima Spedizione"))
-        summary_frame.grid(row=1, column=0, sticky="ew", pady=5)
-        self.summary_label = ttk.Label(summary_frame, font=("Helvetica", 10, "bold"), justify=tk.CENTER)
-        self.summary_label.pack(padx=10, pady=10, fill="x", expand=True)
-
-        data_frame = ttk.LabelFrame(main_frame,
-                                    text=self.lang.get('shipping_plan_details_label', "Dettaglio Piano di Spedizione"))
-        data_frame.grid(row=2, column=0, sticky="nsew")
-        data_frame.rowconfigure(0, weight=1)
-        data_frame.columnconfigure(0, weight=1)
-
-        cols = ('status', 'order', 'product', 'original', 'modified', 'note')
-        self.tree = ttk.Treeview(data_frame, columns=cols, show="headings")
-        self.tree.heading('status', text=self.lang.get('header_status', "Stato"))
-        self.tree.heading('order', text=self.lang.get('header_order', "Ordine"))
-        self.tree.heading('product', text=self.lang.get('header_product', "Prodotto"))
-        self.tree.heading('original', text=self.lang.get('header_original_qty', "Q.tà Piano"))
-        self.tree.heading('modified', text=self.lang.get('header_modified_qty', "Q.tà Modificata"))
-        self.tree.heading('note', text=self.lang.get('header_note', "Nota"))
-        self.tree.column('status', width=120)
-        self.tree.pack(side="left", fill="both", expand=True)
-
-        edit_frame = ttk.Frame(main_frame)
-        edit_frame.grid(row=3, column=0, sticky="w", pady=10)
-        self.edit_qty_btn = ttk.Button(edit_frame, text=self.lang.get('edit_qty_btn', "Modifica Q.tà"),
-                                       command=self._edit_quantity, state="disabled")
-        self.edit_qty_btn.pack(side="left")
-        self.edit_note_btn = ttk.Button(edit_frame, text=self.lang.get('edit_note_btn', "Aggiungi/Mod. Nota"),
-                                        command=self._edit_note, state="disabled")
-        self.edit_note_btn.pack(side="left", padx=10)
-        self.remove_row_btn = ttk.Button(edit_frame, text=self.lang.get('remove_row_btn', "Rimuovi Riga"),
-                                         command=self._remove_row, state="disabled")
-        self.remove_row_btn.pack(side="left")
-        self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
-
-        self.save_db_button = ttk.Button(main_frame,
-                                         text=self.lang.get('save_plan_changes_btn', "Salva Modifiche al Piano"),
-                                         command=self._save_to_db, state="disabled")
-        self.save_db_button.grid(row=4, column=0, sticky="e", pady=10)
-
-    def _load_plan(self):
-        # 1. Trova la prossima data di spedizione
-        settings = self.db.fetch_shipping_settings()
-        next_date, error = shipping_processor.find_next_shipping_day(settings)
-        if error:
-            messagebox.showerror("Errore Impostazioni", error, parent=self)
-            return
-        self.shipping_date = next_date
-
-        # 2. Controlla se esistono già dati salvati per questa data
-        db_data = self.db.fetch_shipping_plan_items(self.shipping_date)
-
-        should_load_from_excel = True
-        if db_data:
-            dialog = AskReloadPlanDialog(self, self.lang)
-            self.wait_window(dialog)
-
-            if dialog.result == 'db':
-                should_load_from_excel = False
-            elif dialog.result is None:  # L'utente ha chiuso la finestra
-                return
-
-        # 3. Procedi in base alla scelta dell'utente
-        if should_load_from_excel:
-            file_path = filedialog.askopenfilename(filetypes=[("Excel Files", "*.xlsx")])
-            if not file_path: return
-
-            data, error = shipping_processor.process_shipping_plan(file_path, self.shipping_date, db_data,
-                                                                   self.user_name)
-            if error:
-                messagebox.showerror("Errore Elaborazione", error, parent=self)
-                return
-            self.plan_data = data
-        else:
-            # L'utente ha scelto di usare i dati del DB, li carichiamo
-            self.plan_data = []
-            for item in db_data:
-                self.plan_data.append({
-                    'id': item.ItemId, 'shipping_date': item.ShippingDate,
-                    'order': item.OrderNumber, 'product': item.ProductCode,
-                    'original_qty': item.OriginalQty, 'modified_qty': item.ModifiedQty,
-                    'note': item.Note, 'status': item.Status, 'user': item.UpdatedBy
-                })
-
-        # Salva uno "snapshot" dei dati appena caricati per il confronto futuro
-        self.initial_plan_state = json.dumps(self.plan_data, sort_keys=True, default=str)
-        self._update_ui()
-
-    def _configure_styles(self):
-        style = ttk.Style()
-        style.map("Treeview")
-        style.configure("modified.Treeview", background="#FFFACD")
-        style.configure("removed.Treeview", background="#FFC0CB")
-        style.configure("new.Treeview", background="#D4EDDA")
-
-    def _process_file(self):
-        file_path = filedialog.askopenfilename(filetypes=[("Excel Files", "*.xlsx")])
-        if not file_path: return
-        self.file_label.config(text=os.path.basename(file_path))
-
-        # 1. Fetch shipping settings
-        settings = self.db.fetch_shipping_settings()
-
-        # 2. Fetch the Excel configuration (sheet name, etc.)
-        mappings, sheet_name = self.db.fetch_xls_mappings(file_type_id=1)  # Assumes FileTypeId=1 for shipping plan
-        if not mappings or not sheet_name:
-            messagebox.showerror(self.lang.get('error_config_title'), self.lang.get('error_config_message'),
-                                 parent=self)
-            return
-        xls_config = {'mappings': mappings, 'sheet_name': sheet_name}
-
-        # 3. Call the single, unified processing function
-        data, summary, error = shipping_processor.process_shipping_file(file_path, settings, xls_config)
-
-        if error:
-            messagebox.showerror(self.lang.get('error_processing_title', "Processing Error"), error, parent=self)
-            return
-
-        # 4. Save data and update the UI
-        self.shipping_date = datetime.strptime(summary['next_ship_date'], '%d/%m/%Y').date()
-        self.plan_data = data
-        self.summary_data = summary
-        self.initial_plan_state = json.dumps(self.plan_data, sort_keys=True, default=str)
-        self._update_ui()
-
-    def _update_ui(self):
-        self._update_summary()
-        self._update_treeview()
-        self.save_db_button.config(state="normal" if self.plan_data else "disabled")
-
-    def _update_summary(self):
-        if not self.summary_data:
-            self.summary_label.config(text="")
-            return
-
-        num_orders = self.summary_data.get('total_orders', 0)
-        # Calcola il numero di schede dalla lunghezza dei dati processati
-        num_items = len(
-            [d for d in self.plan_data if d.get('status') not in ['status_removed_by_plan', 'status_removed_manually']])
-
-        summary_text = (
-            f"{self.lang.get('shipping_date_label', 'Data Spedizione')}: {self.summary_data.get('next_ship_date', 'N/D')}   |   "
-            f"{self.lang.get('shipping_type_label', 'Tipo Spedizione')}: Normale   |   "
-            f"{self.lang.get('orders_to_ship_label', 'Ordini da Spedire')}: {num_orders}   |   "
-            f"{self.lang.get('items_to_ship_label', 'Schede da Spedire')}: {num_items}"
-        )
-        self.summary_label.config(text=summary_text)
-
-    def _update_treeview(self):
-        """Popola la tabella con i dati elaborati e applica gli stili."""
-        self.tree.delete(*self.tree.get_children())
-        if not self.plan_data:
-            return
-
-        print(f"DEBUG: Aggiorno la Treeview con {len(self.plan_data)} righe.")
-
-        for i, item in enumerate(self.plan_data):
-            tag = ""
-            status_key = item.get('status', '')
-            if 'modified' in status_key:
-                tag = "modified"
-            elif 'removed' in status_key:
-                tag = "removed"
-            elif 'new' in status_key:
-                tag = "new"
-
-            translated_status = self.lang.get(status_key, status_key)
-
-            self.tree.insert("", "end", iid=i, values=(
-                translated_status,
-                item.get('order', ''),
-                item.get('product', ''),
-                item.get('original_qty', ''),
-                item.get('modified_qty', ''),
-                item.get('note', '')
-            ), tags=(tag,))
-
-    def _on_row_select(self, event=None):
-        selected_item = self.tree.focus()
-        if not selected_item:
-            self.note_text.config(state="disabled")
-            return
-
-        self.note_text.config(state="normal")
-        self.note_text.delete("1.0", tk.END)
-
-        excel_row = int(selected_item)
-        for item in self.processed_data:
-            if item['excel_row'] == excel_row:
-                self.note_text.insert("1.0", item['note'])
-                break
-
-    def _save_note(self):
-        selected_item = self.tree.focus()
-        if not selected_item: return
-
-        excel_row = int(selected_item)
-        note_content = self.note_text.get("1.0", tk.END).strip()
-
-        for item in self.processed_data:
-            if item['excel_row'] == excel_row:
-                item['note'] = note_content
-                messagebox.showinfo("Nota Salvata", "Nota salvata temporaneamente.", parent=self)
-                break
-
-    def _save_to_db(self):
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "Riepilogo Spedizione"
-
-        headers = ["Riga Excel", "Ordine", "Prodotto", "Q.tà Totale", "Q.tà Spedita", "Q.tà Mancante"]
-        ws.append(headers)
-
-        for item in self.processed_data:
-            ws.append([
-                item['excel_row'], item['order'], item['product'],
-                item['total_order_qty'], item['shipping_qty'], item['missing_qty']
-            ])
-            if item['note']:
-                cell = ws.cell(row=ws.max_row, column=2)
-                if cell.comment:
-                    cell.comment.text += f"\n---\n{item['note']}"
-                else:
-                    cell.comment = openpyxl.comments.Comment(item['note'], self.user_name)
-
-        header_font = Font(bold=True, color="FFFFFF")
-        header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
-        for cell in ws[1]:
-            cell.font = header_font
-            cell.fill = header_fill
-        ws.auto_filter.ref = ws.dimensions
-
-        excel_buffer = io.BytesIO()
-        wb.save(excel_buffer)
-        excel_binary_data = excel_buffer.getvalue()
-
-        general_note = f"Report generato il {datetime.now().strftime('%d/%m/%Y %H:%M')} per la spedizione del {self.summary_data['next_ship_date']}."
-        notes_to_save = [(item['excel_row'], item['note']) for item in self.processed_data if item['note']]
-
-        success, msg = self.db.save_backlog_report(self.user_name, general_note, excel_binary_data, notes_to_save)
-
-        if success:
-            messagebox.showinfo("Successo", msg, parent=self)
-            self.destroy()
-        else:
-            messagebox.showerror("Errore", msg, parent=self)
-
+import shipping_processor  # Assicurati che il file shipping_processor.py esista
 
 class AddInterruptionWindow(tk.Toplevel):
     """Finestra per l'inserimento di un fermo di produzione."""
@@ -502,8 +217,7 @@ class AddInterruptionWindow(tk.Toplevel):
         try:
             start = datetime.strptime(self.from_hour_var.get(), "%H:%M")
             end = datetime.strptime(self.to_hour_var.get(), "%H:%M")
-            if end < start:
-                end += timedelta(days=1)
+            if end < start: end += timedelta(days=1)
             duration = end - start
             self.duration_var.set(str(int(duration.total_seconds() / 60)))
         except ValueError:
@@ -554,12 +268,12 @@ class AddInterruptionWindow(tk.Toplevel):
 
             if self.time_choice_var.get() == "duration":
                 params['lost_gain'] = int(self.duration_var.get())
-                params['from_hour'] = None
+                params['from_hour'] = None;
                 params['to_hour'] = None
             else:
                 self._calculate_duration(None)
                 params['lost_gain'] = int(self.duration_var.get())
-                params['from_hour'] = self.from_hour_var.get()
+                params['from_hour'] = self.from_hour_var.get();
                 params['to_hour'] = self.to_hour_var.get()
 
             order_name = self.order_var.get()
@@ -580,8 +294,237 @@ class AddInterruptionWindow(tk.Toplevel):
                                  f"Assicurati che tutti i campi obbligatori (*) siano compilati correttamente.\n\nDettaglio: {e}",
                                  parent=self)
 
+# class ShippingReportWindow(tk.Toplevel):
+#     def __init__(self, parent, db, lang, user_name):
+#         super().__init__(parent)
+#         self.db = db
+#         self.lang = lang
+#         self.user_name = user_name
+#         self.title(self.lang.get('shipping_management_title', "Gestione e Analisi Spedizioni"))
+#         self.geometry("1200x750")
+#
+#         self.shipping_date = None
+#         self.plan_data = []
+#         self.initial_plan_state = ""
+#         self.summary_data = {}
+#
+#         self._create_widgets()
+#         self._configure_styles()
+#
+#     def _create_widgets(self):
+#         main_frame = ttk.Frame(self, padding="10")
+#         main_frame.pack(fill="both", expand=True)
+#         main_frame.rowconfigure(2, weight=1)
+#         main_frame.columnconfigure(0, weight=1)
+#
+#         action_frame = ttk.LabelFrame(main_frame, text=self.lang.get('main_actions_label', "Azioni Principali"))
+#         action_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+#         ttk.Button(action_frame, text=self.lang.get('load_plan_btn', "1. Carica Piano Spedizioni (.xlsx)"),
+#                    command=self._load_plan).pack(side="left", padx=10, pady=5)
+#         ttk.Button(action_frame, text=self.lang.get('load_actuals_btn', "2. Carica Consuntivo Spedizioni (.xlsx)"),
+#                    state="disabled").pack(side="left", padx=10, pady=5)
+#         ttk.Button(action_frame, text=self.lang.get('create_analytics_btn', "Crea Report Analitico"),
+#                    state="disabled").pack(side="left", padx=10, pady=5)
+#
+#         summary_frame = ttk.LabelFrame(main_frame, text=self.lang.get('next_shipping_summary_label',
+#                                                                       "Riepilogo Prossima Spedizione"))
+#         summary_frame.grid(row=1, column=0, sticky="ew", pady=5)
+#         self.summary_label = ttk.Label(summary_frame, font=("Helvetica", 10, "bold"), justify=tk.CENTER)
+#         self.summary_label.pack(padx=10, pady=10, fill="x", expand=True)
+#
+#         data_frame = ttk.LabelFrame(main_frame,
+#                                     text=self.lang.get('shipping_plan_details_label', "Dettaglio Piano di Spedizione"))
+#         data_frame.grid(row=2, column=0, sticky="nsew")
+#         data_frame.rowconfigure(0, weight=1)
+#         data_frame.columnconfigure(0, weight=1)
+#
+#         cols = ('status', 'order', 'product', 'original', 'modified', 'note')
+#         self.tree = ttk.Treeview(data_frame, columns=cols, show="headings")
+#         self.tree.heading('status', text=self.lang.get('header_status', "Stato"))
+#         self.tree.heading('order', text=self.lang.get('header_order', "Ordine"))
+#         self.tree.heading('product', text=self.lang.get('header_product', "Prodotto"))
+#         self.tree.heading('original', text=self.lang.get('header_original_qty', "Q.tà Piano"))
+#         self.tree.heading('modified', text=self.lang.get('header_modified_qty', "Q.tà Modificata"))
+#         self.tree.heading('note', text=self.lang.get('header_note', "Nota"))
+#         self.tree.column('status', width=120)
+#         self.tree.pack(side="left", fill="both", expand=True)
+#
+#         edit_frame = ttk.Frame(main_frame)
+#         edit_frame.grid(row=3, column=0, sticky="w", pady=10)
+#         self.edit_qty_btn = ttk.Button(edit_frame, text=self.lang.get('edit_qty_btn', "Modifica Q.tà"),
+#                                        command=self._edit_quantity, state="disabled")
+#         self.edit_qty_btn.pack(side="left")
+#         self.edit_note_btn = ttk.Button(edit_frame, text=self.lang.get('edit_note_btn', "Aggiungi/Mod. Nota"),
+#                                         command=self._edit_note, state="disabled")
+#         self.edit_note_btn.pack(side="left", padx=10)
+#         self.remove_row_btn = ttk.Button(edit_frame, text=self.lang.get('remove_row_btn', "Rimuovi Riga"),
+#                                          command=self._remove_row, state="disabled")
+#         self.remove_row_btn.pack(side="left")
+#         self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
+#
+#         self.save_db_button = ttk.Button(main_frame,
+#                                          text=self.lang.get('save_plan_changes_btn', "Salva Modifiche al Piano"),
+#                                          command=self._save_to_db, state="disabled")
+#         self.save_db_button.grid(row=4, column=0, sticky="e", pady=10)
+#
+#     def _configure_styles(self):
+#         style = ttk.Style()
+#         style.map("Treeview")
+#         style.configure("modified.Treeview", background="#FFFACD")
+#         style.configure("removed.Treeview", background="#FFC0CB")
+#         style.configure("new.Treeview", background="#D4EDDA")
+#
+#     def _load_plan(self):
+#         settings = self.db.fetch_shipping_settings()
+#
+#         mappings, sheet_name = self.db.fetch_xls_mappings(file_type_id=1)
+#         if not mappings or not sheet_name:
+#             messagebox.showerror(self.lang.get('error_config_title', "Errore Configurazione"),
+#                                  self.lang.get('error_config_message', "Mappatura non trovata..."), parent=self)
+#             return
+#         xls_config = {'mappings': mappings, 'sheet_name': sheet_name}
+#
+#         file_path = filedialog.askopenfilename(filetypes=[("Excel Files", "*.xlsx")])
+#         if not file_path: return
+#
+#         db_data = self.db.fetch_shipping_plan_items(datetime.now().date())
+#
+#         data, summary, error = shipping_processor.process_shipping_file(file_path, settings, db_data, self.user_name,
+#                                                                         xls_config)
+#
+#         if error:
+#             messagebox.showerror(self.lang.get('error_processing_title', "Errore Elaborazione"), error, parent=self)
+#             return
+#
+#         self.shipping_date = datetime.strptime(summary['next_ship_date'], '%d/%m/%Y').date()
+#         self.plan_data = data
+#         self.summary_data = summary
+#         self.initial_plan_state = json.dumps(self.plan_data, sort_keys=True, default=str)
+#         self._update_ui()
+#
+#     def _update_ui(self):
+#         self._update_summary()
+#         self._update_treeview()
+#         self.save_db_button.config(state="normal" if self.plan_data else "disabled")
+#
+#     def _update_summary(self):
+#         if not self.summary_data:
+#             self.summary_label.config(text="")
+#             return
+#
+#         # Recupera i dati corretti dal dizionario 'summary_data'
+#         num_orders = self.summary_data.get('total_orders', 0)
+#         # --- CORREZIONE QUI ---
+#         # Usa la 'total_quantity' calcolata dal processore, invece di contare le righe
+#         total_quantity_to_ship = self.summary_data.get('total_quantity', 0)
+#
+#         summary_text = (
+#             f"{self.lang.get('shipping_date_label', 'Data Spedizione')}: {self.summary_data.get('next_ship_date', 'N/D')}   |   "
+#             f"{self.lang.get('shipping_type_label', 'Tipo Spedizione')}: Normale   |   "
+#             f"{self.lang.get('orders_to_ship_label', 'Ordini da Spedire')}: {num_orders}   |   "
+#             f"{self.lang.get('items_to_ship_label', 'Schede da Spedire')}: {total_quantity_to_ship}"
+#         )
+#         self.summary_label.config(text=summary_text)
+#
+#     def _update_treeview(self):
+#         self.tree.delete(*self.tree.get_children())
+#         if not self.plan_data: return
+#         for i, item in enumerate(self.plan_data):
+#             tag = ""
+#             status_key = item.get('status', '')
+#             if 'modified' in status_key:
+#                 tag = "modified"
+#             elif 'removed' in status_key:
+#                 tag = "removed"
+#             elif 'new' in status_key:
+#                 tag = "new"
+#             translated_status = self.lang.get(status_key, status_key)
+#             self.tree.insert("", "end", iid=i, values=(
+#                 translated_status, item.get('order', ''), item.get('product', ''),
+#                 item.get('original_qty', ''), item.get('modified_qty', ''),
+#                 item.get('note', '')), tags=(tag,))
+#
+#     def _on_row_select(self, event=None):
+#         if self.tree.focus():
+#             self.edit_qty_btn.config(state="normal")
+#             self.edit_note_btn.config(state="normal")
+#             self.remove_row_btn.config(state="normal")
+#         else:
+#             self.edit_qty_btn.config(state="disabled")
+#             self.edit_note_btn.config(state="disabled")
+#             self.remove_row_btn.config(state="disabled")
+#
+#     def _get_selected_item_index(self):
+#         selected_iid = self.tree.focus()
+#         if not selected_iid:
+#             messagebox.showwarning("Nessuna Selezione", "Selezionare una riga dalla lista.")
+#             return None
+#         return int(selected_iid)
+#
+#     def _edit_quantity(self):
+#         index = self._get_selected_item_index()
+#         if index is None: return
+#         item = self.plan_data[index]
+#         prompt = f"Modifica quantità per:\n{item['product']}\n(Piano originale: {item['original_qty']})"
+#         new_qty_str = simpledialog.askstring("Modifica Quantità", prompt, parent=self)
+#         if new_qty_str:
+#             try:
+#                 item['modified_qty'] = int(new_qty_str)
+#                 item['status'] = 'status_modified_manually'
+#                 self._update_treeview()
+#             except ValueError:
+#                 messagebox.showerror("Errore", "Inserire un valore numerico valido.", parent=self)
+#
+#     def _edit_note(self):
+#         index = self._get_selected_item_index()
+#         if index is None: return
+#         item = self.plan_data[index]
+#         prompt = f"Nota per:\n{item['product']}"
+#         new_note = simpledialog.askstring("Modifica Nota", prompt, initialvalue=item['note'], parent=self)
+#         if new_note is not None:
+#             item['note'] = new_note
+#             self._update_treeview()
+#
+#     def _remove_row(self):
+#         index = self._get_selected_item_index()
+#         if index is None: return
+#         if messagebox.askyesno("Conferma Rimozione", "Sei sicuro di voler rimuovere questa riga dal piano?"):
+#             self.plan_data[index]['status'] = 'status_removed_manually'
+#             self._update_treeview()
+#
+#     def _save_to_db(self):
+#         if not self.plan_data: return
+#         current_state = json.dumps(self.plan_data, sort_keys=True, default=str)
+#         if current_state == self.initial_plan_state:
+#             messagebox.showinfo("Nessuna Modifica", "Il piano non è stato modificato.", parent=self)
+#             return
+#         if not messagebox.askyesno("Conferma Salvataggio", "Salvare lo stato attuale del piano nel database?"):
+#             return
+#         success, msg = self.db.save_shipping_plan_items(self.plan_data)
+#         if success:
+#             messagebox.showinfo("Successo", msg, parent=self)
+#             self._refresh_data_from_db()
+#         else:
+#             messagebox.showerror("Errore", msg, parent=self)
+#
+#     def _refresh_data_from_db(self):
+#         if not self.shipping_date: return
+#         self.tree.delete(*self.tree.get_children())
+#         db_data = self.db.fetch_shipping_plan_items(self.shipping_date)
+#         self.plan_data = []
+#         for item in db_data:
+#             self.plan_data.append({
+#                 'id': item.ItemId, 'shipping_date': item.ShippingDate,
+#                 'order': item.OrderNumber, 'product': item.ProductCode,
+#                 'original_qty': item.OriginalQty, 'modified_qty': item.ModifiedQty,
+#                 'note': item.Note, 'status': item.Status, 'user': item.UpdatedBy
+#             })
+#         self.initial_plan_state = json.dumps(self.plan_data, sort_keys=True, default=str)
+#         self._update_ui()
 
 class ShippingReportWindow(tk.Toplevel):
+    """Finestra per la gestione avanzata dei piani di spedizione."""
+
     def __init__(self, parent, db, lang, user_name):
         super().__init__(parent)
         self.db = db
@@ -596,7 +539,7 @@ class ShippingReportWindow(tk.Toplevel):
         self.summary_data = {}
 
         self._create_widgets()
-        self._configure_styles()
+        self._configure_styles()  # Ora questo metodo esiste
 
     def _create_widgets(self):
         main_frame = ttk.Frame(self, padding="10")
@@ -610,8 +553,8 @@ class ShippingReportWindow(tk.Toplevel):
                    command=self._load_plan).pack(side="left", padx=10, pady=5)
         ttk.Button(action_frame, text=self.lang.get('load_actuals_btn', "2. Carica Consuntivo Spedizioni (.xlsx)"),
                    state="disabled").pack(side="left", padx=10, pady=5)
-        ttk.Button(action_frame, text=self.lang.get('create_analytics_btn', "Crea Report Analitico"),
-                   state="disabled").pack(side="left", padx=10, pady=5)
+        self.analytics_button = ttk.Button(action_frame, text=self.lang.get('create_analytics_btn', "Crea Report Analitico"), command=self._generate_and_save_report, state="disabled")
+        self.analytics_button.pack(side="left", padx=10, pady=5)
 
         summary_frame = ttk.LabelFrame(main_frame, text=self.lang.get('next_shipping_summary_label',
                                                                       "Riepilogo Prossima Spedizione"))
@@ -658,34 +601,33 @@ class ShippingReportWindow(tk.Toplevel):
         """Configura gli stili per colorare le righe della Treeview."""
         style = ttk.Style()
         style.map("Treeview")
-        # Colora le righe modificate in giallo
-        style.configure("modified.Treeview", background="#FFFACD")
-        # Colora le righe rimosse in rosa
-        style.configure("removed.Treeview", background="#FFC0CB")
-        # Colora le righe nuove in verde
-        style.configure("new.Treeview", background="#D4EDDA")
+        style.configure("modified.Treeview", background="#FFFACD")  # Giallo chiaro
+        style.configure("removed.Treeview", background="#FFC0CB")  # Rosa
+        style.configure("new.Treeview", background="#D4EDDA")  # Verde chiaro
 
     def _load_plan(self):
-        # 1. Recupera le impostazioni di spedizione (giorni validi)
+        # 1. Recupera le impostazioni di spedizione
         settings = self.db.fetch_shipping_settings()
 
         # 2. Recupera la configurazione del file Excel (nome del foglio, ecc.)
         mappings, sheet_name = self.db.fetch_xls_mappings(file_type_id=1)
         if not mappings or not sheet_name:
-            messagebox.showerror(self.lang.get('error_config_title'), self.lang.get('error_config_message'),
-                                 parent=self)
+            messagebox.showerror(self.lang.get('error_config_title', "Errore Configurazione"),
+                                 self.lang.get('error_config_message',
+                                               "Mappatura del file di pianificazione non trovata."), parent=self)
             return
         xls_config = {'mappings': mappings, 'sheet_name': sheet_name}
 
         # 3. Chiede il file all'utente
         file_path = filedialog.askopenfilename(filetypes=[("Excel Files", "*.xlsx")])
+
         if not file_path: return
 
         # 4. Carica i dati GIA' SALVATI dal DB per il confronto
         # NOTA: Per ora, carichiamo tutti i dati. In futuro potremmo filtrare per data.
         db_data = self.db.fetch_shipping_plan_items(datetime.now().date())
 
-        # 5. Chiama la funzione del processore passando TUTTI gli argomenti
+        # 5. Chiama la funzione unificata del processore
         data, summary, error = shipping_processor.process_shipping_file(
             file_path, settings, db_data, self.user_name, xls_config
         )
@@ -702,20 +644,25 @@ class ShippingReportWindow(tk.Toplevel):
         self._update_ui()
 
     def _update_ui(self):
+        """Aggiorna tutti i componenti della UI con i nuovi dati."""
         self._update_summary()
         self._update_treeview()
+        # Abilita il pulsante Salva solo se ci sono dati caricati
         self.save_db_button.config(state="normal" if self.plan_data else "disabled")
+        # Attiva il pulsante del report analitico
+        self.analytics_button.config(state="normal" if self.plan_data else "disabled")
 
     def _update_summary(self):
         if not self.summary_data: self.summary_label.config(text=""); return
         num_orders = self.summary_data.get('total_orders', 0)
         num_items = len(
             [d for d in self.plan_data if d.get('status') not in ['status_removed_by_plan', 'status_removed_manually']])
+        total_quantity = self.summary_data.get('total_quantity', 0)
         summary_text = (
-            f"{self.lang.get('shipping_date_label', 'Data Spedizione')}: {self.summary_data.get('next_ship_date', 'N/D')} | "
-            f"{self.lang.get('shipping_type_label', 'Tipo Spedizione')}: Normale | "
-            f"{self.lang.get('orders_to_ship_label', 'Ordini da Spedire')}: {num_orders} | "
-            f"{self.lang.get('items_to_ship_label', 'Schede da Spedire')}: {num_items}")
+            f"{self.lang.get('shipping_date_label', 'Data Spedizione')}: {self.summary_data.get('next_ship_date', 'N/D')}   |   "
+            f"{self.lang.get('shipping_type_label', 'Tipo Spedizione')}: Normale   |   "
+            f"{self.lang.get('orders_to_ship_label', 'Ordini da Spedire')}: {num_orders}   |   "
+            f"{self.lang.get('items_to_ship_label', 'Schede da Spedire')}: {total_quantity}")
         self.summary_label.config(text=summary_text)
 
     def _update_treeview(self):
@@ -763,7 +710,7 @@ class ShippingReportWindow(tk.Toplevel):
             try:
                 item['modified_qty'] = int(new_qty_str)
                 item['status'] = 'status_modified_manually'
-                self._update_treeview()
+                self._update_ui()
             except ValueError:
                 messagebox.showerror("Errore", "Inserire un valore numerico valido.", parent=self)
 
@@ -782,23 +729,33 @@ class ShippingReportWindow(tk.Toplevel):
         if index is None: return
         if messagebox.askyesno("Conferma Rimozione", "Sei sicuro di voler rimuovere questa riga dal piano?"):
             self.plan_data[index]['status'] = 'status_removed_manually'
-            self._update_treeview()
+            self._update_ui()
 
     def _save_to_db(self):
+        """Salva le modifiche al piano di spedizione nel database."""
         if not self.plan_data: return
+
         current_state = json.dumps(self.plan_data, sort_keys=True, default=str)
-        if current_state == self.initial_plan_state:
-            messagebox.showinfo("Nessuna Modifica", "Il piano non è stato modificato.", parent=self)
-            return
-        if not messagebox.askyesno("Conferma Salvataggio", "Salvare lo stato attuale del piano nel database?"):
-            return
-        success, msg = self.db.save_shipping_plan_items(self.plan_data)
-        if success:
-            messagebox.showinfo("Successo", msg, parent=self)
-            # Ricarica dal DB per confermare lo stato salvato
-            self._refresh_data_from_db()
+
+        # Procede solo se ci sono state modifiche
+        if current_state != self.initial_plan_state:
+            if not messagebox.askyesno("Conferma Salvataggio", "Salvare le modifiche apportate al piano nel database?"):
+                return
+
+            success, msg = self.db.save_shipping_plan_items(self.plan_data)
+            if success:
+                messagebox.showinfo("Successo", msg, parent=self)
+                self._refresh_data_from_db()  # Ricarica per aggiornare lo stato
+            else:
+                messagebox.showerror("Errore", msg, parent=self)
         else:
-            messagebox.showerror("Errore", msg, parent=self)
+            # Se non ci sono modifiche, informa l'utente
+            messagebox.showinfo(
+                self.lang.get('no_changes_title', "Nessuna Modifica"),
+                self.lang.get('no_changes_message',
+                              "Il piano non è stato modificato. Usa il pulsante 'Crea Report Analitico' per generare il file."),
+                parent=self
+            )
 
     def _refresh_data_from_db(self):
         if not self.shipping_date: return
@@ -807,13 +764,188 @@ class ShippingReportWindow(tk.Toplevel):
         self.plan_data = []
         for item in db_data:
             self.plan_data.append({
-                'id': item.ItemId, 'shipping_date': item.ShippingDate,
+                'id': item.ItemId, 'shipping_date': item.ShippingDate.strftime('%Y-%m-%d'),
                 'order': item.OrderNumber, 'product': item.ProductCode,
                 'original_qty': item.OriginalQty, 'modified_qty': item.ModifiedQty,
                 'note': item.Note, 'status': item.Status, 'user': item.UpdatedBy
             })
         self.initial_plan_state = json.dumps(self.plan_data, sort_keys=True, default=str)
         self._update_ui()
+
+    def _generate_and_save_report(self):
+        """Crea il file Excel del report e lo salva nel backlog."""
+        if not self.plan_data:
+            messagebox.showwarning("Dati Mancanti", "Nessun dato da inserire nel report.", parent=self)
+            return
+
+        # Controlla se ci sono modifiche non salvate
+        current_state = json.dumps(self.plan_data, sort_keys=True, default=str)
+        if current_state != self.initial_plan_state:
+            if messagebox.askyesno("Modifiche non Salvate",
+                                   "Ci sono modifiche non salvate. Vuoi salvarle prima di creare il report?"):
+                self._save_to_db()
+                # Se il salvataggio fallisce, non procedere
+                if json.dumps(self.plan_data, sort_keys=True, default=str) != self.initial_plan_state:
+                    return
+            else:
+                # L'utente non vuole salvare, quindi annulla la creazione del report
+                return
+
+        # 1. Crea il file Excel formattato in memoria
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = self.lang.get('excel_sheet_title', "Riepilogo Spedizione")
+
+        headers = [
+            self.lang.get('header_status', "Stato"), self.lang.get('header_order', "Ordine"),
+            self.lang.get('header_product', "Prodotto"), self.lang.get('header_original_qty', "Q.tà Piano"),
+            self.lang.get('header_modified_qty', "Q.tà Modificata"), self.lang.get('header_note', "Nota")
+        ]
+        ws.append(headers)
+
+        # Applica stili all'header
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
+        for cell in ws[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+
+        # Popola il file con i dati, usando le quantità modificate se presenti
+        for item in self.plan_data:
+            # Usa la quantità modificata se esiste, altrimenti quella originale
+            final_qty = item.get('modified_qty') if item.get('modified_qty') is not None else item.get('original_qty')
+
+            ws.append([
+                self.lang.get(item.get('status', ''), item.get('status', '')),
+                item.get('order'), item.get('product'),
+                item.get('original_qty'), item.get('modified_qty'),
+                item.get('note')
+            ])
+
+        ws.auto_filter.ref = ws.dimensions
+
+        excel_buffer = io.BytesIO()
+        wb.save(excel_buffer)
+        excel_binary_data = excel_buffer.getvalue()
+
+        # 2. Salva il report nel database (tabelle BackLogs)
+        general_note = f"Report generato per la spedizione del {self.summary_data['next_ship_date']}."
+        notes_to_save = [(i, item['note']) for i, item in enumerate(self.plan_data) if item['note']]
+
+        success, msg = self.db.save_backlog_report(self.user_name, general_note, excel_binary_data, notes_to_save)
+
+        if success:
+            messagebox.showinfo("Successo", msg, parent=self)
+        else:
+            messagebox.showerror("Errore", msg, parent=self)
+
+
+class ShippingSettingsWindow(tk.Toplevel):
+    """Finestra per la gestione delle impostazioni di spedizione."""
+
+    def __init__(self, parent, db, lang, user_name):
+        super().__init__(parent)
+        self.db = db
+        self.lang = lang
+        self.user_name = user_name
+        self.title(lang.get('shipping_settings_title', "Impostazioni di Spedizione"))
+        self.geometry("600x400")
+        self.transient(parent)
+        self.grab_set()
+
+        self.day_var = tk.StringVar()
+        self.type_var = tk.StringVar()
+        self.days_map = {
+            "1 - Lunedì": 1, "2 - Martedì": 2, "3 - Mercoledì": 3,
+            "4 - Giovedì": 4, "5 - Venerdì": 5, "6 - Sabato": 6, "7 - Domenica": 7
+        }
+        self.reverse_days_map = {v: k for k, v in self.days_map.items()}
+
+        self._create_widgets()
+        self._load_settings()
+
+    def _create_widgets(self):
+        main_frame = ttk.Frame(self, padding="10")
+        main_frame.pack(fill="both", expand=True)
+        main_frame.rowconfigure(1, weight=1)
+        main_frame.columnconfigure(0, weight=1)
+
+        # Form di inserimento
+        form_frame = ttk.LabelFrame(main_frame,
+                                    text=self.lang.get('add_new_setting_label', "Aggiungi Nuova Impostazione"))
+        form_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        form_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(form_frame, text=self.lang.get('day_of_week_label', "Giorno della Settimana:")).grid(row=0, column=0,
+                                                                                                       padx=5, pady=5)
+        self.day_combo = ttk.Combobox(form_frame, textvariable=self.day_var, state="readonly",
+                                      values=list(self.days_map.keys()))
+        self.day_combo.grid(row=0, column=1, sticky="ew", padx=5)
+
+        ttk.Label(form_frame, text=self.lang.get('shipping_type_label', "Tipo di Trasporto:")).grid(row=1, column=0,
+                                                                                                    padx=5, pady=5)
+        self.type_combo = ttk.Combobox(form_frame, textvariable=self.type_var, state="readonly",
+                                       values=["Normale", "Speciale"])
+        self.type_combo.grid(row=1, column=1, sticky="ew", padx=5)
+
+        ttk.Button(form_frame, text=self.lang.get('add_button', "Aggiungi"), command=self._add_setting).grid(row=1,
+                                                                                                             column=2,
+                                                                                                             padx=10)
+
+        # Lista impostazioni attive
+        list_frame = ttk.LabelFrame(main_frame, text=self.lang.get('active_settings_label', "Impostazioni Attive"))
+        list_frame.grid(row=1, column=0, sticky="nsew")
+        list_frame.rowconfigure(0, weight=1)
+        list_frame.columnconfigure(0, weight=1)
+
+        cols = ('day', 'type')
+        self.tree = ttk.Treeview(list_frame, columns=cols, show="headings")
+        self.tree.heading('day', text=self.lang.get('header_day', "Giorno"))
+        self.tree.heading('type', text=self.lang.get('header_type', "Tipo"))
+        self.tree.pack(side="left", fill="both", expand=True)
+
+        ttk.Button(main_frame, text=self.lang.get('delete_selected_button', "Cancella Selezionata"),
+                   command=self._delete_setting).grid(row=2, column=0, sticky="e", pady=10)
+
+    def _load_settings(self):
+        self.tree.delete(*self.tree.get_children())
+        settings = self.db.fetch_shipping_settings()
+        for setting in settings:
+            day_name = self.reverse_days_map.get(setting.DayOfWeek, "Sconosciuto")
+            self.tree.insert("", "end", iid=setting.ShippingSettingId, values=(day_name, setting.ShippingType))
+
+    def _add_setting(self):
+        day_name = self.day_var.get()
+        ship_type = self.type_var.get()
+
+        if not day_name or not ship_type:
+            messagebox.showwarning("Dati Mancanti", "Selezionare un giorno e un tipo di trasporto.", parent=self)
+            return
+
+        day_of_week = self.days_map.get(day_name)
+        success, message = self.db.add_shipping_setting(day_of_week, ship_type)
+
+        if success:
+            messagebox.showinfo("Successo", message, parent=self)
+            self._load_settings()
+        else:
+            messagebox.showerror("Errore", message, parent=self)
+
+    def _delete_setting(self):
+        selected_item = self.tree.focus()
+        if not selected_item:
+            messagebox.showwarning("Nessuna Selezione", "Selezionare un'impostazione da cancellare.", parent=self)
+            return
+
+        setting_id = int(selected_item)
+        if messagebox.askyesno("Conferma Cancellazione", "Sei sicuro di voler cancellare questa impostazione?"):
+            success, message = self.db.delete_shipping_setting(setting_id)
+            if success:
+                messagebox.showinfo("Successo", message, parent=self)
+                self._load_settings()
+            else:
+                messagebox.showerror("Errore", message, parent=self)
+
 
 class XlsSettingsWindow(tk.Toplevel):
     """Finestra per configurare la mappatura delle colonne e del foglio dei file Excel."""
@@ -824,11 +956,13 @@ class XlsSettingsWindow(tk.Toplevel):
         self.lang = lang
         self.title(self.lang.get('xls_settings_title', "Impostazioni Import Excel"))
         self.geometry("600x500")
+        self.transient(parent)
+        self.grab_set()
 
         self.file_types_data = {}
         self.current_mappings = {}
         self.file_type_var = tk.StringVar()
-        self.sheet_name_var = tk.StringVar()  # Variabile per il nome del foglio
+        self.sheet_name_var = tk.StringVar()
 
         self._create_widgets()
         self._load_file_types()
@@ -841,12 +975,12 @@ class XlsSettingsWindow(tk.Toplevel):
 
         top_frame = ttk.Frame(main_frame)
         top_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        ttk.Label(top_frame, text=self.lang.get('select_file_type_label', "Seleziona Tipo File:")).pack(side="left")
+        ttk.Label(top_frame, text=self.lang.get('select_file_type_label', "Seleziona Tipo File da Configurare:")).pack(
+            side="left")
         self.file_type_combo = ttk.Combobox(top_frame, textvariable=self.file_type_var, state="readonly")
         self.file_type_combo.pack(side="left", padx=10, expand=True, fill="x")
         self.file_type_combo.bind("<<ComboboxSelected>>", self._load_mappings)
 
-        # --- NUOVO CAMPO PER IL NOME DEL FOGLIO ---
         sheet_frame = ttk.Frame(main_frame)
         sheet_frame.grid(row=1, column=0, sticky="ew", pady=5)
         ttk.Label(sheet_frame, text=self.lang.get('sheet_name_label', "Nome Foglio di Lavoro:")).pack(side="left")
@@ -859,20 +993,22 @@ class XlsSettingsWindow(tk.Toplevel):
         self.grid_frame.columnconfigure(2, weight=1)
 
     def _load_file_types(self):
-        # ... (metodo invariato)
-        pass
+        types = self.db.fetch_xls_file_types()
+        if types:
+            self.file_types_data = {self.lang.get(t.TranslationKey, t.FileTypeName): t.FileTypeId for t in types}
+            self.file_type_combo['values'] = sorted(list(self.file_types_data.keys()))
 
     def _load_mappings(self, event=None):
-        # Pulisce la griglia precedente
         for widget in self.grid_frame.winfo_children():
             widget.destroy()
 
-        file_type_id = self.file_types_data.get(self.file_type_var.get())
+        file_type_name = self.file_type_var.get()
+        file_type_id = self.file_types_data.get(file_type_name)
         if not file_type_id: return
 
-        self.current_mappings = self.db.fetch_xls_mappings(file_type_id)
+        self.current_mappings, sheet_name = self.db.fetch_xls_mappings(file_type_id)
+        self.sheet_name_var.set(sheet_name or "")
 
-        # Intestazioni
         ttk.Label(self.grid_frame, text=self.lang.get('field_name_header', "Campo Dati"),
                   font=("Helvetica", 9, "bold")).grid(row=0, column=0, padx=5, pady=5)
         ttk.Label(self.grid_frame, text=self.lang.get('column_letter_header', "Lettera Colonna"),
@@ -880,18 +1016,13 @@ class XlsSettingsWindow(tk.Toplevel):
         ttk.Label(self.grid_frame, text=self.lang.get('start_row_header', "Riga Inizio Dati"),
                   font=("Helvetica", 9, "bold")).grid(row=0, column=2, padx=5, pady=5)
 
-        # Crea dinamicamente i campi di input
         row_index = 1
         for field, details in self.current_mappings.items():
             ttk.Label(self.grid_frame, text=f"{field}:").grid(row=row_index, column=0, sticky="w", padx=5)
-
             col_var = tk.StringVar(value=details['col'])
             row_var = tk.StringVar(value=details['row'])
-
             ttk.Entry(self.grid_frame, textvariable=col_var, width=10).grid(row=row_index, column=1, sticky="w", padx=5)
             ttk.Entry(self.grid_frame, textvariable=row_var, width=10).grid(row=row_index, column=2, sticky="w", padx=5)
-
-            # Salva una riferimento per poter leggere i valori dopo
             details['col_var'] = col_var
             details['row_var'] = row_var
             row_index += 1
@@ -904,67 +1035,33 @@ class XlsSettingsWindow(tk.Toplevel):
             file_type_id = self.file_types_data.get(self.file_type_var.get())
             if not file_type_id: return
 
-            # 1. Salva il nome del foglio
             new_sheet_name = self.sheet_name_var.get().strip()
             self.db.update_xls_sheet_name(file_type_id, new_sheet_name)
 
-            # 2. Salva le mappature delle colonne
             for field, details in self.current_mappings.items():
                 mapping_id = details['id']
                 new_col = details['col_var'].get().upper()
                 new_row = int(details['row_var'].get())
                 self.db.update_xls_mapping(mapping_id, new_col, new_row)
 
-            messagebox.showinfo("Successo", "Impostazioni salvate.", parent=self)
+            messagebox.showinfo("Successo", "Impostazioni di mappatura salvate con successo.", parent=self)
         except Exception as e:
-            messagebox.showerror("Errore", f"Impossibile salvare.\n\nDettaglio: {e}", parent=self)
+            messagebox.showerror("Errore",
+                                 f"Impossibile salvare le modifiche. Controllare i valori inseriti.\n\nDettaglio: {e}",
+                                 parent=self)
 
 
-class AskReloadPlanDialog(tk.Toplevel):
-    """Dialogo per chiedere all'utente se ricaricare da Excel o usare i dati del DB."""
+def open_add_interruption_window(parent, db, lang, user_name):
+    AddInterruptionWindow(parent, db, lang, user_name)
 
-    def __init__(self, parent, lang):
-        super().__init__(parent)
-        self.transient(parent)
-        self.grab_set()
-        self.title(lang.get('plan_already_exists_title', "Piano Esistente"))
-        self.result = None  # 'excel' o 'db'
-
-        main_frame = ttk.Frame(self, padding="20")
-        main_frame.pack(expand=True, fill="both")
-
-        message = lang.get('plan_already_exists_message',
-                           "Un piano per la prossima data di spedizione è già salvato nel database.\n\n"
-                           "Vuoi ricaricare i dati dal file Excel (sovrascrivendo le modifiche manuali)\n"
-                           "o continuare a lavorare con il piano già salvato?")
-        ttk.Label(main_frame, text=message, justify=tk.LEFT).pack(pady=10)
-
-        btn_frame = ttk.Frame(main_frame)
-        btn_frame.pack(pady=10)
-
-        ttk.Button(btn_frame, text=lang.get('reload_from_excel_btn', "Ricarica da Excel"),
-                   command=self._use_excel).pack(side="left", padx=10)
-        ttk.Button(btn_frame, text=lang.get('use_saved_plan_btn', "Usa Piano Salvato"),
-                   command=self._use_db).pack(side="left", padx=10)
-
-    def _use_excel(self):
-        self.result = 'excel'
-        self.destroy()
-
-    def _use_db(self):
-        self.result = 'db'
-        self.destroy()
-
-def open_xls_settings_window(parent, db, lang, user_name):
-    XlsSettingsWindow(parent, db, lang, user_name)
 
 def open_shipping_report_window(parent, db, lang, user_name):
     ShippingReportWindow(parent, db, lang, user_name)
 
-def open_add_interruption_window(parent, db, lang, user_name):
-    AddInterruptionWindow(parent, db, lang, user_name)
 
 def open_shipping_settings_window(parent, db, lang, user_name):
     ShippingSettingsWindow(parent, db, lang, user_name)
 
 
+def open_xls_settings_window(parent, db, lang, user_name):
+    XlsSettingsWindow(parent, db, lang, user_name)

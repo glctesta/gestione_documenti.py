@@ -758,6 +758,190 @@ class MaintenanceTimesManagerWindow(tk.Toplevel):
                                  parent=self)
 
 
+class CompanyManagerWindow(tk.Toplevel):
+    """Finestra per la gestione delle Compagnie/Siti."""
+
+    def __init__(self, parent, db, lang, user_name):
+        super().__init__(parent)
+        self.db = db
+        self.lang = lang
+        self.user_name = user_name
+        self.title(lang.get('company_management_title', "Gestione Compagnie"))
+        self.geometry("900x550")
+
+        self.current_site_id = None
+        self.logo_binary_data = None
+        self.sites_list = []
+
+        self.name_var = tk.StringVar()
+        self.address_var = tk.StringVar()
+        self.vat_var = tk.StringVar()
+        self.country_var = tk.StringVar()
+
+        self._create_widgets()
+        self._load_sites()
+
+    def _create_widgets(self):
+        main_frame = ttk.Frame(self, padding="10")
+        main_frame.pack(fill="both", expand=True)
+        main_frame.rowconfigure(0, weight=1)
+        main_frame.columnconfigure(0, weight=1)
+        main_frame.columnconfigure(1, weight=1)
+
+        # Lista Compagnie (Sinistra)
+        list_frame = ttk.LabelFrame(main_frame, text=self.lang.get('company_list_label', "Lista Compagnie"))
+        list_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        list_frame.rowconfigure(0, weight=1)
+        list_frame.columnconfigure(0, weight=1)
+
+        cols = ('name', 'country', 'vat')
+        self.tree = ttk.Treeview(list_frame, columns=cols, show="headings")
+        self.tree.heading('name', text=self.lang.get('header_company_name', "Nome Compagnia"))
+        self.tree.heading('country', text=self.lang.get('header_country', "Nazione"))
+        self.tree.heading('vat', text=self.lang.get('header_vat', "Partita IVA"))
+        self.tree.column('country', width=80, anchor='center')
+        self.tree.column('vat', width=120)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        self.tree.bind("<<TreeviewSelect>>", self._on_site_select)
+
+        # Form (Destra)
+        form_frame = ttk.LabelFrame(main_frame, text=self.lang.get('details_label', "Dettagli"))
+        form_frame.grid(row=0, column=1, sticky="nsew")
+        form_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(form_frame, text=self.lang.get('company_name_label', "Nome Compagnia (*):")).grid(row=0, column=0,
+                                                                                                    sticky="w", padx=5,
+                                                                                                    pady=3)
+        self.name_entry = ttk.Entry(form_frame, textvariable=self.name_var)
+        self.name_entry.grid(row=0, column=1, sticky="ew", padx=5)
+
+        ttk.Label(form_frame, text=self.lang.get('address_label', "Indirizzo:")).grid(row=1, column=0, sticky="w",
+                                                                                      padx=5, pady=3)
+        ttk.Entry(form_frame, textvariable=self.address_var).grid(row=1, column=1, sticky="ew", padx=5)
+
+        ttk.Label(form_frame, text=self.lang.get('vat_label', "Partita IVA:")).grid(row=2, column=0, sticky="w", padx=5,
+                                                                                    pady=3)
+        ttk.Entry(form_frame, textvariable=self.vat_var).grid(row=2, column=1, sticky="ew", padx=5)
+
+        ttk.Label(form_frame, text=self.lang.get('country_label', "Nazione (*):")).grid(row=3, column=0, sticky="w",
+                                                                                        padx=5, pady=3)
+        ttk.Entry(form_frame, textvariable=self.country_var).grid(row=3, column=1, sticky="ew", padx=5)
+
+        ttk.Label(form_frame, text=self.lang.get('logo_label', "Logo:")).grid(row=4, column=0, sticky="w", padx=5,
+                                                                              pady=5)
+        ttk.Button(form_frame, text=self.lang.get('load_logo_button', "Carica..."), command=self._load_logo).grid(row=4,
+                                                                                                                  column=1,
+                                                                                                                  sticky="w",
+                                                                                                                  padx=5)
+
+        self.logo_label = ttk.Label(form_frame, background="lightgrey",
+                                    text=self.lang.get('no_logo_text', "Nessun logo"))
+        self.logo_label.grid(row=5, column=0, columnspan=2, pady=10, sticky="ew", ipady=20)
+
+        btn_frame = ttk.Frame(form_frame)
+        btn_frame.grid(row=6, column=0, columnspan=2, pady=20)
+        ttk.Button(btn_frame, text=self.lang.get('new_button_short', "Nuovo"), command=self._clear_form).pack(
+            side="left", padx=5)
+        ttk.Button(btn_frame, text=self.lang.get('save_button', "Salva"), command=self._save).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text=self.lang.get('delete_button', "Cancella"), command=self._delete).pack(side="left",
+                                                                                                          padx=5)
+
+    def _load_sites(self):
+        self.tree.delete(*self.tree.get_children())
+        self.sites_list = self.db.fetch_all_sites()
+        for site in self.sites_list:
+            self.tree.insert("", "end", iid=site.IDSite, values=(site.SiteName, site.SiteCountry, site.SiteVat))
+
+    def _on_site_select(self, event=None):
+        selected_item = self.tree.focus()
+        if not selected_item: return
+        self.current_site_id = int(selected_item)
+
+        selected_site = next((s for s in self.sites_list if s.IDSite == self.current_site_id), None)
+        if not selected_site: return
+
+        self.name_var.set(selected_site.SiteName or "")
+        self.address_var.set(selected_site.SiteAddress or "")
+        self.vat_var.set(selected_site.SiteVat or "")
+        self.country_var.set(selected_site.SiteCountry or "")
+        self.logo_binary_data = selected_site.Logo
+        self._display_logo()
+
+    def _clear_form(self):
+        self.tree.selection_set([])
+        self.current_site_id = None
+        self.name_var.set("")
+        self.address_var.set("")
+        self.vat_var.set("")
+        self.country_var.set("")
+        self.logo_binary_data = None
+        self._display_logo()
+        self.name_entry.focus_set()
+
+    def _display_logo(self):
+        if self.logo_binary_data and PIL_AVAILABLE:
+            try:
+                image = Image.open(io.BytesIO(self.logo_binary_data))
+                # --- CORREZIONE QUI: Converte l'immagine in RGB ---
+                # Questo risolve i problemi con la trasparenza dei file PNG
+                image = image.convert("RGB")
+
+                image.thumbnail((150, 150))
+                self.logo_photo = ImageTk.PhotoImage(image)
+                self.logo_label.config(image=self.logo_photo, text="")
+            except Exception as e:
+                # Aggiungiamo un print per vedere l'errore esatto nel terminale
+                print(f"ERRORE caricamento logo: {e}")
+                self.logo_label.config(image="", text=self.lang.get('logo_error_text', "Errore logo"))
+        else:
+            self.logo_label.config(image="", text=self.lang.get('no_logo_text', "Nessun logo"))
+
+    def _save(self):
+        name = self.name_var.get().strip()
+        country = self.country_var.get().strip()
+        if not name or not country:
+            messagebox.showerror("Dati Mancanti", "Nome Compagnia e Nazione sono obbligatori.", parent=self)
+            return
+
+        address = self.address_var.get().strip()
+        vat = self.vat_var.get().strip()
+
+        # --- CONTROLLO AGGIUNTIVO PER SICUREZZA ---
+        # Se stiamo modificando, l'ID è già noto. Se è nuovo, non c'è CompanyId da validare qui.
+        company_id_to_save = self.current_site_id
+        # --- FINE CONTROLLO ---
+
+        if company_id_to_save:  # UPDATE
+            success, message = self.db.update_site(company_id_to_save, name, address, vat, country,
+                                                   self.logo_binary_data)
+        else:  # INSERT
+            success, message = self.db.add_new_site(name, address, vat, country, self.logo_binary_data)
+
+        if success:
+            messagebox.showinfo("Successo", message, parent=self)
+            self._load_sites()
+            self._clear_form()
+        else:
+            messagebox.showerror("Errore", message, parent=self)
+
+    def _delete(self):
+        if not self.current_site_id:
+            messagebox.showwarning("Nessuna Selezione", "Selezionare una compagnia da cancellare.", parent=self)
+            return
+
+        if messagebox.askyesno("Conferma Cancellazione",
+                               "Sei sicuro di voler cancellare questa compagnia? L'operazione non è reversibile."):
+            # Aggiungere qui un controllo per verificare se la compagnia è in uso prima di cancellare
+            success, message = self.db.delete_site(self.current_site_id)
+            if success:
+                messagebox.showinfo("Successo", message, parent=self)
+                self._load_sites()
+                self._clear_form()
+            else:
+                messagebox.showerror("Errore", message, parent=self)
+
+def open_company_manager(parent, db, lang, user_name):
+    CompanyManagerWindow(parent, db, lang, user_name)
 def open_maintenance_times_manager(parent, db, lang, user_name):
     MaintenanceTimesManagerWindow(parent, db, lang, user_name)
 

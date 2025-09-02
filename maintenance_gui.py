@@ -5,11 +5,13 @@ from tkinter import ttk, messagebox
 from tkinter import filedialog
 import os
 import reportlab
+import io
 from matplotlib import pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from tkcalendar import DateEntry
 from collections import Counter
-
+import openpyxl
+from openpyxl.styles import Font, PatternFill
 
 import richieste_intervento
 import openpyxl
@@ -873,9 +875,6 @@ class FillTemplateWindow(tk.Toplevel):
             else:
                 messagebox.showerror(self.lang.get('error_title'), self.db.last_error_details, parent=self)
 
-
-# In maintenance_gui.py
-
 class MaintenanceReportWindow(tk.Toplevel):
     """Finestra avanzata per la generazione di report di manutenzione."""
 
@@ -1076,40 +1075,6 @@ class MaintenanceReportWindow(tk.Toplevel):
     def _export_to_pdf(self):
         messagebox.showinfo("Info", "Funzionalità di esportazione PDF in sviluppo.")
 
-def open_fill_templates(parent, db, lang, user_name=None):
-    # Controlla se user_name è stato fornito (dovrebbe esserlo se chiamato tramite login da App)
-    if user_name:
-        FillTemplateWindow(parent, db, lang, user_name)  # Passa user_name alla classe
-    else:
-        # Fallback di sicurezza nel caso venga chiamata erroneamente senza utente
-        print("Errore: Tentativo di aprire Compilazione Schede senza autenticazione.")
-
-def open_add_machine(parent, db, lang):
-    AddMachineWindow(parent, db, lang)
-
-def open_edit_machine(parent, db, lang):
-    # L'utente autenticato viene passato qui
-    user_name = parent.authenticated_user_for_maintenance # Dovremo aggiungere questa variabile
-    SelectMachineToEditWindow(parent, db, lang, user_name)
-
-def open_view_machines(parent, db, lang):
-    ViewMachineWindow(parent, db, lang)
-
-def open_maintenance_docs(parent, db, lang):
-    MaintenanceDocsWindow(parent, db, lang)
-
-def open_fill_templates(parent, db, lang, user_name=None):
-    # Controlla se user_name è stato fornito (dovrebbe esserlo se chiamato tramite login da App)
-    if user_name:
-        FillTemplateWindow(parent, db, lang, user_name) # Passa user_name alla classe
-    else:
-        # Fallback di sicurezza nel caso venga chiamata erroneamente senza utente
-        print("Errore: Tentativo di aprire Compilazione Schede senza autenticazione.")
-
-def open_add_maintenance_tasks(parent, db, lang, user_name):
-    """Launcher function to create and show the AddMaintenanceTasksWindow."""
-    AddMaintenanceTasksWindow(parent, db, lang, user_name)
-
 class AddTaskRowDialog(tk.Toplevel):
     """Dialogo modale per inserire o MODIFICARE i dettagli di un singolo task."""
 
@@ -1185,6 +1150,185 @@ class AddTaskRowDialog(tk.Toplevel):
             return
         self.task_name = self.name_var.get().strip()
         self.destroy()
+
+class BrandManagerWindow(tk.Toplevel):
+    """Finestra per la gestione dei Brand delle macchine."""
+
+    def __init__(self, parent, db, lang, user_name):
+        super().__init__(parent)
+        self.db = db
+        self.lang = lang
+        self.user_name = user_name
+        self.title(lang.get('brand_management_title', "Gestione Brand"))
+        self.geometry("800x500")
+
+        self.suppliers_data = {}
+        self.current_brand_id = None
+        self.logo_binary_data = None
+        self.brands_list = []
+
+        self.brand_name_var = tk.StringVar()
+        self.supplier_var = tk.StringVar()
+
+        self._create_widgets()
+        self._load_suppliers()
+        self._load_brands()
+
+    def _create_widgets(self):
+        main_frame = ttk.Frame(self, padding="10")
+        main_frame.pack(fill="both", expand=True)
+        main_frame.rowconfigure(0, weight=1)
+        main_frame.columnconfigure(0, weight=3)
+        main_frame.columnconfigure(1, weight=2)
+
+        list_frame = ttk.LabelFrame(main_frame, text=self.lang.get('brands_list_label', "Lista Brand"))
+        list_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        list_frame.rowconfigure(0, weight=1)
+        list_frame.columnconfigure(0, weight=1)
+
+        cols = ('brand', 'company')
+        self.tree = ttk.Treeview(list_frame, columns=cols, show="headings")
+        self.tree.heading('brand', text=self.lang.get('header_brand_name', "Nome Brand"))
+        self.tree.heading('company', text=self.lang.get('header_supplier_name', "Produttore"))
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        self.tree.bind("<<TreeviewSelect>>", self._on_brand_select)
+
+        form_frame = ttk.LabelFrame(main_frame, text=self.lang.get('details_label', "Dettagli"))
+        form_frame.grid(row=0, column=1, sticky="nsew")
+        form_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(form_frame, text=self.lang.get('supplier_label', "Produttore (*):")).grid(row=0, column=0, sticky="w",
+                                                                                            padx=5, pady=5)
+        self.supplier_combo = ttk.Combobox(form_frame, textvariable=self.supplier_var, state="readonly")
+        self.supplier_combo.grid(row=0, column=1, sticky="ew", padx=5)
+
+        ttk.Label(form_frame, text=self.lang.get('brand_name_label', "Nome Brand (*):")).grid(row=1, column=0,
+                                                                                              sticky="w", padx=5,
+                                                                                              pady=5)
+        self.brand_entry = ttk.Entry(form_frame, textvariable=self.brand_name_var)
+        self.brand_entry.grid(row=1, column=1, sticky="ew", padx=5)
+
+        ttk.Label(form_frame, text=self.lang.get('logo_label', "Logo:")).grid(row=2, column=0, sticky="w", padx=5,
+                                                                              pady=5)
+        ttk.Button(form_frame, text=self.lang.get('load_logo_button', "Carica..."), command=self._load_logo).grid(row=2,
+                                                                                                                  column=1,
+                                                                                                                  sticky="w",
+                                                                                                                  padx=5)
+
+        self.logo_label = ttk.Label(form_frame, background="lightgrey",
+                                    text=self.lang.get('no_logo_text', "Nessun logo"))
+        self.logo_label.grid(row=3, column=0, columnspan=2, pady=10, sticky="ew", ipady=20)
+
+        btn_frame = ttk.Frame(form_frame)
+        btn_frame.grid(row=4, column=0, columnspan=2, pady=20)
+        ttk.Button(btn_frame, text=self.lang.get('new_button_short', "Nuovo"), command=self._clear_form).pack(
+            side="left", padx=5)
+        ttk.Button(btn_frame, text=self.lang.get('save_button', "Salva"), command=self._save).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text=self.lang.get('delete_button', "Cancella"), command=self._delete).pack(side="left",
+                                                                                                          padx=5)
+
+    def _load_suppliers(self):
+        suppliers = self.db.fetch_supplier_sites()
+        if suppliers:
+            self.suppliers_data = {s.SiteName: s.IDSite for s in suppliers}
+            self.supplier_combo['values'] = sorted(list(self.suppliers_data.keys()))
+
+    def _load_brands(self):
+        self.tree.delete(*self.tree.get_children())
+        self.brands_list = self.db.fetch_brands_with_company_name()
+        for brand in self.brands_list:
+            # --- CORREZIONE QUI: Usa 'CompanyName' invece di 'SiteName' ---
+            company_name = brand.CompanyName or "N/A"
+            self.tree.insert("", "end", iid=brand.EquipmentBrandId, values=(brand.Brand, company_name))
+
+    def _on_brand_select(self, event=None):
+        selected_item = self.tree.focus()
+        if not selected_item: return
+        self.current_brand_id = int(selected_item)
+
+        selected_brand = next((b for b in self.brands_list if b.EquipmentBrandId == self.current_brand_id), None)
+        if not selected_brand: return
+
+        self.brand_name_var.set(selected_brand.Brand)
+        supplier_name = next((name for name, id in self.suppliers_data.items() if id == selected_brand.CompanyId), "")
+        self.supplier_var.set(supplier_name)
+        self.logo_binary_data = selected_brand.BrandLogo
+        self._display_logo()
+
+    def _clear_form(self):
+        self.tree.selection_set([])
+        self.current_brand_id = None
+        self.brand_name_var.set("")
+        self.supplier_var.set("")
+        self.logo_binary_data = None
+        self._display_logo()
+        self.brand_entry.focus_set()
+
+    def _load_logo(self):
+        if not PIL_AVAILABLE: return
+        file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.png;*.jpg;*.jpeg;*.bmp")])
+        if file_path:
+            with open(file_path, 'rb') as f:
+                self.logo_binary_data = f.read()
+            self._display_logo()
+
+    def _display_logo(self):
+        if self.logo_binary_data and PIL_AVAILABLE:
+            try:
+                image = Image.open(io.BytesIO(self.logo_binary_data))
+                image = image.convert("RGB")  # Converte per evitare problemi con PNG
+                image.thumbnail((150, 150))
+                self.logo_photo = ImageTk.PhotoImage(image)
+                self.logo_label.config(image=self.logo_photo, text="")
+            except Exception as e:
+                print(f"ERRORE caricamento logo: {e}")
+                self.logo_label.config(image="", text=self.lang.get('logo_error_text', "Errore logo"))
+        else:
+            self.logo_label.config(image="", text=self.lang.get('no_logo_text', "Nessun logo"))
+
+    def _save(self):
+        brand_name = self.brand_name_var.get().strip()
+        supplier_name = self.supplier_var.get()
+        if not brand_name or not supplier_name:
+            messagebox.showerror("Dati Mancanti", "Produttore e Nome Brand sono obbligatori.", parent=self)
+            return
+
+        company_id = self.suppliers_data.get(supplier_name)
+        if company_id is None:
+            messagebox.showerror("Errore", "Selezionare un produttore valido dalla lista.", parent=self)
+            return
+
+        if self.current_brand_id:
+            success, message = self.db.update_brand(self.current_brand_id, brand_name, company_id,
+                                                    self.logo_binary_data)
+        else:
+            success, message = self.db.add_new_brand(brand_name, company_id, self.logo_binary_data)
+
+        if success:
+            messagebox.showinfo("Successo", message, parent=self)
+            self._load_brands()
+            self._clear_form()
+        else:
+            messagebox.showerror("Errore", message, parent=self)
+
+    def _delete(self):
+        if not self.current_brand_id:
+            messagebox.showwarning("Nessuna Selezione", "Selezionare un brand da cancellare.", parent=self)
+            return
+
+        if self.db.check_if_brand_is_used(self.current_brand_id):
+            messagebox.showerror("Operazione non permessa",
+                                 "Impossibile cancellare un brand già associato a una o più macchine.", parent=self)
+            return
+
+        if messagebox.askyesno("Conferma Cancellazione", "Sei sicuro di voler cancellare questo brand?"):
+            success, message = self.db.delete_brand(self.current_brand_id)
+            if success:
+                messagebox.showinfo("Successo", message, parent=self)
+                self._load_brands()
+                self._clear_form()
+            else:
+                messagebox.showerror("Errore", message, parent=self)
 
 class AddMaintenanceTasksWindow(tk.Toplevel):
     """
@@ -1404,11 +1548,125 @@ class AddMaintenanceTasksWindow(tk.Toplevel):
         else:
             messagebox.showerror("Errori durante il Salvataggio", "\n".join(errors))
 
+def open_fill_templates(parent, db, lang, user_name=None):
+    # Controlla se user_name è stato fornito (dovrebbe esserlo se chiamato tramite login da App)
+    if user_name:
+        FillTemplateWindow(parent, db, lang, user_name)  # Passa user_name alla classe
+    else:
+        # Fallback di sicurezza nel caso venga chiamata erroneamente senza utente
+        print("Errore: Tentativo di aprire Compilazione Schede senza autenticazione.")
+
+def open_add_machine(parent, db, lang):
+    AddMachineWindow(parent, db, lang)
+
+def open_edit_machine(parent, db, lang):
+    # L'utente autenticato viene passato qui
+    user_name = parent.authenticated_user_for_maintenance # Dovremo aggiungere questa variabile
+    SelectMachineToEditWindow(parent, db, lang, user_name)
+
+def open_view_machines(parent, db, lang):
+    ViewMachineWindow(parent, db, lang)
+
+def open_maintenance_docs(parent, db, lang):
+    MaintenanceDocsWindow(parent, db, lang)
+
+def open_fill_templates(parent, db, lang, user_name=None):
+    # Controlla se user_name è stato fornito (dovrebbe esserlo se chiamato tramite login da App)
+    if user_name:
+        FillTemplateWindow(parent, db, lang, user_name) # Passa user_name alla classe
+    else:
+        # Fallback di sicurezza nel caso venga chiamata erroneamente senza utente
+        print("Errore: Tentativo di aprire Compilazione Schede senza autenticazione.")
+
+def open_add_maintenance_tasks(parent, db, lang, user_name):
+    """Launcher function to create and show the AddMaintenanceTasksWindow."""
+    AddMaintenanceTasksWindow(parent, db, lang, user_name)
+
 def open_add_maintenance_doc(parent, db, lang, user_name):
     MaintenanceDocsWindow(parent, db, lang, user_name)
 
 def open_reports(parent, db, lang):
     # Sostituisce la vecchia finestra segnaposto con quella nuova
     MaintenanceReportWindow(parent, db, lang)
+
+def open_brand_manager(parent, db, lang, user_name):
+    BrandManagerWindow(parent, db, lang, user_name)
+
+def generate_missing_action_report(parent, db, lang):
+    """
+    Esegue la stored procedure e genera un report Excel formattato,
+    salvandolo automaticamente in C:\Temp e aprendolo.
+    """
+    # 1. Esegui la stored procedure
+    results, headers, error = db.execute_missing_action_report()
+
+    if error:
+        messagebox.showerror(lang.get('error_title', "Errore"), error, parent=parent)
+        return
+
+    if not results:
+        messagebox.showinfo(lang.get('info_title', "Info"),
+                            lang.get('no_missing_actions_found', "Nessuna manutenzione mancante trovata."),
+                            parent=parent)
+        return
+
+    # --- NUOVA LOGICA DI SALVATAGGIO ---
+    try:
+        # 2. Definisci il percorso e crea la cartella se non esiste
+        temp_dir = "C:\\Temp"
+        os.makedirs(temp_dir, exist_ok=True)
+
+        # 3. Crea un nome file univoco con data e ora
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_name = f"Report_Azioni_Mancanti_{timestamp}.xlsx"
+        file_path = os.path.join(temp_dir, file_name)
+
+        # 4. Crea e formatta il file Excel
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Azioni Mancanti"
+
+        ws.append(headers)
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="808080", end_color="808080", fill_type="solid")
+        for cell in ws[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+
+        for row_data in results:
+            ws.append(list(row_data))
+
+        ws.auto_filter.ref = ws.dimensions
+        for col in ws.columns:
+            max_length = 0
+            column = col[0].column_letter
+            for cell in col:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = (max_length + 2)
+            ws.column_dimensions[column].width = adjusted_width
+
+        # 5. Salva il file
+        wb.save(file_path)
+
+        # 6. Avvisa l'utente e apri il file
+        messagebox.showinfo(
+            lang.get('success_title', "Successo"),
+            f"{lang.get('report_saved_successfully', 'Report salvato con successo in:')}\n{file_path}",
+            parent=parent
+        )
+        os.startfile(file_path)
+
+    except PermissionError:
+        messagebox.showerror(lang.get('error_title', "Errore"),
+                             f"Errore di permesso. Impossibile salvare il file in {file_path}.\nAssicurati che il file non sia già aperto o di avere i permessi di scrittura.",
+                             parent=parent)
+    except Exception as e:
+        messagebox.showerror(lang.get('error_title', "Errore"),
+                             f"{lang.get('error_generating_excel', 'Impossibile generare il file Excel:')}\n{e}",
+                             parent=parent)
 
 
