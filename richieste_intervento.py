@@ -2,105 +2,26 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog  # Import simpledialog
 from datetime import datetime
+
+import logger
+
 # Importa il nuovo file utils.py
 import utils
+import logging
 import tempfile
 import os
 import sys
 import subprocess
-
-# In richieste_intervento.py
-
-# In richieste_intervento.py
-
-# In richieste_intervento.py
-
-# class AddNewSparePartWindow(tk.Toplevel):
-#     """Finestra per aggiungere un nuovo materiale di ricambio al catalogo."""
-#
-#     def __init__(self, parent, db, lang):
-#         super().__init__(parent)
-#         self.db = db
-#         self.lang = lang
-#         self.new_part_id = None
-#
-#         # Usa il gestore della lingua per il titolo
-#         self.title(self.lang.get('add_new_material_title', "Aggiungi Nuovo Materiale"))
-#         self.geometry("500x300")
-#         self.transient(parent)
-#         self.grab_set()
-#
-#         self.part_number_var = tk.StringVar()
-#         self.code_var = tk.StringVar()
-#         self._create_widgets()
-#
-#     def _create_widgets(self):
-#         frame = ttk.Frame(self, padding="15")
-#         frame.pack(fill=tk.BOTH, expand=True)
-#         frame.columnconfigure(1, weight=1)
-#
-#         # Usa il gestore della lingua per tutte le etichette
-#         ttk.Label(frame, text=self.lang.get('material_part_number_label', "Codice Materiale (*):")).grid(row=0,
-#                                                                                                          column=0,
-#                                                                                                          sticky=tk.W,
-#                                                                                                          pady=5)
-#         self.part_number_entry = ttk.Entry(frame, textvariable=self.part_number_var)
-#         self.part_number_entry.grid(row=0, column=1, sticky=tk.EW, pady=5)
-#
-#         ttk.Label(frame, text=self.lang.get('material_code_label', "Nome Materiale:")).grid(row=1, column=0,
-#                                                                                             sticky=tk.W, pady=5)
-#         self.code_entry = ttk.Entry(frame, textvariable=self.code_var)
-#         self.code_entry.grid(row=1, column=1, sticky=tk.EW, pady=5)
-#
-#         ttk.Label(frame, text=self.lang.get('material_description_label', "Descrizione:")).grid(row=2, column=0,
-#                                                                                                 sticky=tk.NW, pady=5)
-#         self.description_text = tk.Text(frame, height=5, wrap=tk.WORD)
-#         self.description_text.grid(row=2, column=1, sticky=tk.EW, pady=5)
-#
-#         button_frame = ttk.Frame(frame)
-#         button_frame.grid(row=3, column=1, sticky=tk.E, pady=(20, 0))
-#
-#         # Usa il gestore della lingua per i pulsanti
-#         ttk.Button(button_frame, text=self.lang.get('save_button', "Salva"), command=self._save_new_part).pack(
-#             side=tk.LEFT, padx=5)
-#         ttk.Button(button_frame, text=self.lang.get('cancel_button', "Annulla"), command=self.destroy).pack(
-#             side=tk.LEFT)
-#
-#         self.part_number_entry.focus_set()
-#
-#     def _save_new_part(self):
-#         # ... (questo metodo rimane invariato)
-#         part_number = self.part_number_var.get().strip()
-#         code = self.code_var.get().strip()
-#         description = self.description_text.get("1.0", tk.END).strip()
-#
-#         if not part_number:
-#             messagebox.showerror(self.lang.get('error_title', "Errore"),
-#                                  self.lang.get('error_part_number_required', "Il Codice Materiale è obbligatorio."),
-#                                  parent=self)
-#             return
-#
-#         new_id = self.db.add_new_spare_part(part_number, code, description)
-#
-#         if new_id:
-#             messagebox.showinfo(self.lang.get('success_title', "Successo"),
-#                                 self.lang.get('info_new_part_saved', "Nuovo materiale salvato con successo."),
-#                                 parent=self)
-#             self.new_part_id = new_id
-#             self.destroy()
-#         else:
-#             messagebox.showerror(self.lang.get('error_title', "Errore"),
-#                                  self.lang.get('error_saving_part',
-#                                                "Impossibile salvare il nuovo materiale.") + f"\n\n{self.db.last_error_details}",
-#                                  parent=self)
-#
-# # In richiese_intervento.py
-#
-# # In richieste_intervento.py
-#
-# # In richieste_intervento.py
-
+import utils
 class RequestWindow(tk.Toplevel):
+    logging.basicConfig(
+        filename='ManageDocs.log',
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
+
+    logger = logging.getLogger(__name__)
+
     """Finestra per richiedere parti di ricambio o interventi."""
 
     def __init__(self, parent, db, lang, user_name, equipment_id, equipment_name):
@@ -246,33 +167,36 @@ class RequestWindow(tk.Toplevel):
         except Exception as e:
             messagebox.showerror("Errore", f"Impossibile aprire il documento: {e}", parent=self)
 
-    # def _open_add_new_part_window(self):
-    #     add_window = AddNewSparePartWindow(self, self.db, self.lang)
-    #     self.wait_window(add_window)
-    #     newly_created_id = add_window.new_part_id
-    #     if newly_created_id:
-    #         self._load_spare_parts(select_id=newly_created_id)
-
     def _save_request(self):
-        """Valida i dati del form e li salva nel database."""
+        """Valida i dati del form e li salva nel database, poi invia una email di notifica."""
         part_selection = self.spare_part_var.get()
         quantity_str = self.quantity_var.get()
         notes = self.notes_text.get("1.0", tk.END).strip()
 
+        # Validazione della selezione parte
         if not part_selection or part_selection not in self.spare_parts_data:
-            messagebox.showwarning(self.lang.get('warning_title', "Attenzione"), self.lang.get('warning_select_part',
-                                                                                               "Selezionare una parte di ricambio valida dalla lista."),
-                                   parent=self)
+            messagebox.showwarning(
+                self.lang.get('warning_title', "Attenzione"),
+                self.lang.get('warning_select_part', "Selezionare una parte di ricambio valida dalla lista."),
+                parent=self
+            )
             return
+
+        # Validazione della quantità
         try:
             quantity = int(quantity_str)
             if quantity <= 0: raise ValueError
         except ValueError:
-            messagebox.showwarning(self.lang.get('warning_title', "Attenzione"),
-                                   self.lang.get('warning_invalid_quantity',
-                                                 "La quantità deve essere un numero intero positivo."), parent=self)
+            messagebox.showwarning(
+                self.lang.get('warning_title', "Attenzione"),
+                self.lang.get('warning_invalid_quantity', "La quantità deve essere un numero intero positivo."),
+                parent=self
+            )
             return
+
         spare_part_id = self.spare_parts_data.get(part_selection)
+
+        # Salvataggio nel database
         success = self.db.insert_spare_part_request(
             equipment_id=self.equipment_id,
             spare_part_id=spare_part_id,
@@ -280,16 +204,74 @@ class RequestWindow(tk.Toplevel):
             notes=notes,
             requested_by=self.user_name
         )
+
         if success:
-            messagebox.showinfo(self.lang.get('success_title', "Successo"),
-                                self.lang.get('info_request_sent', "Richiesta inviata con successo."), parent=self)
-            self.destroy()
+            try:
+                # Recupera i dettagli del macchinario dal database
+                equipment_query = """
+                            SELECT eb.Brand + ' ' + 
+                            [InternalName] + '(' + [SerialNumber] + ')' as InternalName,[InventoryNumber] as SerialNumber
+                            FROM [Traceability_RS].[eqp].[Equipments] e inner join [eqp].[EquipmentBrands] eb on e.BrandId=eb.EquipmentBrandId 
+                            where e.equipmentid= ?
+                        """
+                with self.db.conn.cursor() as cursor:
+                    cursor.execute(equipment_query, (self.equipment_id,))
+                    equipment_row = cursor.fetchone()
+
+                # Formatta il nome del macchinario
+                if equipment_row and (equipment_row.InternalName or equipment_row.SerialNumber):
+                    equipment_name = f"{equipment_row.InternalName or ''} [{equipment_row.SerialNumber}]".strip()
+                else:
+                    equipment_name = f"ID: {self.equipment_id}"
+
+                # Preparazione del contenuto dell'email
+                subject = f"Richiesta ricambi - {equipment_name}"
+
+                # Creazione del corpo dell'email
+                body = f"""
+    Nuova richiesta ricambi:
+
+    Richiedente: {self.user_name}
+    Macchinario: {equipment_name}
+    Parte richiesta: {part_selection}
+    Quantità: {quantity}
+    Note: {notes}
+
+    Questa è una email automatica, si prega di non rispondere.
+    """
+                # Recupero dei destinatari dal database
+                recipients = utils.get_email_recipients(self.db.conn)
+
+                # Invio dell'email
+                utils.send_email(
+                    recipients=recipients,
+                    subject=subject,
+                    body=body
+                )
+
+                messagebox.showinfo(
+                    self.lang.get('success_title', "Successo"),
+                    self.lang.get('info_request_sent', "Richiesta inviata con successo."),
+                    parent=self
+                )
+                self.destroy()
+
+            except Exception as e:
+                logging.error(f"Errore nell'invio dell'email: {str(e)}")
+                messagebox.showwarning(
+                    self.lang.get('warning_title', "Attenzione"),
+                    self.lang.get('warning_email_failed',
+                                  "La richiesta è stata salvata ma l'invio dell'email è fallito."),
+                    parent=self
+                )
+                self.destroy()
         else:
-            messagebox.showerror(self.lang.get('error_title', "Errore"),
-                                 f"{self.lang.get('error_sending_request', 'Impossibile inviare la richiesta.')}\n\n{self.db.last_error_details}",
-                                 parent=self)
+            messagebox.showerror(
+                self.lang.get('error_title', "Errore"),
+                f"{self.lang.get('error_sending_request', 'Impossibile inviare la richiesta.')}\n\n{self.db.last_error_details}",
+                parent=self
+            )
 
 
-# Funzione Launcher (Invariata)
 def open_request_window(parent, db, lang, user_name, equipment_id, equipment_name):
     RequestWindow(parent, db, lang, user_name, equipment_id, equipment_name)

@@ -876,7 +876,6 @@ class FillTemplateWindow(tk.Toplevel):
                 messagebox.showerror(self.lang.get('error_title'), self.db.last_error_details, parent=self)
 
 class MaintenanceReportWindow(tk.Toplevel):
-    """Finestra avanzata per la generazione di report di manutenzione."""
 
     def __init__(self, parent, db, lang):
         super().__init__(parent)
@@ -993,7 +992,6 @@ class MaintenanceReportWindow(tk.Toplevel):
                                  self.lang.get('error_date_range', "Selezionare un intervallo di date valido."))
             return
 
-        # --- CORREZIONE: Converti le stringhe in oggetti data ---
         try:
             # Il formato '%d/%m/%Y' deve corrispondere a quello del DateEntry
             from_date_obj = datetime.strptime(from_date_str, '%d/%m/%Y').date()
@@ -1002,7 +1000,6 @@ class MaintenanceReportWindow(tk.Toplevel):
             messagebox.showerror(self.lang.get('error_title', "Errore"),
                                  self.lang.get('error_invalid_date_format', "Il formato della data non è valido."))
             return
-        # --- FINE CORREZIONE ---
 
         all_text = self.lang.get('all_filter_option', "TUTTI")
         equipment_id = self.equipments_data.get(
@@ -1229,8 +1226,10 @@ class BrandManagerWindow(tk.Toplevel):
 
     def _load_suppliers(self):
         suppliers = self.db.fetch_supplier_sites()
+        print("Suppliers returned:", suppliers)
         if suppliers:
             self.suppliers_data = {s.SiteName: s.IDSite for s in suppliers}
+            print("Suppliers data:", self.suppliers_data)
             self.supplier_combo['values'] = sorted(list(self.suppliers_data.keys()))
 
     def _load_brands(self):
@@ -1337,10 +1336,6 @@ class BrandManagerWindow(tk.Toplevel):
                 messagebox.showerror("Errore", message, parent=self)
 
 class AddMaintenanceTasksWindow(tk.Toplevel):
-    """
-    Finestra per la GESTIONE (Aggiunta, Modifica, Rimozione) dei task.
-    VERSIONE CORRETTA E COMPLETA.
-    """
 
     def __init__(self, parent, db, lang, user_name):
         super().__init__(parent)
@@ -1434,6 +1429,24 @@ class AddMaintenanceTasksWindow(tk.Toplevel):
         if interventions:
             self.interventions_data = {r.TimingDescriprion: r.ProgrammedInterventionId for r in interventions}
             self.intervention_combo['values'] = sorted(list(self.interventions_data.keys()))
+
+    def get_selected_equipment_name(self):
+        """Restituisce il nome del macchinario selezionato."""
+        equipment_sel = self.equipment_var.get()
+        if equipment_sel:
+            return equipment_sel  # Questo restituirà il formato "InternalName [SerialNumber]"
+        return None
+
+    def get_equipment_details(self):
+        """Restituisce un dizionario con i dettagli del macchinario selezionato."""
+        equipment_sel = self.equipment_var.get()
+        if equipment_sel:
+            equipment_id = self.equipments_data[equipment_sel]
+            return {
+                'display_name': equipment_sel,
+                'id': equipment_id
+            }
+        return None
 
     def _load_existing_tasks(self, event=None):
         """Carica i task esistenti SOLO SE sia la macchina che l'intervento sono selezionati."""

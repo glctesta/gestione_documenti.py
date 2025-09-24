@@ -1,59 +1,101 @@
 # utils.py
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-import traceback
-from datetime import datetime
-#l'account con Vandewiele non funziona, ho creato un utente fittivo per poter usare gmail.
-#con questo utente funziona
-#SMTP_SERVER = "vandewiele-com.mail.protection.outlook.com"
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-SMTP_USER = "u8588557424@gmail.com"
-SMTP_PASSWORD = "mork cnez vayb wgrb"  # Password fornita dall'utente
+from email_connector import EmailSender
+import logging
+from typing import List, Optional
+
+# Configurazione logging
+logging.basicConfig(
+    filename='ManageDocs.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+logger = logging.getLogger(__name__)
 
 
-def send_email(recipients, subject, body):
-    """Sends an email using the configured SMTP settings."""
+def get_email_recipients(conn) -> List[str]:
+    """
+    Recupera gli indirizzi email dei destinatari dal database.
 
-    # Recipients deve essere una lista di stringhe
+    Args:
+        conn: Connessione al database
+
+    Returns:
+        List[str]: Lista di indirizzi email validi
+    """
+    try:
+        query = """
+        SELECT [VALUE] 
+        FROM traceability_rs.dbo.settings 
+        WHERE atribute = 'Sys_Email_Purchase'
+        """
+
+        with conn.cursor() as cursor:
+            cursor.execute(query)
+            results = cursor.fetchall()
+
+        # Estrai gli indirizzi email dalla prima colonna di ogni riga
+        email_list = [row[0] for row in results if row[0]]
+
+        # Pulisci e valida gli indirizzi email
+        valid_emails = []
+        for email in email_list:
+            # Gestisce il caso in cui ci siano più email separate da virgola o punto e virgola
+            separators = [';', ',']
+            emails = [email]
+
+            for separator in separators:
+                if separator in email:
+                    emails = [e.strip() for e in email.split(separator)]
+                    break
+
+            valid_emails.extend([e for e in emails if e and '@' in e])
+        print(valid_emails)
+        return valid_emails
+        logger.info(f"Indirizzi email trovati: {valid_emails}")
+        return valid_emails
+
+    except Exception as e:
+        logger.error(f"Errore nel recupero degli indirizzi email: {str(e)}")
+        raise  # Meglio sollevare l'eccezione invece di usare valori di default
+
+
+def send_email(recipients: List[str], subject: str, body: str,
+               smtp_host: str = "vandewiele-com.mail.protection.outlook.com", smtp_port: int = 25) -> None:
+    """
+    Invia l'email ai destinatari specificati.
+
+    Args:
+        recipients: Lista di indirizzi email destinatari
+        subject: Oggetto dell'email
+        body: Corpo dell'email
+        smtp_host: Host SMTP (default: vandewiele-com.mail.protection.outlook.com)
+        smtp_port: Porta SMTP (default: 25)
+
+    Raises:
+        ValueError: Se non ci sono destinatari
+        Exception: Per altri errori durante l'invio
+    """
     if not recipients:
-        print("Email sending skipped: No recipients provided.")
-        return True
-
-    msg = MIMEMultipart()
-    msg['From'] = SMTP_USER
-    # Unisce la lista dei destinatari in una stringa separata da virgole per l'header
-    msg['To'] = ", ".join(recipients)
-    msg['Subject'] = subject
-
-    msg.attach(MIMEText(body, 'plain'))
+        logger.error("Nessun destinatario specificato per l'email")
+        raise ValueError("Nessun destinatario specificato per l'email")
 
     try:
-        # Connessione al server
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.ehlo()  # Identificazione al server SMTP
-
-        # Avvio crittografia TLS
-        server.starttls()
-        server.ehlo()  # Re-identificazione dopo connessione TLS
-
-        # Login
-        server.login(SMTP_USER, SMTP_PASSWORD)
-
-        # Invio email
-        # Il secondo argomento deve essere la lista degli indirizzi
-        server.sendmail(SMTP_USER, recipients, msg.as_string())
-
-        # Disconnessione
-        server.quit()
-        print(f"Email successfully sent to {msg['To']}")
-        return True
-    except smtplib.SMTPAuthenticationError:
-        print("Failed to send email: SMTP Authentication Error. Check username/password.")
-        traceback.print_exc()
-        return False
+        sender = EmailSender(smtp_host, smtp_port)
+        # Prima volta: salva le credenziali (verranno criptate)
+        sender.save_credentials("Accounting@Eutron.it",
+                            "9jHgFhSs7Vf+"
+                                )
+        # Note: Le credenziali non dovrebbero essere nel codice
+        # Utilizzare variabili d'ambiente o file di configurazione sicuri
+        sender.send_email(
+            to_email=', '.join(recipients),
+            subject=subject,
+            body=body,
+            is_html=False
+        )
+        logger.info(f"Email inviata con successo a {len(recipients)} destinatari")
+        print("email inviata")
     except Exception as e:
-        print(f"Failed to send email: {e}")
-        traceback.print_exc()
-        return False
+        logger.error(f"Errore nell'invio dell'email: {str(e)}")
+        raise

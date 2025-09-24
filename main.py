@@ -6,14 +6,14 @@ import sys
 import tempfile
 import tkinter as tk
 from collections import defaultdict
-# Corretto l'import per coerenza
 from datetime import datetime, timedelta
 from tkinter import ttk, messagebox, filedialog
 import random
 import pyodbc
 from PIL import ImageOps, ImageDraw, ImageFont
 from packaging import version
-
+from tkcalendar import DateEntry
+import pandas as pd
 import general_docs_gui
 import maintenance_gui
 import materials_gui
@@ -21,6 +21,12 @@ import operations_gui
 import permissions_gui
 import submissions_gui
 import tools_gui
+from traceability import TraceabilityManager
+import logging
+
+# Configurazione logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 try:
     from PIL import Image, ImageTk
@@ -30,10 +36,10 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.6.5"  # Versione aggiornata
+APP_VERSION = "1.7.2"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
-# --- CONFIGURAZIONE DATABASE ---
+# # --- CONFIGURAZIONE DATABASE ---
 DB_DRIVER = '{SQL Server Native Client 11.0}'
 DB_SERVER = 'roghipsql01.vandewiele.local\\emsreset'
 DB_DATABASE = 'Traceability_rs'
@@ -149,10 +155,482 @@ class LanguageManager:
         """Imposta la lingua corrente."""
         self.current_language = lang_code.lower()
 
-
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
 
+    def get_equipment_info(self, equipment_id):
+        """Recupera le informazioni del macchinario dal database."""
+        try:
+            query = """
+            SELECT eb.Brand + ' ' + 
+                [InternalName] + '(' + [SerialNumber] + ')' as InternalName,[InventoryNumber] as SerialNumber
+                FROM [Traceability_RS].[eqp].[Equipments] e inner join [eqp].[EquipmentBrands] eb on e.BrandId=eb.EquipmentBrandId 
+                where e.equipmentid= ?
+            """
+            with self.conn.cursor() as cursor:
+                cursor.execute(query, (equipment_id,))
+                row = cursor.fetchone()
+                return row
+        except Exception as e:
+            self.last_error_details = str(e)
+            return None
+
+    def fetch_clients_for_verification(self):
+        """Recupera i clienti per la verifica associazione."""
+        query = """
+        select distinct p.idclient, fc.FinalClientName
+        from traceability_rs.dbo.FinalClients fc 
+        inner join traceability_rs.dbo.products p on p.idfinalclient = fc.idfinalclient 
+        inner join traceability_rs.dbo.Clients c on c.IDClient = p.idclient 
+        order by fc.FinalClientName, p.idclient
+        """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_orders_by_year_and_client(self, year, client_id=None):
+        """Recupera gli ordini per anno e cliente."""
+        query = """
+        select o.idorder, o.OrderNumber, p.productcode, fc.FinalClientName
+        from traceability_rs.dbo.products p 
+        inner join traceability_rs.dbo.Clients c on c.IDClient = p.idclient 
+        inner join traceability_rs.dbo.orders o on p.idproduct = o.IDProduct 
+        inner join traceability_rs.dbo.FinalClients fc on fc.idfinalclient = p.idfinalclient
+        where year(o.OrderDate) = ?
+        """
+        params = [year]
+
+        if client_id:
+            query += " AND p.idclient = ?"
+            params.append(client_id)
+
+        query += " order by o.ordernumber"
+
+        try:
+            self.cursor.execute(query, params)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def verify_label_association(self, label_code):
+        """Verifica l'associazione di un'etichetta."""
+        query = """
+        Select distinct o.OrderNumber, p.ProductCode, l.LabelCod, b.IDBoard
+        from traceability_rs.dbo.orders as O 
+        inner join traceability_rs.dbo.products as P on p.idproduct = o.idproduct 
+        inner join traceability_rs.dbo.boards as B on b.IDOrder = o.idorder 
+        inner join traceability_rs.dbo.LabelCodes as L on l.IDBoard = b.IDBoard
+        where l.IDBoard in (select IDBoard from LabelCodes where LabelCod = ?)
+        """
+        try:
+            self.cursor.execute(query, label_code)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_final_clients_for_linking(self):
+        """Recupera i clienti finali per il filtro."""
+        query = """
+        SELECT fc.IDFinalClient, fc.FinalClientName, fc.AcronimForCode
+        FROM 
+         FinalClients fc 
+        ORDER BY fc.FinalClientName
+        """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_final_products_by_client(self, client_id):
+        """Recupera i prodotti finali per un cliente specifico."""
+        query = """
+        SELECT idproduct, ProductCode, ProductName, ProductCodClienteFinal
+        FROM traceability_rs.dbo.products
+        WHERE idfinalclient = ? AND IsFinalProduct = 1
+        ORDER BY ProductCode
+        """
+        try:
+            self.cursor.execute(query, client_id)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_semi_products_by_client(self, client_id):
+        """Recupera i semilavorati per un cliente specifico."""
+        query = """
+        SELECT idproduct, ProductCode, ProductName
+        FROM traceability_rs.dbo.products
+        WHERE (idfinalclient = ? ) 
+        AND (IsFinalProduct = 0 OR IsFinalProduct IS NULL)
+        AND CHARINDEX('cipr', productcode, 1) = 0
+        ORDER BY ProductCode
+        """
+        try:
+            self.cursor.execute(query, client_id)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_existing_links(self, final_product_id=None, client_id=None):
+        """Recupera i collegamenti esistenti."""
+        query = """
+        SELECT pl.ProductLInkedTableId, pl.IdProductFinal, pl.IdProductSemi, pl.Dateout,
+               pf.ProductCode as FinalCode, pf.ProductName as FinalName,
+               ps.ProductCode as SemiCode, ps.ProductName as SemiName,
+               fc.FinalClientName
+        FROM traceability_rs.dbo.ProductsLinked pl
+        INNER JOIN traceability_rs.dbo.products pf ON pl.IdProductFinal = pf.idproduct
+        INNER JOIN traceability_rs.dbo.products ps ON pl.IdProductSemi = ps.idproduct
+        INNER JOIN traceability_rs.dbo.FinalClients fc ON pf.idfinalclient = fc.IDFinalClient
+        WHERE pl.Dateout IS NULL
+        """
+        params = []
+
+        if final_product_id:
+            query += " AND pl.IdProductFinal = ?"
+            params.append(final_product_id)
+        elif client_id:
+            query += " AND pf.idfinalclient = ?"
+            params.append(client_id)
+
+        query += " ORDER BY fc.FinalClientName, pf.ProductCode, ps.ProductCode"
+
+        try:
+            self.cursor.execute(query, params)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def add_product_link(self, final_product_id, semi_product_id):
+        """Aggiunge un nuovo collegamento."""
+        # Prima verifica se esiste già un collegamento attivo
+        check_query = """
+        SELECT COUNT(*) FROM traceability_rs.dbo.ProductsLinked 
+        WHERE IdProductFinal = ? AND IdProductSemi = ? AND Dateout IS NULL
+        """
+        try:
+            count = self.cursor.execute(check_query, final_product_id, semi_product_id).fetchval()
+            if count > 0:
+                return False, "Esiste già un collegamento attivo tra questi prodotti."
+
+            insert_query = """
+            INSERT INTO dbo.ProductsLinked (IdProductFinal, IdProductSemi)
+            VALUES (?, ?)
+            """
+            self.cursor.execute(insert_query, final_product_id, semi_product_id)
+            self.conn.commit()
+            return True, "Collegamento aggiunto con successo."
+
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            return False, f"Errore database: {e}"
+
+    def delete_product_link(self, link_id):
+        """Esegue un soft delete del collegamento."""
+        query = "UPDATE dbo.ProductsLinked SET Dateout = GETDATE() WHERE ProductLInkedTableId = ?"
+        try:
+            self.cursor.execute(query, link_id)
+            self.conn.commit()
+            return True, "Collegamento eliminato con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            return False, f"Errore database: {e}"
+
+    def fetch_final_products(self):
+        """Recupera tutti i prodotti con informazioni sui clienti finali."""
+        query = """
+           select idproduct, upper(ProductCode) as ProductCode, ProductName, 
+                  isnull(ProductCodClienteFinal,'#ND') as ProductCodClienteFinal, 
+                  p.IsFinalProduct, fc.FinalClientName, AcronimForCode,
+                  p.idfinalclient
+           from dbo.products as P 
+           left join FinalClients FC on fc.IDFinalClient = p.idfinalclient
+           where charindex('cipr', p.productcode, 1) = 0
+           order by p.ProductCode
+           """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_final_clients_for_products(self):
+        """Recupera i clienti finali per la selezione."""
+        query = """
+           SELECT [IDFinalClient], [FinalClientName], [AcronimForCode]
+           FROM [Traceability_RS].[dbo].[FinalClients] 
+           ORDER BY FinalClientName
+           """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def update_product_final_info(self, product_id, is_final_product, final_client_id, customer_code):
+        """Aggiorna le informazioni di prodotto finale."""
+        query = """
+           UPDATE dbo.products 
+           SET IsFinalProduct = ?, idfinalclient = ?, ProductCodClienteFinal = ?
+           WHERE idproduct = ?
+           """
+        try:
+            # Converti i valori per il database
+            is_final_int = 1 if is_final_product else 0
+            final_client_id = final_client_id if final_client_id else None
+            customer_code = customer_code if customer_code else None
+
+            self.cursor.execute(query, is_final_int, final_client_id, customer_code, product_id)
+            self.conn.commit()
+            return True, "Prodotto aggiornato con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            return False, f"Errore database: {e}"
+
+    def fetch_final_customers(self):
+        """Recupera tutti i clienti finali."""
+        query = """
+        SELECT [IDFinalClient], [FinalClientName], [FinalClientFullName], [AcronimForCode],
+               [ClientAddress], [ClientCity], [ClientZIP], [ClientCountry], [VatCode]
+        FROM [Traceability_RS].[dbo].[FinalClients] 
+        ORDER BY [FinalClientName]
+        """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def add_final_customer(self, name, full_name, acronim, address, city, zip_code, country, vat_code):
+        """Aggiunge un nuovo cliente finale."""
+        query = """
+        INSERT INTO [Traceability_RS].[dbo].[FinalClients] 
+        (FinalClientName, FinalClientFullName, AcronimForCode, ClientAddress, ClientCity, ClientZIP, ClientCountry, VatCode)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        try:
+            self.cursor.execute(query, name, full_name, acronim, address, city, zip_code, country, vat_code)
+            self.conn.commit()
+            return True, "Cliente aggiunto con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            return False, f"Errore database: {e}"
+
+    def update_final_customer(self, customer_id, name, full_name, acronim, address, city, zip_code, country, vat_code):
+        """Aggiorna un cliente finale esistente."""
+        query = """
+        UPDATE [Traceability_RS].[dbo].[FinalClients] 
+        SET FinalClientName = ?, FinalClientFullName = ?, AcronimForCode = ?,
+            ClientAddress = ?, ClientCity = ?, ClientZIP = ?, ClientCountry = ?, VatCode = ?
+        WHERE IDFinalClient = ?
+        """
+        try:
+            self.cursor.execute(query, name, full_name, acronim, address, city, zip_code, country, vat_code,
+                                customer_id)
+            self.conn.commit()
+            return True, "Cliente aggiornato con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            return False, f"Errore database: {e}"
+
+    def delete_final_customer(self, customer_id):
+        """Elimina un cliente finale."""
+        query = "DELETE FROM [Traceability_RS].[dbo].[FinalClients] WHERE IDFinalClient = ?"
+        try:
+            self.cursor.execute(query, customer_id)
+            self.conn.commit()
+            return True, "Cliente eliminato con successo."
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            return False, f"Errore database: {e}"
+
+    def fetch_kce_products(self):
+        query = "SELECT idProduct, ProductCode FROM dbo.PRODUCTS WHERE PRODUCTCODE LIKE '%KCE%' ORDER BY ProductCode;"
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e);
+            return []
+
+    # def fetch_customer_product_associations(self, product_id, client_id):
+    #     query = """
+    #         SELECT pc.productCustomerCodeid, p.productcode as SubAssemblkyCode,
+    #                p1.productcode as FinalCode, pc.CustomerCode, p.idProduct, p1.idProduct as idFinalCode
+    #         FROM dbo.ProductCustomerCodes pc
+    #         INNER JOIN dbo.products p ON pc.IdProduct = p.idproduct
+    #         LEFT JOIN dbo.products p1 ON p1.idproduct = pc.IdFinalCode
+    #         WHERE (pc.IdProduct = ? OR pc.IdFinalCode = ?) AND pc.idfinalclient = ? AND pc.DateOut IS NULL;
+    #     """
+    #     try:
+    #         self.cursor.execute(query, product_id, product_id, client_id)
+    #         return self.cursor.fetchall()
+    #     except pyodbc.Error as e:
+    #         self.last_error_details = str(e);
+    #         return []
+    #
+    # def fetch_available_subassemblies(self):
+    #     query = """
+    #         SELECT p.idProduct, p.ProductCode FROM dbo.PRODUCTS p
+    #         WHERE p.PRODUCTCODE LIKE '%KCE%' AND NOT EXISTS
+    #         (SELECT 1 FROM dbo.productcustomercodes pc WHERE p.idproduct = pc.idproduct AND pc.DateOut IS NULL)
+    #         ORDER BY ProductCode;
+    #     """
+    #     try:
+    #         self.cursor.execute(query)
+    #         return self.cursor.fetchall()
+    #     except pyodbc.Error as e:
+    #         self.last_error_details = str(e);
+    #         return []
+    #
+    # def fetch_available_final_products(self):
+    #     query = """
+    #         SELECT p.idProduct, p.ProductCode FROM dbo.PRODUCTS p
+    #         WHERE p.PRODUCTCODE LIKE '%KCE%' AND NOT EXISTS
+    #         (SELECT 1 FROM dbo.productcustomercodes pc WHERE p.idproduct = pc.IdFinalCode AND pc.DateOut IS NULL)
+    #         ORDER BY ProductCode;
+    #     """
+    #     try:
+    #         self.cursor.execute(query)
+    #         return self.cursor.fetchall()
+    #     except pyodbc.Error as e:
+    #         self.last_error_details = str(e);
+    #         return []
+    #
+    # def add_product_association(self, id_product, id_final_code, customer_code, id_final_client):
+    #     query = "INSERT INTO dbo.ProductCustomerCodes (IdProduct, IdFinalCode, CustomerCode, idfinalclient) VALUES (?, ?, ?, ?);"
+    #     try:
+    #         self.cursor.execute(query, id_product, id_final_code, customer_code, id_final_client)
+    #         self.conn.commit()
+    #         return True, "Associazione creata."
+    #     except pyodbc.Error as e:
+    #         self.conn.rollback();
+    #         return False, f"Errore DB: {e}"
+    #
+    # def soft_delete_product_customer_code(self, association_id):
+    #     query = "UPDATE dbo.ProductCustomerCodes SET DateOut = GETDATE() WHERE productCustomerCodeid = ?;"
+    #     try:
+    #         self.cursor.execute(query, association_id)
+    #         self.conn.commit()
+    #         return True, "Associazione cancellata con successo."
+    #     except pyodbc.Error as e:
+    #         self.conn.rollback();
+    #         return False, f"Errore DB: {e}"
+    #
+    # # NUOVE FUNZIONI PER LA GESTIONE DELLE ASSOCIAZIONI
+    # def update_subassembly_association(self, association_id, customer_code, final_client_id):
+    #     """Aggiorna un'associazione di tipo sotto-assieme"""
+    #     query = "UPDATE dbo.ProductCustomerCodes SET CustomerCode = ?, IdFinalClient = ? WHERE ProductCustomerCodeId = ?"
+    #     try:
+    #         self.cursor.execute(query, customer_code, final_client_id, association_id)
+    #         self.conn.commit()
+    #         return True, "Associazione sotto-assieme aggiornata con successo."
+    #     except pyodbc.Error as e:
+    #         self.conn.rollback()
+    #         return False, f"Errore DB: {e}"
+    #
+    # def update_finalproduct_association(self, association_id, customer_code, final_code_id, final_client_id):
+    #     """Aggiorna un'associazione di tipo prodotto finale"""
+    #     query = "UPDATE dbo.ProductCustomerCodes SET CustomerCode = ?, IdFinalCode = ?, IdFinalClient = ? WHERE ProductCustomerCodeId = ?"
+    #     try:
+    #         self.cursor.execute(query, customer_code, final_code_id, final_client_id, association_id)
+    #         self.conn.commit()
+    #         return True, "Associazione prodotto finale aggiornata con successo."
+    #     except pyodbc.Error as e:
+    #         self.conn.rollback()
+    #         return False, f"Errore DB: {e}"
+    #
+    # def fetch_supplier_sites(self):
+    #     """Recupera i fornitori dalla tabella Sites."""
+    #     query = "SELECT [IDSite], [SiteName] FROM [Traceability_RS].[dbo].[Sites] ORDER BY SiteName;"
+    #     try:
+    #         self.cursor.execute(query)
+    #         return self.cursor.fetchall()
+    #     except pyodbc.Error as e:
+    #         self.last_error_details = str(e)
+    #         return []
+    #
+    # def fetch_final_products_for_association(self):
+    #     query = """
+    #         SELECT p.idProduct, ProductCode
+    #         FROM dbo.Products P
+    #         LEFT JOIN dbo.ProductCustomerCodes pc ON pc.IdFinalCode = p.idproduct
+    #         WHERE CHARINDEX('cip', p.productcode, 1) = 0  and charindex('rma',p.productcode,1)=0
+    #         ORDER BY p.ProductCode;
+    #     """
+    #     try:
+    #         self.cursor.execute(query)
+    #         return self.cursor.fetchall()
+    #     except pyodbc.Error as e:
+    #         self.last_error_details = str(e);
+    #         return []
+    #
+    # def fetch_sub_assemblies_for_association(self, final_product_id):
+    #     query = """
+    #         SELECT p.idProduct, p.productcode as SubAssemblyCode,
+    #                p1.ProductCode as FinalCode, pc.CustomerCode, pc.ProductCustomerCodeId
+    #         FROM dbo.Products P
+    #         LEFT JOIN dbo.ProductCustomerCodes pc ON pc.IdSubAssembly = p.idproduct AND pc.DateOut IS NULL
+    #         LEFT JOIN dbo.products p1 ON p1.idproduct = pc.idfinalcode
+    #         WHERE CHARINDEX('cip', p.productcode, 1) = 0  and charindex('rma',p.productcode,1)=0
+    #           AND p.idproduct = ?
+    #         ORDER BY p.ProductCode;
+    #     """
+    #     try:
+    #         self.cursor.execute(query, final_product_id)
+    #         return self.cursor.fetchall()
+    #     except pyodbc.Error as e:
+    #         self.last_error_details = str(e);
+    #         return []
+    #
+    # def fetch_available_final_codes(self):
+    #     query = """
+    #         SELECT p.idProduct, p.productcode AS FinalCode
+    #         FROM dbo.Products P
+    #         WHERE p.idproduct NOT IN (SELECT DISTINCT IdSubAssembly FROM dbo.ProductCustomerCodes WHERE IdSubAssembly IS NOT NULL)
+    #           AND CHARINDEX('cip', p.productcode, 1) = 0
+    #         ORDER BY p.ProductCode;
+    #     """
+    #     try:
+    #         self.cursor.execute(query)
+    #         return self.cursor.fetchall()
+    #     except pyodbc.Error as e:
+    #         self.last_error_details = str(e);
+    #         return []
+    #
+    # def add_product_customer_code(self, sub_assembly_id, customer_code, final_code_id):
+    #     query = "INSERT INTO dbo.ProductCustomerCodes (IdSubAssembly, IdFinalCode, CustomerCode) VALUES (?, ?, ?);"
+    #     try:
+    #         self.cursor.execute(query, sub_assembly_id, final_code_id, customer_code)
+    #         self.conn.commit()
+    #         return True, "Associazione creata con successo."
+    #     except pyodbc.Error as e:
+    #         self.conn.rollback();
+    #         return False, f"Errore DB: {e}"
+    #
+    # def update_product_customer_code(self, association_id, customer_code, final_code_id):
+    #     query = "UPDATE dbo.ProductCustomerCodes SET CustomerCode = ?, IdFinalCode = ? WHERE ProductCustomerCodeId = ?;"
+    #     try:
+    #         self.cursor.execute(query, customer_code, final_code_id, association_id)
+    #         self.conn.commit()
+    #         return True, "Associazione aggiornata con successo."
+    #     except pyodbc.Error as e:
+    #         self.conn.rollback();
+    #         return False, f"Errore DB: {e}"
+    #
     def fetch_supplier_sites(self):
         """Recupera i fornitori/compagnie dalla tabella Sites."""
         query = "SELECT [IDSite], [SiteName] FROM [Traceability_RS].[dbo].[Sites] WHERE isSupplier = 1 ORDER BY SiteName;"
@@ -165,7 +643,7 @@ class Database:
 
     def fetch_all_sites(self):
         """Recupera tutti i siti/compagnie per la gestione."""
-        query = "SELECT IDSite, SiteName, SiteAddress, SiteVat, SiteCountry, Logo FROM dbo.Sites where isnull(IsSupplier,0) = 1 ORDER BY SiteName;"
+        query = "SELECT IDSite, SiteName, SiteAddress, SiteVat, SiteCountry, Logo FROM dbo.Sites ORDER BY SiteName;"
         try:
             self.cursor.execute(query)
             return self.cursor.fetchall()
@@ -809,8 +1287,8 @@ class Database:
     def add_production_interruption(self, params):
         """Salva un nuovo record di interruzione produzione in ReportIssueLogs."""
         query = """
-                INSERT INTO ResetServices.[BreakDown].[ReportIssueLogs] ([DateReport], [HourReport], [UserName], [IssueAreaId], [ \
-                                                            WorkingAreaID],
+                INSERT INTO ResetServices.[BreakDown].[ReportIssueLogs] ([DateReport], [HourReport], [UserName], [IssueAreaId], \
+                                                            [WorkingAreaID],
                     [WorkingLineID], [WorkingSubAreaID], [IssueProblemId], [FromHour], [ToHour],
                     [Lost_OR_Gain], [Hours], [PoNumber], [ProductCode], [Note], [ActionPlan]) \
                 VALUES (?, GETDATE(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?); \
@@ -2923,6 +3401,183 @@ class ViewDocumentForm(tk.Toplevel):
         if not success:
              messagebox.showerror(self.lang.get('error_title', "Errore"), "Impossibile aprire il documento.", parent=self)
 
+class LineStoppageReportForm(tk.Toplevel):
+        def __init__(self, parent, db_handler, lang_manager):
+            super().__init__(parent)
+            self.db = db_handler
+            self.lang = lang_manager
+
+            self.title(self.lang.get('line_stoppage_report_title', "Report Fermi Linea"))
+            self.geometry("400x300")
+
+            # Crea il frame principale
+            main_frame = ttk.Frame(self, padding="20")
+            main_frame.pack(fill=tk.BOTH, expand=True)
+
+            # Date selectors
+            date_frame = ttk.LabelFrame(main_frame, text=self.lang.get('date_range_label', "Intervallo Date"),
+                                        padding="10")
+            date_frame.pack(fill=tk.X, pady=(0, 20))
+
+            # From Date
+            ttk.Label(date_frame, text=self.lang.get('from_date_label', "Da:")).grid(row=0, column=0, padx=5, pady=5)
+            self.from_date = DateEntry(date_frame, width=12, background='darkblue', foreground='white', borderwidth=2)
+            self.from_date.grid(row=0, column=1, padx=5, pady=5)
+
+            # To Date
+            ttk.Label(date_frame, text=self.lang.get('to_date_label', "A:")).grid(row=1, column=0, padx=5, pady=5)
+            self.to_date = DateEntry(date_frame, width=12, background='darkblue', foreground='white', borderwidth=2)
+            self.to_date.grid(row=1, column=1, padx=5, pady=5)
+
+            # Buttons
+            button_frame = ttk.Frame(main_frame)
+            button_frame.pack(fill=tk.X, pady=20)
+
+            ttk.Button(button_frame, text=self.lang.get('generate_report_button', "Genera Report"),
+                       command=self._generate_report).pack(side=tk.LEFT, padx=5)
+            ttk.Button(button_frame, text=self.lang.get('close_button', "Chiudi"),
+                       command=self.destroy).pack(side=tk.RIGHT, padx=5)
+
+        def _generate_report(self):
+            """Genera il report Excel dei fermi linea."""
+            try:
+                # Esegue la query
+                query = """
+                SELECT [BreakDownProblemLogId] AS ID,
+                       cast([DateReport] as DATE) AS ReportIussedOn,
+                       [HourReport] as TimeIussed,
+                       [FromHour] as FromTime,
+                       [ToHour] as ToTime,
+                       [UserName] AS IussedBy,
+                       wa.AreaName As WorkingArea,
+                       ia.IssueArea As Thema,
+                       WS.AreaSubName As SubWorkingArea,
+                       WL.WorkingLineName As Line,
+                       [Lost_OR_Gain] AS BreakDownType,
+                       [Hours] AS NrMinutesBreakDown,
+                       [PoNumber],
+                       [ProductCode],
+                       [ip].DescriptionEN As BreakDownReason,
+                       cast([Note] as text) as [Note],
+                       CAST([DateSys] as datetime) As RealDataEntry 
+                FROM [ResetServices].[BreakDown].[ReportIssueLogs] AS RI 
+                inner join [ResetServices].[BreakDown].IssuesAreas AS IA on Ri.IssueAreaId=IA.IssueAreaId 
+                inner join [ResetServices].[BreakDown].WorkingAreas as WA on Wa.WorkingAreaID=RI.WorkingAreaID 
+                inner join [ResetServices].[BreakDown].WorkingLines AS WL on WL.WorkingLineID=RI.WorkingLineID 
+                inner join [ResetServices].[BreakDown].WorkingSubAreas AS WS on WS.WorkingSubAreaID=Ri.WorkingSubAreaID 
+                inner join [ResetServices].[BreakDown].IssueProblems AS [IP] on [IP].IssueProblemId=ri.IssueProblemId 
+                Where Datereport between ? AND ?
+                """
+
+                # Esegue la query con i parametri delle date
+                self.db.cursor.execute(query, (self.from_date.get_date(), self.to_date.get_date()))
+                results = self.db.cursor.fetchall()
+
+                if not results:
+                    messagebox.showinfo(self.lang.get('info_title', "Informazione"),
+                                        self.lang.get('no_data_found',
+                                                      "Nessun dato trovato per il periodo selezionato."),
+                                        parent=self)
+                    return
+
+                # Crea la cartella C:\temp se non esiste
+                temp_dir = r"C:\temp"
+                if not os.path.exists(temp_dir):
+                    os.makedirs(temp_dir)
+
+                # Genera il nome del file con timestamp
+                timestamp = datetime.now().strftime("%y%m%d%H%M%S")
+                file_name = f"ReportBreakDown{timestamp}.xlsx"
+                file_path = os.path.join(temp_dir, file_name)
+
+                # Usa pandas per creare un Excel formattato
+                df = pd.DataFrame.from_records(results, columns=[x[0] for x in self.db.cursor.description])
+
+                with pd.ExcelWriter(file_path, engine='xlsxwriter') as writer:
+                    df.to_excel(writer, sheet_name='Report Fermi Linea', index=False)
+
+                    # Ottiene il foglio di lavoro
+                    worksheet = writer.sheets['Report Fermi Linea']
+
+                    # Formatta le intestazioni
+                    header_format = writer.book.add_format({
+                        'bold': True,
+                        'fg_color': '#D7E4BC',
+                        'border': 1,
+                        'align': 'center'
+                    })
+
+                    # Formatta le date
+                    date_format = writer.book.add_format({'num_format': 'dd/mm/yyyy'})
+                    time_format = writer.book.add_format({'num_format': 'hh:mm'})
+
+                    # Applica la formattazione alle intestazioni e imposta le larghezze delle colonne
+                    for col_num, value in enumerate(df.columns.values):
+                        worksheet.write(0, col_num, value, header_format)
+
+                        # Imposta larghezze colonne specifiche
+                        if 'Date' in value or 'Data' in value:
+                            worksheet.set_column(col_num, col_num, 12)
+                            # Applica formato data alle celle della colonna
+                            worksheet.set_column(col_num, col_num, 12, date_format)
+                        elif 'Time' in value or 'Hour' in value:
+                            worksheet.set_column(col_num, col_num, 10)
+                            # Applica formato ora alle celle della colonna
+                            worksheet.set_column(col_num, col_num, 10, time_format)
+                        elif value in ['Note', 'BreakDownReason']:
+                            worksheet.set_column(col_num, col_num, 40)
+                        else:
+                            worksheet.set_column(col_num, col_num, 15)
+
+                    # Imposta filtri automatici
+                    worksheet.autofilter(0, 0, len(df), len(df.columns) - 1)
+
+                    # Congela la prima riga
+                    worksheet.freeze_panes(1, 0)
+
+                # Apre il file Excel direttamente
+                os.startfile(file_path)
+
+                # Chiude la finestra del form
+                self.destroy()
+
+            except Exception as e:
+                messagebox.showerror(
+                    self.lang.get('error_title', "Errore"),
+                    self.lang.get('error_generating_report', f"Errore durante la generazione del report: {str(e)}"),
+                    parent=self
+                )
+
+def connect_to_database():
+    """Stabilisce la connessione al database usando la configurazione sicura"""
+    try:
+        # Ottieni la stringa di connessione sicura
+        from database_config import db_config
+        conn_str = db_config.get_connection_string()
+
+        # DEBUG: Controlla il tipo e il valore
+        logger.info(f"Tipo conn_str: {type(conn_str)}")
+        if not isinstance(conn_str, str):
+            error_msg = f"ERRORE: conn_str non è una stringa! Tipo: {type(conn_str)}, Valore: {conn_str}"
+            logger.error(error_msg)
+            raise TypeError(error_msg)
+
+        logger.info("Tentativo di connessione al database...")
+
+        # Connessione con timeout
+        timeout = db_config.get_connection_params().get('timeout', 30)
+        conn = pyodbc.connect(conn_str, timeout=timeout)
+
+        logger.info("Connessione al database stabilita con successo")
+        return conn
+
+    except pyodbc.Error as e:
+        logger.error(f"Errore di connessione al database: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Errore imprevisto nella connessione: {e}")
+        raise
+
 class App(tk.Tk):
     """Classe principale dell'applicazione."""
     def __init__(self):
@@ -2941,6 +3596,7 @@ class App(tk.Tk):
         # --- NUOVE VARIABILI PER IL FLASHING ---
         self.birthday_flash_job_id = None
         self.birthday_stop_job_id = None
+        self.periodic_check_job_id = None
         # --- NUOVE VARIABILI PER LA SCRITTA SCORREVOLE ---
         self.scrolling_job_id = None
         self.scrolling_text = ""
@@ -2951,12 +3607,26 @@ class App(tk.Tk):
 
         # Inizializza il database
         self.db = Database(DB_CONN_STR)
+        logger.info("Connessione al database stabilita con successo")
         if not self.db.connect():
             messagebox.showerror("Database Error",
                                  f"Impossibile connettersi al database.\n\nDetails: {self.db.last_error_details}")
             self.destroy()
             self.should_exit = True
             return
+
+        # conn = connect_to_database()
+        # self.db = Database(conn)
+        # logger.info("Connessione al database stabilita con successo")
+
+        if not self.db.connect():
+            messagebox.showerror("Database Error",
+                                 f"Impossibile connettersi al database.\n\nDetails: {self.db.last_error_details}")
+            logger.error("Impossibile connettersi al database.")
+            self.destroy()
+            self.should_exit = True
+            return
+
 
         # Carica la lingua salvata
         initial_lang = self._load_language_setting()
@@ -2969,6 +3639,8 @@ class App(tk.Tk):
             # check_version already handles shutdown, we just need to stop __init__
             return
 
+        self.traceability_manager = TraceabilityManager(self, self.db, self.lang)
+
         self.logo_label = None
         self.authenticated_user_for_maintenance = None
         self._create_widgets()
@@ -2978,6 +3650,77 @@ class App(tk.Tk):
         self._update_clock()  # Avvia l'orologio
 
         self.after(100, self._post_startup_tasks)
+
+    def open_line_stoppage_report(self):
+        """Apre la finestra per generare il report dei fermi linea."""
+        LineStoppageReportForm(self, self.db, self.lang)
+
+    def open_verification_association_with_login(self):
+        """Apre la verifica associazione dopo il login"""
+        self._execute_simple_login(
+            action_callback=lambda user_name: self.traceability_manager.open_verification_association(user_name)
+        )
+
+    def open_manage_customers_with_login(self):
+        """Apre la gestione clienti dopo il login"""
+        self._execute_simple_login(
+            action_callback=lambda user_name: self.traceability_manager.open_manage_customers(user_name)
+        )
+
+    def open_define_products_with_login(self):
+        """Apre la definizione prodotti dopo il login"""
+        self._execute_simple_login(
+            action_callback=lambda user_name: self.traceability_manager.open_define_products(user_name)
+        )
+
+    def open_manage_links_with_login(self):
+        """Apre la gestione collegamenti dopo il login"""
+        self._execute_simple_login(
+            action_callback=lambda user_name: self.traceability_manager.open_manage_links()
+        )
+
+    def _trigger_update(self, version_info):
+        """Lancia l'updater e chiude l'applicazione."""
+        source = version_info.MainPath
+        destination = os.path.dirname(sys.executable)
+        exe_name = os.path.basename(sys.executable)
+        updater_path = os.path.join(destination, "updater.exe")
+
+        if not os.path.exists(updater_path):
+            messagebox.showerror("Errore Critico", "File updater.exe non trovato! Impossibile aggiornare.", parent=self)
+            return
+
+        subprocess.Popen([updater_path, source, destination, exe_name])
+        self._on_closing(force_quit=True)  # Chiude l'app senza chiedere conferma
+
+    def _periodic_version_check(self):
+        """Controlla periodicamente la presenza di nuove versioni."""
+        print("Controllo periodico versione in corso...")
+
+        app_name = os.path.basename(sys.executable)
+        version_info = self.db.fetch_latest_version_info(app_name)
+
+        # Se trova una nuova versione, mostra il dialogo
+        if version_info and is_update_needed(APP_VERSION, version_info.Version):
+            dialog = UpdateNotificationDialog(self, self.lang, version_info.Version, APP_VERSION)
+            self.wait_window(dialog)
+
+            if dialog.result == 'now':
+                self._trigger_update(version_info)
+                return  # Interrompe il ciclo di controllo
+            elif dialog.result == 'later':
+                # Ripianifica il controllo tra 15 minuti
+                remind_interval_ms = 15 * 60 * 1000
+                self.periodic_check_job_id = self.after(remind_interval_ms, self._periodic_version_check)
+                return
+            elif dialog.result == 'ignore':
+                # Interrompe il controllo per questa sessione
+                print("Controllo versione silenziato per questa sessione.")
+                return
+
+        # Se non ci sono aggiornamenti, ripianifica il controllo tra 120 minuti
+        default_interval_ms = 120 * 60 * 1000
+        self.periodic_check_job_id = self.after(default_interval_ms, self._periodic_version_check)
 
     def open_company_manager_with_login(self):
         """Apre la finestra di gestione delle compagnie dopo il login."""
@@ -3186,9 +3929,12 @@ class App(tk.Tk):
 
     def _post_startup_tasks(self):
         """Esegue compiti che richiedono che la finestra principale sia completamente inizializzata."""
+        print("DEBUG: Eseguo le operazioni post-avvio...")
         self._update_clock()
 
-        # Controlla prima i compleanni. Se ne trova uno, non avvia lo slideshow.
+        # Avvia il primo controllo periodico dopo 2 minuti dall'avvio
+        self.periodic_check_job_id = self.after(120000, self._periodic_version_check)
+
         is_birthday = self._check_for_birthdays()
         if not is_birthday:
             self._setup_slideshow()
@@ -3430,15 +4176,10 @@ class App(tk.Tk):
             return 'it'  # Ritorna al default in caso di errore
 
     def open_fill_templates_with_login(self):
-        """Apre la finestra di compilazione schede, richiedendo prima il login."""
-        # Assicurati che LoginWindow sia definita in main.py
-        login_form = LoginWindow(self, self.db, self.lang)
-        self.wait_window(login_form)
-        authenticated_user = login_form.authenticated_user_name
-        if authenticated_user:
-            # Chiama la funzione corretta in maintenance_gui, passando l'utente autenticato
-            maintenance_gui.open_fill_templates(self, self.db, self.lang, authenticated_user)
-
+        """Apre la finestra per compilare le schede dopo un login semplice."""
+        self._execute_simple_login(
+            action_callback=lambda user_name: maintenance_gui.open_fill_templates(self, self.db, self.lang, user_name)
+        )
     def check_version(self):
         """
         Controlla se l'app è eseguita dalla sorgente, poi verifica la versione
@@ -3560,8 +4301,10 @@ class App(tk.Tk):
 
         # 2. ORA crea i sottomenu figli, usando production_submenu come genitore
         self.declarations_submenu = tk.Menu(self.production_submenu, tearoff=0)
+        self.traceability_submenu = tk.Menu(self.production_submenu, tearoff=0)
         self.reports_submenu = tk.Menu(self.production_submenu, tearoff=0)
         self.operativity_submenu = tk.Menu(self.reports_submenu, tearoff=0)
+
 
         # Sottomenu di Strumenti
         self.permissions_submenu = tk.Menu(self.tools_menu, tearoff=0)
@@ -3629,8 +4372,44 @@ class App(tk.Tk):
         self.declarations_submenu.add_command(
             label=self.lang.get('submenu_interruptions', "Interruzioni di produzione"),
             command=self.open_add_interruption_window_with_login)
+
+        # Aggiungi il nuovo sottomenu per la tracciabilità
+        self.production_submenu.add_cascade(label=self.lang.get('submenu_traceability', "Tracciabilità"),
+                                            menu=self.traceability_submenu)
+        self.traceability_submenu.delete(0, 'end')
+        # 1. Final Customers
+        customers_submenu = tk.Menu(self.traceability_submenu, tearoff=0)
+        self.traceability_submenu.add_cascade(label=self.lang.get('submenu_final_customers', "Clienti Finali"),
+                                              menu=customers_submenu)
+        customers_submenu.delete(0, 'end')
+        customers_submenu.add_command(label=self.lang.get('submenu_manage_customers', "Gestisci Clienti"),
+                                      command=self.open_manage_customers_with_login)
+
+        # 2. Final Products
+        products_submenu = tk.Menu(self.traceability_submenu, tearoff=0)
+        self.traceability_submenu.add_cascade(label=self.lang.get('submenu_final_products', "Prodotti Finali"),
+                                              menu=products_submenu)
+        products_submenu.delete(0, 'end')
+        products_submenu.add_command(label=self.lang.get('submenu_define_products', "Definisci Prodotti"),
+                                     command=self.open_define_products_with_login)
+
+        # 3. Link Products
+        links_submenu = tk.Menu(self.traceability_submenu, tearoff=0)
+        self.traceability_submenu.add_cascade(label=self.lang.get('submenu_link_products', "Collega Prodotti"),
+                                              menu=links_submenu)
+
+        links_submenu.delete(0, 'end')
+        links_submenu.add_command(label=self.lang.get('submenu_manage_links', "Gestisci Collegamenti"),
+                                  command=self.open_manage_links_with_login)
+        self.traceability_submenu.add_command(
+            label=self.lang.get('verification_association', "Verifica Associazione"),
+            command=self.open_verification_association_with_login)
+
+
+        # Aggiungi il sottomenu Rapporti (SOLO UNA VOLTA)
         self.production_submenu.add_cascade(label=self.lang.get('submenu_reports_prod', "Rapporti"),
                                             menu=self.reports_submenu)
+
         self.reports_submenu.delete(0, 'end')
         self.reports_submenu.add_cascade(label=self.lang.get('submenu_operativity', "Operativita'"),
                                          menu=self.operativity_submenu)
@@ -3645,10 +4424,7 @@ class App(tk.Tk):
                                      command=self.open_shipping_settings_with_login)
         shipping_submenu.add_command(label=self.lang.get('submenu_xls_settings', "Impostazioni XLS"),
                                      command=self.open_xls_settings_with_login)
-        self.reports_submenu.add_command(
-            label=self.lang.get('submenu_line_stoppage_reports', "Rapporti di fermo linea"), state="disabled")
-        self.production_submenu.add_command(label=self.lang.get('submenu_settings_prod', "Impostazioni"),
-                                            state="disabled")
+        self.reports_submenu.add_command(label=self.lang.get('submenu_line_stoppage_reports', "Rapporti di fermo linea"), command=self.open_line_stoppage_report)
         self.operations_menu.add_separator()
         self.operations_menu.add_command(label=self.lang.get('submenu_materials_ops', "Materiali"), state="disabled")
         self.operations_menu.add_command(label=self.lang.get('submenu_hr', "Risorse Umane"), state="disabled")
@@ -3807,10 +4583,65 @@ class App(tk.Tk):
             action_callback=lambda user_name: maintenance_gui.open_add_machine(self, self.db, self.lang)
         )
 
-    def _on_closing(self):
-        if messagebox.askokcancel(self.lang.get('quit_title', "Quit"), self.lang.get('quit_message', "Do you want to quit?")):
+    def _on_closing(self, force_quit=False):
+        """Gestisce la chiusura dell'applicazione."""
+        # Ferma tutti i timer attivi
+        if self.slideshow_job_id: self.after_cancel(self.slideshow_job_id)
+        if self.birthday_flash_job_id: self.after_cancel(self.birthday_flash_job_id)
+        if self.birthday_stop_job_id: self.after_cancel(self.birthday_stop_job_id)
+        if self.periodic_check_job_id: self.after_cancel(self.periodic_check_job_id)
+
+        if force_quit or messagebox.askokcancel(self.lang.get('quit_title'), self.lang.get('quit_message')):
             self.db.disconnect()
             self.destroy()
+
+    # def open_final_association_with_login(self):
+    #     """Apre la finestra per l'associazione codici finali."""
+    #     self._execute_simple_login(
+    #         action_callback=lambda user_name: traciability.open_final_association_window(self, self.db, self.lang,
+    #                                                                                      user_name)
+    #     )
+
+class UpdateNotificationDialog(tk.Toplevel):
+    """Dialogo per notificare un nuovo aggiornamento e chiedere l'azione desiderata."""
+
+    def __init__(self, parent, lang, new_version, current_version):
+        super().__init__(parent)
+        self.transient(parent)
+        self.grab_set()
+        self.title(lang.get('update_available_title', "Aggiornamento Disponibile"))
+        self.result = None  # 'now', 'later', o 'ignore'
+
+        main_frame = ttk.Frame(self, padding="20")
+        main_frame.pack(expand=True, fill="both")
+
+        message = lang.get('update_notification_message',
+                           "È stata rilasciata una nuova versione del programma ({0}).\n"
+                           "La tua versione attuale è la {1}.\n\n"
+                           "Cosa vuoi fare?", new_version, current_version)
+        ttk.Label(main_frame, text=message, justify=tk.LEFT).pack(pady=10)
+
+        btn_frame = ttk.Frame(main_frame)
+        btn_frame.pack(pady=20)
+
+        ttk.Button(btn_frame, text=lang.get('update_now_btn', "Aggiorna Ora"),
+                   command=self._on_now).pack(side="left", padx=10)
+        ttk.Button(btn_frame, text=lang.get('remind_later_btn', "Ricorda tra 15 min"),
+                   command=self._on_later).pack(side="left", padx=10)
+        ttk.Button(btn_frame, text=lang.get('ignore_session_btn', "Ignora per questa sessione"),
+                   command=self._on_ignore).pack(side="left", padx=10)
+
+    def _on_now(self):
+        self.result = 'now'
+        self.destroy()
+
+    def _on_later(self):
+        self.result = 'later'
+        self.destroy()
+
+    def _on_ignore(self):
+        self.result = 'ignore'
+        self.destroy()
 
 if __name__ == "__main__":
     app = App()

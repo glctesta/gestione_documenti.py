@@ -1,0 +1,13 @@
+# File di configurazione
+.env.db
+*.env
+secrets/
+config/__pycache__/
+
+# File temporanei
+*.tmp
+*.log
+
+# File di database
+*.db
+*.sql
