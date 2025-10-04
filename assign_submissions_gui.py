@@ -90,93 +90,149 @@ class AssignSubmissionWindow(tk.Toplevel):
         self.unassigned_rows = self.db.fetch_unassigned_submissions() or []
         self.submissions_map.clear()
         display_values = []
+
         for r in self.unassigned_rows:
-            # r: accesso per attributo o indice (pyodbc)
-            seg_id = getattr(r, 'SegnalazioneId', r[0])
-            data = getattr(r, 'DataSegnalazione', r[1])
-            from_ = getattr(r, 'InputFrom', r[2])
-            title = getattr(r, 'Titolo', r[3])
+            # r è un dict grazie al metodo sopra
+            seg_id = r.get('SegID')
+            if seg_id is None:
+                continue
+            data = r.get('DataSegnalazione', '')
+            from_ = r.get('InputFrom', '')
+            title = r.get('Titolo', '')
             display = f"[{seg_id}] {data} - {from_} - {title}"
             self.submissions_map[display] = r
             display_values.append(display)
+
         self.submission_combo['values'] = display_values
 
     def _on_submission_selected(self, event=None):
         disp = self.submission_var.get()
-        row = self.submissions_map.get(disp)
-        if not row:
+        r = self.submissions_map.get(disp)
+        if not r:
             return
-        # Popola dettagli
-        get = lambda name, idx: getattr(row, name, row[idx]) if row is not None else ''
-        self.lbl_id.config(text=str(get('SegnalazioneId', 0)))
-        self.lbl_date.config(text=str(get('DataSegnalazione', 1)))
-        self.lbl_from.config(text=str(get('InputFrom', 2)))
-        self.lbl_title.config(text=str(get('Titolo', 3)))
 
-        self.txt_desc.config(state='normal'); self.txt_desc.delete('1.0', tk.END)
-        self.txt_desc.insert('1.0', str(get('Descrizione', 4) or ''))
+        self.lbl_id.config(text=str(r.get('SegID', '-')))
+        self.lbl_date.config(text=str(r.get('DataSegnalazione', '-')))
+        self.lbl_from.config(text=str(r.get('InputFrom', '-')))
+        self.lbl_title.config(text=str(r.get('Titolo', '-')))
+
+        self.txt_desc.config(state='normal')
+        self.txt_desc.delete('1.0', tk.END)
+        self.txt_desc.insert('1.0', str(r.get('Descrizione', '') or ''))
         self.txt_desc.config(state='disabled')
 
-        self.lbl_doc.config(text=str(get('Documents', 5)))
-        stato = str(get('TipoStato', 6)) + " / " + str(get('StatoType', 7))
-        self.lbl_state.config(text=stato)
+        self.lbl_doc.config(text=str(r.get('Documents', '-')))
+        self.lbl_state.config(text=f"{r.get('TipoStato', '-')} / {r.get('StatoType', '-')}")
 
         # Carica e abilita combo dipendenti
         employees = self.db.fetch_assignable_employees() or []
         self.employees_map.clear()
-        self.employee_combo['values'] = [f"{getattr(e, 'Employee', e[1])}" for e in employees]
+        display_values = []
         for e in employees:
-            eid = getattr(e, 'EmployeeHireHistoryId', e[0])
-            name = getattr(e, 'Employee', e[1])
-            email = getattr(e, 'WorkEmail', e[2])
-            self.employees_map[name] = (eid, email)
+            # pyodbc row: 0=id, 1=nome, 2=email (come da query fornita)
+            try:
+                eid = getattr(e, 'EmployeeHireHistoryId', e[0])
+                name = getattr(e, 'Employee', e[1])
+                email = getattr(e, 'WorkEmail', e[2])
+                eid = int(eid)
+            except Exception:
+                continue
+            display_values.append(name)
+            self.employees_map[name] = {'id': eid, 'email': email}
+
+        self.employee_combo['values'] = display_values
         self.employee_combo.config(state='readonly')
         self.employee_var.set('')
 
     def _confirm(self):
-        disp = self.submission_var.get().strip()
-        emp = self.employee_var.get().strip()
+        disp = (self.submission_var.get() or '').strip()
+        emp_display = (self.employee_var.get() or '').strip()
         if not disp:
-            messagebox.showwarning(self.lang.get('warning_title', 'Attenzione'), self.lang.get('warning_select_submission', 'Seleziona una segnalazione.'), parent=self)
+            messagebox.showwarning(self.lang.get('warning_title', 'Attenzione'),
+                                   self.lang.get('warning_select_submission', 'Seleziona una segnalazione.'),
+                                   parent=self)
             return
-        if not emp:
-            messagebox.showwarning(self.lang.get('warning_title', 'Attenzione'), self.lang.get('warning_select_employee', 'Seleziona un assegnatario.'), parent=self)
-            return
-
-        row = self.submissions_map[disp]
-        seg_id = getattr(row, 'SegnalazioneId', row[0])
-        emp_id, work_email = self.employees_map.get(emp, (None, None))
-        if not emp_id:
-            messagebox.showerror(self.lang.get('error_title', 'Errore'), self.lang.get('error_invalid_employee', 'Assegnatario non valido.'), parent=self)
+        if not emp_display:
+            messagebox.showwarning(self.lang.get('warning_title', 'Attenzione'),
+                                   self.lang.get('warning_select_employee', 'Seleziona un assegnatario.'), parent=self)
             return
 
-        note = self.note_text.get('1.0', tk.END).strip()
-        ok = self.db.insert_submission_assignment(segnalazione_id=seg_id, employee_hire_history_id=emp_id, note=note)
+        r = self.submissions_map.get(disp)
+        if not r:
+            messagebox.showerror(self.lang.get('error_title', 'Errore'),
+                                 'Impossibile recuperare i dati della segnalazione.', parent=self)
+            return
+
+        seg_id = int(r['SegID'])  # è sicuramente numerico
+        seg_date = r.get('DataSegnalazione')
+        title = r.get('Titolo', '')
+        who = r.get('InputFrom', '')
+        reporter_email = r.get('Email')  # email del segnalante
+
+        emp_info = self.employees_map.get(emp_display)
+        if not emp_info:
+            messagebox.showerror(self.lang.get('error_title', 'Errore'),
+                                 self.lang.get('error_invalid_employee', 'Assegnatario non valido.'), parent=self)
+            return
+
+        emp_id = emp_info['id']
+        assignee_email = emp_info['email']
+        note = (self.note_text.get('1.0', tk.END) or '').strip()
+
+        ok = self.db.assign_submission(segnalazione_id=seg_id, employee_hire_history_id=emp_id, note=note)
         if not ok:
-            messagebox.showerror(self.lang.get('error_title', 'Errore'), self.db.last_error_details or 'Errore salvataggio.', parent=self)
+            messagebox.showerror(self.lang.get('error_title', 'Errore'),
+                                 self.db.last_error_details or 'Errore salvataggio.', parent=self)
             return
 
-        # Invia mail all'assegnatario (usa WorkEmail)
+        # Date in dd.mm.yyyy
+        from datetime import datetime, date as dtdate
+        def fmt_dt(d):
+            try:
+                if isinstance(d, (datetime, dtdate)):
+                    return d.strftime('%d.%m.%Y')
+                return str(d)
+            except Exception:
+                return str(d)
+
+        today_s = fmt_dt(datetime.now())
+        seg_date_s = fmt_dt(seg_date)
+
+        # Email all’assegnatario
         try:
-            recipients = [work_email] if work_email else []
-            if recipients:
+            if assignee_email:
                 subject = f"New assignment - Submission [{seg_id}]"
-                title = getattr(row, 'Titolo', row[3])
-                who = getattr(row, 'InputFrom', row[2])
                 body = (
-                    f"Hello,\n\n"
-                    f"You have been assigned a new submission.\n\n"
+                    "Hello,\n\n"
+                    "You have been assigned a new submission.\n\n"
                     f"Submission ID: {seg_id}\n"
                     f"Title: {title}\n"
                     f"Input from: {who}\n"
                     f"Note: {note or '-'}\n\n"
-                    f"Regards,\nSystem"
+                    "Regards,\nSystem"
                 )
-                utils.send_email(recipients=recipients, subject=subject, body=body)
+                utils.send_email(recipients=[assignee_email], subject=subject, body=body)
         except Exception as e:
-            # Non bloccare l'utente se fallisce la mail: segnala e prosegui
             messagebox.showwarning(self.lang.get('warning_title', 'Attenzione'),
-                                   f"Operazione registrata ma invio email fallito:\n{e}", parent=self)
+                                   f"Operazione registrata ma invio email all'assegnatario fallito:\n{e}", parent=self)
 
-        messagebox.showinfo(self.lang.get('success_title', 'Successo'), self.lang.get('info_assignment_saved', 'Assegnazione registrata.'), parent=self)
+        # Email al segnalante (testo richiesto)
+        try:
+            if reporter_email:
+                subject2 = f"Conferma presa in carico segnalazione [{seg_id}]"
+                body2 = (
+                    "Gentile utente,\n\n"
+                    f"La sua segnalazione del {seg_date_s} con titolo \"{title}\" "
+                    f"è stata presa in carico in data {today_s} dalla persona a cui è stata assegnata "
+                    f"({emp_display}).\n"
+                    "Sarà informato sulle decisioni che saranno prese.\n\n"
+                    "Cordiali saluti,\nSistema"
+                )
+                utils.send_email(recipients=[reporter_email], subject=subject2, body=body2)
+        except Exception as e:
+            messagebox.showwarning(self.lang.get('warning_title', 'Attenzione'),
+                                   f"Operazione registrata ma invio email al segnalante fallito:\n{e}", parent=self)
+
+        messagebox.showinfo(self.lang.get('success_title', 'Successo'),
+                            self.lang.get('info_assignment_saved', 'Assegnazione registrata.'), parent=self)
         self.destroy()

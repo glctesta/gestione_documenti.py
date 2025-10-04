@@ -112,7 +112,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.7.2"  # Versione aggiornata
+APP_VERSION = "1.7.3"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -249,34 +249,46 @@ class Database:
 
     def fetch_unassigned_submissions(self):
         query = """
-        SELECT se.SegnalazioneId,
-               CAST(se.DataSegnalazione AS date) AS DataSegnalazione,
-               e.EmployeeName + ' ' + e.EmployeeSurname AS InputFrom,
-               se.Titolo,
-               se.Descrizione,
-               IIF(sa.SegnalazioneStatoAllegatoID IS NULL, 'No attached doc', DescrizioneDocumento) AS Documents,
-               sts.TipoStato,
-               IIF(sts.[StatoChiuso]=0,'OPEN','CLOSED') AS StatoType,
-               IIF(sea.SegnalazioniAssegnazioniId IS NULL, 'NOT ASSIGNED TASK', e1.EmployeeName + ' ' + e1.EmployeeSurname) AS AssignedTo
-        FROM [Employee].[dbo].[SegnalazioniTipoStati] S
-        INNER JOIN [Employee].[dbo].[SegnalazioneStati] SS ON S.SegnalazioniTipoStatoId = SS.SegnalazioniTipoStatoId
-        INNER JOIN [Employee].[dbo].[Segnalazioni] se ON se.TipoSegnalazioneId = SS.SegnalazioneId
-        LEFT JOIN [Employee].[dbo].EmployeeHireHistory h ON h.EmployeehirehistoryId = se.IdDipendente
-        LEFT JOIN [Employee].dbo.[employees] E ON e.employeeid = h.EmployeeId
-        LEFT JOIN [Employee].[dbo].[SegnalazioniStatiAllegati] sa ON SS.SegnalazioneStatoId = sa.SegnalazioneStatoId
-        LEFT JOIN [Employee].[dbo].[SegnalazioneAssegnazioni] sea ON se.SegnalazioneId = sea.Segnalazioneid
-        LEFT JOIN [Employee].[dbo].EmployeeHireHistory h1 ON h1.EmployeehirehistoryId = sea.EmployeehirehistoryId
-        LEFT JOIN [Employee].dbo.[employees] E1 ON e1.employeeid = h1.EmployeeId 
-        INNER JOIN [Employee].[dbo].[SegnalazioniTipoStati] sts ON sts.SegnalazioniTipoStatoId = SS.SegnalazioniTipoStatoId
+        SELECT
+            CAST(se.SegnalazioneId AS int) AS SegID,
+            CAST(se.DataSegnalazione AS date) AS DataSegnalazione,
+            e.EmployeeName + ' ' + e.EmployeeSurname AS InputFrom,
+            se.Titolo,
+            se.Descrizione,
+            IIF(sa.SegnalazioneStatoAllegatoID IS NULL, 'No attached doc', sa.DescrizioneDocumento) AS Documents,
+            sts.TipoStato,
+            IIF(sts.StatoChiuso = 0, 'OPEN', 'CLOSED') AS StatoType,
+            eaFrom.WorkEmail AS Email
+        FROM Employee.dbo.Segnalazioni se
+        INNER JOIN Employee.dbo.SegnalazioneStati ss
+            ON ss.SegnalazioneId = se.SegnalazioneId              -- join corretto sull'ID segnalazione
+        INNER JOIN Employee.dbo.SegnalazioniTipoStati sts
+            ON sts.SegnalazioniTipoStatoId = ss.SegnalazioniTipoStatoId
+        LEFT JOIN Employee.dbo.EmployeeHireHistory h
+            ON h.EmployeeHireHistoryId = se.IdDipendente
+        LEFT JOIN Employee.dbo.Employees e
+            ON e.EmployeeId = h.EmployeeId
+        LEFT JOIN Employee.dbo.EmployeeAddress eaFrom
+            ON eaFrom.EmployeeId = e.EmployeeId
+           AND eaFrom.DateOut IS NULL
+        LEFT JOIN Employee.dbo.SegnalazioniStatiAllegati sa
+            ON sa.SegnalazioneStatoId = ss.SegnalazioneStatoId
         WHERE sts.StatoChiuso = 0
-          AND sea.SegnalazioniAssegnazioniId IS NULL
-        ORDER BY se.datasegnalazione DESC;
+          AND NOT EXISTS (
+              SELECT 1
+              FROM Employee.dbo.SegnalazioneAssegnazioni sea
+              WHERE sea.SegnalazioneId = se.SegnalazioneId
+          )
+        ORDER BY se.DataSegnalazione DESC;
         """
         cur = None
         try:
             cur = self.conn.cursor()
             cur.execute(query)
-            return cur.fetchall()
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+            # ritorna lista di dict con chiavi: SegID, DataSegnalazione, InputFrom, Titolo, Descrizione, Documents, TipoStato, StatoType, Email
+            return [dict(zip(cols, row)) for row in rows]
         except Exception as e:
             self.last_error_details = str(e)
             return []
@@ -317,15 +329,33 @@ class Database:
             except:
                 pass
 
-    def insert_submission_assignment(self, segnalazione_id: int, employee_hire_history_id: int, note: str):
-        query = """
-        INSERT INTO Employee.dbo.SegnalazioneSvolgimenti (SegnalazioneId, EmployeeHireHistoryId, [Note])
-        VALUES (?, ?, ?);
+    def assign_submission(self, segnalazione_id: int, employee_hire_history_id: int,
+                          note: str = None):
+        """
+        Registra l'assegnazione:
+          - Inserisce in SegnalazioneAssegnazioni (marca come assegnata)
+          - Inserisce la nota in SegnalazioneSvolgimento
+        """
+        q_assign = """
+            INSERT INTO Employee.dbo.SegnalazioneAssegnazioni
+                (SegnalazioneId, EmployeeHireHistoryId, [Note])
+            VALUES (?, ?, ?);
+        """
+        q_progress = """
+            INSERT INTO Employee.dbo.SegnalazioneStati
+                (SegnalazioneId, SegnalazioniTipoStatoId, DataAttivita,[Nota], [OperatoDa])
+            VALUES (?, 1, GetDate(),'Assigned', 'System');
         """
         cur = None
         try:
             cur = self.conn.cursor()
-            cur.execute(query, segnalazione_id, employee_hire_history_id, note or None)
+            # Cast difensivo per evitare clash di tipi
+            seg_id = int(segnalazione_id)
+            ehh_id = int(employee_hire_history_id)
+
+            cur.execute(q_assign, seg_id, ehh_id, note if note else None)
+            cur.execute(q_progress, seg_id )# , ehh_id)
+
             self.conn.commit()
             return True
         except Exception as e:
