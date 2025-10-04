@@ -72,6 +72,9 @@ class AddMachineWindow(tk.Toplevel):
         self.serial_var, self.internal_name_var = tk.StringVar(), tk.StringVar()
         self.year_var, self.inventory_var = tk.StringVar(), tk.StringVar()
 
+        # checkbox per il valore mustcalibrated
+        self.must_calibrated_var = tk.BooleanVar(value=False)
+
         self._create_widgets()
         self._load_combobox_data()
 
@@ -111,9 +114,17 @@ class AddMachineWindow(tk.Toplevel):
         self.inventory_entry = ttk.Entry(frame, textvariable=self.inventory_var)
         self.inventory_entry.grid(row=6, column=1, sticky=tk.EW, pady=5)
 
+        # --- NUOVO: Checkbox Necessita Calibrazione ---
+        self.calibration_check = ttk.Checkbutton(
+            frame,
+            text=self.lang.get('needs_calibration', "Necessita calibrazione"),
+            variable=self.must_calibrated_var
+        )
+        self.calibration_check.grid(row=7, column=1, sticky=tk.W, pady=(8, 0))
+
         # --- Pulsanti ---
         button_frame = ttk.Frame(frame)
-        button_frame.grid(row=7, column=1, sticky=tk.E, pady=(20, 0))
+        button_frame.grid(row=8, column=1, sticky=tk.E, pady=(20, 0))
 
         self.save_button = ttk.Button(button_frame, text=self.lang.get('save_button'), command=self._save_machine)
         self.save_button.pack(side=tk.LEFT, padx=5)
@@ -121,25 +132,21 @@ class AddMachineWindow(tk.Toplevel):
         self.cancel_button = ttk.Button(button_frame, text=self.lang.get('cancel_button'), command=self.destroy)
         self.cancel_button.pack(side=tk.LEFT)
 
-        # --- NUOVO: Aggiunta logo in basso a destra ---
+        # --- Logo in basso a destra (spostato una riga più giù) ---
         if PIL_AVAILABLE:
             try:
-                # Carica l'immagine
                 image = Image.open("logo.png")
-                image.thumbnail((100, 100))  # Rimpicciolisce l'immagine se necessario
-                # IMPORTANTE: conservare un riferimento all'immagine per evitare che venga eliminata
+                image.thumbnail((100, 100))
                 self.logo_image = ImageTk.PhotoImage(image)
-
-                # Crea e posiziona la label con il logo
                 logo_label = ttk.Label(frame, image=self.logo_image)
-                logo_label.grid(row=8, column=1, sticky=tk.SE, pady=(10, 0), padx=5)
+                logo_label.grid(row=9, column=1, sticky=tk.SE, pady=(10, 0), padx=5)
             except FileNotFoundError:
                 print("logo.png non trovato per la finestra di inserimento.")
             except Exception as e:
                 print(f"Errore caricamento logo: {e}")
 
-        # Rende l'ultima riga (quella del logo) espandibile per spingerlo in basso
-        frame.rowconfigure(8, weight=1)
+        # Rende l'ultima riga espandibile per spingere in basso
+        frame.rowconfigure(9, weight=1)
 
     def _load_combobox_data(self):
         # ... (questo metodo rimane invariato) ...
@@ -163,7 +170,7 @@ class AddMachineWindow(tk.Toplevel):
             self.phase_combo['values'] = list(self.phases_data.keys())
 
     def _save_machine(self):
-        # ... (questo metodo rimane invariato) ...
+
         """Valida i dati e li salva nel database."""
         # Validazione input
         if not all([self.brand_var.get(), self.type_var.get(), self.phase_var.get(), self.serial_var.get()]):
@@ -181,6 +188,7 @@ class AddMachineWindow(tk.Toplevel):
         brand_id = self.brands_data.get(self.brand_var.get())
         type_id = self.types_data.get(self.type_var.get())
         phase_id = self.phases_data.get(self.phase_var.get())
+        must_calibrated = 1 if self.must_calibrated_var.get() else 0
 
         success = self.db.add_new_equipment(
             brand_id=brand_id,
@@ -189,9 +197,9 @@ class AddMachineWindow(tk.Toplevel):
             serial_number=self.serial_var.get(),
             internal_name=self.internal_name_var.get(),
             prod_year=prod_year,
-            inv_number=self.inventory_var.get()
+            inv_number=self.inventory_var.get(),
+            must_calibrated=must_calibrated
         )
-
         if success:
             messagebox.showinfo(self.lang.get('success_title'), self.lang.get('info_machine_saved'), parent=self)
             self.destroy()

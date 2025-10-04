@@ -161,6 +161,24 @@ class NewSubmissionWindow(tk.Toplevel):
         )
         if success:
             messagebox.showinfo("Successo", message, parent=self)
+            # INVIO EMAIL al gruppo "Sys_email_submission"
+            try:
+                recipients = utils.get_email_recipients(self.db.conn, attribute='Sys_email_submission')
+                if recipients:
+                    subject = "New submission created"
+                    body = (
+                        "Hello,\n\n"
+                        "A new submission has just been created in the system.\n\n"
+                        f"Title: {title}\n"
+                        f"Submitted by: {employee_name}\n"
+                        f"Location: {location or '-'}\n"
+                        f"Description:\n{description}\n\n"
+                        "Regards,\nSystem"
+                    )
+                    utils.send_email(recipients=recipients, subject=subject, body=body)
+            except Exception as e:
+                # Non bloccare l'utente per errore email
+                print(f"Warning: email group notification failed: {e}")
             self.destroy()
         else:
             messagebox.showerror("Errore", message, parent=self)

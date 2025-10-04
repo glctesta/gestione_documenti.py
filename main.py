@@ -23,10 +23,86 @@ import submissions_gui
 import tools_gui
 from traceability import TraceabilityManager
 import logging
+from datetime import date
+from calibration_gui import CalibrationsWindow
+import collections.abc
+import scarti_gui
+import tempfile
+import assign_submissions_gui
 
 # Configurazione logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO,
+                    filename='app.log',
+                    format='%(asctime)s | %(levelname)s | %(name)s | % (message)s',
+                    encoding='utf-8')
+
+logger = logging.getLogger('app.log')
+
+
+def setup_logging(app_folder_name="Traceability_RS", debug=True):
+    """
+    Configura un logger rotante su file + (opzionale) console.
+    Restituisce il percorso del file di log in uso.
+    """
+    # 1) Determina directory log sicura nel profilo utente
+    base_dir = os.getenv("LOCALAPPDATA") or os.getenv("APPDATA") or os.path.expanduser("~")
+    log_dir = os.path.join(base_dir, app_folder_name, "Logs")
+
+    # 2) Fallback su temp se non scrivibile
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        test_path = os.path.join(log_dir, ".write_test")
+        with open(test_path, "w", encoding="utf-8") as f:
+            f.write("ok")
+        os.remove(test_path)
+    except Exception:
+        log_dir = os.path.join(tempfile.gettempdir(), app_folder_name, "Logs")
+        os.makedirs(log_dir, exist_ok=True)
+
+    # 3) Nome file
+    log_file = os.path.join(log_dir, f"app_{datetime.now().strftime('%Y%m%d')}.log")
+
+    # 4) Root logger
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG if debug else logging.INFO)
+
+    # Evita doppio setup se già configurato
+    if root.handlers:
+        return log_file
+
+    # 5) Formatter
+    fmt = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+    datefmt = "%Y-%m-%d %H:%M:%S"
+    formatter = logging.Formatter(fmt=fmt, datefmt=datefmt)
+
+    # 6) File handler rotante
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_file, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    )
+    file_handler.setLevel(logging.DEBUG if debug else logging.INFO)
+    file_handler.setFormatter(formatter)
+    root.addHandler(file_handler)
+
+    # 7) Console handler (utile in debug; in exe può non vedersi)
+    console_handler = logging.StreamHandler(stream=sys.stdout)
+    console_handler.setLevel(logging.DEBUG if debug else logging.INFO)
+    console_handler.setFormatter(formatter)
+    root.addHandler(console_handler)
+
+    # 8) Logga eccezioni non gestite
+    def _excepthook(exc_type, exc, tb):
+        logging.getLogger("UNCAUGHT").exception("Unhandled exception", exc_info=(exc_type, exc, tb))
+        # Mostra anche su stderr (facoltativo)
+        sys.__excepthook__(exc_type, exc, tb)
+
+    sys.excepthook = _excepthook
+
+    return log_file
+
+# Chiama subito il setup
+LOG_FILE_PATH = setup_logging(debug=True)
+logger = logging.getLogger("TraceabilityRS")
+logger.info("Logging avviato. File: %s", LOG_FILE_PATH)
 
 try:
     from PIL import Image, ImageTk
@@ -47,6 +123,7 @@ DB_UID = 'emsreset'
 DB_PWD = 'E6QhqKUxHFXTbkB7eA8c9ya'
 DB_CONN_STR = f'DRIVER={DB_DRIVER};SERVER={DB_SERVER};DATABASE={DB_DATABASE};UID={DB_UID};PWD={DB_PWD};'
 
+
 def is_update_needed(current_ver_str, db_ver_str):
     """Confronta due stringhe di versione (es. '1.4.0') in modo sicuro."""
     try:
@@ -55,13 +132,16 @@ def is_update_needed(current_ver_str, db_ver_str):
         # Fallback a un confronto di stringhe semplice in caso di errore
         return db_ver_str > current_ver_str
 
+
 def fetch_working_areas(self):
     """Recupera le Aree di Lavoro principali."""
     query = "SELECT [WorkingAreaID], [AreaName] FROM [ResetServices].[BreakDown].[WorkingAreas] ORDER BY AreaName;"
     try:
         self.cursor.execute(query)
         return self.cursor.fetchall()
-    except pyodbc.Error as e: self.last_error_details = str(e); return []
+    except pyodbc.Error as e:
+        self.last_error_details = str(e); return []
+
 
 def fetch_working_sub_areas(self, working_area_id):
     """Recupera le Sotto-Aree in base all'Area di Lavoro selezionata."""
@@ -73,7 +153,9 @@ def fetch_working_sub_areas(self, working_area_id):
     try:
         self.cursor.execute(query, working_area_id)
         return self.cursor.fetchall()
-    except pyodbc.Error as e: self.last_error_details = str(e); return []
+    except pyodbc.Error as e:
+        self.last_error_details = str(e); return []
+
 
 def fetch_working_lines(self, working_area_id, sub_area_id):
     """Recupera le Linee in base all'Area e Sotto-Area selezionate."""
@@ -88,7 +170,9 @@ def fetch_working_lines(self, working_area_id, sub_area_id):
     try:
         self.cursor.execute(query, working_area_id, sub_area_id)
         return self.cursor.fetchall()
-    except pyodbc.Error as e: self.last_error_details = str(e); return []
+    except pyodbc.Error as e:
+        self.last_error_details = str(e); return []
+
 
 def fetch_production_orders_for_breakdown(self):
     """Recupera gli ordini di produzione per la selezione."""
@@ -108,7 +192,9 @@ def fetch_production_orders_for_breakdown(self):
     try:
         self.cursor.execute(query)
         return self.cursor.fetchall()
-    except pyodbc.Error as e: self.last_error_details = str(e); return []
+    except pyodbc.Error as e:
+        self.last_error_details = str(e); return []
+
 
 def fetch_issue_areas(self):
     """Recupera le aree problematiche (es. Meccanica, Elettrica)."""
@@ -116,7 +202,9 @@ def fetch_issue_areas(self):
     try:
         self.cursor.execute(query)
         return self.cursor.fetchall()
-    except pyodbc.Error as e: self.last_error_details = str(e); return []
+    except pyodbc.Error as e:
+        self.last_error_details = str(e); return []
+
 
 class LanguageManager:
     """Gestisce le traduzioni e la lingua corrente dell'applicazione."""
@@ -155,8 +243,407 @@ class LanguageManager:
         """Imposta la lingua corrente."""
         self.current_language = lang_code.lower()
 
+
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
+
+    def fetch_unassigned_submissions(self):
+        query = """
+        SELECT se.SegnalazioneId,
+               CAST(se.DataSegnalazione AS date) AS DataSegnalazione,
+               e.EmployeeName + ' ' + e.EmployeeSurname AS InputFrom,
+               se.Titolo,
+               se.Descrizione,
+               IIF(sa.SegnalazioneStatoAllegatoID IS NULL, 'No attached doc', DescrizioneDocumento) AS Documents,
+               sts.TipoStato,
+               IIF(sts.[StatoChiuso]=0,'OPEN','CLOSED') AS StatoType,
+               IIF(sea.SegnalazioniAssegnazioniId IS NULL, 'NOT ASSIGNED TASK', e1.EmployeeName + ' ' + e1.EmployeeSurname) AS AssignedTo
+        FROM [Employee].[dbo].[SegnalazioniTipoStati] S
+        INNER JOIN [Employee].[dbo].[SegnalazioneStati] SS ON S.SegnalazioniTipoStatoId = SS.SegnalazioniTipoStatoId
+        INNER JOIN [Employee].[dbo].[Segnalazioni] se ON se.TipoSegnalazioneId = SS.SegnalazioneId
+        LEFT JOIN [Employee].[dbo].EmployeeHireHistory h ON h.EmployeehirehistoryId = se.IdDipendente
+        LEFT JOIN [Employee].dbo.[employees] E ON e.employeeid = h.EmployeeId
+        LEFT JOIN [Employee].[dbo].[SegnalazioniStatiAllegati] sa ON SS.SegnalazioneStatoId = sa.SegnalazioneStatoId
+        LEFT JOIN [Employee].[dbo].[SegnalazioneAssegnazioni] sea ON se.SegnalazioneId = sea.Segnalazioneid
+        LEFT JOIN [Employee].[dbo].EmployeeHireHistory h1 ON h1.EmployeehirehistoryId = sea.EmployeehirehistoryId
+        LEFT JOIN [Employee].dbo.[employees] E1 ON e1.employeeid = h1.EmployeeId 
+        INNER JOIN [Employee].[dbo].[SegnalazioniTipoStati] sts ON sts.SegnalazioniTipoStatoId = SS.SegnalazioniTipoStatoId
+        WHERE sts.StatoChiuso = 0
+          AND sea.SegnalazioniAssegnazioniId IS NULL
+        ORDER BY se.datasegnalazione DESC;
+        """
+        cur = None
+        try:
+            cur = self.conn.cursor()
+            cur.execute(query)
+            return cur.fetchall()
+        except Exception as e:
+            self.last_error_details = str(e)
+            return []
+        finally:
+            try:
+                if cur: cur.close()
+            except:
+                pass
+
+    def fetch_assignable_employees(self):
+        query = """
+        SELECT h.EmployeeHireHistoryId,
+               UPPER(e.EmployeeSurname + ' ' + e.EmployeeName) AS Employee,
+               ea.WorkEmail
+        FROM employee.dbo.employees e
+        INNER JOIN employee.dbo.EmployeeHireHistory h ON e.EmployeeId = h.EmployeeId
+        INNER JOIN employee.dbo.EmployeeCdcStories ec ON ec.EmployeeHireHistoryId = h.EmployeeHireHistoryId
+                                                      AND ec.DateOut IS NULL
+                                                      AND h.employeerid = 2
+                                                      AND h.EndWorkDate IS NULL 
+        INNER JOIN employee.dbo.Functions f ON ec.FunctionId = f.FunctionId
+        INNER JOIN employee.dbo.EmployeeAddress ea ON ea.EmployeeId = e.EmployeeId
+                                                 AND ea.DateOut IS NULL
+        WHERE f.IsStructure = 1
+        ORDER BY UPPER(e.EmployeeSurname + ' ' + e.EmployeeName);
+        """
+        cur = None
+        try:
+            cur = self.conn.cursor()
+            cur.execute(query)
+            return cur.fetchall()
+        except Exception as e:
+            self.last_error_details = str(e)
+            return []
+        finally:
+            try:
+                if cur: cur.close()
+            except:
+                pass
+
+    def insert_submission_assignment(self, segnalazione_id: int, employee_hire_history_id: int, note: str):
+        query = """
+        INSERT INTO Employee.dbo.SegnalazioneSvolgimenti (SegnalazioneId, EmployeeHireHistoryId, [Note])
+        VALUES (?, ?, ?);
+        """
+        cur = None
+        try:
+            cur = self.conn.cursor()
+            cur.execute(query, segnalazione_id, employee_hire_history_id, note or None)
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+        finally:
+            try:
+                if cur: cur.close()
+            except:
+                pass
+
+    def insert_scrap_reason(self, reason):
+        query = "INSERT INTO Traceability_RS.dbo.ScrapResons ([Reason]) VALUES (?);"
+        cur = None
+        try:
+            cur = self.conn.cursor()
+            cur.execute(query, reason.strip())
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+        finally:
+            try:
+                if cur: cur.close()
+            except:
+                pass
+
+    def update_scrap_reason(self, scrap_reason_id, reason):
+        query = "UPDATE Traceability_RS.dbo.ScrapResons SET [Reason] = ? WHERE ScrapReasonId = ?;"
+        cur = None
+        try:
+            cur = self.conn.cursor()
+            cur.execute(query, reason.strip(), scrap_reason_id)
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+        finally:
+            try:
+                if cur: cur.close()
+            except:
+                pass
+
+    def delete_scrap_reason(self, scrap_reason_id):
+        query = "DELETE FROM Traceability_RS.dbo.ScrapResons WHERE ScrapReasonId = ?;"
+        cur = None
+        try:
+            cur = self.conn.cursor()
+            cur.execute(query, scrap_reason_id)
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+        finally:
+            try:
+                if cur: cur.close()
+            except:
+                pass
+    def get_scrap_label_info(self, label_code):
+        """
+        Verifica il codice etichetta (scheda scrap).
+        Ritorna la riga con: IDLabelCode (se esiste), OrderNumber, OrderDate (formattata), OrderQuantity, ProductCode, IDBoard.
+        """
+        query = """
+            SELECT 
+                l.IDLabelCode,           -- se non esiste la colonna, verrà None nell'accesso attributo
+                b.IDBoard,
+                o.OrderNumber,
+                FORMAT(o.OrderDate,'d','ro-ro') AS OrderDate,
+                o.OrderQuantity,
+                p.ProductCode
+            FROM Traceability_RS.dbo.LabelCodes L
+            INNER JOIN Traceability_RS.dbo.boards b ON b.idboard = l.IDBoard
+            INNER JOIN Traceability_RS.dbo.orders o ON o.IDOrder = b.IDOrder
+            INNER JOIN Traceability_RS.dbo.products p ON p.idproduct = o.idproduct
+            WHERE l.labelcod = ?
+        """
+        try:
+            cur = self.conn.cursor()
+            cur.execute(query, label_code)
+            return cur.fetchone()
+        except Exception as e:
+            self.last_error_details = str(e)
+            return None
+        finally:
+            try:
+                cur.close()
+            except:
+                pass
+
+    def get_label_id_by_code(self, label_code):
+        """
+        Recupera l'ID della label se la colonna IDLabelCode esiste, altrimenti prova a dedurre dall'IDBoard.
+        """
+        try:
+            cur = self.conn.cursor()
+            # Primo tentativo: IDLabelCode
+            cur.execute("SELECT IDLabelCode FROM Traceability_RS.dbo.LabelCodes WHERE LabelCod = ?", label_code)
+            row = cur.fetchone()
+            if row and hasattr(row, 'IDLabelCode') and row.IDLabelCode is not None:
+                return row.IDLabelCode
+
+            # Fallback (se non esiste IDLabelCode, NON lo forziamo a IDBoard: lasciamo None)
+            return None
+        except Exception as e:
+            self.last_error_details = str(e)
+            return None
+        finally:
+            try:
+                cur.close()
+            except:
+                pass
+
+    def fetch_origin_areas_for_scrap(self):
+        """
+        Carica la combo 'Area di provenienza' dalle ParentPhases (filtrate).
+        """
+        query = """
+            SELECT idParentPhase, ParentPhaseName
+            FROM Traceability_RS.dbo.ParentPhases
+            WHERE (CHARINDEX('Incoming', ParentPhaseName) = 0)
+              AND (CHARINDEX('Instru', ParentPhaseName) = 0)
+            ORDER BY ParentPhaseName;
+        """
+        try:
+            cur = self.conn.cursor()
+            cur.execute(query)
+            return cur.fetchall()
+        except Exception as e:
+            self.last_error_details = str(e)
+            return []
+        finally:
+            try:
+                cur.close()
+            except:
+                pass
+
+    def fetch_scrap_reasons(self):
+        """
+        Carica la combo 'Motivo' da dbo.ScrapResons (nome tabella fornito).
+        """
+        query = """
+            SELECT ScrapReasonId, [Reason]
+            FROM Traceability_RS.dbo.ScrapResons
+            ORDER BY [Reason];
+        """
+        try:
+            cur = self.conn.cursor()
+            cur.execute(query)
+            return cur.fetchall()
+        except Exception as e:
+            self.last_error_details = str(e)
+            return []
+        finally:
+            try:
+                cur.close()
+            except:
+                pass
+
+    def insert_scrap_declaration(self, user_name, id_label_code, id_parent_phase, scrap_reason_id, note, picture_bytes):
+        """
+        Salva la dichiarazione nella tabella dbo.ScarpDeclarations (nome tabella fornito).
+        DateIn è GETDATE() lato SQL.
+        """
+        query = """
+            INSERT INTO dbo.ScarpDeclarations
+                ([User], [IdLabelCode], [IDParentPhase], [ScrapReasonId], [Note], [DateIn], [Picture])
+            VALUES (?, ?, ?, ?, ?, GETDATE(), ?);
+        """
+        try:
+            cur = self.conn.cursor()
+            cur.execute(query, user_name, id_label_code, id_parent_phase, scrap_reason_id, note, picture_bytes)
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+        finally:
+            try:
+                cur.close()
+            except:
+                pass
+
+    def authenticate_and_get_user(self, user_id, password):
+        """
+        Autentica un utente e, se ha successo, recupera i suoi dati e permessi.
+        :return: Un oggetto User in caso di successo, altrimenti None.
+        """
+        # 1. Eseguiamo l'autenticazione esistente per verificare le credenziali
+        employee_name = self.authenticate_user(user_id, password)
+        logger.debug("authenticate_user result for user_id=%r: %s", user_id,
+                     "OK" if employee_name else "FAILED")
+
+        if not employee_name:
+            return None  # Login fallito
+
+        # 2. Se l'autenticazione ha successo, carichiamo i permessi
+
+        permissions_query = """
+             SELECT p.PermissionKey , ep.[user]
+            FROM dbo.EmployeePermissions ep
+            inner JOIN dbo.Permissions p ON ep.PermissionId = p.PermissionId
+           WHERE ep.[user] = ?            
+        """
+        permissions = set()
+        cursor = None
+        try:
+            cursor = self.conn.cursor()
+            logger.debug("Executing permissions query with param user_id=%r", user_id)
+            # Usiamo lo user_id numerico per la ricerca dei permessi
+            cursor.execute(permissions_query, user_id)
+            # Creiamo un set con tutte le chiavi di permesso trovate
+            permissions = {row.PermissionKey for row in cursor.fetchall()}
+        except Exception as e:
+            print(f"ATTENZIONE: Impossibile caricare i permessi per l'utente {user_id}. Errore: {e}")
+            # L'utente potrà accedere ma non avrà permessi speciali
+        finally:
+            if cursor:
+                cursor.close()
+
+        # 3. Creiamo e restituiamo l'oggetto User completo
+        return User(name=employee_name, permissions=permissions)
+
+    def get_calibratable_equipment(self):
+        """
+        Recupera dal database la lista di tutte le attrezzature che
+        richiedono una calibrazione.
+        :return: Una lista di righe (oggetti row) o None in caso di errore.
+        """
+        query = """
+            SELECT e.EquipmentId, e.InternalName, e.InventoryNumber, eb.Brand, s.SiteName
+            FROM eqp.equipments e 
+            INNER JOIN eqp.EquipmentBrands eb ON e.BrandId = eb.EquipmentBrandId
+            INNER JOIN dbo.Sites s ON eb.CompanyId = s.IDSite
+            INNER JOIN eqp.EquipmentTypes et ON e.EquipmentTypeId = et.EquipmentTypeId
+            WHERE e.MustCalibrated = 1
+            ORDER BY e.InternalName
+        """
+        cursor = None
+        try:
+            # Assumo che la tua connessione si chiami self.conn
+            cursor = self.conn.cursor()
+            cursor.execute(query)
+            return cursor.fetchall()
+        finally:
+            if cursor:
+                cursor.close()
+
+    def get_last_calibration(self, equipment_id):
+        """
+        Recupera l'ultima registrazione di calibrazione per una specifica attrezzatura.
+        :param equipment_id: L'ID dell'attrezzatura da cercare.
+        :return: Una singola riga (oggetto row) o None se non trovata.
+        """
+        query = """
+            SELECT TOP 1 
+                cast(c.CalibratedOn as date) As CalibratedOn, 
+                cast(c.ExpireOn as date) as ExpireOn
+            FROM eqp.calibrations c 
+            WHERE c.equipmentid = ?
+            ORDER BY c.CalibratedOn DESC
+        """
+        cursor = None
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(query, equipment_id)
+            return cursor.fetchone()
+        finally:
+            if cursor:
+                cursor.close()
+
+    def get_suppliers(self):
+        """
+        NUOVO: Recupera la lista dei fornitori dal database.
+        :return: Una lista di righe (oggetti row) con IDSite e SiteName.
+        """
+        query = "SELECT IDSite, SiteName FROM Sites WHERE IsSupplier = 1 ORDER BY SiteName;"
+        cursor = None
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(query)
+            return cursor.fetchall()
+        finally:
+            if cursor:
+                cursor.close()
+
+    def add_new_calibration(self, equipment_id, expiry_date, supplier_id, cert_number):
+        """
+        MODIFICATO: Inserisce una nuova calibrazione usando l'ID del fornitore (supplier_id).
+        :param supplier_id: L'ID numerico del fornitore (IDSite).
+        """
+        query = """
+            INSERT INTO eqp.calibrations 
+                (EquipmentId, CalibratedOn, ExpireOn, CalibrationSupplierId, NrCertificate)
+            VALUES (?, GETDATE(), ?, ?, ?)
+        """
+        # Nota: Ho ipotizzato che il campo nella tabella `eqp.calibrations`
+        # si chiami `CertifyingBodyId`. Adattalo se ha un nome diverso.
+        cursor = None
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(query, equipment_id, expiry_date, supplier_id, cert_number)
+            self.conn.commit()
+        except Exception as e:
+            if self.conn:
+                self.conn.rollback()
+            raise e
+        finally:
+            if cursor:
+                cursor.close()
 
     def get_equipment_info(self, equipment_id):
         """Recupera le informazioni del macchinario dal database."""
@@ -466,170 +953,7 @@ class Database:
             self.last_error_details = str(e);
             return []
 
-    # def fetch_customer_product_associations(self, product_id, client_id):
-    #     query = """
-    #         SELECT pc.productCustomerCodeid, p.productcode as SubAssemblkyCode,
-    #                p1.productcode as FinalCode, pc.CustomerCode, p.idProduct, p1.idProduct as idFinalCode
-    #         FROM dbo.ProductCustomerCodes pc
-    #         INNER JOIN dbo.products p ON pc.IdProduct = p.idproduct
-    #         LEFT JOIN dbo.products p1 ON p1.idproduct = pc.IdFinalCode
-    #         WHERE (pc.IdProduct = ? OR pc.IdFinalCode = ?) AND pc.idfinalclient = ? AND pc.DateOut IS NULL;
-    #     """
-    #     try:
-    #         self.cursor.execute(query, product_id, product_id, client_id)
-    #         return self.cursor.fetchall()
-    #     except pyodbc.Error as e:
-    #         self.last_error_details = str(e);
-    #         return []
-    #
-    # def fetch_available_subassemblies(self):
-    #     query = """
-    #         SELECT p.idProduct, p.ProductCode FROM dbo.PRODUCTS p
-    #         WHERE p.PRODUCTCODE LIKE '%KCE%' AND NOT EXISTS
-    #         (SELECT 1 FROM dbo.productcustomercodes pc WHERE p.idproduct = pc.idproduct AND pc.DateOut IS NULL)
-    #         ORDER BY ProductCode;
-    #     """
-    #     try:
-    #         self.cursor.execute(query)
-    #         return self.cursor.fetchall()
-    #     except pyodbc.Error as e:
-    #         self.last_error_details = str(e);
-    #         return []
-    #
-    # def fetch_available_final_products(self):
-    #     query = """
-    #         SELECT p.idProduct, p.ProductCode FROM dbo.PRODUCTS p
-    #         WHERE p.PRODUCTCODE LIKE '%KCE%' AND NOT EXISTS
-    #         (SELECT 1 FROM dbo.productcustomercodes pc WHERE p.idproduct = pc.IdFinalCode AND pc.DateOut IS NULL)
-    #         ORDER BY ProductCode;
-    #     """
-    #     try:
-    #         self.cursor.execute(query)
-    #         return self.cursor.fetchall()
-    #     except pyodbc.Error as e:
-    #         self.last_error_details = str(e);
-    #         return []
-    #
-    # def add_product_association(self, id_product, id_final_code, customer_code, id_final_client):
-    #     query = "INSERT INTO dbo.ProductCustomerCodes (IdProduct, IdFinalCode, CustomerCode, idfinalclient) VALUES (?, ?, ?, ?);"
-    #     try:
-    #         self.cursor.execute(query, id_product, id_final_code, customer_code, id_final_client)
-    #         self.conn.commit()
-    #         return True, "Associazione creata."
-    #     except pyodbc.Error as e:
-    #         self.conn.rollback();
-    #         return False, f"Errore DB: {e}"
-    #
-    # def soft_delete_product_customer_code(self, association_id):
-    #     query = "UPDATE dbo.ProductCustomerCodes SET DateOut = GETDATE() WHERE productCustomerCodeid = ?;"
-    #     try:
-    #         self.cursor.execute(query, association_id)
-    #         self.conn.commit()
-    #         return True, "Associazione cancellata con successo."
-    #     except pyodbc.Error as e:
-    #         self.conn.rollback();
-    #         return False, f"Errore DB: {e}"
-    #
-    # # NUOVE FUNZIONI PER LA GESTIONE DELLE ASSOCIAZIONI
-    # def update_subassembly_association(self, association_id, customer_code, final_client_id):
-    #     """Aggiorna un'associazione di tipo sotto-assieme"""
-    #     query = "UPDATE dbo.ProductCustomerCodes SET CustomerCode = ?, IdFinalClient = ? WHERE ProductCustomerCodeId = ?"
-    #     try:
-    #         self.cursor.execute(query, customer_code, final_client_id, association_id)
-    #         self.conn.commit()
-    #         return True, "Associazione sotto-assieme aggiornata con successo."
-    #     except pyodbc.Error as e:
-    #         self.conn.rollback()
-    #         return False, f"Errore DB: {e}"
-    #
-    # def update_finalproduct_association(self, association_id, customer_code, final_code_id, final_client_id):
-    #     """Aggiorna un'associazione di tipo prodotto finale"""
-    #     query = "UPDATE dbo.ProductCustomerCodes SET CustomerCode = ?, IdFinalCode = ?, IdFinalClient = ? WHERE ProductCustomerCodeId = ?"
-    #     try:
-    #         self.cursor.execute(query, customer_code, final_code_id, final_client_id, association_id)
-    #         self.conn.commit()
-    #         return True, "Associazione prodotto finale aggiornata con successo."
-    #     except pyodbc.Error as e:
-    #         self.conn.rollback()
-    #         return False, f"Errore DB: {e}"
-    #
-    # def fetch_supplier_sites(self):
-    #     """Recupera i fornitori dalla tabella Sites."""
-    #     query = "SELECT [IDSite], [SiteName] FROM [Traceability_RS].[dbo].[Sites] ORDER BY SiteName;"
-    #     try:
-    #         self.cursor.execute(query)
-    #         return self.cursor.fetchall()
-    #     except pyodbc.Error as e:
-    #         self.last_error_details = str(e)
-    #         return []
-    #
-    # def fetch_final_products_for_association(self):
-    #     query = """
-    #         SELECT p.idProduct, ProductCode
-    #         FROM dbo.Products P
-    #         LEFT JOIN dbo.ProductCustomerCodes pc ON pc.IdFinalCode = p.idproduct
-    #         WHERE CHARINDEX('cip', p.productcode, 1) = 0  and charindex('rma',p.productcode,1)=0
-    #         ORDER BY p.ProductCode;
-    #     """
-    #     try:
-    #         self.cursor.execute(query)
-    #         return self.cursor.fetchall()
-    #     except pyodbc.Error as e:
-    #         self.last_error_details = str(e);
-    #         return []
-    #
-    # def fetch_sub_assemblies_for_association(self, final_product_id):
-    #     query = """
-    #         SELECT p.idProduct, p.productcode as SubAssemblyCode,
-    #                p1.ProductCode as FinalCode, pc.CustomerCode, pc.ProductCustomerCodeId
-    #         FROM dbo.Products P
-    #         LEFT JOIN dbo.ProductCustomerCodes pc ON pc.IdSubAssembly = p.idproduct AND pc.DateOut IS NULL
-    #         LEFT JOIN dbo.products p1 ON p1.idproduct = pc.idfinalcode
-    #         WHERE CHARINDEX('cip', p.productcode, 1) = 0  and charindex('rma',p.productcode,1)=0
-    #           AND p.idproduct = ?
-    #         ORDER BY p.ProductCode;
-    #     """
-    #     try:
-    #         self.cursor.execute(query, final_product_id)
-    #         return self.cursor.fetchall()
-    #     except pyodbc.Error as e:
-    #         self.last_error_details = str(e);
-    #         return []
-    #
-    # def fetch_available_final_codes(self):
-    #     query = """
-    #         SELECT p.idProduct, p.productcode AS FinalCode
-    #         FROM dbo.Products P
-    #         WHERE p.idproduct NOT IN (SELECT DISTINCT IdSubAssembly FROM dbo.ProductCustomerCodes WHERE IdSubAssembly IS NOT NULL)
-    #           AND CHARINDEX('cip', p.productcode, 1) = 0
-    #         ORDER BY p.ProductCode;
-    #     """
-    #     try:
-    #         self.cursor.execute(query)
-    #         return self.cursor.fetchall()
-    #     except pyodbc.Error as e:
-    #         self.last_error_details = str(e);
-    #         return []
-    #
-    # def add_product_customer_code(self, sub_assembly_id, customer_code, final_code_id):
-    #     query = "INSERT INTO dbo.ProductCustomerCodes (IdSubAssembly, IdFinalCode, CustomerCode) VALUES (?, ?, ?);"
-    #     try:
-    #         self.cursor.execute(query, sub_assembly_id, final_code_id, customer_code)
-    #         self.conn.commit()
-    #         return True, "Associazione creata con successo."
-    #     except pyodbc.Error as e:
-    #         self.conn.rollback();
-    #         return False, f"Errore DB: {e}"
-    #
-    # def update_product_customer_code(self, association_id, customer_code, final_code_id):
-    #     query = "UPDATE dbo.ProductCustomerCodes SET CustomerCode = ?, IdFinalCode = ? WHERE ProductCustomerCodeId = ?;"
-    #     try:
-    #         self.cursor.execute(query, customer_code, final_code_id, association_id)
-    #         self.conn.commit()
-    #         return True, "Associazione aggiornata con successo."
-    #     except pyodbc.Error as e:
-    #         self.conn.rollback();
-    #         return False, f"Errore DB: {e}"
+
     #
     def fetch_supplier_sites(self):
         """Recupera i fornitori/compagnie dalla tabella Sites."""
@@ -653,7 +977,7 @@ class Database:
 
     def add_new_site(self, name, address, vat, country, logo):
         """Aggiunge una nuova compagnia."""
-        query = "INSERT INTO dbo.Sites (SiteName, SiteAddress, SiteVat, SiteCountry, Logo) VALUES (?, ?, ?, ?, ?);"
+        query = "INSERT INTO dbo.Sites (SiteName, SiteAddress, SiteVat, SiteCountry, Logo, IDLastPhase, IsSupplier, IsTempraryLeasingComp) VALUES (?, ?, ?, ?, ?, 139, 1, 0);"
         try:
             self.cursor.execute(query, name, address, vat, country, logo)
             self.conn.commit()
@@ -687,40 +1011,6 @@ class Database:
             self.conn.rollback()
             return False, f"Errore database: {e}"
 
-    def fetch_all_sites(self):
-        """Recupera tutti i siti/compagnie per la gestione."""
-        query = "SELECT IDSite, SiteName, SiteAddress, SiteVat, SiteCountry, Logo FROM dbo.Sites ORDER BY SiteName;"
-        try:
-            self.cursor.execute(query)
-            results = self.cursor.fetchall()
-
-            # --- DEBUG: Stampa il numero di risultati ---
-            print(f"DEBUG: La query fetch_all_sites ha restituito {len(results)} compagnie.")
-
-            return results
-        except pyodbc.Error as e:
-            self.last_error_details = str(e)
-            return []
-
-    def fetch_brands_with_company_name(self):
-        """Recupera tutti i brand con il nome del fornitore associato."""
-        query = """
-            SELECT 
-                b.EquipmentBrandId, 
-                b.Brand, 
-                b.BrandLogo, 
-                s.SiteName AS CompanyName, -- Usa un alias esplicito
-                s.IDSite AS CompanyId
-            FROM eqp.EquipmentBrands b
-            LEFT JOIN dbo.Sites s ON b.CompanyId = s.IDSite
-            ORDER BY b.Brand;
-        """
-        try:
-            self.cursor.execute(query)
-            return self.cursor.fetchall()
-        except pyodbc.Error as e:
-            self.last_error_details = str(e)
-            return []
 
     def check_if_brand_is_used(self, brand_id):
         """Controlla se un brand è utilizzato in almeno una macchina."""
@@ -731,20 +1021,6 @@ class Database:
         except pyodbc.Error:
             return True  # Per sicurezza, in caso di errore, si assume che sia usato
 
-    def add_new_brand(self, brand_name, company_id, logo_data):
-        """Aggiunge un nuovo brand."""
-        query = "INSERT INTO eqp.EquipmentBrands (Brand, CompanyId, BrandLogo) VALUES (?, ?, ?);"
-        try:
-            # Assicura che company_id sia None se non è un numero valido
-            company_id_to_save = int(company_id) if company_id is not None else None
-            self.cursor.execute(query, brand_name, company_id_to_save, logo_data)
-            self.conn.commit()
-            return True, "Brand aggiunto con successo."
-        except pyodbc.Error as e:
-            self.conn.rollback()
-            if 'UNIQUE' in str(e) or 'duplicate' in str(e):
-                return False, "Errore: Esiste già un brand con questo nome."
-            return False, f"Errore database: {e}"
 
     def update_brand(self, brand_id, brand_name, company_id, logo_data):
         """Aggiorna un brand esistente."""
@@ -816,7 +1092,8 @@ class Database:
             self.cursor.execute(query)
             return self.cursor.fetchall()
         except pyodbc.Error as e:
-            self.last_error_details = str(e); return []
+            self.last_error_details = str(e);
+            return []
 
     def fetch_xls_mappings(self, file_type_id):
         """
@@ -862,15 +1139,6 @@ class Database:
             self.conn.rollback()
             self.last_error_details = str(e)
             return False
-
-    def fetch_shipping_plan_items(self, shipping_date):
-        """Recupera le righe del piano di spedizione per una data specifica."""
-        query = "SELECT * FROM dbo.ShippingPlanItems WHERE ShippingDate = ?;"
-        try:
-            self.cursor.execute(query, shipping_date)
-            return self.cursor.fetchall()
-        except pyodbc.Error as e:
-            self.last_error_details = str(e); return []
 
     def save_shipping_plan_items(self, plan_data_list):
         """Esegue un'operazione di UPSERT (Update/Insert) per i dati del piano."""
@@ -1000,14 +1268,8 @@ class Database:
             self.cursor.execute(query)
             return self.cursor.fetchall()
         except pyodbc.Error as e:
-            self.last_error_details = str(e); return []
-
-    def open_maintenance_times_with_login(self):
-        """Apre la finestra per gestire i tempi di manutenzione."""
-        self._execute_simple_login(
-            action_callback=lambda user_name: tools_gui.open_maintenance_times_manager(self, self.db, self.lang,
-                                                                                       user_name)
-        )
+            self.last_error_details = str(e);
+            return []
 
     def fetch_tasks_for_timing(self, equipment_id, intervention_id):
         """Recupera i compiti di manutenzione con i relativi tempi."""
@@ -1031,7 +1293,8 @@ class Database:
             self.cursor.execute(query, equipment_id, intervention_id)
             return self.cursor.fetchall()
         except pyodbc.Error as e:
-            self.last_error_details = str(e); return []
+            self.last_error_details = str(e);
+            return []
 
     def update_task_pdf_reference(self, task_id, pdf_reference):
         """Aggiorna solo il campo PdfRiferiment per un dato compito."""
@@ -1356,7 +1619,8 @@ class Database:
             self.cursor.execute(query, material_id)
             return self.cursor.fetchone()
         except pyodbc.Error as e:
-            self.last_error_details = str(e); return None
+            self.last_error_details = str(e);
+            return None
 
     def add_material(self, part_number, code, description, catalog_data, doc_name, user_name):
         """Aggiunge un nuovo materiale, includendo l'utente che ha eseguito l'operazione."""
@@ -1422,7 +1686,8 @@ class Database:
             self.cursor.execute(query, material_id)
             return [row.EquipmentId for row in self.cursor.fetchall()]
         except pyodbc.Error as e:
-            self.last_error_details = str(e); return []
+            self.last_error_details = str(e);
+            return []
 
     def update_material_links(self, material_id, equipment_ids, user_name):
         """Sincronizza i collegamenti tra un materiale e le macchine, includendo l'utente."""
@@ -1456,7 +1721,8 @@ class Database:
             self.cursor.execute(query, equipment_id)
             return self.cursor.fetchall()
         except pyodbc.Error as e:
-            self.last_error_details = str(e); return []
+            self.last_error_details = str(e);
+            return []
 
     def fetch_user_permissions(self, employee_hire_history_id):
         """Recupera i permessi attivi per un dato dipendente."""
@@ -1468,7 +1734,8 @@ class Database:
                                    ON h.EmployeeHireHistoryId = a.EmployeeHireHistoryId
                          LEFT JOIN traceability_rs.dbo.AppTranslations ap ON ap.TranslationKey = a.TranslationKey
                 WHERE h.EmployeeHireHistoryId = ? \
-                  AND a.DateOut IS NULL; \
+                  AND a.DateOut IS NULL
+                  ORDER BY ap.TranslationValue + ' [' + ap.LanguageCode + ']'; \
                 """
         try:
             self.cursor.execute(query, employee_hire_history_id)
@@ -1489,7 +1756,7 @@ class Database:
                                   WHERE TranslationKey = a.TranslationKey \
                                     AND EmployeeHireHistoryId = ? \
                                     AND DateOut IS NULL)
-                ORDER BY a.TranslationKey; \
+                ORDER BY a.translationvalue, a.TranslationKey; \
                 """
         try:
             self.cursor.execute(query, employee_hire_history_id)
@@ -1667,10 +1934,12 @@ class Database:
                 WHERE h.EndWorkDate IS NULL \
                   AND h.employeerid = 2 \
                   AND u.Nomeuser = ? \
-                  AND u.Pass = ?; \
+                  AND u.Pass = ? \
+                  AND a.DateOut IS NULL; \
                 """
         try:
             # L'ordine dei parametri è fondamentale: TranslationKey, Nomeuser, Pass
+
             self.cursor.execute(query, menu_translation_key, user_id, password)
             return self.cursor.fetchone()
         except pyodbc.Error as e:
@@ -2127,7 +2396,8 @@ class Database:
             return None
         # NUOVO METODO: Aggiunge una nuova parte di ricambio al catalogo
 
-    def add_new_spare_part(self, material_part_number, material_code=None, material_description=None, to_be_revizited=1):
+    def add_new_spare_part(self, material_part_number, material_code=None, material_description=None,
+                           to_be_revizited=1):
         """Inserisce una nuova parte in eqp.SparePartMaterials e restituisce il nuovo ID."""
         # Assumiamo che la tabella abbia un IDENTITY ID (SparePartMaterialId)
         query = """
@@ -2267,43 +2537,6 @@ class Database:
             self.last_error_details = str(e)
             return []
 
-    # def fetch_spare_parts(self):
-    #     """Recupera la lista di parti di ricambio e servizi disponibili."""
-    #     # ATTENZIONE: Questa query assume i nomi delle colonne (SparePartMaterialId, MaterialPartNumber, PartCode, Description).
-    #     # Modificala se i nomi reali nella tua tabella eqp.SparePartMaterials sono diversi.
-    #     query = """
-    #             SELECT SparePartMaterialId, MaterialPartNumber, MaterialCode, MaterialDescription
-    #             FROM eqp.SparePartMaterials
-    #             ORDER BY MaterialPartNumber \
-    #             """
-    #     try:
-    #         self.cursor.execute(query)
-    #         return self.cursor.fetchall()
-    #     except pyodbc.Error as e:
-    #         print(f"Errore nel recupero parti di ricambio: {e}")
-    #         self.last_error_details = str(e)
-    #         return []
-
-    # NUOVO METODO: Inserisce la richiesta nella tabella eqp.RequestSpareParts
-    def insert_spare_part_request(self, equipment_id, spare_part_id, quantity, notes, requested_by):
-        """Inserisce una nuova richiesta di parti di ricambio o intervento."""
-        # ATTENZIONE: Questa query assume la struttura della tabella eqp.RequestSpareParts.
-        # Ho impostato uno stato iniziale 'Open'.
-        query = """
-                INSERT INTO eqp.RequestSpareParts
-                (EquipmentId, SparePartMaterialId, Quantity, Note, RequestedBy, DateRequest, Solved)
-                VALUES (?, ?, ?, ?, ?, GETDATE(), 0) \
-                """
-        try:
-            self.cursor.execute(query, equipment_id, spare_part_id, quantity, notes, requested_by)
-            self.conn.commit()
-            return True
-        except pyodbc.Error as e:
-            self.conn.rollback()
-            print(f"Errore nell'inserimento richiesta: {e}")
-            self.last_error_details = str(e)
-            return False
-
     def __init__(self, conn_str):
         self.conn_str = conn_str
         self.conn = None
@@ -2424,7 +2657,6 @@ class Database:
             print(f"Errore nel recupero degli interventi programmati: {e}")
             return []
 
-
         # Assicuriamoci che DateOut sia NULL per il nuovo documento.
         insert_query = """
                        INSERT INTO eqp.EquipmentMantainanceDocs
@@ -2540,7 +2772,8 @@ class Database:
 
     def fetch_all_equipments(self):
         """Recupera ID, Nome Interno e Seriale di tutte le macchine per la selezione."""
-        query = "SELECT EquipmentId, InternalName, SerialNumber FROM eqp.Equipments ORDER BY InternalName, SerialNumber;"
+        #query = "SELECT EquipmentId, InternalName, SerialNumber FROM eqp.Equipments ORDER BY InternalName, SerialNumber;"
+        query = "SELECT  distinct e.EquipmentId, InternalName, SerialNumber FROM eqp.Equipments E inner join [eqp].[CompitiManutenzione] CM on e.EquipmentId=cm.EquipmentId ORDER BY InternalName, SerialNumber;"
         try:
             self.cursor.execute(query)
             return self.cursor.fetchall()
@@ -2619,16 +2852,16 @@ class Database:
             print(f"Errore nel recupero delle fasi di produzione: {e}")
             return []
 
-    def add_new_equipment(self, brand_id, type_id, phase_id, serial_number, internal_name, prod_year, inv_number):
+    def add_new_equipment(self, brand_id, type_id, phase_id, serial_number, internal_name, prod_year, inv_number, must_calibrated):
         """Salva una nuova macchina nel database."""
         query = """
                 INSERT INTO eqp.Equipments
                 (BrandId, EquipmentTypeId, ParentPhaseId, SerialNumber, InternalName, ProductionYear, InventoryNumber,
-                 DateSys)
-                VALUES (?, ?, ?, ?, ?, ?, ?, GETDATE())
+                 DateSys, MustCalibrated)
+                VALUES (?, ?, ?, ?, ?, ?, ?, GETDATE(), ?)
                 """
         try:
-            self.cursor.execute(query, brand_id, type_id, phase_id, serial_number, internal_name, prod_year, inv_number)
+            self.cursor.execute(query, brand_id, type_id, phase_id, serial_number, internal_name, prod_year, inv_number, must_calibrated)
             self.conn.commit()
             return True
         except pyodbc.Error as e:
@@ -2655,9 +2888,11 @@ class Database:
                 WHERE h.EndWorkDate IS NULL AND h.employeerid = 2 AND u.Nomeuser = ? AND Pass = ?;
                 """
         try:
+
             self.cursor.execute(query, user_id, password)
             row = self.cursor.fetchone()
             return row.EmployeeName if row else None
+
         except pyodbc.Error as e:
             print(f"Error during authentication: {e}")
             return None
@@ -2985,6 +3220,7 @@ class Database:
             self.last_error_details = f"Errore Applicazione (File System): {e}"
             return False
 
+
 class LoginWindow(tk.Toplevel):
     """Finestra per raccogliere le credenziali dell'utente."""
 
@@ -3056,6 +3292,7 @@ class LoginWindow(tk.Toplevel):
         # L'utente ha chiuso la finestra senza premere login
         self.clicked_login = False
         self.destroy()
+
 
 class InsertDocumentForm(tk.Toplevel):
     """Finestra di inserimento documenti (di Produzione)."""
@@ -3247,7 +3484,7 @@ class InsertDocumentForm(tk.Toplevel):
             display_text = f"File: {doc.documentName} | Rev: {doc.DocumentRevisionNumber} | Validato: {is_valid_text}"
             self.docs_listbox.insert(tk.END, display_text)
             if doc.IsValid:
-                self.docs_listbox.itemconfig(i, {'bg': '#c8e6c9'}) # Verde chiaro per validati
+                self.docs_listbox.itemconfig(i, {'bg': '#c8e6c9'})  # Verde chiaro per validati
 
     def _reset_phase_section(self):
         self.parent_phase_var.set("")
@@ -3267,6 +3504,7 @@ class InsertDocumentForm(tk.Toplevel):
         self.revision_var.set("")
         self.validated_var.set(False)
         self.file_entry.config(state="readonly")
+
 
 class ViewDocumentForm(tk.Toplevel):
     """Finestra per visualizzare un documento (di Produzione)."""
@@ -3399,50 +3637,52 @@ class ViewDocumentForm(tk.Toplevel):
         print(f"Richiesta apertura documento con ID: {selected_doc.DocumentProductionID}")
         success = self.db.fetch_and_open_document(selected_doc.DocumentProductionID)
         if not success:
-             messagebox.showerror(self.lang.get('error_title', "Errore"), "Impossibile aprire il documento.", parent=self)
+            messagebox.showerror(self.lang.get('error_title', "Errore"), "Impossibile aprire il documento.",
+                                 parent=self)
+
 
 class LineStoppageReportForm(tk.Toplevel):
-        def __init__(self, parent, db_handler, lang_manager):
-            super().__init__(parent)
-            self.db = db_handler
-            self.lang = lang_manager
+    def __init__(self, parent, db_handler, lang_manager):
+        super().__init__(parent)
+        self.db = db_handler
+        self.lang = lang_manager
 
-            self.title(self.lang.get('line_stoppage_report_title', "Report Fermi Linea"))
-            self.geometry("400x300")
+        self.title(self.lang.get('line_stoppage_report_title', "Report Fermi Linea"))
+        self.geometry("400x300")
 
-            # Crea il frame principale
-            main_frame = ttk.Frame(self, padding="20")
-            main_frame.pack(fill=tk.BOTH, expand=True)
+        # Crea il frame principale
+        main_frame = ttk.Frame(self, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
 
-            # Date selectors
-            date_frame = ttk.LabelFrame(main_frame, text=self.lang.get('date_range_label', "Intervallo Date"),
-                                        padding="10")
-            date_frame.pack(fill=tk.X, pady=(0, 20))
+        # Date selectors
+        date_frame = ttk.LabelFrame(main_frame, text=self.lang.get('date_range_label', "Intervallo Date"),
+                                    padding="10")
+        date_frame.pack(fill=tk.X, pady=(0, 20))
 
-            # From Date
-            ttk.Label(date_frame, text=self.lang.get('from_date_label', "Da:")).grid(row=0, column=0, padx=5, pady=5)
-            self.from_date = DateEntry(date_frame, width=12, background='darkblue', foreground='white', borderwidth=2)
-            self.from_date.grid(row=0, column=1, padx=5, pady=5)
+        # From Date
+        ttk.Label(date_frame, text=self.lang.get('from_date_label', "Da:")).grid(row=0, column=0, padx=5, pady=5)
+        self.from_date = DateEntry(date_frame, width=12, background='darkblue', foreground='white', borderwidth=2)
+        self.from_date.grid(row=0, column=1, padx=5, pady=5)
 
-            # To Date
-            ttk.Label(date_frame, text=self.lang.get('to_date_label', "A:")).grid(row=1, column=0, padx=5, pady=5)
-            self.to_date = DateEntry(date_frame, width=12, background='darkblue', foreground='white', borderwidth=2)
-            self.to_date.grid(row=1, column=1, padx=5, pady=5)
+        # To Date
+        ttk.Label(date_frame, text=self.lang.get('to_date_label', "A:")).grid(row=1, column=0, padx=5, pady=5)
+        self.to_date = DateEntry(date_frame, width=12, background='darkblue', foreground='white', borderwidth=2)
+        self.to_date.grid(row=1, column=1, padx=5, pady=5)
 
-            # Buttons
-            button_frame = ttk.Frame(main_frame)
-            button_frame.pack(fill=tk.X, pady=20)
+        # Buttons
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=20)
 
-            ttk.Button(button_frame, text=self.lang.get('generate_report_button', "Genera Report"),
-                       command=self._generate_report).pack(side=tk.LEFT, padx=5)
-            ttk.Button(button_frame, text=self.lang.get('close_button', "Chiudi"),
-                       command=self.destroy).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text=self.lang.get('generate_report_button', "Genera Report"),
+                   command=self._generate_report).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text=self.lang.get('close_button', "Chiudi"),
+                   command=self.destroy).pack(side=tk.RIGHT, padx=5)
 
-        def _generate_report(self):
-            """Genera il report Excel dei fermi linea."""
-            try:
-                # Esegue la query
-                query = """
+    def _generate_report(self):
+        """Genera il report Excel dei fermi linea."""
+        try:
+            # Esegue la query
+            query = """
                 SELECT [BreakDownProblemLogId] AS ID,
                        cast([DateReport] as DATE) AS ReportIussedOn,
                        [HourReport] as TimeIussed,
@@ -3469,84 +3709,85 @@ class LineStoppageReportForm(tk.Toplevel):
                 Where Datereport between ? AND ?
                 """
 
-                # Esegue la query con i parametri delle date
-                self.db.cursor.execute(query, (self.from_date.get_date(), self.to_date.get_date()))
-                results = self.db.cursor.fetchall()
+            # Esegue la query con i parametri delle date
+            self.db.cursor.execute(query, (self.from_date.get_date(), self.to_date.get_date()))
+            results = self.db.cursor.fetchall()
 
-                if not results:
-                    messagebox.showinfo(self.lang.get('info_title', "Informazione"),
-                                        self.lang.get('no_data_found',
-                                                      "Nessun dato trovato per il periodo selezionato."),
-                                        parent=self)
-                    return
+            if not results:
+                messagebox.showinfo(self.lang.get('info_title', "Informazione"),
+                                    self.lang.get('no_data_found',
+                                                  "Nessun dato trovato per il periodo selezionato."),
+                                    parent=self)
+                return
 
-                # Crea la cartella C:\temp se non esiste
-                temp_dir = r"C:\temp"
-                if not os.path.exists(temp_dir):
-                    os.makedirs(temp_dir)
+            # Crea la cartella C:\temp se non esiste
+            temp_dir = r"C:\temp"
+            if not os.path.exists(temp_dir):
+                os.makedirs(temp_dir)
 
-                # Genera il nome del file con timestamp
-                timestamp = datetime.now().strftime("%y%m%d%H%M%S")
-                file_name = f"ReportBreakDown{timestamp}.xlsx"
-                file_path = os.path.join(temp_dir, file_name)
+            # Genera il nome del file con timestamp
+            timestamp = datetime.now().strftime("%y%m%d%H%M%S")
+            file_name = f"ReportBreakDown{timestamp}.xlsx"
+            file_path = os.path.join(temp_dir, file_name)
 
-                # Usa pandas per creare un Excel formattato
-                df = pd.DataFrame.from_records(results, columns=[x[0] for x in self.db.cursor.description])
+            # Usa pandas per creare un Excel formattato
+            df = pd.DataFrame.from_records(results, columns=[x[0] for x in self.db.cursor.description])
 
-                with pd.ExcelWriter(file_path, engine='xlsxwriter') as writer:
-                    df.to_excel(writer, sheet_name='Report Fermi Linea', index=False)
+            with pd.ExcelWriter(file_path, engine='xlsxwriter') as writer:
+                df.to_excel(writer, sheet_name='Report Fermi Linea', index=False)
 
-                    # Ottiene il foglio di lavoro
-                    worksheet = writer.sheets['Report Fermi Linea']
+                # Ottiene il foglio di lavoro
+                worksheet = writer.sheets['Report Fermi Linea']
 
-                    # Formatta le intestazioni
-                    header_format = writer.book.add_format({
-                        'bold': True,
-                        'fg_color': '#D7E4BC',
-                        'border': 1,
-                        'align': 'center'
-                    })
+                # Formatta le intestazioni
+                header_format = writer.book.add_format({
+                    'bold': True,
+                    'fg_color': '#D7E4BC',
+                    'border': 1,
+                    'align': 'center'
+                })
 
-                    # Formatta le date
-                    date_format = writer.book.add_format({'num_format': 'dd/mm/yyyy'})
-                    time_format = writer.book.add_format({'num_format': 'hh:mm'})
+                # Formatta le date
+                date_format = writer.book.add_format({'num_format': 'dd/mm/yyyy'})
+                time_format = writer.book.add_format({'num_format': 'hh:mm'})
 
-                    # Applica la formattazione alle intestazioni e imposta le larghezze delle colonne
-                    for col_num, value in enumerate(df.columns.values):
-                        worksheet.write(0, col_num, value, header_format)
+                # Applica la formattazione alle intestazioni e imposta le larghezze delle colonne
+                for col_num, value in enumerate(df.columns.values):
+                    worksheet.write(0, col_num, value, header_format)
 
-                        # Imposta larghezze colonne specifiche
-                        if 'Date' in value or 'Data' in value:
-                            worksheet.set_column(col_num, col_num, 12)
-                            # Applica formato data alle celle della colonna
-                            worksheet.set_column(col_num, col_num, 12, date_format)
-                        elif 'Time' in value or 'Hour' in value:
-                            worksheet.set_column(col_num, col_num, 10)
-                            # Applica formato ora alle celle della colonna
-                            worksheet.set_column(col_num, col_num, 10, time_format)
-                        elif value in ['Note', 'BreakDownReason']:
-                            worksheet.set_column(col_num, col_num, 40)
-                        else:
-                            worksheet.set_column(col_num, col_num, 15)
+                    # Imposta larghezze colonne specifiche
+                    if 'Date' in value or 'Data' in value:
+                        worksheet.set_column(col_num, col_num, 12)
+                        # Applica formato data alle celle della colonna
+                        worksheet.set_column(col_num, col_num, 12, date_format)
+                    elif 'Time' in value or 'Hour' in value:
+                        worksheet.set_column(col_num, col_num, 10)
+                        # Applica formato ora alle celle della colonna
+                        worksheet.set_column(col_num, col_num, 10, time_format)
+                    elif value in ['Note', 'BreakDownReason']:
+                        worksheet.set_column(col_num, col_num, 40)
+                    else:
+                        worksheet.set_column(col_num, col_num, 15)
 
-                    # Imposta filtri automatici
-                    worksheet.autofilter(0, 0, len(df), len(df.columns) - 1)
+                # Imposta filtri automatici
+                worksheet.autofilter(0, 0, len(df), len(df.columns) - 1)
 
-                    # Congela la prima riga
-                    worksheet.freeze_panes(1, 0)
+                # Congela la prima riga
+                worksheet.freeze_panes(1, 0)
 
-                # Apre il file Excel direttamente
-                os.startfile(file_path)
+            # Apre il file Excel direttamente
+            os.startfile(file_path)
 
-                # Chiude la finestra del form
-                self.destroy()
+            # Chiude la finestra del form
+            self.destroy()
 
-            except Exception as e:
-                messagebox.showerror(
-                    self.lang.get('error_title', "Errore"),
-                    self.lang.get('error_generating_report', f"Errore durante la generazione del report: {str(e)}"),
-                    parent=self
-                )
+        except Exception as e:
+            messagebox.showerror(
+                self.lang.get('error_title', "Errore"),
+                self.lang.get('error_generating_report', f"Errore durante la generazione del report: {str(e)}"),
+                parent=self
+            )
+
 
 def connect_to_database():
     """Stabilisce la connessione al database usando la configurazione sicura"""
@@ -3578,8 +3819,20 @@ def connect_to_database():
         logger.error(f"Errore imprevisto nella connessione: {e}")
         raise
 
+class User:
+    """Una semplice classe per contenere i dati dell'utente loggato."""
+    def __init__(self, name, permissions=None):
+        self.name = name
+        # Usiamo un 'set' per ricerche di permessi super veloci
+        self.permissions = set(permissions) if permissions else set()
+
+    def has_permission(self, permission_key):
+        """Verifica se l'utente ha un permesso specifico."""
+        return permission_key in self.permissions
+
 class App(tk.Tk):
     """Classe principale dell'applicazione."""
+
     def __init__(self):
         super().__init__()
         self.should_exit = False  # Flag to control shutdown
@@ -3615,19 +3868,6 @@ class App(tk.Tk):
             self.should_exit = True
             return
 
-        # conn = connect_to_database()
-        # self.db = Database(conn)
-        # logger.info("Connessione al database stabilita con successo")
-
-        if not self.db.connect():
-            messagebox.showerror("Database Error",
-                                 f"Impossibile connettersi al database.\n\nDetails: {self.db.last_error_details}")
-            logger.error("Impossibile connettersi al database.")
-            self.destroy()
-            self.should_exit = True
-            return
-
-
         # Carica la lingua salvata
         initial_lang = self._load_language_setting()
         self.lang = LanguageManager(self.db)
@@ -3651,9 +3891,50 @@ class App(tk.Tk):
 
         self.after(100, self._post_startup_tasks)
 
+    def open_assign_submissions_with_login(self):
+        self._execute_authorized_action(
+            menu_translation_key='submenu_assign',
+            action_callback=lambda: assign_submissions_gui.open_assign_submissions(self, self.db, self.lang)
+        )
+
+    def open_scrap_declaration_with_login(self):
+        """Apre la finestra per la dichiarazione scarti con autenticazione e autorizzazione."""
+        # self._execute_authorized_action(
+        #     menu_translation_key='submenu_scrap_declaration',
+        #     action_callback=lambda: scarti_gui.open_scrap_declaration_window(self, self.db, self.lang)
+        # )
+        self._execute_authorized_action(
+            menu_translation_key='submenu_scrap_declaration',
+            action_callback=lambda:scarti_gui.open_scrap_declaration_window(self, self.db, self.lang)
+        )
+    def open_calibrations_manager_with_login(self):
+        logger = logging.getLogger("TraceabilityRS")
+        required = 'calibration_management'
+        logger.debug("Request to open CalibrationsWindow; required_permission=%r", required)
+        # Chiama il login in modalità "gatekeeper"
+        user = self._execute_simple_login(required_permission=required)
+        logger.debug("Login result for calibrations: %s", "OK" if user else "FAILED")
+
+        # Questo `if` è il controllo di sicurezza.
+        # Il codice al suo interno viene eseguito solo se _execute_simple_login
+        # restituisce un oggetto utente valido (login riuscito).
+        if user:
+            print(f"Login riuscito per l'utente {user.name}. Apertura finestra...")
+            try:
+                # Ora che l'utente è autenticato, possiamo creare la finestra.
+                CalibrationsWindow(self, self.db, self.lang)
+            except Exception as e:
+                logging.getLogger("TraceabilityRS").exception("Error opening CalibrationsWindow: %s", e)
+                messagebox.showerror("Errore", f"Impossibile aprire il modulo di calibrazione: {e}")
+
+        else:
+            # Questo blocco viene eseguito se l'utente chiude la finestra di login
+            # o non ha i permessi.
+            print("Login fallito o annullato. Accesso al modulo negato.")
+
     def open_line_stoppage_report(self):
-        """Apre la finestra per generare il report dei fermi linea."""
-        LineStoppageReportForm(self, self.db, self.lang)
+            """Apre la finestra per generare il report dei fermi linea."""
+            LineStoppageReportForm(self, self.db, self.lang)
 
     def open_verification_association_with_login(self):
         """Apre la verifica associazione dopo il login"""
@@ -4012,7 +4293,8 @@ class App(tk.Tk):
         """Richiede il login e poi apre la finestra per aggiungere/gestire i task."""
         # This action modifies data, so it requires a simple login.
         self._execute_simple_login(
-            action_callback=lambda user_name: maintenance_gui.open_add_maintenance_tasks(self, self.db, self.lang, user_name)
+            action_callback=lambda user_name: maintenance_gui.open_add_maintenance_tasks(self, self.db, self.lang,
+                                                                                         user_name)
         )
 
     def open_manage_permissions_with_login(self):
@@ -4067,30 +4349,46 @@ class App(tk.Tk):
         view_form.grab_set()
         self.wait_window(view_form)
 
-    def _execute_simple_login(self, action_callback):
-        """
-        Gestisce il processo di login semplice per le funzioni non ristrette.
-        :param action_callback: La funzione da eseguire in caso di successo.
-                                Riceverà il nome dell'utente come argomento.
-        """
+    def _execute_simple_login(self, action_callback=None, required_permission=None):
+        logger.debug("_execute_simple_login called; required_permission=%r", required_permission)
+
         login_form = LoginWindow(self, self.db, self.lang)
         self.wait_window(login_form)
 
         if not login_form.clicked_login:
-            return
+            logger.debug("Login window closed without login.")
+            return None
 
         user_id = login_form.user_id
+        logger.debug("LoginWindow returned user_id=%r", user_id)
+
         password = login_form.password
+        user = self.db.authenticate_and_get_user(user_id, password)
 
-        # Esegue l'autenticazione standard
-        employee_name = self.db.authenticate_user(user_id, password)
+        if not user:
+            logger.debug("Authentication failed for user_id=%r", user_id)
+            messagebox.showerror(self.lang.get('login_title'),
+                                 self.lang.get('login_auth_failed'), parent=self)
+            return None
 
-        if employee_name:
-            # Successo: esegue l'azione richiesta passando il nome utente
-            action_callback(employee_name)
-        else:
-            # Fallimento: mostra l'errore
-            messagebox.showerror(self.lang.get('login_title'), self.lang.get('login_auth_failed'), parent=self)
+        logger.debug("Authenticated as %r; permissions=%s", user.name,
+                     sorted(user.permissions))
+
+        if required_permission and not user.has_permission(required_permission):
+            logger.debug("Permission check FAILED for %r -> required=%r",
+                         user.name, required_permission)
+            messagebox.showwarning(
+                self.lang.get('access_denied', "Accesso Negato"),
+                self.lang.get('permission_missing', "Non si dispone delle autorizzazioni per questa operazione."),
+                parent=self
+            )
+            return None
+
+        if isinstance(action_callback, collections.abc.Callable):
+            # Passa il nome utente come da pattern esistente
+            action_callback(user.name)
+
+        return user
 
     def _execute_authorized_action(self, menu_translation_key, action_callback):
         """
@@ -4098,6 +4396,8 @@ class App(tk.Tk):
         :param menu_translation_key: La chiave di traduzione del menu per il controllo permessi.
         :param action_callback: La funzione da eseguire in caso di successo.
         """
+        logger.debug("_execute_authorized_action called; menu_translation_key=%r", menu_translation_key)
+
         login_form = LoginWindow(self, self.db, self.lang)
         self.wait_window(login_form)
 
@@ -4106,6 +4406,7 @@ class App(tk.Tk):
             return
 
         user_id = login_form.user_id
+        logger.debug("LoginWindow returned user_id=%r for authorized action %r", user_id, menu_translation_key)
         password = login_form.password
 
         # Controlla autenticazione e autorizzazione
@@ -4115,13 +4416,19 @@ class App(tk.Tk):
             # Caso 1: Username o Password errati
             messagebox.showerror(self.lang.get('login_title'), self.lang.get('login_auth_failed'), parent=self)
         elif auth_result.AuthorizedUsedId is None:
+            logger.debug("User %r authenticated but NOT authorized for %r", user_id, menu_translation_key)
             # Caso 2: Utente valido, ma NON autorizzato per questa funzione
             messagebox.showwarning(self.lang.get('auth_access_denied_title', "Accesso Negato"),
                                    self.lang.get('auth_access_denied_message',
                                                  "Non si dispone delle autorizzazioni necessarie per accedere a questa funzione."),
                                    parent=self)
         else:
-            # Caso 3: Successo! Esegue l'azione
+            logger.debug("User %r authorized for %r; executing action.", user_id, menu_translation_key)
+            try:
+                self.last_authenticated_user_name = auth_result.EmployeeName
+            except Exception:
+                self.last_authenticated_user_name = None
+
             action_callback()
 
     def open_maint_cycles_manager_with_login(self):
@@ -4180,6 +4487,7 @@ class App(tk.Tk):
         self._execute_simple_login(
             action_callback=lambda user_name: maintenance_gui.open_fill_templates(self, self.db, self.lang, user_name)
         )
+
     def check_version(self):
         """
         Controlla se l'app è eseguita dalla sorgente, poi verifica la versione
@@ -4282,6 +4590,27 @@ class App(tk.Tk):
         # Associa il ridimensionamento al disegno dell'immagine
         self.slideshow_label.bind('<Configure>', lambda e: self._draw_current_image())
 
+    def open_calibrations_manager_with_login(self):
+        """
+        Questa funzione agisce da "ponte". Prima esegue il login
+        e SOLO SE ha successo, apre la finestra.
+        """
+        # Chiama il login in modalità "gatekeeper", richiedendo un permesso specifico.
+        # La funzione _execute_simple_login restituirà l'utente se il login
+        # e la verifica dei permessi vanno a buon fine, altrimenti None.
+        user_che_ha_fatto_login = self._execute_simple_login(
+            required_permission='calibration_management'
+        )
+
+        # L'if controlla che il login sia andato a buon fine.
+        if user_che_ha_fatto_login:
+            # Solo ora, con la certezza che l'utente è autorizzato,
+            # creiamo e apriamo la finestra delle calibrazioni.
+            try:
+                CalibrationsWindow(self, self.db, self.lang)
+            except Exception as e:
+                messagebox.showerror("Errore", f"Impossibile aprire il modulo di calibrazione: {e}")
+
     def _create_menu(self):
         self.menubar = tk.Menu(self)
         self.config(menu=self.menubar)
@@ -4305,6 +4634,8 @@ class App(tk.Tk):
         self.reports_submenu = tk.Menu(self.production_submenu, tearoff=0)
         self.operativity_submenu = tk.Menu(self.reports_submenu, tearoff=0)
 
+        # Crea il contenitore per il nuovo sottomenu "Calibrazioni"
+        self.calibrations_submenu = tk.Menu(self.production_submenu, tearoff=0)
 
         # Sottomenu di Strumenti
         self.permissions_submenu = tk.Menu(self.tools_menu, tearoff=0)
@@ -4373,15 +4704,32 @@ class App(tk.Tk):
             label=self.lang.get('submenu_interruptions', "Interruzioni di produzione"),
             command=self.open_add_interruption_window_with_login)
 
+        # Aggiungi la nuova voce di menu per la dichiarazione degli scarti
+        self.declarations_submenu.add_command(
+            label=self.lang.get('submenu_scrap_declaration', "Dichiarazione scarti"),
+            command=self.open_scrap_declaration_with_login
+        )
+
         # Aggiungi il nuovo sottomenu per la tracciabilità
         self.production_submenu.add_cascade(label=self.lang.get('submenu_traceability', "Tracciabilità"),
                                             menu=self.traceability_submenu)
+
         self.traceability_submenu.delete(0, 'end')
         # 1. Final Customers
         customers_submenu = tk.Menu(self.traceability_submenu, tearoff=0)
         self.traceability_submenu.add_cascade(label=self.lang.get('submenu_final_customers', "Clienti Finali"),
                                               menu=customers_submenu)
         customers_submenu.delete(0, 'end')
+        # Aggiungi il nuovo sottomenu per le Calibrazioni
+        self.production_submenu.add_cascade(label=self.lang.get('submenu_calibrations', "Calibrazioni"),
+                                            menu=self.calibrations_submenu)
+
+        self.calibrations_submenu.delete(0, 'end')
+
+        self.calibrations_submenu.add_command(
+            label=self.lang.get('submenu_manage_calibrations', "Gestisci Calibrazioni"),
+            command=self.open_calibrations_manager_with_login
+        )
         customers_submenu.add_command(label=self.lang.get('submenu_manage_customers', "Gestisci Clienti"),
                                       command=self.open_manage_customers_with_login)
 
@@ -4405,7 +4753,6 @@ class App(tk.Tk):
             label=self.lang.get('verification_association', "Verifica Associazione"),
             command=self.open_verification_association_with_login)
 
-
         # Aggiungi il sottomenu Rapporti (SOLO UNA VOLTA)
         self.production_submenu.add_cascade(label=self.lang.get('submenu_reports_prod', "Rapporti"),
                                             menu=self.reports_submenu)
@@ -4424,7 +4771,9 @@ class App(tk.Tk):
                                      command=self.open_shipping_settings_with_login)
         shipping_submenu.add_command(label=self.lang.get('submenu_xls_settings', "Impostazioni XLS"),
                                      command=self.open_xls_settings_with_login)
-        self.reports_submenu.add_command(label=self.lang.get('submenu_line_stoppage_reports', "Rapporti di fermo linea"), command=self.open_line_stoppage_report)
+        self.reports_submenu.add_command(
+            label=self.lang.get('submenu_line_stoppage_reports', "Rapporti di fermo linea"),
+            command=self.open_line_stoppage_report)
         self.operations_menu.add_separator()
         self.operations_menu.add_command(label=self.lang.get('submenu_materials_ops', "Materiali"), state="disabled")
         self.operations_menu.add_command(label=self.lang.get('submenu_hr', "Risorse Umane"), state="disabled")
@@ -4444,7 +4793,6 @@ class App(tk.Tk):
         machine_submenu.add_separator()
         machine_submenu.add_command(label=self.lang.get('submenu_brand_management', "Gestione Brand"),
                                     command=self.open_brand_manager_with_login)
-        # --- POSIZIONE CORRETTA PER "GESTIONE COMPAGNIE" ---
         machine_submenu.add_command(label=self.lang.get('submenu_company_management', "Gestione Compagnie"),
                                     command=self.open_company_manager_with_login)
 
@@ -4468,6 +4816,10 @@ class App(tk.Tk):
         self.submissions_menu.delete(0, 'end')
         self.submissions_menu.add_command(label=self.lang.get('submenu_new_submission', "Nuova Segnalazione"),
                                           command=self.open_new_submission_form)
+        self.submissions_menu.add_command(
+            label=self.lang.get('submenu_assign', 'Assegna'),
+            command=self.open_assign_submissions_with_login
+        )
         self.submissions_menu.add_command(label=self.lang.get('submenu_view_submissions', "Visualizza Segnalazioni"),
                                           state="disabled")
 
@@ -4490,6 +4842,11 @@ class App(tk.Tk):
                                            command=self.open_manage_materials_with_login)
         self.materials_submenu.add_command(label=self.lang.get('submenu_view', "Visualizza"),
                                            command=self.open_view_materials)
+
+        self.tools_menu.add_command(
+            label=self.lang.get('submenu_scrap_types', 'Tipi scrap'),
+            command=self.open_scrap_types_with_login
+        )
 
         self.tools_menu.add_separator()
         self.tools_menu.add_command(label=self.lang.get('submenu_suppliers', "Produttori"),
@@ -4519,6 +4876,12 @@ class App(tk.Tk):
         except tk.TclError:
             pass
 
+    def open_scrap_types_with_login(self):
+        # Usa il gate "per menù" con chiave di traduzione dedicata
+        self._execute_authorized_action(
+            menu_translation_key='submenu_scrap_types',
+            action_callback=lambda: scarti_gui.open_scrap_reasons_manager(self, self.db, self.lang)
+        )
     def _change_language(self, lang_code):
         """Cambia la lingua, aggiorna la UI, salva l'impostazione e mostra una notifica."""
         self.lang.set_language(lang_code)
@@ -4546,12 +4909,6 @@ class App(tk.Tk):
             parent=self
         )
 
-    def open_add_machine_with_login(self):
-        """Apre la finestra per aggiungere una macchina dopo un login semplice."""
-        self._execute_simple_login(
-            action_callback=lambda user_name: maintenance_gui.open_add_machine(self, self.db, self.lang)
-        )
-
     def open_manage_materials_with_login(self):
         self._execute_simple_login(
             action_callback=lambda user_name: materials_gui.open_manage_materials(self, self.db, self.lang, user_name)
@@ -4562,13 +4919,6 @@ class App(tk.Tk):
         # Passiamo 'None' come user_name perché non c'è autenticazione
         materials_gui.open_view_materials(self, self.db, self.lang, user_name=None)
 
-    def open_add_machine_with_login(self):
-        """Apre la finestra di login e, se l'autenticazione ha successo, apre la finestra per aggiungere una macchina."""
-        login_form = LoginWindow(self, self.db, self.lang)
-        self.wait_window(login_form)
-        authenticated_user = login_form.authenticated_user_name
-        if authenticated_user:
-            maintenance_gui.open_add_machine(self, self.db, self.lang)
 
     def open_edit_machine_with_login(self):
         def action(user_name):
@@ -4595,12 +4945,6 @@ class App(tk.Tk):
             self.db.disconnect()
             self.destroy()
 
-    # def open_final_association_with_login(self):
-    #     """Apre la finestra per l'associazione codici finali."""
-    #     self._execute_simple_login(
-    #         action_callback=lambda user_name: traciability.open_final_association_window(self, self.db, self.lang,
-    #                                                                                      user_name)
-    #     )
 
 class UpdateNotificationDialog(tk.Toplevel):
     """Dialogo per notificare un nuovo aggiornamento e chiedere l'azione desiderata."""
@@ -4642,6 +4986,7 @@ class UpdateNotificationDialog(tk.Toplevel):
     def _on_ignore(self):
         self.result = 'ignore'
         self.destroy()
+
 
 if __name__ == "__main__":
     app = App()

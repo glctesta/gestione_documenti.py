@@ -59,16 +59,28 @@ class UpdateProgressWindow(tk.Tk):
             file_frame,
             text="",
             font=("Helvetica", 8),
-            foreground="grey"
+            foreground="grey",
+            anchor="w",
+            width=80
         )
-        self.file_label.pack(anchor='center')
+        self.file_label.pack(anchor='x')
 
         self.after(200, self.start_update)
 
     def update_file_label(self, text):
-        """Aggiorna il testo della label del file in modo pulito"""
-        self.file_label.configure(text=text)
-        self.update_idletasks()
+        """Aggiorna il testo della label del file senza artefatti grafici."""
+        # 1) Pulisce la label scrivendo spazi su tutta la sua larghezza
+        try:
+            width = int(self.file_label.cget('width')) or 0
+        except Exception:
+            width = 0
+        if width > 0:
+            self.file_label.configure(text=" " * width)
+            self.file_label.update_idletasks()
+
+        # 2) Imposta il nuovo testo
+        self.file_label.configure(text=text or "")
+        self.file_label.update_idletasks()
 
     def start_update(self):
         try:
