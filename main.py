@@ -1,5 +1,6 @@
 #import configparser
 # --- StdIO safeguard + Faulthandler sicuro per exe windowed ---
+import shutil
 import sys, os, atexit
 from pathlib import Path
 
@@ -124,7 +125,7 @@ import logging
 import logging.config
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
-
+import json, socket
 
 def _detect_log_file_path(logger_name: str) -> str:
     """
@@ -214,8 +215,9 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
+
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.7.4"  # Versione aggiornata
+APP_VERSION = "1.7.6"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -235,7 +237,6 @@ def is_update_needed(current_ver_str, db_ver_str):
         # Fallback a un confronto di stringhe semplice in caso di errore
         return db_ver_str > current_ver_str
 
-
 def fetch_working_areas(self):
     """Recupera le Aree di Lavoro principali."""
     query = "SELECT [WorkingAreaID], [AreaName] FROM [ResetServices].[BreakDown].[WorkingAreas] ORDER BY AreaName;"
@@ -244,7 +245,6 @@ def fetch_working_areas(self):
         return self.cursor.fetchall()
     except pyodbc.Error as e:
         self.last_error_details = str(e); return []
-
 
 def fetch_working_sub_areas(self, working_area_id):
     """Recupera le Sotto-Aree in base all'Area di Lavoro selezionata."""
@@ -258,7 +258,6 @@ def fetch_working_sub_areas(self, working_area_id):
         return self.cursor.fetchall()
     except pyodbc.Error as e:
         self.last_error_details = str(e); return []
-
 
 def fetch_working_lines(self, working_area_id, sub_area_id):
     """Recupera le Linee in base all'Area e Sotto-Area selezionate."""
@@ -275,7 +274,6 @@ def fetch_working_lines(self, working_area_id, sub_area_id):
         return self.cursor.fetchall()
     except pyodbc.Error as e:
         self.last_error_details = str(e); return []
-
 
 def fetch_production_orders_for_breakdown(self):
     """Recupera gli ordini di produzione per la selezione."""
@@ -298,7 +296,6 @@ def fetch_production_orders_for_breakdown(self):
     except pyodbc.Error as e:
         self.last_error_details = str(e); return []
 
-
 def fetch_issue_areas(self):
     """Recupera le aree problematiche (es. Meccanica, Elettrica)."""
     query = "SELECT [IssueAreaId], [IssueArea] FROM [ResetServices].[BreakDown].[IssuesAreas] ORDER BY [IssueArea];"
@@ -308,6 +305,190 @@ def fetch_issue_areas(self):
     except pyodbc.Error as e:
         self.last_error_details = str(e); return []
 
+class KanbanRulesManagementForm(tk.Toplevel):
+    def __init__(self, master, db_handler, lang_manager):
+        super().__init__(master)
+        self.db = db_handler
+        self.lang = lang_manager
+
+        self.title(self.lang.get('rules_mgmt_title', "KanBan - Gestione regole"))
+        self.geometry("640x460")
+        self.resizable(False, False)
+        self.transient(master)
+        self.grab_set()
+
+        # Stato form
+        self._current_rule_id = None
+        self.rule_type_var = tk.StringVar(value="percent")  # 'percent' | 'qty'
+        self.rule_value_var = tk.StringVar()
+
+        self._logo_imgtk = None
+
+        self._build_ui()
+        self._load_rules()
+
+    def _build_ui(self):
+        root = ttk.Frame(self, padding=12)
+        root.pack(fill="both", expand=True)
+
+        # Lista regole
+        list_frame = ttk.Labelframe(root, text=self.lang.get('rules_list', "Regole"))
+        list_frame.pack(fill="both", expand=True)
+
+        cols = ("id", "type", "value", "status", "dateout")
+        self.tree = ttk.Treeview(list_frame, columns=cols, show="headings", height=10)
+        self.tree.heading("id", text="ID")
+        self.tree.column("id", width=60, anchor="center")
+        self.tree.heading("type", text=self.lang.get('rule_type', "Tipo"))
+        self.tree.column("type", width=140)
+        self.tree.heading("value", text=self.lang.get('rule_value', "Valore"))
+        self.tree.column("value", width=100, anchor="e")
+        self.tree.heading("status", text=self.lang.get('rule_status', "Stato"))
+        self.tree.column("status", width=100)
+        self.tree.heading("dateout", text="DateOut")
+        self.tree.column("dateout", width=140)
+        self.tree.pack(fill="both", expand=True)
+        self.tree.bind("<<TreeviewSelect>>", self._on_select)
+
+        # Editor regola
+        edit = ttk.Labelframe(root, text=self.lang.get('rule_editor', "Editor regola"))
+        edit.pack(fill="x", pady=(10, 0))
+
+        r1 = ttk.Frame(edit); r1.pack(fill="x", padx=8, pady=6)
+        ttk.Label(r1, text=self.lang.get('rule_type', "Tipo")).pack(side="left")
+
+        ttk.Radiobutton(r1, text=self.lang.get('rule_percent', "Percentuale"), value="percent",
+                        variable=self.rule_type_var).pack(side="left", padx=(8, 8))
+        ttk.Radiobutton(r1, text=self.lang.get('rule_quantity', "Quantità"), value="qty",
+                        variable=self.rule_type_var).pack(side="left", padx=(0, 8))
+
+        r2 = ttk.Frame(edit); r2.pack(fill="x", padx=8, pady=6)
+        ttk.Label(r2, text=self.lang.get('rule_value', "Valore")).pack(side="left")
+        self.value_entry = ttk.Entry(r2, textvariable=self.rule_value_var, width=12)
+        self.value_entry.pack(side="left", padx=(8, 8))
+        ttk.Label(r2, text=self.lang.get('rule_value_hint', "(% intero 1..100 o quantità > 0)")).pack(side="left")
+
+        # Pulsanti azione
+        btns = ttk.Frame(root); btns.pack(fill="x", pady=(10, 0))
+        ttk.Button(btns, text=self.lang.get('button_new', "Nuova"), command=self._on_new).pack(side="left")
+        ttk.Button(btns, text=self.lang.get('button_save', "Salva"), command=self._on_save).pack(side="left", padx=(8,0))
+        ttk.Button(btns, text=self.lang.get('button_delete', "Elimina"), command=self._on_delete).pack(side="left", padx=(8,0))
+        ttk.Button(btns, text=self.lang.get('button_clear', "Pulisci"), command=self._on_clear).pack(side="left", padx=(8,0))
+
+        # Logo in basso a destra
+        bottom = ttk.Frame(root); bottom.pack(fill="both", expand=True)
+        self.logo_lbl = ttk.Label(bottom)
+        self.logo_lbl.pack(side="right", anchor="se", padx=4, pady=4)
+        self._load_logo()
+
+    def _load_logo(self):
+        try:
+            if os.path.exists("logo.png"):
+                img = Image.open("logo.png")
+                img.thumbnail((160, 80))
+                self._logo_imgtk = ImageTk.PhotoImage(img)
+                self.logo_lbl.configure(image=self._logo_imgtk)
+        except Exception:
+            pass
+
+    def _load_rules(self):
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        rows = self.db.fetch_all_kanban_rules()
+        for r in rows:
+            is_pct = getattr(r, "MinimumProcent", None) is not None
+            value = int(getattr(r, "MinimumProcent", 0) if is_pct else getattr(r, "MinimumQty", 0))
+            type_txt = self.lang.get('rule_percent', "Percentuale") if is_pct else self.lang.get('rule_quantity', "Quantità")
+            status_txt = self.lang.get('rule_status_active', "Attiva") if getattr(r, "DateOut", None) is None else self.lang.get('rule_status_closed', "Chiusa")
+            dateout_txt = "" if getattr(r, "DateOut", None) is None else str(getattr(r, "DateOut"))
+            self.tree.insert("", "end", iid=str(r.KanBanRuleID),
+                             values=(r.KanBanRuleID, type_txt, value, status_txt, dateout_txt))
+
+    def _on_select(self, event=None):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        rid = int(sel[0])
+        # recupera record dalla lista corrente
+        rows = self.db.fetch_all_kanban_rules()
+        the = next((x for x in rows if x.KanBanRuleID == rid), None)
+        if not the:
+            return
+        self._current_rule_id = rid
+        is_pct = getattr(the, "MinimumProcent", None) is not None
+        self.rule_type_var.set("percent" if is_pct else "qty")
+        val = int(getattr(the, "MinimumProcent", 0) if is_pct else getattr(the, "MinimumQty", 0))
+        self.rule_value_var.set(str(val))
+
+    def _validate(self):
+        typ = self.rule_type_var.get()
+        sval = self.rule_value_var.get().strip()
+        if not sval.isdigit():
+            return False, self.lang.get('rules_err_numeric', "Inserire un numero intero positivo.")
+        n = int(sval)
+        if typ == "percent":
+            if n < 1 or n > 100:
+                return False, self.lang.get('rules_err_percent_range', "La percentuale deve essere tra 1 e 100.")
+            return True, ("percent", n)
+        else:
+            if n <= 0:
+                return False, self.lang.get('rules_err_qty_positive', "La quantità deve essere > 0.")
+            return True, ("qty", n)
+
+    def _on_new(self):
+        self._current_rule_id = None
+        self.rule_type_var.set("percent")
+        self.rule_value_var.set("")
+        self.tree.selection_remove(self.tree.selection())
+
+    def _on_clear(self):
+        self._on_new()
+
+    def _on_save(self):
+        ok, res = self._validate()
+        if not ok:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"), res, parent=self)
+            return
+        typ, val = res
+        min_pct = val if typ == "percent" else None
+        min_qty = val if typ == "qty" else None
+
+        if self._current_rule_id is None:
+            ok, err = self.db.add_kanban_rule(min_pct, min_qty)
+        else:
+            ok, err = self.db.update_kanban_rule(self._current_rule_id, min_pct, min_qty)
+
+        if ok:
+            messagebox.showinfo(self.lang.get('info_title', "Informazione"), self.lang.get('rules_saved', "Regola salvata."), parent=self)
+            self._load_rules()
+            if self._current_rule_id is None:
+                self._on_new()
+        else:
+            messagebox.showerror(self.lang.get('error_title', "Errore"),
+                                 self.lang.get('rules_save_err', f"Errore salvataggio: {err or self.db.last_error_details}"),
+                                 parent=self)
+
+    def _on_delete(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"), self.lang.get('rules_select_row', "Seleziona una regola."), parent=self)
+            return
+        rid = int(sel[0])
+        if not messagebox.askyesno(self.lang.get('confirm_title', "Conferma"),
+                                   self.lang.get('confirm_delete_rule', "Eliminare (chiudere) la regola selezionata?"),
+                                   parent=self):
+            return
+        ok, err = self.db.soft_delete_kanban_rule(rid)
+        if ok:
+            messagebox.showinfo(self.lang.get('info_title', "Informazione"), self.lang.get('rules_deleted', "Regola eliminata."), parent=self)
+            self._load_rules()
+            self._on_new()
+        else:
+            # già chiusa o altro errore
+            msg = self.lang.get('rules_already_closed', "La regola è già chiusa o non esiste.") if err == "already_closed_or_not_found" else (err or self.db.last_error_details)
+            messagebox.showerror(self.lang.get('error_title', "Errore"),
+                                 self.lang.get('rules_delete_err', f"Errore eliminazione: {msg}"),
+                                 parent=self)
 
 class LanguageManager:
     """Gestisce le traduzioni e la lingua corrente dell'applicazione."""
@@ -346,9 +527,726 @@ class LanguageManager:
         """Imposta la lingua corrente."""
         self.current_language = lang_code.lower()
 
-
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
+
+    def fetch_kanban_current_stock_by_component(self) -> dict[int, int]:
+        """
+        Ritorna {IdComponent: StockTotale} (DateOut IS NULL).
+        """
+        sql = """
+        SELECT IdComponent, COALESCE(SUM(Quantity),0) AS Stock
+        FROM knb.KanBanRecords
+        WHERE DateOut IS NULL
+        GROUP BY IdComponent;
+        """
+        cur = self.conn.cursor()
+        cur.execute(sql)
+        out = {int(r.IdComponent): int(r.Stock or 0) for r in cur.fetchall()}
+        cur.close()
+        return out
+
+    def fetch_active_rules_by_component(self) -> dict[int, dict]:
+        """
+        Ritorna {IdComponent: {'rule_id':..., 'min_qty':..., 'min_pct':...}}
+        per i link attivi (DateOut IS NULL) in knb.KanBanRecodRules.
+        """
+        sql = """
+        SELECT rr.IdComponent, r.KanBanRuleID, r.MinimumQty, r.MinimumProcent
+        FROM knb.KanBanRecodRules rr
+        INNER JOIN knb.KanBanRules r ON r.KanBanRuleID = rr.KanBanRuleId
+        WHERE rr.DateOut IS NULL;
+        """
+        cur = self.conn.cursor()
+        cur.execute(sql)
+        out = {}
+        for r in cur.fetchall():
+            out[int(r.IdComponent)] = {
+                'rule_id': int(r.KanBanRuleID),
+                'min_qty': (int(r.MinimumQty) if getattr(r, 'MinimumQty', None) is not None else None),
+                'min_pct': (int(r.MinimumProcent) if getattr(r, 'MinimumProcent', None) is not None else None)
+            }
+        cur.close()
+        return out
+
+    def fetch_first_load_qty_by_component(self, comp_ids: list[int]) -> dict[int, int]:
+        """
+        Per i componenti richiesti, ritorna la 'prima quantità' caricata (earliest DateIn con Quantity>0).
+        {IdComponent: first_qty}
+        """
+        if not comp_ids:
+            return {}
+        # Costruisco una tabella temporanea con i comp_ids per efficienza (in pyodbc uso IN con params)
+        placeholders = ",".join("?" for _ in comp_ids)
+        sql = f"""
+        WITH ranked AS (
+          SELECT IdComponent, Quantity,
+                 ROW_NUMBER() OVER (PARTITION BY IdComponent ORDER BY DateIn ASC, KanBanRecordId ASC) AS rn
+          FROM knb.KanBanRecords
+          WHERE Quantity > 0 AND IdComponent IN ({placeholders})
+        )
+        SELECT IdComponent, Quantity FROM ranked WHERE rn = 1;
+        """
+        cur = self.conn.cursor()
+        cur.execute(sql, comp_ids)
+        out = {int(r.IdComponent): int(r.Quantity) for r in cur.fetchall()}
+        cur.close()
+        return out
+
+    def fetch_max_single_load_by_component(self, comp_ids: list[int]) -> dict[int, dict]:
+        """
+        Per i componenti richiesti, ritorna la massima quantità di un singolo carico e la sua KanBanRecordId.
+        {IdComponent: {'max_qty': int, 'record_id': int}}
+        """
+        if not comp_ids:
+            return {}
+        placeholders = ",".join("?" for _ in comp_ids)
+        sql = f"""
+        WITH ranked AS (
+          SELECT IdComponent, Quantity, KanBanRecordId,
+                 ROW_NUMBER() OVER (PARTITION BY IdComponent ORDER BY Quantity DESC, DateIn DESC, KanBanRecordId DESC) AS rn
+          FROM knb.KanBanRecords
+          WHERE Quantity > 0 AND IdComponent IN ({placeholders})
+        )
+        SELECT IdComponent, Quantity AS MaxQty, KanBanRecordId
+        FROM ranked WHERE rn = 1;
+        """
+        cur = self.conn.cursor()
+        cur.execute(sql, comp_ids)
+        out = {int(r.IdComponent): {'max_qty': int(r.MaxQty), 'record_id': int(r.KanBanRecordId)} for r in
+               cur.fetchall()}
+        cur.close()
+        return out
+
+    def fetch_components_master(self, comp_ids: list[int]) -> dict[int, dict]:
+        """
+        Ritorna {IdComponent: {'code':..., 'desc':...}}
+        """
+        if not comp_ids:
+            return {}
+        placeholders = ",".join("?" for _ in comp_ids)
+        sql = f"SELECT IdComponent, ComponentCode, ComponentDescription FROM dbo.Components WHERE IdComponent IN ({placeholders});"
+        cur = self.conn.cursor()
+        cur.execute(sql, comp_ids)
+        out = {
+            int(r.IdComponent): {'code': r.ComponentCode, 'desc': getattr(r, 'ComponentDescription', '') or ''}
+            for r in cur.fetchall()
+        }
+        cur.close()
+        return out
+
+    def has_refill_request_today(self, kanban_record_id: int) -> bool:
+        """
+        True se esiste già una richiesta per la stessa KanBanRecordId oggi.
+        """
+        sql = """
+        SELECT 1
+        FROM knb.KanBanMaterialRequestes
+        WHERE KanBanRecordId = ?
+          AND CAST(RequestedOn AS date) = CAST(GETDATE() AS date);
+        """
+        cur = self.conn.cursor()
+        cur.execute(sql, kanban_record_id)
+        row = cur.fetchone()
+        cur.close()
+        return row is not None
+
+    def insert_refill_request(self, kanban_record_id: int, qty_to_refill: int) -> bool:
+        """
+        Inserisce la richiesta di refill.
+        """
+        sql = """
+        INSERT INTO knb.KanBanMaterialRequestes (KanBanRecordId, QtyToRefill, RequestedOn)
+        VALUES (?, ?, GETDATE());
+        """
+        try:
+            cur = self.conn.cursor()
+            cur.execute(sql, kanban_record_id, qty_to_refill)
+            self.conn.commit()
+            cur.close()
+            logger.info('Richiesta materiali KanBan, registrata in DB')
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+
+    def get_total_stock_component(self, id_component: int) -> int:
+        """
+        Stock totale del componente su tutte le locazioni (DateOut IS NULL).
+        """
+        sql = """
+        SELECT COALESCE(SUM(Quantity), 0) AS Qty
+        FROM knb.KanBanRecords
+        WHERE IdComponent = ? AND DateOut IS NULL;
+        """
+        self.cursor.execute(sql, id_component)
+        row = self.cursor.fetchone()
+        return int(row.Qty if row and row.Qty is not None else 0)
+
+    def get_component_locations_with_stock(self, id_component: int) -> dict[int, int]:
+        """
+        Restituisce {LocationId: Qty} per le locazioni dove il componente ha stock > 0 (DateOut IS NULL).
+        """
+        sql = """
+        SELECT LocationId, SUM(Quantity) AS Qty
+        FROM knb.KanBanRecords
+        WHERE IdComponent = ? AND DateOut IS NULL
+        GROUP BY LocationId
+        HAVING SUM(Quantity) > 0;
+        """
+        self.cursor.execute(sql, id_component)
+        return {int(r.LocationId): int(r.Qty or 0) for r in self.cursor.fetchall()}
+
+    def fetch_all_components_for_combo(self):
+        """
+        Elenco per combo: IdComponent, ComponentCode, ComponentDescription
+        """
+        sql = """
+        SELECT IdComponent, ComponentCode, ComponentDescription
+        FROM dbo.Components
+        ORDER BY ComponentCode;
+        """
+        self.cursor.execute(sql)
+        return self.cursor.fetchall()
+
+    def fetch_all_locations_for_combo(self):
+        """
+        Elenco per combo: LocationId, LocationCode, KanBanLocation (area)
+        """
+        sql = """
+        SELECT l.LocationId, l.LocationCode, kbl.KanBanLocation
+        FROM knb.Locations AS l
+        LEFT JOIN knb.KanBanLocations AS kbl ON kbl.KanBanLocationId = l.KanBanLocationId
+        ORDER BY kbl.KanBanLocation, l.LocationCode;
+        """
+        self.cursor.execute(sql)
+        return self.cursor.fetchall()
+
+    def get_component_id_by_code(self, component_code: str):
+        sql = "SELECT IdComponent FROM dbo.Components WHERE ComponentCode = ?;"
+        self.cursor.execute(sql, component_code)
+        row = self.cursor.fetchone()
+        return row.IdComponent if row else None
+
+    def get_location_id_by_code(self, location_code: str):
+        sql = "SELECT LocationId FROM knb.Locations WHERE LocationCode = ?;"
+        self.cursor.execute(sql, location_code)
+        row = self.cursor.fetchone()
+        return row.LocationId if row else None
+
+    def get_current_stock(self, id_component: int, location_id: int) -> int:
+        """
+        Stock corrente = somma dei movimenti (Quantity) per componente+locazione con DateOut IS NULL.
+        """
+        sql = """
+        SELECT COALESCE(SUM(Quantity), 0) AS Qty
+        FROM knb.KanBanRecords
+        WHERE IdComponent = ? AND LocationId = ? AND DateOut IS NULL;
+        """
+        self.cursor.execute(sql, id_component, location_id)
+        row = self.cursor.fetchone()
+        return int(row.Qty if row and row.Qty is not None else 0)
+
+    def insert_kanban_movement(self, location_id: int, id_component: int, quantity: int, user_name: str | None = None):
+        """
+        Inserisce un movimento: quantity >0 carico, <0 prelievo.
+        DateIn = GETDATE(), DateOut = NULL, [User] = utente che esegue l'operazione.
+        """
+        if not isinstance(quantity, int) or quantity == 0:
+            return False, "invalid_quantity"
+        try:
+            self.conn.autocommit = False
+            sql = """
+            INSERT INTO knb.KanBanRecords (LocationId, IdComponent, Quantity, DateIn, DateOut, [User])
+            VALUES (?, ?, ?, GETDATE(), NULL, ?);
+            """
+            self.cursor.execute(sql, location_id, id_component, quantity, user_name)
+            self.conn.commit()
+            return True, None
+        except Exception as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            self.last_error_details = str(e)
+            return False, str(e)
+        finally:
+            self.conn.autocommit = True
+
+    def fetch_components_locations_report(self):
+        """
+        Elenca componenti attivi con la loro locazione e area (solo record aperti: DateOut IS NULL).
+        Colonne: ComponentCode, ComponentDescription, LocationCode, KanBanLocation
+        """
+        sql = """
+        SELECT c.ComponentCode,
+               c.ComponentDescription,
+               l.LocationCode,
+               kbl.KanBanLocation
+        FROM dbo.Components AS c
+        INNER JOIN knb.KanBanRecords AS kr ON kr.IdComponent = c.IdComponent
+        INNER JOIN knb.Locations     AS l  ON l.LocationId   = kr.LocationId
+        INNER JOIN knb.KanBanLocations AS kbl ON kbl.KanBanLocationId = l.KanBanLocationId
+        WHERE kr.DateOut IS NULL
+        ORDER BY kbl.KanBanLocation, l.LocationCode, c.ComponentCode;
+        """
+        try:
+            self.cursor.execute(sql)
+            return self.cursor.fetchall()
+        except Exception as e:
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_all_kanban_rules(self):
+        """
+        Ritorna tutte le regole (attive e chiuse).
+        """
+        sql = """
+        SELECT KanBanRuleID, MinimumProcent, MinimumQty, DateOut
+        FROM knb.KanBanRules
+        ORDER BY CASE WHEN DateOut IS NULL THEN 0 ELSE 1 END,
+                 CASE WHEN MinimumProcent IS NOT NULL THEN 0 ELSE 1 END,
+                 MinimumProcent, MinimumQty, KanBanRuleID;
+        """
+        try:
+            self.cursor.execute(sql)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def add_kanban_rule(self, min_percent: int | None, min_qty: int | None):
+        """
+        Crea una nuova regola. Esattamente uno tra min_percent e min_qty deve essere valorizzato.
+        """
+        if (min_percent is None) == (min_qty is None):
+            return False, "exactly_one_value_required"
+        try:
+            self.conn.autocommit = False
+            self.cursor.execute(
+                "INSERT INTO knb.KanBanRules (MinimumProcent, MinimumQty) VALUES (?, ?);",
+                min_percent, min_qty
+            )
+            self.conn.commit()
+            return True, None
+        except pyodbc.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            self.last_error_details = str(e)
+            return False, str(e)
+        finally:
+            self.conn.autocommit = True
+
+    def update_kanban_rule(self, rule_id: int, min_percent: int | None, min_qty: int | None):
+        """
+        Modifica una regola esistente. Esattamente uno tra min_percent e min_qty deve essere valorizzato.
+        Non tocca DateOut.
+        """
+        if (min_percent is None) == (min_qty is None):
+            return False, "exactly_one_value_required"
+        try:
+            self.conn.autocommit = False
+            self.cursor.execute(
+                "UPDATE knb.KanBanRules SET MinimumProcent = ?, MinimumQty = ? WHERE KanBanRuleID = ?;",
+                min_percent, min_qty, rule_id
+            )
+            if self.cursor.rowcount == 0:
+                self.conn.rollback()
+                return False, "not_found"
+            self.conn.commit()
+            return True, None
+        except pyodbc.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            self.last_error_details = str(e)
+            return False, str(e)
+        finally:
+            self.conn.autocommit = True
+
+    def soft_delete_kanban_rule(self, rule_id: int):
+        """
+        Cancellazione logica: setta DateOut = GETDATE() se non è già valorizzata.
+        """
+        try:
+            self.conn.autocommit = False
+            self.cursor.execute(
+                "UPDATE knb.KanBanRules SET DateOut = GETDATE() WHERE KanBanRuleID = ? AND DateOut IS NULL;",
+                rule_id
+            )
+            if self.cursor.rowcount == 0:
+                # già chiusa o non trovata
+                self.conn.rollback()
+                return False, "already_closed_or_not_found"
+            self.conn.commit()
+            return True, None
+        except pyodbc.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            self.last_error_details = str(e)
+            return False, str(e)
+        finally:
+            self.conn.autocommit = True
+
+    def fetch_component_types(self):
+        """
+        Select IdComponentType, ComponentTypeName from ComponentTypes order by ComponentTypeName;
+        """
+        sql = """
+        SELECT IdComponentType, ComponentTypeName
+        FROM dbo.ComponentTypes
+        ORDER BY ComponentTypeName;
+        """
+        try:
+            self.cursor.execute(sql)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_components(self, component_type_id: int | None = None):
+        """
+        Carica i componenti (len(componentcode) > 5), opzionalmente filtrati per tipo.
+        select idcomponent, c.ComponentCode, ComponentDescription, ct.ComponentTypeName
+        from components c
+        left join ComponentTypes ct on c.IDComponentType = ct.IDComponentType
+        where len(c.componentcode) > 5
+          [and c.IDComponentType = ?]
+        order by c.componentcode;
+        """
+        base = """
+        SELECT c.IdComponent, c.ComponentCode, c.ComponentDescription, ct.ComponentTypeName
+        FROM dbo.Components c
+        LEFT JOIN dbo.ComponentTypes ct ON c.IDComponentType = ct.IDComponentType
+        WHERE LEN(c.ComponentCode) > 5
+        """
+        params = []
+        if component_type_id:
+            base += " AND c.IDComponentType = ?"
+            params.append(component_type_id)
+        base += " ORDER BY c.ComponentCode;"
+        try:
+            self.cursor.execute(base, params)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_kanban_rules(self):
+        """
+        SELECT KanBanRuleID, MinimumProcent, MinimumQty FROM knb.KanBanRules
+        Ordina con percentuali prima, poi quantità.
+        """
+        sql = """
+        SELECT KanBanRuleID, MinimumProcent, MinimumQty
+        FROM knb.KanBanRules
+        ORDER BY CASE WHEN MinimumProcent IS NOT NULL THEN 0 ELSE 1 END,
+                 MinimumProcent, MinimumQty;
+        """
+        try:
+            self.cursor.execute(sql)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_active_rule_for_component(self, id_component: int):
+        """
+        Ritorna la regola attiva (DateOut IS NULL) per il componente, se presente.
+        """
+        sql = """
+        SELECT TOP 1 KanBanRuleId
+        FROM knb.KanBanRecodRules
+        WHERE IdComponent = ? AND DateOut IS NULL
+        ORDER BY DateIn DESC;
+        """
+        try:
+            self.cursor.execute(sql, id_component)
+            return self.cursor.fetchone()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return None
+
+    def assign_rule_to_component(self, id_component: int, kanban_rule_id: int | None):
+        """
+        Associa una regola a un componente:
+        - Chiude eventuale regola attiva con DateOut = GETDATE()
+        - Se kanban_rule_id è None: solo chiusura (rimozione regola)
+        - Altrimenti inserisce un nuovo record con DateIn = GETDATE(), DateOut = NULL
+
+        Usa transazione.
+        """
+        try:
+            self.conn.autocommit = False
+
+            # Chiudi eventuali regole attive
+            self.cursor.execute(
+                "UPDATE knb.KanBanRecodRules SET DateOut = GETDATE() WHERE IdComponent = ? AND DateOut IS NULL;",
+                id_component
+            )
+
+            if kanban_rule_id is not None:
+                self.cursor.execute(
+                    "INSERT INTO knb.KanBanRecodRules (IdComponent, KanBanRuleId, DateIn) VALUES (?, ?, GETDATE());",
+                    id_component, kanban_rule_id
+                )
+
+            self.conn.commit()
+            return True, None
+        except pyodbc.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            self.last_error_details = str(e)
+            return False, str(e)
+        finally:
+            self.conn.autocommit = True
+
+    def _table_has_column(self, schema: str, table: str, column: str) -> bool:
+        sql = """
+        SELECT 1
+        FROM sys.columns
+        WHERE object_id = OBJECT_ID(?)
+          AND name = ?;
+        """
+        try:
+            self.cursor.execute(sql, f"{schema}.{table}", column)
+            return self.cursor.fetchone() is not None
+        except pyodbc.Error:
+            return False
+
+    def fetch_locations_for_combo(self):
+        """
+        Ritorna elenco locazioni per combo destinazione.
+        Colonne: LocationId, KanBanLocationId, LocationCode, KanBanLocation
+        """
+        sql = """
+        SELECT l.LocationId, k.KanBanLocationId, l.LocationCode, k.KanBanLocation
+        FROM knb.Locations l
+        INNER JOIN knb.KanBanLocations k ON k.KanBanLocationId = l.KanBanLocationId
+        ORDER BY k.KanBanLocation, l.LocationCode;
+        """
+        try:
+            self.cursor.execute(sql)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def search_component_open_records(self, component_code: str):
+        """
+        Ricerca componenti attivi (DateOut IS NULL) per codice componente.
+        Aggiungo KanBanRecordId per identificare il record da chiudere.
+        """
+        sql = """
+        SELECT k.KanBanRecordId, c.IdComponent, l.LocationId,
+               c.ComponentCode, c.ComponentDescription,
+               l.LocationCode + ' (' +kl.KanBanLocation +')' as LocationCode, k.Quantity
+        FROM dbo.Components AS c
+        INNER JOIN knb.KanBanRecords AS k ON c.IdComponent = k.IdComponent
+        INNER JOIN knb.Locations     AS l ON k.LocationId  = l.LocationId
+        inner join knb.KanBanLocations as KL on l.KanBanLocationId=Kl.KanBanLocationId
+        WHERE c.ComponentCode = ? AND k.DateOut IS NULL
+        ORDER BY l.LocationCode;
+        """
+        try:
+            self.cursor.execute(sql, component_code)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def move_record_to_location(self, record_id: int, to_location_id: int, to_kanban_location_id: int | None = None):
+        """
+        Sposta UN record (singolo componente in una specifica locazione) in un'altra locazione.
+        - Chiude il record sorgente (DateOut = GETDATE()).
+        - Inserisce nuovo record con stessa Quantity/IdComponent in locazione destinazione (DateIn = GETDATE()).
+        Se la tabella ha la colonna KanBanLocationId, la valorizza.
+        """
+        has_kbl = self._table_has_column('knb', 'KanBanRecords', 'KanBanLocationId')
+        try:
+            self.conn.autocommit = False
+
+            # Carico dati del record
+            self.cursor.execute(
+                "SELECT IdComponent, Quantity FROM knb.KanBanRecords WHERE KanBanRecordId = ?;", record_id
+            )
+            row = self.cursor.fetchone()
+            if not row:
+                self.conn.rollback()
+                return False, "not_found"
+            id_component, qty = row
+
+            # Chiudi il record sorgente (solo se ancora aperto)
+            self.cursor.execute(
+                "UPDATE knb.KanBanRecords SET DateOut = GETDATE() WHERE KanBanRecordId = ? AND DateOut IS NULL;",
+                record_id
+            )
+            if self.cursor.rowcount == 0:
+                self.conn.rollback()
+                return False, "already_closed"
+
+            # Inserisci nuovo record in destinazione
+            if has_kbl and to_kanban_location_id is not None:
+                sql_ins = """
+                INSERT INTO knb.KanBanRecords (LocationId, IdComponent, Quantity, DateIn, KanBanLocationId)
+                VALUES (?, ?, ?, GETDATE(), ?);
+                """
+                self.cursor.execute(sql_ins, to_location_id, id_component, qty, to_kanban_location_id)
+            else:
+                sql_ins = """
+                INSERT INTO knb.KanBanRecords (LocationId, IdComponent, Quantity, DateIn)
+                VALUES (?, ?, ?, GETDATE());
+                """
+                self.cursor.execute(sql_ins, to_location_id, id_component, qty)
+
+            self.conn.commit()
+            return True, None
+        except pyodbc.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            self.last_error_details = str(e)
+            return False, str(e)
+        finally:
+            self.conn.autocommit = True
+
+    def move_all_from_location(self, from_location_id: int, to_location_id: int,
+                               to_kanban_location_id: int | None = None):
+        """
+        Sposta TUTTI i record aperti (DateOut IS NULL) da una locazione a un'altra.
+        Chiude i record sorgenti e inserisce nuovi record in blocco.
+        """
+        has_kbl = self._table_has_column('knb', 'KanBanRecords', 'KanBanLocationId')
+        try:
+            self.conn.autocommit = False
+
+            # Conta quanti record aperti ci sono nella sorgente
+            self.cursor.execute(
+                "SELECT COUNT(*) FROM knb.KanBanRecords WHERE LocationId = ? AND DateOut IS NULL;",
+                from_location_id
+            )
+            n = self.cursor.fetchone()[0]
+            if n == 0:
+                self.conn.rollback()
+                return False, "nothing_to_move"
+
+            # Chiudi i record sorgenti
+            self.cursor.execute(
+                "UPDATE knb.KanBanRecords SET DateOut = GETDATE() WHERE LocationId = ? AND DateOut IS NULL;",
+                from_location_id
+            )
+
+            # Inserimento con INSERT ... SELECT
+            if has_kbl and to_kanban_location_id is not None:
+                sql_ins = """
+                INSERT INTO knb.KanBanRecords (LocationId, IdComponent, Quantity, DateIn, KanBanLocationId)
+                SELECT ?, IdComponent, Quantity, GETDATE(), ?
+                FROM knb.KanBanRecords
+                WHERE LocationId = ? AND DateOut = (SELECT MAX(DateOut) FROM knb.KanBanRecords kk WHERE kk.KanBanRecordId = knb.KanBanRecords.KanBanRecordId)
+                   OR (LocationId = ? AND DateOut IS NULL) -- per sicurezza, ma dopo l'update sopra non ci saranno più NULL
+                ;
+                """
+                # Notare: la riga sopra replica quantity e component dagli ultimi record; in pratica, dopo l'UPDATE, le righe appena chiuse vengono reinserite.
+                # Passo due volte from_location_id per la OR.
+                self.cursor.execute(sql_ins, to_location_id, to_kanban_location_id, from_location_id, from_location_id)
+            else:
+                sql_ins = """
+                INSERT INTO knb.KanBanRecords (LocationId, IdComponent, Quantity, DateIn)
+                SELECT ?, IdComponent, Quantity, GETDATE()
+                FROM knb.KanBanRecords
+                WHERE LocationId = ? AND DateOut = (SELECT MAX(DateOut) FROM knb.KanBanRecords kk WHERE kk.KanBanRecordId = knb.KanBanRecords.KanBanRecordId)
+                   OR (LocationId = ? AND DateOut IS NULL);
+                """
+                self.cursor.execute(sql_ins, to_location_id, from_location_id, from_location_id)
+
+            self.conn.commit()
+            return True, None
+        except pyodbc.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            self.last_error_details = str(e)
+            return False, str(e)
+        finally:
+            self.conn.autocommit = True
+
+    def fetch_kanban_locations_all(self):
+        """
+        Restituisce tutte le locazioni KanBan (LocationCode) ordinate.
+        """
+        sql = """
+            SELECT L.LocationCode, L.KanBanLocationId
+            FROM knb.Locations AS L
+            ORDER BY L.LocationCode;
+        """
+        try:
+            self.cursor.execute(sql)
+            return self.cursor.fetchall()  # .LocationCode, .KanBanLocationId
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def count_kanban_locations(self) -> int | None:
+        """
+        Ritorna il numero totale di locazioni KanBan (knb.Locations).
+        """
+        try:
+            return self.cursor.execute("SELECT COUNT(*) FROM knb.Locations;").fetchval()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return None
+
+    def fetch_kanban_areas(self):
+        """
+        Restituisce le aree KanBan (IDParentPhase, ParentPhaseName) filtrate per CodCDC in (10,30,90).
+        """
+        query = """            
+            select [KanBanLocationId] AS IDParentPhase,
+            KanBanLocation AS ParentPhaseName
+             FROM  KNB.KANBANLOCATIONS order by KanBanLocation;
+        """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def insert_kanban_location(self, kanban_location_id: int, location_code: str):
+        """
+        Inserisce una nuova locazione KanBan.
+        Ritorna (True, None) su successo, oppure (False, 'duplicate') se violazione chiave/unicità,
+        oppure (False, 'messaggio_errore') per altri errori.
+        """
+        sql = """
+            INSERT INTO knb.Locations (KanBanLocationId, LocationCode)
+            VALUES (?, ?);
+        """
+        try:
+            self.cursor.execute(sql, int(kanban_location_id), location_code)
+            self.conn.commit()
+            return True, None
+        except pyodbc.IntegrityError as e:
+            # SQL Server: 2627 (unique constraint), 2601 (duplicate key)
+            msg = str(e)
+            if any(code in msg for code in ("2627", "2601")) or "UNIQUE" in msg.upper() or "duplicate" in msg.lower():
+                self.conn.rollback()
+                return False, "duplicate"
+            self.conn.rollback()
+            return False, msg
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            return False, str(e)
 
     def fetch_card_referiments(self, label_code):
         """
@@ -753,7 +1651,6 @@ class Database:
             except:
                 pass
 
-    # Sostituisci il metodo esistente con questo
     def insert_scrap_declaration(self, user_name, id_label_code, id_parent_phase, scrap_reason_id,
                                  note, picture_bytes, riferiments=None):
         """
@@ -882,12 +1779,13 @@ class Database:
         :return: Una singola riga (oggetto row) o None se non trovata.
         """
         query = """
-            SELECT TOP 1 
-                cast(c.CalibratedOn as date) As CalibratedOn, 
-                cast(c.ExpireOn as date) as ExpireOn
-            FROM eqp.calibrations c 
-            WHERE c.equipmentid = ?
-            ORDER BY c.CalibratedOn DESC
+            SELECT TOP (1)
+            c.CalibratedOn,
+            c.ExpireOn,
+            c.NrCertificate
+            FROM eqp.Calibrations AS c
+            WHERE c.EquipmentId = ?
+        ORDER BY c.CalibratedOn DESC, c.CalibrationId DESC;
         """
         cursor = None
         try:
@@ -913,30 +1811,32 @@ class Database:
             if cursor:
                 cursor.close()
 
-    def add_new_calibration(self, equipment_id, expiry_date, supplier_id, cert_number):
+    def add_new_calibration(self, equipment_id: int, expire_on: str, supplier_id: int, certificate_bytes):
         """
-        MODIFICATO: Inserisce una nuova calibrazione usando l'ID del fornitore (supplier_id).
-        :param supplier_id: L'ID numerico del fornitore (IDSite).
+        Inserisce una calibrazione.
+        NrCertificate: varbinary(MAX) -> passare bytes/bytearray o None.
+        Se per retrocompatibilità arriva una str, viene codificata UTF-8.
         """
-        query = """
-            INSERT INTO eqp.calibrations 
-                (EquipmentId, CalibratedOn, ExpireOn, CalibrationSupplierId, NrCertificate)
-            VALUES (?, GETDATE(), ?, ?, ?)
+        sql = """
+        INSERT INTO eqp.Calibrations (EquipmentId, CalibratedOn, ExpireOn, SupplierId, NrCertificate)
+        VALUES (?, GETDATE(), ?, ?, ?);
         """
-        # Nota: Ho ipotizzato che il campo nella tabella `eqp.calibrations`
-        # si chiami `CertifyingBodyId`. Adattalo se ha un nome diverso.
-        cursor = None
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(query, equipment_id, expiry_date, supplier_id, cert_number)
-            self.conn.commit()
-        except Exception as e:
-            if self.conn:
-                self.conn.rollback()
-            raise e
-        finally:
-            if cursor:
-                cursor.close()
+
+        # Normalizza il parametro binario
+        if certificate_bytes is None:
+            param_cert = None
+        elif isinstance(certificate_bytes, (bytes, bytearray, memoryview)):
+            # memoryview va bene, ma convertiamolo a bytes per sicurezza
+            param_cert = bytes(certificate_bytes)
+        elif isinstance(certificate_bytes, str):
+            # solo se vuoi supportare ancora stringhe (verranno salvate come UTF-8)
+            param_cert = certificate_bytes.encode('utf-8')
+        else:
+            # qualsiasi altro tipo (es. Path) -> prova a convertirlo in bytes
+            param_cert = bytes(certificate_bytes)
+
+        self.cursor.execute(sql, equipment_id, expire_on, supplier_id, param_cert)
+        self.conn.commit()
 
     def get_equipment_info(self, equipment_id):
         """Recupera le informazioni del macchinario dal database."""
@@ -1246,8 +2146,6 @@ class Database:
             self.last_error_details = str(e);
             return []
 
-
-    #
     def fetch_supplier_sites(self):
         """Recupera i fornitori/compagnie dalla tabella Sites."""
         query = "SELECT [IDSite], [SiteName] FROM [Traceability_RS].[dbo].[Sites] WHERE isSupplier = 1 ORDER BY SiteName;"
@@ -1304,7 +2202,6 @@ class Database:
             self.conn.rollback()
             return False, f"Errore database: {e}"
 
-
     def check_if_brand_is_used(self, brand_id):
         """Controlla se un brand è utilizzato in almeno una macchina."""
         query = "SELECT COUNT(*) FROM eqp.Equipments WHERE BrandId = ?;"
@@ -1313,7 +2210,6 @@ class Database:
             return count > 0
         except pyodbc.Error:
             return True  # Per sicurezza, in caso di errore, si assume che sia usato
-
 
     def update_brand(self, brand_id, brand_name, company_id, logo_data):
         """Aggiorna un brand esistente."""
@@ -2020,7 +2916,7 @@ class Database:
     def fetch_user_permissions(self, employee_hire_history_id):
         """Recupera i permessi attivi per un dato dipendente."""
         query = """
-                SELECT a.AuthorizedUsedId, ap.TranslationValue + ' [' + ap.LanguageCode + ']' AS MenuKey
+                SELECT a.AuthorizedUsedId, ap.TranslationValue + ' [' + ap.MenuValue + ']' AS MenuKey
                 FROM Employee.dbo.employees e
                          INNER JOIN employee.dbo.EmployeeHireHistory h ON h.EmployeeId = e.EmployeeId
                          LEFT JOIN Traceability_rs.dbo.AutorizedUsers a \
@@ -2040,16 +2936,19 @@ class Database:
     def fetch_available_permissions(self, employee_hire_history_id):
         """Recupera i menu a cui un utente NON è ancora abilitato."""
         query = """
-                SELECT a.Translationkey, a.translationvalue
-                FROM AppTranslations a
-                WHERE a.LanguageCode = 'it'             -- O 'en', la lingua base per le chiavi
-                  AND a.TranslationKey LIKE 'submenu_%' -- Seleziona solo chiavi di sottomenu
-                  AND NOT EXISTS (SELECT 1 \
-                                  FROM AutorizedUsers \
-                                  WHERE TranslationKey = a.TranslationKey \
-                                    AND EmployeeHireHistoryId = ? \
-                                    AND DateOut IS NULL)
-                ORDER BY a.translationvalue, a.TranslationKey; \
+        SELECT DISTINCT
+               a.TranslationKey AS Translationkey,
+               CAST(a.MenuValue AS nvarchar(255)) AS translationvalue
+        FROM AppTranslations AS a
+        WHERE a.MenuValue IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM AutorizedUsers AS au
+              WHERE au.TranslationKey = a.TranslationKey
+                AND au.EmployeeHireHistoryId = ?
+                AND au.DateOut IS NULL
+          )
+        ORDER BY translationvalue, Translationkey;
                 """
         try:
             self.cursor.execute(query, employee_hire_history_id)
@@ -2558,7 +3457,6 @@ class Database:
             print(f"Errore nell'inserimento del nuovo task: {e}")
             self.last_error_details = str(e)
             return False
-
     def fetch_report_maintainers(self):
         """Recupera la lista dei manutentori che hanno eseguito almeno una manutenzione."""
         query = """
@@ -2689,29 +3587,29 @@ class Database:
             return None
         # NUOVO METODO: Aggiunge una nuova parte di ricambio al catalogo
 
-    def add_new_spare_part(self, material_part_number, material_code=None, material_description=None,
-                           to_be_revizited=1):
-        """Inserisce una nuova parte in eqp.SparePartMaterials e restituisce il nuovo ID."""
-        # Assumiamo che la tabella abbia un IDENTITY ID (SparePartMaterialId)
-        query = """
-                INSERT INTO eqp.SparePartMaterials (MaterialPartNumber, MaterialCode, MaterialDescription,toberevizited)
-                OUTPUT INSERTED.SparePartMaterialId 
-                VALUES (?, ?, ?, 1);
-                """
-        try:
-            # Esegui l'INSERT
-            self.cursor.execute(query, material_part_number, material_code, material_description)
-
-            # Poiché abbiamo usato OUTPUT, l'INSERT ora restituisce un risultato che possiamo leggere con fetchval().
-            new_id = self.cursor.fetchval()
-
-            if new_id:
-                self.conn.commit()
-                return new_id
-            else:
-                self.conn.rollback()
-                self.last_error_details = "Inserimento riuscito ma impossibile recuperare il nuovo ID."
-                return None
+    # def add_new_spare_part(self, material_part_number, material_code=None, material_description=None,
+    #                        to_be_revizited=1):
+    #     """Inserisce una nuova parte in eqp.SparePartMaterials e restituisce il nuovo ID."""
+    #     # Assumiamo che la tabella abbia un IDENTITY ID (SparePartMaterialId)
+    #     query = """
+    #             INSERT INTO eqp.SparePartMaterials (MaterialPartNumber, MaterialCode, MaterialDescription,toberevizited)
+    #             OUTPUT INSERTED.SparePartMaterialId
+    #             VALUES (?, ?, ?, 1);
+    #             """
+    #     try:
+    #         # Esegui l'INSERT
+    #         self.cursor.execute(query, material_part_number, material_code, material_description)
+    #
+    #         # Poiché abbiamo usato OUTPUT, l'INSERT ora restituisce un risultato che possiamo leggere con fetchval().
+    #         new_id = self.cursor.fetchval()
+    #
+    #         if new_id:
+    #             self.conn.commit()
+    #             return new_id
+    #         else:
+    #             self.conn.rollback()
+    #             self.last_error_details = "Inserimento riuscito ma impossibile recuperare il nuovo ID."
+    #             return None
 
         except pyodbc.Error as e:
             self.conn.rollback()
@@ -3508,7 +4406,6 @@ class Database:
             self.last_error_details = f"Errore Applicazione (File System): {e}"
             return False
 
-
 class LoginWindow(tk.Toplevel):
     """Finestra per raccogliere le credenziali dell'utente."""
 
@@ -3580,7 +4477,6 @@ class LoginWindow(tk.Toplevel):
         # L'utente ha chiuso la finestra senza premere login
         self.clicked_login = False
         self.destroy()
-
 
 class InsertDocumentForm(tk.Toplevel):
     """Finestra di inserimento documenti (di Produzione)."""
@@ -3793,6 +4689,1515 @@ class InsertDocumentForm(tk.Toplevel):
         self.validated_var.set(False)
         self.file_entry.config(state="readonly")
 
+class KanbanLocationCreateForm(tk.Toplevel):
+    """
+    Crea una locazione KanBan:
+    - Combo aree (da dbo.ParentPhases, CodCDC in 10,30,90)
+    - Campo locazione (max 8 char)
+    - Bottone salva
+    - Logo bottom-right
+    """
+    def __init__(self, master, db_handler, lang_manager):
+        super().__init__(master)
+        self.db = db_handler
+        self.lang = lang_manager
+
+        self.title(self.lang.get('kanban_locations_title', "Crea locazione KanBan"))
+        self.geometry("500x260")
+        self.resizable(False, False)
+        self.transient(master)
+        self.grab_set()
+
+        # State
+        self.area_map = {}  # {display_name: id}
+        self.area_var = tk.StringVar()
+        self.location_var = tk.StringVar()
+
+        self._build_ui()
+        self._load_areas()
+        self._update_save_state()
+
+    def _build_ui(self):
+        container = ttk.Frame(self, padding=16)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        # Area label + combo
+        ttk.Label(container, text=self.lang.get('kanban_area_label', "Area KanBan"),
+                  font=("Helvetica", 10, "bold")).grid(row=0, column=0, sticky="w")
+        self.area_combo = ttk.Combobox(container, textvariable=self.area_var, state="readonly", width=44)
+        self.area_combo.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 12))
+        self.area_combo.bind("<<ComboboxSelected>>", lambda e: self._update_save_state())
+
+        # Location label + entry
+        ttk.Label(container, text=self.lang.get('kanban_location_label', "Locazione"),
+                  font=("Helvetica", 10, "bold")).grid(row=2, column=0, sticky="w")
+        self.location_entry = ttk.Entry(container, textvariable=self.location_var, width=30)
+        self.location_entry.grid(row=3, column=0, sticky="w", pady=(2, 12))
+        self.location_entry.bind("<KeyRelease>", self._on_location_change)
+
+        # Buttons (Save + Close)
+        btns = ttk.Frame(container)
+        btns.grid(row=4, column=0, columnspan=2, sticky="e", pady=(10, 0))
+
+        self.save_btn = ttk.Button(btns, text=self.lang.get('button_save', "Salva"), command=self._on_save)
+        self.save_btn.pack(side="right", padx=(6, 0))
+
+        close_btn = ttk.Button(btns, text=self.lang.get('button_close', "Chiudi"), command=self.destroy)
+        close_btn.pack(side="right")
+
+        # Bottom bar: left -> total locations, right -> logo
+        bottom = ttk.Frame(container)
+        bottom.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        bottom.columnconfigure(0, weight=1)  # sinistra si espande
+
+        # Totale locazioni (sinistra)
+        self.total_locations_label = ttk.Label(bottom, text="")
+        self.total_locations_label.grid(row=0, column=0, sticky="w")
+
+        # Logo (destra)
+        if PIL_AVAILABLE:
+            try:
+                from PIL import Image, ImageTk
+                img = Image.open("logo.png")
+                img.thumbnail((100, 100))
+                self._logo_img = ImageTk.PhotoImage(img)
+                ttk.Label(bottom, image=self._logo_img).grid(row=0, column=1, sticky="e")
+            except Exception as e:
+                print(f"Errore caricamento logo: {e}")
+
+        # Grid weights
+        container.columnconfigure(0, weight=1)
+
+        # Carica il totale
+        self._load_locations_count()
+
+    def _load_locations_count(self):
+        n = self.db.count_kanban_locations()
+        n_str = str(n) if n is not None else "#N/A"
+        # usa template traducibile con {n}
+        template = self.lang.get('kanban_locations_total', "Totale locazioni: {n}")
+        self.total_locations_label.config(text=template.replace("{n}", n_str))
+
+    def _load_areas(self):
+        rows = self.db.fetch_kanban_areas()
+        if not rows:
+            messagebox.showerror(self.lang.get('error_title', "Errore"),
+                                 self.lang.get('kanban_areas_load_error', "Impossibile caricare le aree KanBan."),
+                                 parent=self)
+            self.area_combo.config(state="disabled")
+            self.save_btn.config(state="disabled")
+            return
+
+        # Mappa display -> id
+        self.area_map = {row.ParentPhaseName: row.IDParentPhase for row in rows}
+        self.area_combo['values'] = list(self.area_map.keys())
+        if self.area_combo['values']:
+            self.area_combo.current(0)
+
+    def _on_location_change(self, event=None):
+        # Uppercase e max 8 caratteri
+        val = self.location_var.get().upper()
+        if len(val) > 8:
+            val = val[:8]
+        if val != self.location_var.get():
+            self.location_var.set(val)
+            # riposiziona il cursore alla fine
+            self.location_entry.icursor(tk.END)
+        self._update_save_state()
+
+    def _update_save_state(self):
+        has_area = bool(self.area_var.get())
+        loc = self.location_var.get().strip()
+        enable = has_area and 1 <= len(loc) <= 8
+        self.save_btn.config(state=("normal" if enable else "disabled"))
+
+    def _on_save(self):
+        # Validazioni
+        area_name = self.area_var.get()
+        if not area_name:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
+                                   self.lang.get('kanban_area_required', "Selezionare un'area."), parent=self)
+            return
+        area_id = self.area_map.get(area_name)
+        print(area_id)
+        loc = self.location_var.get().strip().upper()
+
+        if not loc:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
+                                   self.lang.get('kanban_location_required', "Inserire una locazione."), parent=self)
+            self.location_entry.focus_set()
+            return
+        if len(loc) > 8:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
+                                   self.lang.get('kanban_location_len', "La locazione può avere al massimo 8 caratteri."),
+                                   parent=self)
+            self.location_entry.focus_set()
+            return
+
+        ok, err = self.db.insert_kanban_location(area_id, loc)
+        if ok:
+            messagebox.showinfo(self.lang.get('info_title', "Informazione"),
+                                self.lang.get('kanban_location_saved', "Locazione creata con successo."),
+                                parent=self)
+            self.location_var.set("")
+            self.location_entry.focus_set()
+            self._update_save_state()
+            self._load_locations_count()  # <-- aggiorna conteggio
+            return
+
+        if err == "duplicate":
+            self.location_var.set("")
+            self.location_entry.focus_set()
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
+                                   self.lang.get('kanban_location_exists',
+                                                 "La locazione esiste già per l'area selezionata. Inserire un valore diverso."),
+                                   parent=self)
+            return
+
+        messagebox.showerror(self.lang.get('error_title', "Errore"),
+                             self.lang.get('kanban_location_save_error',
+                                           f"Errore durante il salvataggio della locazione: {err}"),
+                             parent=self)
+
+class KanbanLocationLabelsForm(tk.Toplevel):
+    def __init__(self, master, db_handler, lang_manager):
+        super().__init__(master)
+        self.db = db_handler
+        self.lang = lang_manager
+        self.title(self.lang.get('kanban_labels_title', "Stampa etichette locazioni"))
+        self.geometry("520x260")
+        self.resizable(False, False)
+        self.transient(master)
+        self.grab_set()
+
+        self.cfg = load_printer_config()
+        if not self.cfg:
+            # chiedi subito la configurazione
+            dlg = PrinterSetupDialog(self, self.lang)
+            self.wait_window(dlg)
+            if not getattr(dlg, "result", None):
+                messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
+                                       self.lang.get('printer_not_configured', "Stampante non configurata."), parent=self)
+                self.destroy()
+                return
+            self.cfg = dlg.result
+
+        self.location_var = tk.StringVar()
+        self.copies_var = tk.StringVar(value="1")
+
+        self._build_ui()
+        self._load_locations()
+
+    def _build_ui(self):
+        frm = ttk.Frame(self, padding=16)
+        frm.pack(fill="both", expand=True)
+
+        # Riga configurazione stampante + bottone setup
+        top = ttk.Frame(frm)
+        top.grid(row=0, column=0, columnspan=2, sticky="ew")
+        ttk.Label(top, text=self.lang.get('printer_current', "Stampante:")).pack(side="left")
+        self.prn_label = ttk.Label(top, text=self._printer_summary(), foreground="#006400")
+        self.prn_label.pack(side="left", padx=(6, 0))
+        ttk.Button(top, text=self.lang.get('printer_setup_btn', "Imposta..."), command=self._setup_printer).pack(side="right")
+
+        # Selezione locazione
+        ttk.Label(frm, text=self.lang.get('kanban_location_label', "Locazione"), font=("Helvetica", 10, "bold")).grid(row=1, column=0, sticky="w", pady=(12,2))
+        self.location_combo = ttk.Combobox(frm, textvariable=self.location_var, state="readonly", width=40)
+        self.location_combo.grid(row=2, column=0, sticky="w")
+
+        # Copie
+        ttk.Label(frm, text=self.lang.get('copies_label', "Copie")).grid(row=1, column=1, sticky="w", pady=(12,2))
+        self.copies_entry = ttk.Spinbox(frm, from_=1, to=99, textvariable=self.copies_var, width=5)
+        self.copies_entry.grid(row=2, column=1, sticky="w")
+
+        # Pulsanti
+        btns = ttk.Frame(frm)
+        btns.grid(row=10, column=0, columnspan=2, sticky="e", pady=(16,0))
+        ttk.Button(btns, text=self.lang.get('button_close', "Chiudi"), command=self.destroy).pack(side="right")
+        self.print_btn = ttk.Button(btns, text=self.lang.get('button_print', "Stampa"), command=self._on_print)
+        self.print_btn.pack(side="right", padx=(0,8))
+
+        frm.columnconfigure(0, weight=1)
+
+    def _printer_summary(self) -> str:
+        c = self.cfg or {}
+        return f"{c.get('name','?')} ({c.get('ip','?')}:{c.get('port','?')}, {c.get('dpi','203')} dpi)"
+
+    def _setup_printer(self):
+        dlg = PrinterSetupDialog(self, self.lang)
+        self.wait_window(dlg)
+        if getattr(dlg, "result", None):
+            self.cfg = dlg.result
+            self.prn_label.config(text=self._printer_summary())
+
+    def _load_locations(self):
+        rows = self.db.fetch_kanban_locations_all()
+        if not rows:
+            messagebox.showerror(self.lang.get('error_title', "Errore"),
+                                 self.lang.get('kanban_locations_load_error', "Impossibile caricare le locazioni."),
+                                 parent=self)
+            self.print_btn.config(state="disabled")
+            return
+        values = [r.LocationCode for r in rows]
+        self.location_combo['values'] = values
+        if values:
+            self.location_combo.current(0)
+
+    def _on_print(self):
+        loc = self.location_var.get().strip().upper()
+        if not loc:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
+                                   self.lang.get('kanban_location_required', "Inserire una locazione."), parent=self)
+            return
+
+        # Conformità al limite 8 char se desideri mantenerlo anche in stampa
+        if len(loc) > 8:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
+                                   self.lang.get('kanban_location_len', "La locazione può avere al massimo 8 caratteri."),
+                                   parent=self)
+            return
+
+        try:
+            copies = int(self.copies_var.get())
+        except ValueError:
+            copies = 1
+
+        zpl = build_zpl_label(loc, copies, self.cfg)
+        ok, err = send_raw_to_printer(self.cfg["ip"], int(self.cfg["port"]), zpl.encode("utf-8"))
+        if ok:
+            messagebox.showinfo(self.lang.get('info_title', "Informazione"),
+                                self.lang.get('print_ok', "Stampa inviata alla stampante."), parent=self)
+        else:
+            messagebox.showerror(self.lang.get('error_title', "Errore"),
+                                 self.lang.get('print_error', f"Errore di stampa: {err}"), parent=self)
+
+def get_printer_config_dir() -> Path:
+    base = Path(os.getenv("LOCALAPPDATA", ".")) / "TraceabilityRS"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+def get_printer_config_path() -> Path:
+    return get_printer_config_dir() / "printer_config.json"
+
+def migrate_printer_config(cfg: dict) -> dict:
+    # Versioning e default
+    cfg = dict(cfg or {})
+    cfg.setdefault("version", 1)
+    cfg.setdefault("name", "")
+    cfg.setdefault("ip", "")
+    cfg.setdefault("port", 9100)
+    cfg.setdefault("dpi", 203)
+    cfg.setdefault("label_cm", [5, 5])   # [Larghezza, Altezza] in cm
+    cfg.setdefault("text_pt", 12)
+    cfg.setdefault("language", "ZPL")
+    # NUOVO: scheduling refill Kanban
+    cfg.setdefault("kanban_refill_enabled", True)
+    cfg.setdefault("kanban_refill_check_minutes", 60)
+    return cfg
+
+def load_printer_config() -> dict | None:
+    path = get_printer_config_path()
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        return migrate_printer_config(raw)
+    except Exception:
+        # JSON corrotto o non leggibile
+        return None
+
+def save_printer_config(cfg: dict) -> tuple[bool, str | None]:
+    """
+    Scrive il JSON con backup e sostituzione atomica.
+    Ritorna (True, None) se ok, (False, err) se errore.
+    """
+    try:
+        cfg = migrate_printer_config(cfg)
+        path = get_printer_config_path()
+        dir_ = path.parent
+        dir_.mkdir(parents=True, exist_ok=True)
+
+        # Backup del file esistente
+        if path.exists():
+            bak = dir_ / f"printer_config.bak"
+            shutil.copy2(path, bak)
+
+        # Scrittura atomica: tmp -> replace
+        with tempfile.NamedTemporaryFile("w", delete=False, dir=str(dir_), encoding="utf-8") as tf:
+            json.dump(cfg, tf, ensure_ascii=False, indent=2)
+            tmp_name = tf.name
+        os.replace(tmp_name, path)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+def validate_ip(ip: str) -> bool:
+    try:
+        socket.inet_aton(ip)
+        return True
+    except OSError:
+        return False
+
+def open_config_folder():
+    # Apre la cartella del file JSON nel file manager
+    path = get_printer_config_dir()
+    try:
+        os.startfile(str(path))  # Windows
+    except AttributeError:
+        import subprocess, sys
+        if sys.platform.startswith("darwin"):
+            subprocess.call(["open", str(path)])
+        else:
+            subprocess.call(["xdg-open", str(path)])
+
+def pt_to_dots(pt: int, dpi: int) -> int:
+    # 1 pt = 1/72 inch
+    return max(10, round(dpi * (pt / 72.0)))
+
+def cm_to_dots(cm: float, dpi: int) -> int:
+    return round(dpi * (cm / 2.54))
+
+def build_zpl_label(location_code: str, copies: int, cfg: dict) -> str:
+    """
+    Costruisce ZPL per etichetta 5x5 cm:
+    - QR centrato
+    - Testo sotto, corpo 12pt
+    """
+    dpi = int(cfg.get("dpi", 203))
+    w_cm, h_cm = cfg.get("label_cm", [5, 5])
+    width = cm_to_dots(w_cm, dpi)
+    height = cm_to_dots(h_cm, dpi)
+    text_h = pt_to_dots(int(cfg.get("text_pt", 12)), dpi)
+    text_w = text_h  # quadrato
+
+    margin = max(12, round(0.1 * dpi))  # ~2.5mm a 203dpi -> ~20 dot
+    available_h = height - text_h - margin * 3
+    if available_h < 50:
+        available_h = max(50, height - text_h - margin)
+
+    # Magnification QR (1..10). Considero QR v1 21x21 moduli.
+    modules = 21
+    max_qr_dots = min(width - 2 * margin, available_h)
+    mag = max(1, min(10, max_qr_dots // modules))
+    qr_size = modules * mag
+    qr_x = (width - qr_size) // 2
+    qr_y = margin
+
+    text_y = qr_y + qr_size + margin
+
+    # ZPL
+    data = location_code.upper()
+    zpl = []
+    zpl.append("^XA")
+    zpl.append("^CI28")                           # UTF-8 (anche se non serve per A-Z0-9)
+    zpl.append(f"^PW{width}")                    # print width
+    zpl.append(f"^LL{height}")                   # label length
+    zpl.append("^LH0,0")
+
+    # QR code centrato
+    zpl.append(f"^FO{qr_x},{qr_y}")
+    zpl.append(f"^BQN,2,{mag}")
+    zpl.append(f"^FDLA,{data}^FS")
+
+    # Testo centrato
+    # Uso ^FB per centrare rispetto alla larghezza disponibile
+    zpl.append(f"^FO0,{text_y}")
+    zpl.append(f"^A0N,{text_h},{text_w}")
+    zpl.append(f"^FB{width},1,0,C,0")
+    zpl.append(f"^FD{data}^FS")
+
+    # Numero copie
+    copies = max(1, int(copies))
+    zpl.append(f"^PQ{copies},0,1,Y")
+
+    zpl.append("^XZ")
+    return "".join(zpl)
+
+def send_raw_to_printer(ip: str, port: int, payload: bytes, timeout: float = 5.0) -> tuple[bool, str | None]:
+    try:
+        with socket.create_connection((ip, port), timeout=timeout) as s:
+            s.sendall(payload)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+class KanbanLocationModifyForm(tk.Toplevel):
+    def __init__(self, master, db_handler, lang_manager):
+        super().__init__(master)
+        self.db = db_handler
+        self.lang = lang_manager
+        self.title(self.lang.get('kanban_modify_title', "Modifica locazioni"))
+        self.geometry("720x420")
+        self.resizable(False, False)
+        self.transient(master)
+        self.grab_set()
+
+        self.component_var = tk.StringVar()
+        self.dest_loc_var = tk.StringVar()
+        self.src_loc_var = tk.StringVar()
+        self.dest_loc_var2 = tk.StringVar()
+
+        self._locations_cache = []  # rows for combo
+
+        self._build_ui()
+        self._load_locations()
+
+    def _build_ui(self):
+        nb = ttk.Notebook(self)
+        nb.pack(fill="both", expand=True, padx=12, pady=12)
+
+        # Tab 1: Sposta componente
+        tab1 = ttk.Frame(nb)
+        nb.add(tab1, text=self.lang.get('tab_move_component', "Sposta componente"))
+
+        frm1 = ttk.Frame(tab1, padding=12)
+        frm1.pack(fill="both", expand=True)
+
+        # Ricerca componente
+        row = ttk.Frame(frm1)
+        row.pack(fill="x")
+        ttk.Label(row, text=self.lang.get('component_code', "Codice componente")).pack(side="left")
+        ent = ttk.Entry(row, textvariable=self.component_var, width=30)
+        ent.pack(side="left", padx=(8,8))
+        ttk.Button(row, text=self.lang.get('button_search', "Cerca"), command=self._on_search_component).pack(side="left")
+
+        # Risultati
+        ttk.Label(frm1, text=self.lang.get('results_label', "Risultati")).pack(anchor="w", pady=(12,4))
+        cols = ("record_id", "loc_code", "qty", "desc")
+        self.tree = ttk.Treeview(frm1, columns=cols, show="headings", height=8)
+        self.tree.heading("record_id", text="ID")
+        self.tree.column("record_id", width=60, anchor="center")
+        self.tree.heading("loc_code", text=self.lang.get('location', "Locazione"))
+        self.tree.column("loc_code", width=140)
+        self.tree.heading("qty", text=self.lang.get('quantity', "Q.tà"))
+        self.tree.column("qty", width=80, anchor="e")
+        self.tree.heading("desc", text=self.lang.get('description', "Descrizione"))
+        self.tree.column("desc", width=360)
+        self.tree.pack(fill="both", expand=True)
+
+        # Destinazione
+        dest_row = ttk.Frame(frm1)
+        dest_row.pack(fill="x", pady=(12,0))
+        ttk.Label(dest_row, text=self.lang.get('destination', "Destinazione")).pack(side="left")
+        self.dest_combo = ttk.Combobox(dest_row, textvariable=self.dest_loc_var, state="readonly", width=48)
+        self.dest_combo.pack(side="left", padx=(8,8))
+
+        ttk.Button(frm1, text=self.lang.get('button_move', "Sposta"), command=self._on_move_single).pack(anchor="e", pady=(10,0))
+
+        # Tab 2: Sposta intera locazione
+        tab2 = ttk.Frame(nb)
+        nb.add(tab2, text=self.lang.get('tab_move_location', "Sposta locazione"))
+
+        frm2 = ttk.Frame(tab2, padding=12)
+        frm2.pack(fill="both", expand=True)
+
+        r2a = ttk.Frame(frm2); r2a.pack(fill="x")
+        ttk.Label(r2a, text=self.lang.get('source_location', "Sorgente")).pack(side="left")
+        self.src_combo = ttk.Combobox(r2a, textvariable=self.src_loc_var, state="readonly", width=40)
+        self.src_combo.pack(side="left", padx=(8,16))
+        ttk.Label(r2a, text=self.lang.get('destination', "Destinazione")).pack(side="left")
+        self.dest_combo2 = ttk.Combobox(r2a, textvariable=self.dest_loc_var2, state="readonly", width=40)
+        self.dest_combo2.pack(side="left", padx=(8,0))
+
+        ttk.Button(frm2, text=self.lang.get('button_move_all', "Sposta tutto"), command=self._on_move_all).pack(anchor="e", pady=(12,0))
+
+    def _load_locations(self):
+        rows = self.db.fetch_locations_for_combo()
+        self._locations_cache = rows
+        values = [f"{r.KanBanLocation} • {r.LocationCode}" for r in rows]
+        self.dest_combo['values'] = values
+        self.src_combo['values'] = values
+        self.dest_combo2['values'] = values
+        if values:
+            self.dest_combo.current(0)
+            self.src_combo.current(0)
+            if len(values) > 1:
+                self.dest_combo2.current(1)
+            else:
+                self.dest_combo2.current(0)
+
+    def _on_search_component(self):
+        code = self.component_var.get().strip()
+        if not code:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"), self.lang.get('component_required', "Inserire un codice componente."), parent=self)
+            return
+        rows = self.db.search_component_open_records(code)
+        # pulisci
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        for r in rows:
+            self.tree.insert("", "end", iid=str(r.KanBanRecordId),
+                             values=(r.KanBanRecordId, r.LocationCode, r.Quantity, r.ComponentDescription or ""))
+
+    def _pick_combo_ids(self, combo_value: str):
+        """
+        Estrae LocationId e KanBanLocationId dal valore scelto in combo (usando cache).
+        """
+        try:
+            idx = list(self.dest_combo['values']).index(combo_value)
+        except ValueError:
+            # prova con altre combo
+            vals = list(self.src_combo['values'])
+            idx = vals.index(combo_value) if combo_value in vals else -1
+        if idx < 0:
+            return None, None
+        row = self._locations_cache[idx]
+        return row.LocationId, row.KanBanLocationId
+
+    def _on_move_single(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"), self.lang.get('select_row', "Seleziona una riga dai risultati."), parent=self)
+            return
+        record_id = int(sel[0])
+        dest_val = self.dest_loc_var.get()
+        to_loc_id, to_kbl_id = self._pick_combo_ids(dest_val)
+        if not to_loc_id:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"), self.lang.get('destination_required', "Seleziona la destinazione."), parent=self)
+            return
+
+        # Evita movimento verso la stessa locazione (se deducibile)
+        # Recupero LocationId della riga selezionata leggendo i dati dal DB (più sicuro)
+        rows = self.db.search_component_open_records(self.component_var.get().strip())
+        src_loc_id = None
+        for r in rows:
+            if r.KanBanRecordId == record_id:
+                src_loc_id = r.LocationId
+                break
+        if src_loc_id == to_loc_id:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"), self.lang.get('same_location', "Sorgente e destinazione coincidono."), parent=self)
+            return
+
+        ok, err = self.db.move_record_to_location(record_id, to_loc_id, to_kbl_id)
+        if ok:
+            messagebox.showinfo(self.lang.get('info_title', "Informazione"), self.lang.get('move_ok', "Spostamento completato."), parent=self)
+            self._on_search_component()  # refresh risultati
+        else:
+            messagebox.showerror(self.lang.get('error_title', "Errore"),
+                                 self.lang.get('move_err', f"Errore durante lo spostamento: {err or self.db.last_error_details}"),
+                                 parent=self)
+
+    def _on_move_all(self):
+        src_val = self.src_loc_var.get()
+        dest_val = self.dest_loc_var2.get()
+        if not src_val or not dest_val:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"), self.lang.get('source_dest_required', "Seleziona sorgente e destinazione."), parent=self)
+            return
+        src_loc_id, _ = self._pick_combo_ids(src_val)
+        to_loc_id, to_kbl_id = self._pick_combo_ids(dest_val)
+        if not src_loc_id or not to_loc_id:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"), self.lang.get('source_dest_required', "Seleziona sorgente e destinazione."), parent=self)
+            return
+        if src_loc_id == to_loc_id:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"), self.lang.get('same_location', "Sorgente e destinazione coincidono."), parent=self)
+            return
+
+        ok, err = self.db.move_all_from_location(src_loc_id, to_loc_id, to_kbl_id)
+        if ok:
+            messagebox.showinfo(self.lang.get('info_title', "Informazione"), self.lang.get('move_ok', "Spostamento completato."), parent=self)
+        else:
+            msg = self.lang.get('nothing_to_move', "Nessun record da spostare.") if err == "nothing_to_move" else (err or self.db.last_error_details)
+            messagebox.showerror(self.lang.get('error_title', "Errore"),
+                                 self.lang.get('move_err', f"Errore durante lo spostamento: {msg}"),
+                                 parent=self)
+
+class KanbanMaterialsManagementForm(tk.Toplevel):
+    def __init__(self, master, db_handler, lang_manager):
+        super().__init__(master)
+        self.db = db_handler
+        self.lang = lang_manager
+
+        self.title(self.lang.get('materials_mgmt_title', "KanBan - Materiali: Gestione"))
+        self.geometry("760x420")
+        self.resizable(False, False)
+        self.transient(master)
+        self.grab_set()
+
+        # State
+        self.type_var = tk.StringVar()
+        self.comp_var = tk.StringVar()
+        self.rule_var = tk.StringVar()
+
+        self._types = []       # cache tipi
+        self._components = []  # cache componenti
+        self._rules = []       # cache regole
+        self._comp_index_by_display = {}  # mappa display->row
+        self._rule_index_by_display = {}  # mappa display->row
+
+        self._logo_imgtk = None
+
+        self._build_ui()
+        self._load_types()
+        self._load_rules()
+        self._load_components(None)  # all
+
+    def _build_ui(self):
+        root = ttk.Frame(self, padding=12)
+        root.pack(fill="both", expand=True)
+
+        # Filtri riga 1: Tipo componente
+        fr1 = ttk.Frame(root)
+        fr1.pack(fill="x")
+        ttk.Label(fr1, text=self.lang.get('material_type', "Tipo componente")).pack(side="left")
+        self.type_combo = ttk.Combobox(fr1, textvariable=self.type_var, width=40, state="readonly")
+        self.type_combo.pack(side="left", padx=(8, 0))
+        self.type_combo.bind("<<ComboboxSelected>>", self._on_type_changed)
+
+        # Filtri riga 2: Componente
+        fr2 = ttk.Frame(root)
+        fr2.pack(fill="x", pady=(8, 0))
+        ttk.Label(fr2, text=self.lang.get('component', "Componente")).pack(side="left")
+        self.comp_combo = ttk.Combobox(fr2, textvariable=self.comp_var, width=60, state="readonly")
+        self.comp_combo.pack(side="left", padx=(8, 8))
+        self.comp_combo.bind("<<ComboboxSelected>>", self._on_component_changed)
+
+        # Stato/regola corrente
+        state = ttk.Labelframe(root, text=self.lang.get('current_rule_group', "Regola attiva"))
+        state.pack(fill="x", pady=(12, 0))
+        self.current_rule_label = ttk.Label(state, text=self.lang.get('no_rule', "Nessuna regola associata"))
+        self.current_rule_label.pack(anchor="w", padx=8, pady=6)
+
+        # Assegnazione regola
+        assign = ttk.Labelframe(root, text=self.lang.get('assign_rule_group', "Associa regola"))
+        assign.pack(fill="x", pady=(12, 0))
+        row = ttk.Frame(assign)
+        row.pack(fill="x", padx=8, pady=6)
+        ttk.Label(row, text=self.lang.get('select_rule', "Regola")).pack(side="left")
+        self.rule_combo = ttk.Combobox(row, textvariable=self.rule_var, state="readonly", width=50)
+        self.rule_combo.pack(side="left", padx=(8, 8))
+        ttk.Button(row, text=self.lang.get('button_assign', "Associa"), command=self._on_assign).pack(side="left")
+        ttk.Button(row, text=self.lang.get('button_remove', "Rimuovi"), command=self._on_remove).pack(side="left", padx=(8,0))
+
+        # Logo in basso a destra
+        bottom = ttk.Frame(root)
+        bottom.pack(fill="both", expand=True)
+        self.logo_lbl = ttk.Label(bottom)
+        self.logo_lbl.pack(side="right", anchor="se", padx=4, pady=4)
+        self._load_logo()
+
+    def _load_logo(self):
+        try:
+            if os.path.exists("logo.png"):
+                img = Image.open("logo.png")
+                # Ridimensiona per adattare
+                img.thumbnail((160, 80))
+                self._logo_imgtk = ImageTk.PhotoImage(img)
+                self.logo_lbl.configure(image=self._logo_imgtk)
+        except Exception:
+            # Fallback: nessun logo
+            pass
+
+    def _load_types(self):
+        rows = self.db.fetch_component_types()
+        self._types = rows
+        values = [self.lang.get('all_types', "Tutti i tipi")] + [r.ComponentTypeName for r in rows]
+        self.type_combo['values'] = values
+        if values:
+            self.type_combo.current(0)
+
+    def _load_components(self, type_id: int | None):
+        rows = self.db.fetch_components(type_id)
+        self._components = rows
+        values = []
+        self._comp_index_by_display.clear()
+        for r in rows:
+            disp = f"{r.ComponentCode} • {r.ComponentDescription or ''}"
+            values.append(disp)
+            self._comp_index_by_display[disp] = r
+        self.comp_combo['values'] = values
+        if values:
+            self.comp_combo.current(0)
+            # Aggiorna stato per il primo elemento
+            self._on_component_changed()
+
+    def _load_rules(self):
+        rows = self.db.fetch_kanban_rules()
+        self._rules = rows
+        values = []
+        self._rule_index_by_display.clear()
+        for r in rows:
+            if getattr(r, "MinimumProcent", None) is not None:
+                disp = f"Percentuale {int(r.MinimumProcent)}%"
+            elif getattr(r, "MinimumQty", None) is not None:
+                disp = f"Quantità {int(r.MinimumQty)}"
+            else:
+                disp = f"Regola {r.KanBanRuleID}"
+            values.append(disp)
+            self._rule_index_by_display[disp] = r
+        self.rule_combo['values'] = values
+        if values:
+            self.rule_combo.current(0)
+
+    def _on_type_changed(self, event=None):
+        sel = self.type_var.get()
+        if not sel or sel == self.lang.get('all_types', "Tutti i tipi"):
+            self._load_components(None)
+            return
+        # Trova type_id selezionato
+        type_id = None
+        for t in self._types:
+            if t.ComponentTypeName == sel:
+                type_id = t.IdComponentType
+                break
+        self._load_components(type_id)
+
+    def _get_selected_component_row(self):
+        disp = self.comp_var.get()
+        return self._comp_index_by_display.get(disp)
+
+    def _on_component_changed(self, event=None):
+        row = self._get_selected_component_row()
+        if not row:
+            self.current_rule_label.configure(text=self.lang.get('no_rule', "Nessuna regola associata"))
+            return
+        active = self.db.fetch_active_rule_for_component(row.IdComponent)
+        if active and getattr(active, "KanBanRuleId", None) is not None:
+            # Trova dettaglio regola per visualizzare percentuale/qty
+            rule = None
+            for r in self._rules:
+                if r.KanBanRuleID == active.KanBanRuleId:
+                    rule = r
+                    break
+            if rule:
+                if getattr(rule, "MinimumProcent", None) is not None:
+                    text = self.lang.get('current_rule_fmt_pct', "Regola attiva: {v}%").format(v=int(rule.MinimumProcent))
+                elif getattr(rule, "MinimumQty", None) is not None:
+                    text = self.lang.get('current_rule_fmt_qty', "Regola attiva: Q.tà {v}").format(v=int(rule.MinimumQty))
+                else:
+                    text = self.lang.get('current_rule_fmt_id', "Regola attiva ID {id}").format(id=rule.KanBanRuleID)
+                self.current_rule_label.configure(text=text)
+                # Pre-seleziona la regola nel combo se matcha
+                for disp, rr in self._rule_index_by_display.items():
+                    if rr.KanBanRuleID == rule.KanBanRuleID:
+                        self.rule_var.set(disp)
+                        break
+            else:
+                self.current_rule_label.configure(text=self.lang.get('current_rule_unknown', "Regola attiva non trovata"))
+        else:
+            self.current_rule_label.configure(text=self.lang.get('no_rule', "Nessuna regola associata"))
+
+    def _on_assign(self):
+        comp = self._get_selected_component_row()
+        if not comp:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"), self.lang.get('component_required', "Seleziona un componente."), parent=self)
+            return
+        disp = self.rule_var.get()
+        rule = self._rule_index_by_display.get(disp)
+        if not rule:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"), self.lang.get('rule_required', "Seleziona una regola."), parent=self)
+            return
+        ok, err = self.db.assign_rule_to_component(comp.IdComponent, rule.KanBanRuleID)
+        if ok:
+            messagebox.showinfo(self.lang.get('info_title', "Informazione"), self.lang.get('rule_assigned', "Regola associata."), parent=self)
+            self._on_component_changed()
+        else:
+            messagebox.showerror(self.lang.get('error_title', "Errore"),
+                                 self.lang.get('rule_assign_err', f"Errore associazione: {err or self.db.last_error_details}"),
+                                 parent=self)
+
+    def _on_remove(self):
+        comp = self._get_selected_component_row()
+        if not comp:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"), self.lang.get('component_required', "Seleziona un componente."), parent=self)
+            return
+        if not messagebox.askyesno(self.lang.get('confirm_title', "Conferma"), self.lang.get('confirm_remove_rule', "Rimuovere la regola attiva?"), parent=self):
+            return
+        ok, err = self.db.assign_rule_to_component(comp.IdComponent, None)  # solo chiusura
+        if ok:
+            messagebox.showinfo(self.lang.get('info_title', "Informazione"), self.lang.get('rule_removed', "Regola rimossa."), parent=self)
+            self._on_component_changed()
+        else:
+            messagebox.showerror(self.lang.get('error_title', "Errore"),
+                                 self.lang.get('rule_remove_err', f"Errore rimozione: {err or self.db.last_error_details}"),
+                                 parent=self)
+
+class KanbanMoveForm(tk.Toplevel):
+    def __init__(self, master, db_handler, lang_manager):
+        super().__init__(master)
+        self.db = db_handler
+        self.lang = lang_manager
+
+        self.title(self.lang.get('kanban_move_title', 'KanBan - Movimenta'))
+        self.geometry("720x420")
+        self.resizable(False, False)
+        self.transient(master)
+        self.grab_set()
+
+        # Stato
+        self.op_var = tk.StringVar(value="unload")  # default: Withdrawal
+        self._session_user = self._get_app_username()  # utente loggato alla maschera (se esiste)
+        self._load_user = None  # utente che fa login quando passa a Load
+        self.qty_var = tk.StringVar()
+        self.component_var = tk.StringVar()
+        self.location_var = tk.StringVar()
+
+        # Cache liste per filtro
+        self._components = []   # list of (IdComponent, code, descr)
+        self._locations = []    # list of (LocationId, code, area)
+        self._in_use_location_ids = set()  # locazioni dove il componente ha stock > 0
+        self._build_ui()
+        self._load_lists()
+
+    def _build_ui(self):
+        root = ttk.Frame(self, padding=12)
+        root.pack(fill="both", expand=True)
+
+        # Operazione
+        opf = ttk.Labelframe(root, text=self.lang.get('move_operation', 'Operazione'))
+        opf.pack(fill="x")
+        ttk.Radiobutton(opf, text=self.lang.get('move_load', 'Carico'),
+                        variable=self.op_var, value="load", command=self._on_op_changed).pack(side="left", padx=(10, 10), pady=6)
+        ttk.Radiobutton(opf, text=self.lang.get('move_unload', 'Prelievo'),
+                        variable=self.op_var, value="unload", command=self._on_op_changed).pack(side="left", padx=(0, 10), pady=6)
+
+        # Selezioni
+        sf = ttk.Labelframe(root, text=self.lang.get('move_selection', 'Selezione'))
+        sf.pack(fill="x", pady=(10, 0))
+
+        r1 = ttk.Frame(sf); r1.pack(fill="x", padx=6, pady=6)
+        ttk.Label(r1, text=self.lang.get('component', 'Componente'), width=16).pack(side="left")
+        self.cb_component = ttk.Combobox(r1, textvariable=self.component_var, width=50)
+        self.cb_component.pack(side="left", fill="x", expand=True)
+        self.cb_component.bind("<KeyRelease>", self._on_component_typed)
+
+        # Location row (già presente)
+        r2 = ttk.Frame(sf)
+        r2.pack(fill="x", padx=6, pady=6)
+        ttk.Label(r2, text=self.lang.get('location', 'Locazione'), width=16).pack(side="left")
+        self.cb_location = ttk.Combobox(r2, textvariable=self.location_var, width=50)
+        self.cb_location.pack(side="left", fill="x", expand=True)
+        self.cb_location.bind("<KeyRelease>", self._on_location_typed)
+
+        # HINT: *** in uso per questo componente
+        self.lbl_loc_hint = ttk.Label(
+            r2,
+            text=self.lang.get('loc_in_use_hint', '*** = locazione in uso per questo componente'),
+            foreground="gray"
+        )
+        self.lbl_loc_hint.pack(side="left", padx=(8, 0))
+
+        # Quantity row (già presente)
+        r3 = ttk.Frame(sf);
+        r3.pack(fill="x", padx=6, pady=6)
+        ttk.Label(r3, text=self.lang.get('quantity', 'Quantità'), width=16).pack(side="left")
+        ttk.Entry(r3, textvariable=self.qty_var, width=12).pack(side="left")
+
+        # Etichette saldo: qui e altrove
+        self.lbl_here_balance = ttk.Label(r3, text=self.lang.get('balance_here', 'Saldo qui: {qty}').format(qty='-'))
+        self.lbl_here_balance.pack(side="left", padx=(16, 8))
+        self.lbl_other_balance = ttk.Label(r3, text=self.lang.get('balance_other', 'Altrove: {qty}').format(qty='-'))
+        self.lbl_other_balance.pack(side="left")
+
+        # Pulsanti
+        bf = ttk.Frame(root); bf.pack(fill="x", pady=(12, 0))
+        ttk.Button(bf, text=self.lang.get('button_execute', 'Esegui'),
+                   command=self._on_execute).pack(side="left")
+        ttk.Button(bf, text=self.lang.get('button_import_excel', 'Importa da Excel'),
+                   command=self._on_import_excel).pack(side="left", padx=(8,0))
+        ttk.Button(bf, text=self.lang.get('button_close', 'Chiudi'),
+                   command=self.destroy).pack(side="right")
+
+        # Log/risultati
+        self.log = tk.Text(root, height=10, state="disabled")
+        self.log.pack(fill="both", expand=True, pady=(12, 0))
+
+        # Component combobox bindings
+        self.cb_component.bind("<<ComboboxSelected>>", self._on_component_selected)
+        self.cb_component.bind("<FocusOut>", self._on_component_focus_out)
+
+        # Location combobox bindings
+        self.cb_location.bind("<<ComboboxSelected>>", self._on_location_selected)
+        self.cb_location.bind("<FocusOut>", lambda e: self._update_balances())
+
+    def _on_op_changed(self):
+        if self.op_var.get() == "load":
+            if not self._ensure_load_login():
+                # login annullato/negato: torna a Withdrawal
+                self.op_var.set("unload")
+                messagebox.showwarning(
+                    self.lang.get('warn_title', 'Attenzione'),
+                    self.lang.get('load_requires_login', 'Per eseguire un carico è necessario effettuare il login.'),
+                    parent=self
+                )
+
+    def _load_lists(self):
+        # Componenti
+        self._components = []
+        for r in self.db.fetch_all_components_for_combo():
+            self._components.append((r.IdComponent, r.ComponentCode, r.ComponentDescription or ""))
+        # Stringhe combo: "CODE - Description"
+        comp_items = [f"{c[1]} - {c[2]}" if c[2] else c[1] for c in self._components]
+        self.cb_component["values"] = comp_items
+
+        # Locazioni
+        self._locations = []
+        for r in self.db.fetch_all_locations_for_combo():
+            self._locations.append((r.LocationId, r.LocationCode, r.KanBanLocation or ""))
+        loc_items = [f"{x[1]} - {x[2]}" if x[2] else x[1] for x in self._locations]
+        self.cb_location["values"] = loc_items
+
+    def _on_component_typed(self, event):
+        text = self.component_var.get().lower().strip()
+        items = []
+        for (_id, code, descr) in self._components:
+            s = f"{code} - {descr}" if descr else code
+            if text in code.lower() or text in (descr or "").lower():
+                items.append(s)
+        self.cb_component["values"] = items
+
+    def _on_location_typed(self, event):
+        text = self.location_var.get().lower().strip()
+        items = []
+        for (lid, code, area) in self._locations:
+            if text in code.lower() or text in (area or "").lower():
+                star = " (***)" if lid in getattr(self, "_in_use_location_ids", set()) else ""
+                s = f"{code}{star} - {area}" if area else f"{code}{star}"
+                items.append(s)
+        self.cb_location["values"] = items
+        # non aggiorniamo i saldi finché non c'è una locazione valida; ci pensa <<ComboboxSelected>> o FocusOut
+
+    def _resolve_component(self, text: str):
+        if not text:
+            return None, None, None
+        code = text.split(" - ", 1)[0].strip()
+        # Prova match veloce dal cache
+        for (cid, ccode, cdescr) in self._components:
+            if ccode == code:
+                return cid, ccode, cdescr
+        # Fallback DB
+        cid = self.db.get_component_id_by_code(code)
+        return (cid, code, None) if cid else (None, None, None)
+
+    def _resolve_location(self, text: str):
+        if not text:
+            return None, None, None
+        code = text.split(" - ", 1)[0].strip()
+        code = code.replace(" (***)", "")  # rimuove marcatura
+        for (lid, lcode, area) in self._locations:
+            if lcode == code:
+                return lid, lcode, area
+        lid = self.db.get_location_id_by_code(code)
+        return (lid, code, None) if lid else (None, None, None)
+
+    def _append_log(self, msg: str):
+        self.log.configure(state="normal")
+        self.log.insert("end", msg + "\n")
+        self.log.configure(state="disabled")
+        self.log.see("end")
+
+    def _parse_qty(self):
+        s = self.qty_var.get().strip()
+        if not s.isdigit():
+            return None
+        n = int(s)
+        return n if n > 0 else None
+
+    def _on_execute(self):
+        # Validazioni
+        comp_id, comp_code, _ = self._resolve_component(self.component_var.get())
+        if not comp_id:
+            messagebox.showwarning(self.lang.get('warn_title', 'Attenzione'),
+                                   self.lang.get('move_err_select_component', 'Seleziona un componente valido.'),
+                                   parent=self)
+            return
+        loc_id, loc_code, _ = self._resolve_location(self.location_var.get())
+        if not loc_id:
+            messagebox.showwarning(self.lang.get('warn_title', 'Attenzione'),
+                                   self.lang.get('move_err_select_location', 'Seleziona una locazione valida.'),
+                                   parent=self)
+            return
+        qty = self._parse_qty()
+        if qty is None:
+            messagebox.showwarning(self.lang.get('warn_title', 'Attenzione'),
+                                   self.lang.get('move_err_qty_positive', 'La quantità deve essere un intero > 0.'),
+                                   parent=self)
+            return
+
+        op = self.op_var.get()
+        delta = qty if op == "load" else -qty
+
+        # Se prelievo, verifica disponibilità
+        if delta < 0:
+            avail = self.db.get_current_stock(comp_id, loc_id)
+            if avail + delta < 0:
+                message = self.lang.get('move_err_stock_insufficient',
+                                        'Quantità non disponibile. Disponibile: {avail}').format(avail=avail)
+                messagebox.showerror(self.lang.get('error_title', 'Errore'), message, parent=self)
+                return
+
+        # Determina l'utente da salvare
+        if delta < 0:
+            user_to_save = self._session_user or self._get_app_username()
+        else:
+            if not self._ensure_load_login():
+                messagebox.showwarning(
+                    self.lang.get('warn_title', 'Attenzione'),
+                    self.lang.get('load_requires_login', 'Per eseguire un carico è necessario effettuare il login.'),
+                    parent=self
+                )
+                return
+            user_to_save = self._load_user
+
+        ok, err = self.db.insert_kanban_movement(loc_id, comp_id, int(delta), user_to_save)
+
+        if ok:
+            msg = self.lang.get('move_ok_load', 'Carico registrato.') if delta > 0 else \
+                  self.lang.get('move_ok_unload', 'Prelievo registrato.')
+            messagebox.showinfo(self.lang.get('info_title', 'Informazione'), msg, parent=self)
+            self._append_log(f"{'+' if delta>0 else ''}{delta} {comp_code} @ {self.location_var.get()} - OK")
+            self.qty_var.set("")
+            self._refresh_component_dependent_ui()  # riflette il nuovo stock
+        else:
+            messagebox.showerror(self.lang.get('error_title', 'Errore'),
+                                 err or self.db.last_error_details, parent=self)
+
+    def _on_import_excel(self):
+        """
+        Importa movimenti da file CSV o XLSX con colonne:
+          - Component (o codici simili: ComponentCode, Codice, Code)
+          - Location (o LocationCode, Locazione, Loc)
+          - Quantity (o Qty, Quantita, Qta)
+        Regole utente:
+          - Prelievo (qty < 0): salva l'utente di sessione (login alla maschera).
+          - Carico (qty > 0): al primo carico richiede login; usa quell'utente per tutti i carichi dell'import.
+        """
+        import os, csv
+        from tkinter import filedialog, messagebox
+
+        # Selezione file
+        file_path = filedialog.askopenfilename(
+            title=self.lang.get('import_select_file', 'Seleziona file movimenti'),
+            filetypes=[('Excel/CSV', '*.xlsx *.csv'), ('Excel', '*.xlsx'), ('CSV', '*.csv'), ('Tutti i file', '*.*')]
+        )
+        if not file_path:
+            return
+
+        ext = os.path.splitext(file_path)[1].lower()
+
+        # Lettura righe dal file in una lista di dict con chiavi canoniche: Component, Location, Quantity
+        rows = []
+
+        def _canon(key: str) -> str:
+            k = (key or '').strip().lower().replace(' ', '').replace('_', '')
+            if k in ('component', 'componentcode', 'code', 'codice', 'idcomponent', 'idcomp', 'comp'):
+                return 'Component'
+            if k in ('location', 'locationcode', 'loc', 'locazione', 'codicelocazione'):
+                return 'Location'
+            if k in ('quantity', 'qty', 'quantita', 'qta', 'quantità'):
+                return 'Quantity'
+            return key
+
+        try:
+            if ext == '.csv':
+                with open(file_path, 'r', encoding='utf-8-sig', newline='') as f:
+                    reader = csv.DictReader(f)
+                    # Mappa header a canonici
+                    field_map = {h: _canon(h) for h in reader.fieldnames or []}
+                    for r in reader:
+                        row = {field_map.get(k, k): (v if v is not None else '') for k, v in r.items()}
+                        rows.append(row)
+            elif ext == '.xlsx':
+                try:
+                    from openpyxl import load_workbook
+                except Exception:
+                    messagebox.showerror(
+                        self.lang.get('error_title', 'Errore'),
+                        self.lang.get('openpyxl_missing', 'Per importare file .xlsx è necessario openpyxl.'),
+                        parent=self
+                    )
+                    return
+                wb = load_workbook(file_path, data_only=True)
+                ws = wb.active
+                headers = []
+                for j, cell in enumerate(ws[1], start=1):
+                    headers.append(_canon(str(cell.value) if cell.value is not None else f'Col{j}'))
+                for i, xrow in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+                    r = {}
+                    for j, val in enumerate(xrow):
+                        key = headers[j] if j < len(headers) else f'Col{j + 1}'
+                        r[key] = '' if val is None else str(val)
+                    rows.append(r)
+            else:
+                messagebox.showerror(
+                    self.lang.get('error_title', 'Errore'),
+                    self.lang.get('unsupported_file', 'Formato file non supportato. Usa .csv o .xlsx.'),
+                    parent=self
+                )
+                return
+        except Exception as e:
+            messagebox.showerror(
+                self.lang.get('error_title', 'Errore'),
+                self.lang.get('import_read_error', f'Errore lettura file: {e}'),
+                parent=self
+            )
+            return
+
+        if not rows:
+            messagebox.showinfo(
+                self.lang.get('info_title', 'Informazione'),
+                self.lang.get('import_no_rows', 'Nessuna riga da importare.'),
+                parent=self
+            )
+            return
+
+        # Stato utenti per salvataggio
+        load_login_done = False
+        session_user = self._session_user or self._get_app_username()
+
+        ok_count = 0
+        err_count = 0
+        first_error_msg = None
+
+        for idx, r in enumerate(rows, start=1):
+            comp_text = str(r.get('Component', '') or '').strip()
+            loc_text = str(r.get('Location', '') or '').strip()
+            qty_text = str(r.get('Quantity', '') or '').strip()
+
+            # Validazioni base
+            if not comp_text or not loc_text or not qty_text:
+                err_count += 1
+                if first_error_msg is None:
+                    first_error_msg = self.lang.get('import_err_missing_fields',
+                                                    f'Riga {idx}: campi mancanti (Component/Location/Quantity).')
+                continue
+
+            # Parse quantità
+            try:
+                qty = int(float(qty_text))  # accetta "10.0" -> 10
+            except Exception:
+                err_count += 1
+                if first_error_msg is None:
+                    first_error_msg = self.lang.get('import_err_qty', f'Riga {idx}: Quantità non valida: {qty_text}')
+                continue
+            if qty == 0:
+                err_count += 1
+                if first_error_msg is None:
+                    first_error_msg = self.lang.get('import_err_qty_zero', f'Riga {idx}: Quantità zero non valida.')
+                continue
+
+            # Risolvi component e location
+            comp_id, comp_code, _ = self._resolve_component(comp_text)
+            if not comp_id:
+                err_count += 1
+                if first_error_msg is None:
+                    first_error_msg = self.lang.get('import_err_comp',
+                                                    f'Riga {idx}: Componente non trovato: {comp_text}')
+                continue
+
+            loc_id, loc_code, _ = self._resolve_location(loc_text)
+            if not loc_id:
+                err_count += 1
+                if first_error_msg is None:
+                    first_error_msg = self.lang.get('import_err_loc', f'Riga {idx}: Locazione non trovata: {loc_text}')
+                continue
+
+            # Determina l'utente da salvare, in base al segno della quantità
+            if qty < 0:
+                # Prelievo: richiede utente di sessione (maschera)
+                if not session_user:
+                    # L'app richiede che nei prelievi ci sia un utente loggato alla maschera
+                    messagebox.showwarning(
+                        self.lang.get('warn_title', 'Attenzione'),
+                        self.lang.get('withdraw_requires_session_login',
+                                      'Prelievo rilevato nell\'import: è necessario essere loggati alla maschera.'),
+                        parent=self
+                    )
+                    return  # interrompe l'import intero
+                user_to_save = session_user
+            else:
+                # Carico: richiede login on-demand (una sola volta)
+                if not load_login_done:
+                    if not self._ensure_load_login():
+                        messagebox.showwarning(
+                            self.lang.get('warn_title', 'Attenzione'),
+                            self.lang.get('import_load_requires_login',
+                                          'Import annullato: login necessario per i carichi.'),
+                            parent=self
+                        )
+                        return  # interrompe l'import intero
+                    load_login_done = True
+                user_to_save = self._load_user
+
+            # Controllo disponibilità per prelievo (opzionale, ma utile)
+            if qty < 0:
+                try:
+                    avail = self.db.get_current_stock(comp_id, loc_id)
+                except Exception:
+                    avail = None
+                if avail is not None and avail + qty < 0:
+                    err_count += 1
+                    if first_error_msg is None:
+                        first_error_msg = self.lang.get(
+                            'import_err_insufficient',
+                            f'Riga {idx}: Quantità non disponibile. Disponibile: {avail}'
+                        )
+                    continue
+
+            # Inserimento movimento
+            ok, err = self.db.insert_kanban_movement(loc_id, comp_id, qty, user_to_save)
+            if ok:
+                ok_count += 1
+                if hasattr(self, '_append_log'):
+                    sign = '+' if qty > 0 else ''
+                    self._append_log(f"{sign}{qty} {comp_code} @ {loc_code} - {user_to_save} - OK")
+            else:
+                err_count += 1
+                if first_error_msg is None:
+                    first_error_msg = self.lang.get('import_err_db', f'Riga {idx}: Errore DB: {err}')
+                if hasattr(self, '_append_log'):
+                    self._append_log(f"{qty} {comp_code} @ {loc_code} - {user_to_save} - ERR: {err}")
+
+        # Riepilogo
+        if err_count == 0:
+            messagebox.showinfo(
+                self.lang.get('success_title', 'Successo'),
+                self.lang.get('import_ok', f'Import completato: {ok_count} movimenti importati.'),
+                parent=self
+            )
+        else:
+            msg = self.lang.get('import_summary',
+                                f'Import terminato: OK={ok_count}, Errori={err_count}.\n{first_error_msg or ""}')
+            messagebox.showwarning(self.lang.get('warn_title', 'Attenzione'), msg, parent=self)
+
+        # Refresh UI/saldi dopo import
+        if hasattr(self, '_refresh_component_dependent_ui'):
+            try:
+                self._refresh_component_dependent_ui()
+            except Exception:
+                pass
+
+    def _on_component_selected(self, event=None):
+        self._refresh_component_dependent_ui()
+
+    def _on_component_focus_out(self, event=None):
+        # Se il testo corrisponde a un componente valido, aggiorna UI
+        comp_id, _, _ = self._resolve_component(self.component_var.get())
+        if comp_id:
+            self._refresh_component_dependent_ui()
+
+    def _on_location_selected(self, event=None):
+        self._update_balances()
+
+    def _refresh_component_dependent_ui(self):
+        """
+        Dopo la scelta del componente: marca le locazioni in uso (***), aggiorna i saldi.
+        """
+        comp_id, _, _ = self._resolve_component(self.component_var.get())
+        if not comp_id:
+            # reset marcature e saldi
+            self._in_use_location_ids = set()
+            # ricostruisci la lista locazioni senza marcature
+            items = []
+            for (lid, code, area) in self._locations:
+                s = f"{code} - {area}" if area else code
+                items.append(s)
+            self.cb_location["values"] = items
+            self._update_balances()
+            return
+
+        # Ottieni locazioni in uso per il componente
+        loc_map = self.db.get_component_locations_with_stock(comp_id)  # {LocationId: Qty}
+        self._in_use_location_ids = set(loc_map.keys())
+
+        # Ricostruisci la lista locazioni con (***) dove presente stock
+        items = []
+        for (lid, code, area) in self._locations:
+            star = " (***)" if lid in self._in_use_location_ids else ""
+            label = f"{code}{star} - {area}" if area else f"{code}{star}"
+            items.append(label)
+        self.cb_location["values"] = items
+
+        self._update_balances()
+
+    def _update_balances(self):
+        """
+        Aggiorna le etichette 'Saldo qui' e 'Altrove' in base a componente/locazione selezionati.
+        """
+        comp_id, _, _ = self._resolve_component(self.component_var.get())
+        if not comp_id:
+            self.lbl_here_balance.config(text=self.lang.get('balance_here', 'Saldo qui: {qty}').format(qty='-'))
+            self.lbl_other_balance.config(text=self.lang.get('balance_other', 'Altrove: {qty}').format(qty='-'))
+            return
+
+        loc_id, _, _ = self._resolve_location(self.location_var.get())
+        total = self.db.get_total_stock_component(comp_id)
+        here = self.db.get_current_stock(comp_id, loc_id) if loc_id else 0
+        other = max(total - here, 0)
+
+        self.lbl_here_balance.config(text=self.lang.get('balance_here', 'Saldo qui: {qty}').format(qty=here))
+        self.lbl_other_balance.config(text=self.lang.get('balance_other', 'Altrove: {qty}').format(qty=other))
+
+    def _get_app_username(self):
+        """
+        Prova a leggere l'utente corrente dall'App (master) usando attributi comuni.
+        """
+        app = self.master
+        for attr in ('current_user', 'logged_user', 'current_username', 'username', 'user_name', 'session_user'):
+            if hasattr(app, attr):
+                val = getattr(app, attr)
+                if isinstance(val, dict):
+                    if 'username' in val and val['username']:
+                        return str(val['username'])
+                    if 'name' in val and val['name']:
+                        return str(val['name'])
+                elif val:
+                    return str(val)
+        return None
+
+    def _ensure_load_login(self) -> bool:
+        """
+        Richiede il login quando si seleziona 'Load'. Se ok, memorizza _load_user.
+        Ritorna True se login effettuato (o già presente), False se annullato/negato.
+        """
+        if self._load_user:
+            return True
+        app = self.master
+        did_login = {'ok': False}
+
+        def _after_login():
+            user = self._get_app_username()
+            if user:
+                self._load_user = user
+                did_login['ok'] = True
+
+        if hasattr(app, '_execute_authorized_action'):
+            ok = app._execute_authorized_action(menu_translation_key='kanban_load', action_callback=_after_login)
+            return bool(ok and did_login['ok'])
+        # Se non esiste un sistema di login, neghiamo l'operazione di carico
+        return False
+
+class PrinterSetupDialog(tk.Toplevel):
+    def __init__(self, master, lang):
+        super().__init__(master)
+        self.lang = lang
+        self.title(self.lang.get('printer_setup_title', "Configurazione stampante"))
+        self.resizable(False, False)
+        self.transient(master)
+        self.grab_set()
+
+        self.name_var = tk.StringVar()
+        self.ip_var = tk.StringVar()
+        self.port_var = tk.StringVar(value="9100")
+        self.dpi_var = tk.StringVar(value="203")
+        self.textpt_var = tk.StringVar(value="12")
+
+        frm = ttk.Frame(self, padding=16)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text=self.lang.get('printer_name', "Nome stampante")).grid(row=0, column=0, sticky="w")
+        ttk.Entry(frm, textvariable=self.name_var, width=36).grid(row=0, column=1, sticky="ew", pady=4)
+
+        ttk.Label(frm, text="IP").grid(row=1, column=0, sticky="w")
+        ttk.Entry(frm, textvariable=self.ip_var, width=36).grid(row=1, column=1, sticky="ew", pady=4)
+
+        ttk.Label(frm, text=self.lang.get('printer_port', "Porta")).grid(row=2, column=0, sticky="w")
+        ttk.Entry(frm, textvariable=self.port_var, width=10).grid(row=2, column=1, sticky="w", pady=4)
+
+        ttk.Label(frm, text=self.lang.get('printer_dpi', "DPI")).grid(row=3, column=0, sticky="w")
+        ttk.Entry(frm, textvariable=self.dpi_var, width=10).grid(row=3, column=1, sticky="w", pady=4)
+
+        ttk.Label(frm, text=self.lang.get('printer_textpt', "Corpo testo")).grid(row=4, column=0, sticky="w")
+        ttk.Entry(frm, textvariable=self.textpt_var, width=10).grid(row=4, column=1, sticky="w", pady=4)
+
+        # Bottoni azione
+        btns = ttk.Frame(frm)
+        btns.grid(row=10, column=0, columnspan=2, sticky="e", pady=(10,0))
+
+        # Extra: Apri cartella config
+        ttk.Button(btns, text=self.lang.get('printer_open_folder', "Apri cartella"),
+                   command=open_config_folder).pack(side="left")
+
+        # Extra: Test stampa veloce
+        ttk.Button(btns, text=self.lang.get('printer_test', "Test stampa"),
+                   command=self._test_print).pack(side="left", padx=(8, 0))
+
+        ttk.Button(btns, text=self.lang.get('button_cancel', "Annulla"),
+                   command=self._cancel).pack(side="right")
+        ttk.Button(btns, text=self.lang.get('button_save', "Salva"),
+                   command=self._save).pack(side="right", padx=(0,6))
+
+        frm.columnconfigure(1, weight=1)
+
+        # Precarica config
+        cur = load_printer_config()
+        if cur:
+            self.name_var.set(cur.get("name",""))
+            self.ip_var.set(cur.get("ip",""))
+            self.port_var.set(str(cur.get("port","9100")))
+            self.dpi_var.set(str(cur.get("dpi","203")))
+            self.textpt_var.set(str(cur.get("text_pt","12")))
+
+    def _cancel(self):
+        self.result = None
+        self.destroy()
+
+    def _save(self):
+        name = self.name_var.get().strip()
+        ip = self.ip_var.get().strip()
+        port = self.port_var.get().strip()
+        dpi = self.dpi_var.get().strip()
+        textpt = self.textpt_var.get().strip()
+
+        if not name or not ip or not port:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
+                                   self.lang.get('printer_required', "Compila nome, IP e porta."), parent=self)
+            return
+        if not validate_ip(ip):
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
+                                   self.lang.get('printer_ip_invalid', "IP non valido."), parent=self)
+            return
+        try:
+            port_i = int(port)
+            dpi_i = int(dpi)
+            textpt_i = int(textpt)
+        except ValueError:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
+                                   self.lang.get('printer_numeric_required', "Porta, DPI e corpo testo devono essere numerici."), parent=self)
+            return
+
+        cfg = {
+            "name": name,
+            "ip": ip,
+            "port": port_i,
+            "dpi": dpi_i,
+            "label_cm": [5, 5],
+            "text_pt": textpt_i,
+            "language": "ZPL",
+            "version": 1
+        }
+        ok, err = save_printer_config(cfg)
+        if not ok:
+            messagebox.showerror(self.lang.get('error_title', "Errore"),
+                                 self.lang.get('printer_save_error', f"Impossibile salvare la configurazione. {err}"),
+                                 parent=self)
+            return
+
+        self.result = cfg
+        self.destroy()
+
+    def _test_print(self):
+        # Costruisce e invia una piccola etichetta di test
+        try:
+            ip = self.ip_var.get().strip()
+            port = int(self.port_var.get().strip())
+            dpi = int(self.dpi_var.get().strip() or "203")
+        except ValueError:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
+                                   self.lang.get('printer_numeric_required', "Porta, DPI e corpo testo devono essere numerici."), parent=self)
+            return
+        if not validate_ip(ip):
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
+                                   self.lang.get('printer_ip_invalid', "IP non valido."), parent=self)
+            return
+        zpl = "^XA^CI28^PW400^LL400^FO20,20^A0N,40,40^FDTest stampa^FS^FO20,80^GB350,1,1^FS^XZ"
+        ok, err = send_raw_to_printer(ip, port, zpl.encode("utf-8"))
+        if ok:
+            messagebox.showinfo(self.lang.get('info_title', "Informazione"),
+                                self.lang.get('print_ok', "Stampa inviata alla stampante."), parent=self)
+        else:
+            messagebox.showerror(self.lang.get('error_title', "Errore"),
+                                 self.lang.get('print_error', f"Errore di stampa: {err}"), parent=self)
 
 class ViewDocumentForm(tk.Toplevel):
     """Finestra per visualizzare un documento (di Produzione)."""
@@ -3927,7 +6332,6 @@ class ViewDocumentForm(tk.Toplevel):
         if not success:
             messagebox.showerror(self.lang.get('error_title', "Errore"), "Impossibile aprire il documento.",
                                  parent=self)
-
 
 class LineStoppageReportForm(tk.Toplevel):
     def __init__(self, parent, db_handler, lang_manager):
@@ -4076,7 +6480,6 @@ class LineStoppageReportForm(tk.Toplevel):
                 parent=self
             )
 
-
 def connect_to_database():
     """Stabilisce la connessione al database usando la configurazione sicura"""
     try:
@@ -4199,6 +6602,366 @@ class App(tk.Tk):
         self.after(100, self._post_startup_tasks)
         logger.debug("INIT: scheduled post_startup_tasks")
 
+    def _schedule_kanban_refill_check(self):
+        """
+        Pianifica il controllo refill Kanban su base configurabile (JSON stampante).
+        """
+        try:
+            cfg = load_printer_config() or {}
+            enabled = bool(cfg.get("kanban_refill_enabled", True))
+            minutes = int(cfg.get("kanban_refill_check_minutes", 60))
+        except Exception:
+            enabled = True
+            minutes = 60
+
+        if not enabled or minutes <= 0:
+            return
+
+        # Esegui subito la prima volta in background
+        self._kanban_refill_check_async()
+
+        # Pianifica ripetizione
+        interval_ms = max(60_000, minutes * 60 * 1000)
+        # Salva l'id per eventuale cancel
+        self.kanban_refill_job_id = self.after(interval_ms, self._schedule_kanban_refill_check)
+
+    def _kanban_refill_check_async(self):
+        """
+        Avvia il controllo in un thread per non bloccare la UI.
+        """
+        import threading
+        threading.Thread(target=self._kanban_refill_check_worker, name="KanbanRefillCheck", daemon=True).start()
+
+    def _kanban_refill_check_worker(self):
+        """
+        Logica di controllo:
+        - calcola stock correnti per componente
+        - calcola soglia (assoluta o % su prima quantità) per i componenti con regola
+        - per i componenti senza regola, soglia=0
+        - se stock <= soglia -> prepara richiesta: Qty = max singolo carico; dedup su KanBanRecordId/day
+        - genera Excel, invia mail, salva righe in knb.KanBanMaterialRequestes
+        """
+        log = logging.getLogger("TraceabilityRS")
+        try:
+            # 1. Stock corrente per componente
+            stock_map = self.db.fetch_kanban_current_stock_by_component()  # {comp: stock}
+
+            if not stock_map:
+                return
+
+            comp_ids = list(stock_map.keys())
+
+            # 2. Regole attive per componente
+            rules_map = self.db.fetch_active_rules_by_component()  # {comp: {'min_qty':..., 'min_pct':...}}
+
+            # 3. Prima quantità (per chi ha regola percentuale)
+            pct_comp_ids = [cid for cid, r in rules_map.items() if r.get('min_pct') is not None]
+            first_qty_map = self.db.fetch_first_load_qty_by_component(pct_comp_ids) if pct_comp_ids else {}
+
+            # 4. Max singolo carico + record id
+            max_load_map = self.db.fetch_max_single_load_by_component(comp_ids)  # {comp: {'max_qty','record_id'}}
+
+            # 5. Master component
+            master_map = self.db.fetch_components_master(comp_ids)  # {comp: {'code','desc'}}
+
+            # 6. Valuta richieste
+            requests = []  # elementi: dict con info per Excel e per insert
+            for cid, cur_stock in stock_map.items():
+                rule = rules_map.get(cid)
+                if rule:
+                    if rule.get('min_qty') is not None:
+                        threshold = int(rule['min_qty'])
+                        rule_type = "ABS"
+                        rule_value = threshold
+                    else:
+                        # percentuale: calcolo su prima quantità
+                        base = int(first_qty_map.get(cid, 0))
+                        pct = int(rule.get('min_pct') or 0)
+                        # floor per non anticipare troppo
+                        threshold = int((base * pct) / 100) if base > 0 and pct > 0 else 0
+                        rule_type = "PCT"
+                        rule_value = pct
+                else:
+                    threshold = 0
+                    rule_type = "NA"
+                    rule_value = None
+
+                if cur_stock <= threshold:
+                    ml = max_load_map.get(cid)
+                    if not ml:
+                        continue
+                    qty_to_refill = int(ml['max_qty'])
+                    krec_id = int(ml['record_id'])
+                    # dedup: se già presente oggi per questa KanBanRecordId, salta
+                    if self.db.has_refill_request_today(krec_id):
+                        continue
+                    # prepara riga
+                    meta = master_map.get(cid, {'code': f"#{cid}", 'desc': ''})
+                    requests.append({
+                        'component_id': cid,
+                        'component_code': meta['code'],
+                        'component_desc': meta['desc'],
+                        'current_stock': int(cur_stock),
+                        'threshold': int(threshold),
+                        'rule_type': rule_type,
+                        'rule_value': rule_value,
+                        'max_single_load': qty_to_refill,
+                        'qty_to_refill': qty_to_refill,
+                        'kanban_record_id': krec_id
+                    })
+
+            if not requests:
+                return
+
+            # 7. Genera Excel in memoria
+            excel_bytes = self._build_kanban_refill_excel(requests)
+
+            # 8. Destinatari mail
+            try:
+                recipients = utils.get_email_recipients(self.db.conn, attribute='Sys_email_KanBanRefill')
+            except Exception as e:
+                log.error("KanbanRefill: error reading recipients: %s", e)
+                recipients = []
+
+            if not recipients:
+                log.warning("KanbanRefill: no recipients for Sys_email_KanBanRefill; skipping email.")
+                return
+
+            # 9. Invia email (con allegato Excel)
+            subject = "[Kanban] Refill request - Repair Kanban"
+            body = (
+                "Dear Colleagues,\n\n"
+                "Please find attached the refill request for dedicated materials of the repairers' KANBAN.\n"
+                "The list includes all components whose current stock is at or below the configured reorder point.\n\n"
+                "Regards,\nTraceability System"
+            )
+
+            # Nota: adegua utils.send_email se non gestisce attach; qui assumiamo supports attachments=[(filename, bytes)]
+            try:
+                utils.send_email(
+                    recipients=recipients,
+                    subject=subject,
+                    body=body,
+                    attachments=[("KanbanRefill.xlsx", excel_bytes)]
+                )
+                log.info("KanbanRefill: email sent to %d recipients.", len(recipients))
+            except Exception as e:
+                log.error("KanbanRefill: email send failed: %s", e)
+                return
+
+            # 10. Registra richieste su DB
+            for req in requests:
+                ok = self.db.insert_refill_request(req['kanban_record_id'], req['qty_to_refill'])
+                if not ok:
+                    log.warning("KanbanRefill: insert failed for KanBanRecordId=%s: %s",
+                                req['kanban_record_id'], self.db.last_error_details)
+
+        except Exception as e:
+            logging.getLogger("TraceabilityRS").exception("KanbanRefill job failed: %s", e)
+
+    def _build_kanban_refill_excel(self, rows: list[dict]) -> bytes:
+        """
+        Crea un Excel ben formattato in memoria e ritorna i bytes.
+        Colonne: Component, Description, Current stock, Threshold, Rule type, Rule value, Max single load, Qty requested.
+        """
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+        import io
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Kanban Refill"
+
+        headers = ["Component", "Description", "Current stock", "Threshold",
+                   "Rule type", "Rule value", "Max single load", "Qty requested"]
+        ws.append(headers)
+
+        # Header style
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill(fill_type="solid", start_color="4F81BD", end_color="4F81BD")
+        center = Alignment(horizontal="center", vertical="center")
+        thin = Side(style='thin', color='B7CCE1')
+        header_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        for c in range(1, len(headers) + 1):
+            cell = ws.cell(row=1, column=c)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = center
+            cell.border = header_border
+
+        # Rows with zebra stripes and borders
+        alt_fill = PatternFill(fill_type="solid", start_color="EEF3F7", end_color="EEF3F7")
+        data_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        for i, r in enumerate(rows, start=2):
+            values = [
+                r['component_code'],
+                r['component_desc'],
+                r['current_stock'],
+                r['threshold'],
+                r['rule_type'],
+                r['rule_value'] if r['rule_type'] == 'PCT' else (r['rule_value'] if r['rule_type'] == 'ABS' else ""),
+                r['max_single_load'],
+                r['qty_to_refill']
+            ]
+            ws.append(values)
+            if i % 2 == 0:
+                for c in range(1, len(headers) + 1):
+                    ws.cell(row=i, column=c).fill = alt_fill
+            for c in range(1, len(headers) + 1):
+                ws.cell(row=i, column=c).border = data_border
+
+        # Autofit columns
+        for col_idx in range(1, len(headers) + 1):
+            col_letter = get_column_letter(col_idx)
+            max_len = len(headers[col_idx - 1])
+            for r in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=col_idx, max_col=col_idx):
+                v = r[0].value
+                if v is not None:
+                    max_len = max(max_len, len(str(v)))
+            ws.column_dimensions[col_letter].width = min(max_len + 3, 60)
+
+        # Filters, freeze
+        ws.auto_filter.ref = f"A1:H{ws.max_row}"
+        ws.freeze_panes = "A2"
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        logger.info('File xls per richiesta materiali di kanban creato')
+        return buf.getvalue()
+
+    def open_kanban_move(self):
+        ok = self._execute_authorized_action(
+            menu_translation_key='kanban_move',
+            action_callback=lambda: KanbanMoveForm(self, self.db, self.lang)
+        )
+        if not ok:
+            return
+
+    def open_kanban_materials_report(self):
+        import os
+        from datetime import datetime
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+        from tkinter import messagebox
+
+        rows = self.db.fetch_components_locations_report()
+        if not rows:
+            messagebox.showinfo(self.lang.get('info_title', 'Informazione'),
+                                self.lang.get('materials_report_no_data', 'Nessun dato da esportare.'))
+            return
+
+        # Workbook e foglio
+        wb = Workbook()
+        ws = wb.active
+        ws.title = self.lang.get('materials_report_title', 'Materiali - Report')
+
+        # Intestazioni con filtro e colore azzurro tenue
+        headers = [
+            self.lang.get('col_component_code', 'Codice componente'),
+            self.lang.get('col_description', 'Descrizione'),
+            self.lang.get('col_location', 'Locazione'),
+            self.lang.get('col_area', 'Area')
+        ]
+        ws.append(headers)
+
+        header_fill = PatternFill(fill_type='solid', start_color='DDEBF7', end_color='DDEBF7')  # azzurro tenue
+        header_font = Font(bold=True)
+        header_alignment = Alignment(horizontal='center', vertical='center')
+        thin = Side(style='thin', color='B7CCE1')
+        header_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        for col_idx in range(1, len(headers) + 1):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = header_alignment
+            cell.border = header_border
+
+        # Dati
+        for r in rows:
+            ws.append([
+                getattr(r, 'ComponentCode', ''),
+                getattr(r, 'ComponentDescription', '') or '',
+                getattr(r, 'LocationCode', ''),
+                getattr(r, 'KanBanLocation', '')
+            ])
+
+        # Auto filtro e freeze pane
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
+        ws.freeze_panes = "A2"
+
+        # Zebra stripes leggere e bordi sottili
+        alt_fill = PatternFill(fill_type='solid', start_color='F7FBFF', end_color='F7FBFF')
+        data_border = Border(left=Side(style='thin', color='D9D9D9'),
+                             right=Side(style='thin', color='D9D9D9'),
+                             top=Side(style='thin', color='D9D9D9'),
+                             bottom=Side(style='thin', color='D9D9D9'))
+        for r in range(2, ws.max_row + 1):
+            if r % 2 == 0:
+                for c in range(1, len(headers) + 1):
+                    ws.cell(row=r, column=c).fill = alt_fill
+            for c in range(1, len(headers) + 1):
+                ws.cell(row=r, column=c).border = data_border
+
+        # Larghezza colonne auto-fit semplice
+        for col_idx in range(1, len(headers) + 1):
+            col_letter = get_column_letter(col_idx)
+            max_len = len(str(headers[col_idx - 1]))
+            for r in range(2, ws.max_row + 1):
+                val = ws.cell(row=r, column=col_idx).value
+                if val is None:
+                    continue
+                max_len = max(max_len, len(str(val)))
+            ws.column_dimensions[col_letter].width = min(max_len + 2, 60)
+
+            # Salva in C:\Temp e chiedi se aprire il file
+            try:
+                target_dir = r"C:\Temp"
+                os.makedirs(target_dir, exist_ok=True)
+                filename = f"KanBan_Materiali_Report_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+                fullpath = os.path.join(target_dir, filename)
+                wb.save(fullpath)
+
+                prompt = self.lang.get('materials_report_saved_open',
+                                       'Report salvato in: {path}\nAprirlo ora?').format(path=fullpath)
+                if messagebox.askyesno(self.lang.get('info_title', 'Informazione'), prompt):
+                    try:
+                        if hasattr(os, 'startfile'):  # Windows
+                            os.startfile(fullpath)
+                        else:
+                            import subprocess, sys
+                            if sys.platform == 'darwin':  # macOS
+                                subprocess.Popen(['open', fullpath])
+                            else:  # Linux
+                                subprocess.Popen(['xdg-open', fullpath])
+                    except Exception as e:
+                        messagebox.showerror(self.lang.get('error_title', 'Errore'),
+                                             self.lang.get('materials_report_open_error',
+                                                           f'Impossibile aprire il file: {e}'))
+            except Exception as e:
+                messagebox.showerror(self.lang.get('error_title', 'Errore'),
+                                     self.lang.get('materials_report_error',
+                                                   f'Errore durante la creazione del report: {e}'))
+
+    def open_kanban_rules_management(self):
+        KanbanRulesManagementForm(self, self.db, self.lang)
+
+    def open_printer_setup(self):
+        # Apre la finestra di configurazione stampante.
+        # Richiede che PrinterSetupDialog sia importata/definita.
+        dlg = PrinterSetupDialog(self, self.lang)
+        self.wait_window(dlg)
+        if getattr(dlg, "result", None):
+            # Se vuoi tenere un cache della config
+            self.printer_cfg = dlg.result
+            # TODO: notifica eventuali form aperte che usano la stampante
+            # es. if hasattr(self, "labels_form") and self.labels_form.winfo_exists(): ...
+            pass
+
     def _check_calibration_warnings_startup_async(self):
         #return
         import threading, logging
@@ -4214,8 +6977,6 @@ class App(tk.Tk):
             logging.info("Startup: controllo calibrazioni completato.")
         except Exception as e:
             logging.exception("Errore controllo calibrazioni in avvio: %s", e)
-
-
 
     def _check_calibration_warnings_startup(self):
         """
@@ -4370,6 +7131,39 @@ class App(tk.Tk):
         except Exception as e:
             log.exception("Errore controllo calibrazioni in avvio: %s", e)
 
+    def _not_implemented(self, title, action):
+        messagebox.showinfo(
+            self.lang.get('info_title', 'Informazione'),
+            f"{title} - {action}: funzione in sviluppo.",
+            parent=self
+        )
+
+    # Locazioni
+    def open_kanban_locations_create(self):
+        KanbanLocationCreateForm(self, self.db, self.lang)
+
+    def open_kanban_locations_modify(self):
+        KanbanLocationModifyForm(self, self.db, self.lang)
+
+    def open_kanban_locations_edit(self):
+        self._not_implemented('KanBan - Locazioni', 'Modifica')
+
+    def open_kanban_locations_labels(self):
+        KanbanLocationLabelsForm(self, self.db, self.lang)
+
+    # Materiali
+    def open_kanban_materials_management(self):
+        KanbanMaterialsManagementForm(self, self.db, self.lang)
+
+    # KanBan
+    # def open_kanban_move(self):
+    #     self._not_implemented('KanBan', 'Movimenta')
+
+    def open_kanban_verify(self):
+        self._not_implemented('KanBan', 'Verifica')
+
+    def open_kanban_manage(self):
+        self._not_implemented('KanBan', 'Gestione')
 
 
     def open_assign_submissions_with_login(self):
@@ -4693,15 +7487,19 @@ class App(tk.Tk):
         #logger.debug("POST: skipped by debug")
         print("DEBUG: Eseguo le operazioni post-avvio...")
         self._update_clock()
+        logger.info('Avviato check versione programma')
         self.periodic_check_job_id = self.after(120000, self._periodic_version_check)
-
+        logger.info('Avviato controllo compleanni')
         is_birthday = self._check_for_birthdays()
         if not is_birthday:
             self._setup_slideshow()
 
         # PRIMA: self.after(500, self._check_calibration_warnings_startup)
         # DOPO:
+        logger.info('Avviato controllo calibrazioni effettuate')
         self.after(500, self._check_calibration_warnings_startup_async)
+        logger.info('Avviato controllo quantita kanban')
+        self._schedule_kanban_refill_check()
 
     def _setup_slideshow(self):
         """Legge le impostazioni e avvia il ciclo dello slideshow."""
@@ -5111,8 +7909,16 @@ class App(tk.Tk):
         # 1. Crea il sottomenu genitore "Produzione"
         self.production_submenu = tk.Menu(self.operations_menu, tearoff=0)
 
-        # 2. ORA crea i sottomenu figli, usando production_submenu come genitore
+        # 2. Sottomenu figli, usando production_submenu come genitore
         self.declarations_submenu = tk.Menu(self.production_submenu, tearoff=0)
+        # Sottomenu KanBan (diretto figlio di Produzione)
+        self.kanban_root_submenu = tk.Menu(self.production_submenu, tearoff=0)
+
+        # Figli di KanBan
+        self.kanban_locations_submenu = tk.Menu(self.kanban_root_submenu, tearoff=0)  # Locazioni
+        self.kanban_materials_submenu = tk.Menu(self.kanban_root_submenu, tearoff=0)  # Materiali
+        self.kanban_core_submenu = tk.Menu(self.kanban_root_submenu, tearoff=0)  # KanBan
+
         self.traceability_submenu = tk.Menu(self.production_submenu, tearoff=0)
         self.reports_submenu = tk.Menu(self.production_submenu, tearoff=0)
         self.operativity_submenu = tk.Menu(self.reports_submenu, tearoff=0)
@@ -5124,14 +7930,21 @@ class App(tk.Tk):
         self.permissions_submenu = tk.Menu(self.tools_menu, tearoff=0)
         self.materials_submenu = tk.Menu(self.tools_menu, tearoff=0)
 
-        # Aggiunge ogni menu principale alla barra
-        self.menubar.add_cascade(menu=self.document_menu)
-        self.menubar.add_cascade(menu=self.general_docs_menu)
-        self.menubar.add_cascade(menu=self.operations_menu)
-        self.menubar.add_cascade(menu=self.maintenance_menu)
-        self.menubar.add_cascade(menu=self.submissions_menu)
-        self.menubar.add_cascade(menu=self.tools_menu)
-        self.menubar.add_cascade(menu=self.help_menu)
+        # Aggiunge ogni menu principale alla barra (con etichette iniziali)
+        self.menubar.add_cascade(label=self.lang.get('menu_documents', "Documenti di Produzione"),
+                                 menu=self.document_menu)
+        self.menubar.add_cascade(label=self.lang.get('menu_general_docs', "Documenti Generali"),
+                                 menu=self.general_docs_menu)
+        self.menubar.add_cascade(label=self.lang.get('menu_operations', "Operazioni"),
+                                 menu=self.operations_menu)
+        self.menubar.add_cascade(label=self.lang.get('menu_maintenance', "Manutenzione"),
+                                 menu=self.maintenance_menu)
+        self.menubar.add_cascade(label=self.lang.get('menu_submissions', "Segnalazioni"),
+                                 menu=self.submissions_menu)
+        self.menubar.add_cascade(label=self.lang.get('menu_tools', "Strumenti"),
+                                 menu=self.tools_menu)
+        self.menubar.add_cascade(label=self.lang.get('menu_help', "Aiuto"),
+                                 menu=self.help_menu)
 
         # Il sottomenu della lingua è un caso speciale, dentro il menu Aiuto
         self.language_menu = tk.Menu(self.help_menu, tearoff=0)
@@ -5175,17 +7988,95 @@ class App(tk.Tk):
                     label=self.lang.get('submenu_view', "Visualizza"),
                     command=cmd_view
                 )
+
         # --- 3. Menu Operations ---
         self.operations_menu.delete(0, 'end')
         self.operations_menu.add_cascade(label=self.lang.get('submenu_production_ops', "Produzione"),
                                          menu=self.production_submenu)
+
         self.production_submenu.delete(0, 'end')
         self.production_submenu.add_cascade(label=self.lang.get('submenu_declarations', "Dichiarazioni"),
                                             menu=self.declarations_submenu)
+
         self.declarations_submenu.delete(0, 'end')
         self.declarations_submenu.add_command(
             label=self.lang.get('submenu_interruptions', "Interruzioni di produzione"),
             command=self.open_add_interruption_window_with_login)
+
+        # --- KanBan come SECONDA VOCE sotto Produzione ---
+        # Pulisci eventuali voci precedenti
+        self.kanban_root_submenu.delete(0, 'end')
+        self.kanban_locations_submenu.delete(0, 'end')
+        self.kanban_materials_submenu.delete(0, 'end')
+        self.kanban_core_submenu.delete(0, 'end')
+
+        # 1) Locazioni -> Crea, Modifica, Etichette
+        self.kanban_locations_submenu.add_command(
+            label=self.lang.get('action_create', 'Crea'),
+            command=self.open_kanban_locations_create
+        )
+        self.kanban_locations_submenu.add_command(
+            label=self.lang.get('menu_locations_modify', 'Modifica...'),
+            command=self.open_kanban_locations_modify
+        )
+        self.kanban_locations_submenu.add_command(
+            label=self.lang.get('action_labels', 'Etichette'),
+            command=self.open_kanban_locations_labels
+        )
+        # Dopo le altre voci di Locazioni
+        self.kanban_locations_submenu.add_separator()
+        self.kanban_locations_submenu.add_command(
+            label=self.lang.get('printer_setup_menu', 'Impostazioni stampante...'),
+            command=self.open_printer_setup
+        )
+
+        # 2) Materiali -> Gestione, Regole, Report
+        self.kanban_materials_submenu.add_command(
+            label=self.lang.get('menu_materials_mgmt', 'Materiali - Gestione'),
+            command=self.open_kanban_materials_management
+        )
+        self.kanban_materials_submenu.add_command(
+            label=self.lang.get('menu_rules_mgmt', 'Gestione regole'),
+            command=self.open_kanban_rules_management
+        )
+        self.kanban_materials_submenu.add_command(
+            label=self.lang.get('submenu_report_single', 'Report'),
+            command=self.open_kanban_materials_report
+        )
+
+        # 3) KanBan -> Movimenta, Verifica, Gestione
+        self.kanban_core_submenu.add_command(
+            label=self.lang.get('kanban_move', 'Movimenta'),
+            command=self.open_kanban_move
+        )
+        self.kanban_core_submenu.add_command(
+            label=self.lang.get('kanban_verify', 'Verifica'),
+            command=self.open_kanban_verify
+        )
+        self.kanban_core_submenu.add_command(
+            label=self.lang.get('submenu_manage', 'Gestione'),
+            command=self.open_kanban_manage
+        )
+
+        # Monta le 3 diramazioni dentro il KanBan radice
+        self.kanban_root_submenu.add_cascade(
+            label=self.lang.get('submenu_kanban_locations', 'Locazioni'),
+            menu=self.kanban_locations_submenu
+        )
+        self.kanban_root_submenu.add_cascade(
+            label=self.lang.get('submenu_kanban_materials', 'Materiali'),
+            menu=self.kanban_materials_submenu
+        )
+        self.kanban_root_submenu.add_cascade(
+            label=self.lang.get('submenu_kanban_core', 'KanBan'),
+            menu=self.kanban_core_submenu
+        )
+
+        # Aggiungi KanBan come seconda voce sotto Produzione
+        self.production_submenu.add_cascade(
+            label=self.lang.get('submenu_kanban', 'KanBan'),
+            menu=self.kanban_root_submenu
+        )
 
         # Aggiungi la nuova voce di menu per la dichiarazione degli scarti
         self.declarations_submenu.add_command(
@@ -5203,16 +8094,16 @@ class App(tk.Tk):
         self.traceability_submenu.add_cascade(label=self.lang.get('submenu_final_customers', "Clienti Finali"),
                                               menu=customers_submenu)
         customers_submenu.delete(0, 'end')
+
         # Aggiungi il nuovo sottomenu per le Calibrazioni
         self.production_submenu.add_cascade(label=self.lang.get('submenu_calibrations', "Calibrazioni"),
                                             menu=self.calibrations_submenu)
-
         self.calibrations_submenu.delete(0, 'end')
-
         self.calibrations_submenu.add_command(
             label=self.lang.get('submenu_manage_calibrations', "Gestisci Calibrazioni"),
             command=self.open_calibrations_manager_with_login
         )
+
         customers_submenu.add_command(label=self.lang.get('submenu_manage_customers', "Gestisci Clienti"),
                                       command=self.open_manage_customers_with_login)
 
@@ -5228,15 +8119,15 @@ class App(tk.Tk):
         links_submenu = tk.Menu(self.traceability_submenu, tearoff=0)
         self.traceability_submenu.add_cascade(label=self.lang.get('submenu_link_products', "Collega Prodotti"),
                                               menu=links_submenu)
-
         links_submenu.delete(0, 'end')
         links_submenu.add_command(label=self.lang.get('submenu_manage_links', "Gestisci Collegamenti"),
                                   command=self.open_manage_links_with_login)
+
         self.traceability_submenu.add_command(
             label=self.lang.get('verification_association', "Verifica Associazione"),
             command=self.open_verification_association_with_login)
 
-        # Aggiungi il sottomenu Rapporti (SOLO UNA VOLTA)
+        # Aggiungi il sottomenu Rapporti
         self.production_submenu.add_cascade(label=self.lang.get('submenu_reports_prod', "Rapporti"),
                                             menu=self.reports_submenu)
 
@@ -5244,6 +8135,7 @@ class App(tk.Tk):
         self.reports_submenu.add_cascade(label=self.lang.get('submenu_operativity', "Operativita'"),
                                          menu=self.operativity_submenu)
         self.operativity_submenu.delete(0, 'end')
+
         shipping_submenu = tk.Menu(self.operativity_submenu, tearoff=0)
         self.operativity_submenu.add_cascade(label=self.lang.get('submenu_shipping', "Spedizioni"),
                                              menu=shipping_submenu)
@@ -5254,9 +8146,11 @@ class App(tk.Tk):
                                      command=self.open_shipping_settings_with_login)
         shipping_submenu.add_command(label=self.lang.get('submenu_xls_settings', "Impostazioni XLS"),
                                      command=self.open_xls_settings_with_login)
+
         self.reports_submenu.add_command(
             label=self.lang.get('submenu_line_stoppage_reports', "Rapporti di fermo linea"),
             command=self.open_line_stoppage_report)
+
         self.operations_menu.add_separator()
         self.operations_menu.add_command(label=self.lang.get('submenu_materials_ops', "Materiali"), state="disabled")
         self.operations_menu.add_command(label=self.lang.get('submenu_hr', "Risorse Umane"), state="disabled")
@@ -5347,15 +8241,15 @@ class App(tk.Tk):
         about_menu_label = f"{self.lang.get('menu_about')} {APP_VERSION}"
         self.help_menu.add_command(label=about_menu_label, command=self._show_about)
 
-        # Aggiorna le etichette dei menu principali
+        # Aggiorna le etichette dei menu principali (indici 0..6)
         try:
-            self.menubar.entryconfig(1, label=self.lang.get('menu_documents', "Documenti di Produzione"))
-            self.menubar.entryconfig(2, label=self.lang.get('menu_general_docs', "Documenti Generali"))
-            self.menubar.entryconfig(3, label=self.lang.get('menu_operations', "Operations"))
-            self.menubar.entryconfig(4, label=self.lang.get('menu_maintenance'))
-            self.menubar.entryconfig(5, label=self.lang.get('menu_submissions', "Segnalazioni"))
-            self.menubar.entryconfig(6, label=self.lang.get('menu_tools', "Strumenti"))
-            self.menubar.entryconfig(7, label=self.lang.get('menu_help'))
+            self.menubar.entryconfig(0, label=self.lang.get('menu_documents', "Documenti di Produzione"))
+            self.menubar.entryconfig(1, label=self.lang.get('menu_general_docs', "Documenti Generali"))
+            self.menubar.entryconfig(2, label=self.lang.get('menu_operations', "Operazioni"))
+            self.menubar.entryconfig(3, label=self.lang.get('menu_maintenance', "Manutenzione"))
+            self.menubar.entryconfig(4, label=self.lang.get('menu_submissions', "Segnalazioni"))
+            self.menubar.entryconfig(5, label=self.lang.get('menu_tools', "Strumenti"))
+            self.menubar.entryconfig(6, label=self.lang.get('menu_help', "Aiuto"))
         except tk.TclError:
             pass
 
@@ -5427,7 +8321,6 @@ class App(tk.Tk):
         if force_quit or messagebox.askokcancel(self.lang.get('quit_title'), self.lang.get('quit_message')):
             self.db.disconnect()
             self.destroy()
-
 
 class UpdateNotificationDialog(tk.Toplevel):
     """Dialogo per notificare un nuovo aggiornamento e chiedere l'azione desiderata."""

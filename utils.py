@@ -41,8 +41,6 @@ def get_email_recipients(conn, attribute: str = 'Sys_Email_Purchase') -> List[st
     except Exception as e:
         logger.error(f"Errore nel recupero degli indirizzi email ({attribute}): {str(e)}")
         raise
-
-
 def send_email(
     recipients: List[str],
     subject: str,

@@ -204,6 +204,7 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
         if names:
             origin_area_combo.set(names[0])
 
+
         # Motivi
         reasons = db_connection.fetch_scrap_reasons()
         reason_names = []
@@ -483,10 +484,10 @@ class ScrapReasonsManagerWindow(tk.Toplevel):
                                    self.lang.get('error_reason_required', 'Inserire un motivo valido.'), parent=self)
             return
 
-        if self.current_id is None:
-            ok = self.db.insert_scrap_reason(text)
-        else:
-            ok = self.db.update_scrap_reason(self.current_id, text)
+        #if self.current_id is None:
+        ok = self.db.insert_scrap_reason(text)
+        #else:
+        #    ok = self.db.update_scrap_reason(self.current_id, text)
 
         if ok:
             self._load_reasons()

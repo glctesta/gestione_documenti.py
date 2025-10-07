@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import os
-
+import utils
 
 class NewSubmissionWindow(tk.Toplevel):
     """Finestra per l'inserimento di una nuova segnalazione (Near Miss, Idea, etc.)."""
