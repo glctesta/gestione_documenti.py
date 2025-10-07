@@ -1,0 +1,34 @@
+[loggers]
+keys=root,TraceabilityRS
+
+[handlers]
+keys=console,file
+
+[formatters]
+keys=std
+
+[logger_root]
+level=INFO
+handlers=console,file
+
+[logger_TraceabilityRS]
+level=DEBUG
+handlers=console,file
+qualname=TraceabilityRS
+propagate=0
+
+[handler_console]
+class=StreamHandler
+level=DEBUG
+formatter=std
+args=(sys.stdout,)
+
+[handler_file]
+class=logging.handlers.RotatingFileHandler
+level=DEBUG
+formatter=std
+args=('traceability_rs.log','a',1048576,5,'utf-8')
+
+[formatter_std]
+format=%(asctime)s | %(levelname)-7s | %(name)s | %(message)s
+datefmt=%Y-%m-%d %H:%M:%S

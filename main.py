@@ -1,9 +1,100 @@
 #import configparser
-import os
+# --- StdIO safeguard + Faulthandler sicuro per exe windowed ---
+import sys, os, atexit
+from pathlib import Path
+
+_STDOUT_FILE = None
+_STDERR_FILE = None
+
+try:
+    base = Path(os.getenv("LOCALAPPDATA", ".")) / "TraceabilityRS" / "logs"
+    base.mkdir(parents=True, exist_ok=True)
+
+    if getattr(sys, "stdout", None) is None:
+        _STDOUT_FILE = open(base / "stdout.log", "w", buffering=1, encoding="utf-8")
+        sys.stdout = _STDOUT_FILE
+
+    if getattr(sys, "stderr", None) is None:
+        _STDERR_FILE = open(base / "stderr.log", "w", buffering=1, encoding="utf-8")
+        sys.stderr = _STDERR_FILE
+except Exception:
+    pass
+
+@atexit.register
+def _close_stdio_files():
+    for f in (_STDOUT_FILE, _STDERR_FILE):
+        try:
+            if f: f.close()
+        except Exception:
+            pass
+
+# Faulthandler: opzionale e sicuro (usa un file dedicato)
+try:
+    import faulthandler
+    if os.getenv("ENABLE_FAULTHANDLER", "0") == "1":
+        _FH = open(base / "faulthandler.log", "w", buffering=1, encoding="utf-8")
+        faulthandler.enable(file=_FH)
+        t = int(os.getenv("FH_DUMP_TIMEOUT", "0"))
+        if t > 0:
+            faulthandler.dump_traceback_later(t, repeat=True, file=_FH)
+
+        @atexit.register
+        def _close_fh():
+            try:
+                _FH.close()
+            except Exception:
+                pass
+except Exception:
+    pass
+
+# --- Logging robusto (file + console solo se esiste) ---
+import logging
+from logging.handlers import RotatingFileHandler
+
+def setup_logging(debug: bool = False,
+                  log_dir: str | None = None,
+                  logfile_name: str = "traceability_rs.log",
+                  logger_name: str = "TraceabilityRS") -> str:
+    root_logger = logging.getLogger()
+    if root_logger.handlers:
+        # già configurato
+        for h in root_logger.handlers:
+            if hasattr(h, "baseFilename"):
+                return h.baseFilename
+        return ""
+
+    level = logging.DEBUG if debug or os.getenv("TRACE_RS_DEBUG") == "1" else logging.INFO
+    root_logger.setLevel(level)
+    fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s", "%Y-%m-%d %H:%M:%S")
+
+    if not log_dir:
+        log_dir = os.path.join(os.getenv("LOCALAPPDATA", "."), "TraceabilityRS", "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    file_path = os.path.join(log_dir, logfile_name)
+
+    fh = RotatingFileHandler(file_path, maxBytes=5*1024*1024, backupCount=5, encoding="utf-8")
+    fh.setLevel(level)
+    fh.setFormatter(fmt)
+    root_logger.addHandler(fh)
+
+    if getattr(sys, "stdout", None):
+        ch = logging.StreamHandler(sys.stdout)
+        ch.setLevel(level)
+        ch.setFormatter(fmt)
+        root_logger.addHandler(ch)
+
+    app_logger = logging.getLogger(logger_name)
+    app_logger.setLevel(level)
+    app_logger.debug("Logging inizializzato. Livello=%s, file=%s", logging.getLevelName(level), file_path)
+    return file_path
+
+LOG_FILE_PATH = setup_logging(debug=False, logger_name="TraceabilityRS")
+logger = logging.getLogger("TraceabilityRS")
+logger.info("Logging avviato. File: %s", LOG_FILE_PATH)
+
 import re
 import subprocess
-import sys
-import tempfile
+import sys, os, atexit
 import tkinter as tk
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -22,97 +113,109 @@ import permissions_gui
 import submissions_gui
 import tools_gui
 from traceability import TraceabilityManager
-import logging
-from datetime import date
+import logging.handlers
 from calibration_gui import CalibrationsWindow
 import collections.abc
 import scarti_gui
 import tempfile
 import assign_submissions_gui
-
-# Configurazione logging
-logging.basicConfig(level=logging.INFO,
-                    filename='app.log',
-                    format='%(asctime)s | %(levelname)s | %(name)s | % (message)s',
-                    encoding='utf-8')
-
-logger = logging.getLogger('app.log')
+import utils
+import logging
+import logging.config
+from pathlib import Path
+from logging.handlers import RotatingFileHandler
 
 
-def setup_logging(app_folder_name="Traceability_RS", debug=True):
+def _detect_log_file_path(logger_name: str) -> str:
     """
-    Configura un logger rotante su file + (opzionale) console.
-    Restituisce il percorso del file di log in uso.
+    Ritorna il percorso del primo FileHandler/RotatingFileHandler trovato
+    sul logger specificato o, in fallback, sul root logger.
     """
-    # 1) Determina directory log sicura nel profilo utente
-    base_dir = os.getenv("LOCALAPPDATA") or os.getenv("APPDATA") or os.path.expanduser("~")
-    log_dir = os.path.join(base_dir, app_folder_name, "Logs")
+    def _first_file_handler_path(lg: logging.Logger) -> str:
+        for h in lg.handlers:
+            if hasattr(h, "baseFilename"):
+                try:
+                    return str(Path(h.baseFilename).resolve())
+                except Exception:
+                    return str(h.baseFilename)
+        return ""
 
-    # 2) Fallback su temp se non scrivibile
-    try:
-        os.makedirs(log_dir, exist_ok=True)
-        test_path = os.path.join(log_dir, ".write_test")
-        with open(test_path, "w", encoding="utf-8") as f:
-            f.write("ok")
-        os.remove(test_path)
-    except Exception:
-        log_dir = os.path.join(tempfile.gettempdir(), app_folder_name, "Logs")
-        os.makedirs(log_dir, exist_ok=True)
+    lg_app = logging.getLogger(logger_name)
+    p = _first_file_handler_path(lg_app)
+    if p:
+        return p
+    return _first_file_handler_path(logging.getLogger())
 
-    # 3) Nome file
-    log_file = os.path.join(log_dir, f"app_{datetime.now().strftime('%Y%m%d')}.log")
 
-    # 4) Root logger
-    root = logging.getLogger()
-    root.setLevel(logging.DEBUG if debug else logging.INFO)
+def setup_logging(debug: bool = False,
+                  log_dir: str | None = None,
+                  logfile_name: str = "traceability_rs.log",
+                  logger_name: str = "TraceabilityRS") -> str:
+    """
+    Inizializza il logging:
+    - File rotante in %LOCALAPPDATA%\\TraceabilityRS\\logs di default.
+    - Console handler solo se sys.stdout esiste (in exe windowed è None).
+    Evita duplicazioni se già configurato. Ritorna il path del file di log.
+    """
+    root_logger = logging.getLogger()
 
-    # Evita doppio setup se già configurato
-    if root.handlers:
-        return log_file
+    # Se già configurato, non duplicare; prova a restituire il file esistente
+    if root_logger.handlers:
+        existing = _detect_log_file_path(logger_name)
+        if existing:
+            return existing
+        # se non troviamo un file handler, proseguiamo a configurarne uno
 
-    # 5) Formatter
-    fmt = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
-    datefmt = "%Y-%m-%d %H:%M:%S"
-    formatter = logging.Formatter(fmt=fmt, datefmt=datefmt)
+    level = logging.DEBUG if debug or os.getenv("TRACE_RS_DEBUG") == "1" else logging.INFO
+    root_logger.setLevel(level)
 
-    # 6) File handler rotante
-    file_handler = logging.handlers.RotatingFileHandler(
-        log_file, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    formatter = logging.Formatter(
+        "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
     )
-    file_handler.setLevel(logging.DEBUG if debug else logging.INFO)
-    file_handler.setFormatter(formatter)
-    root.addHandler(file_handler)
 
-    # 7) Console handler (utile in debug; in exe può non vedersi)
-    console_handler = logging.StreamHandler(stream=sys.stdout)
-    console_handler.setLevel(logging.DEBUG if debug else logging.INFO)
-    console_handler.setFormatter(formatter)
-    root.addHandler(console_handler)
+    # File handler
+    if not log_dir:
+        log_dir = os.path.join(os.getenv("LOCALAPPDATA", "."), "TraceabilityRS", "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    file_path = os.path.join(log_dir, logfile_name)
 
-    # 8) Logga eccezioni non gestite
-    def _excepthook(exc_type, exc, tb):
-        logging.getLogger("UNCAUGHT").exception("Unhandled exception", exc_info=(exc_type, exc, tb))
-        # Mostra anche su stderr (facoltativo)
-        sys.__excepthook__(exc_type, exc, tb)
+    fh = RotatingFileHandler(file_path, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
+    fh.setLevel(level)
+    fh.setFormatter(formatter)
+    root_logger.addHandler(fh)
 
-    sys.excepthook = _excepthook
+    # Console handler (solo se c’è stdout)
+    stdout = getattr(sys, "stdout", None)
+    if stdout:
+        ch = logging.StreamHandler(stdout)
+        ch.setLevel(level)
+        ch.setFormatter(formatter)
+        root_logger.addHandler(ch)
 
-    return log_file
+    # Imposta anche il logger applicativo al livello scelto
+    app_logger = logging.getLogger(logger_name)
+    app_logger.setLevel(level)
+    app_logger.debug("Logging inizializzato. Livello=%s, file=%s",
+                     logging.getLevelName(level), file_path)
 
-# Chiama subito il setup
-LOG_FILE_PATH = setup_logging(debug=True)
+    return str(Path(file_path).resolve())
+
+
+
+# Esempio di utilizzo all’avvio (main.py):
+LOG_FILE_PATH = setup_logging(debug=False, logger_name="TraceabilityRS")
 logger = logging.getLogger("TraceabilityRS")
 logger.info("Logging avviato. File: %s", LOG_FILE_PATH)
 
 try:
     from PIL import Image, ImageTk
-
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.7.3"  # Versione aggiornata
+APP_VERSION = "1.7.4"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -246,6 +349,133 @@ class LanguageManager:
 
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
+
+    def fetch_card_referiments(self, label_code):
+        """
+        Carica i riferimenti scheda per una label (LabelCod).
+        Ritorna una lista di stringhe (Referiment).
+        """
+        query = """
+        select 
+            ProductRiferiments.CodRiferimento + ' [' + ParentPhases.ParentPhaseName + ']' As Referiment
+        from LabelCodes 
+        inner join Boards on LabelCodes.IDBoard=Boards.IDBoard
+        inner join Orders on Orders.IDOrder = Boards.IDOrder
+        inner join Products on Products.IDProduct = Orders.IDProduct
+        inner join ProductComponentsErp on Products.IDProduct = ProductComponentsErp.IDProduct
+        inner join ProductRiferiments on ProductComponentsErp.IDProductCompErp = ProductRiferiments.IDProductCompErp
+        inner join Components on Components.IDComponent = ProductComponentsErp.IDComponent
+        inner join ParentPhases on ParentPhases.IDParentPhase = ProductRiferiments.IDParentPhase
+        where LabelCodes.LabelCod = ?
+        order by ParentPhases.ParentPhaseName,
+                 ProductRiferiments.CodRiferimento + ' [' + ParentPhases.ParentPhaseName + ']';
+        """
+        cur = None
+        try:
+            cur = self.conn.cursor()
+            cur.execute(query, label_code)
+            rows = cur.fetchall()
+            return [getattr(r, 'Referiment', r[0]) for r in rows] if rows else []
+        except Exception as e:
+            self.last_error_details = str(e)
+            return []
+        finally:
+            try:
+                if cur: cur.close()
+            except Exception:
+                pass
+
+    def fetch_calibration_warnings(self):
+        """
+        Elenco attrezzature con calibrazione mancante o in scadenza (<=7 giorni)
+        e per cui NON è stato inviato un avviso nelle ultime 24 ore (tabella eqp.CalibrationWarnings).
+        Considera solo l’ultima calibrazione per attrezzatura.
+        """
+        query = """
+        SELECT 
+            e.EquipmentId,
+            e.InternalName + ' [Inventory: ' + ISNULL(e.InventoryNumber, '#N/DD') + ']' AS Equipment,
+            CAST(c1.CalibratedOn AS date) AS LastCalibrationDate,
+            s1.SiteName AS CalibratedBy,
+            c1.NrCertificate,
+            CAST(c1.ExpireOn AS date) AS ExpireOn,
+            IIF(c1.CalibratedOn IS NULL, 'No calibration record!', '') AS [Note]
+        FROM eqp.Equipments e
+        OUTER APPLY (
+            SELECT TOP 1 c.*
+            FROM eqp.Calibrations c
+            WHERE c.EquipmentID = e.EquipmentId
+            ORDER BY c.CalibratedOn DESC
+        ) c1
+        LEFT JOIN dbo.Sites s1 ON s1.IDSite = c1.CalibrationSupplierId
+        LEFT JOIN eqp.EquipmentBrands eb ON eb.EquipmentBrandId = e.BrandId
+        INNER JOIN dbo.Sites s ON s.IDSite = eb.CompanyId
+        OUTER APPLY (
+            SELECT TOP 1 w.WarningSentOn AS LastWarn
+            FROM eqp.CalibrationWarnings w
+            WHERE w.EquipmentId = e.EquipmentId
+            ORDER BY w.WarningSentOn DESC
+        ) w1
+        WHERE e.MustCalibrated = 1
+          AND (
+                c1.ExpireOn IS NULL
+                OR DATEDIFF(day, GETDATE(), c1.ExpireOn) <= 7
+              )
+          AND (
+                w1.LastWarn IS NULL
+                OR DATEDIFF(day, w1.LastWarn, GETDATE()) >= 1
+              )
+        ORDER BY e.InternalName + ' [Inventory: ' + ISNULL(e.InventoryNumber,'#N/DD') + ']', c1.ExpireOn;
+        """
+        cur = None
+        try:
+            cur = self.conn.cursor()
+            cur.execute(query)
+            return cur.fetchall()
+        except Exception as e:
+            self.last_error_details = str(e)
+            return []
+        finally:
+            try:
+                if cur: cur.close()
+            except:
+                pass
+
+    def mark_calibration_warning_sent(self, equipment_ids):
+        """
+        Registra l'invio avviso per gli EquipmentId passati, inserendo una riga in eqp.CalibrationWarnings
+        con WarningSentOn = GETDATE() per ciascun equipment.
+
+        Ritorna True/False.
+        """
+        if not equipment_ids:
+            return True
+
+        sql = """INSERT INTO eqp.CalibrationWarnings (EquipmentId, WarningSentOn)
+            SELECT ?, GETDATE()
+            WHERE NOT EXISTS (
+               SELECT 1 FROM eqp.CalibrationWarnings
+               WHERE EquipmentId = ? AND CAST(WarningSentOn AS date) = CAST(GETDATE() AS date)
+            );
+            """
+        cur = None
+        try:
+            cur = self.conn.cursor()
+            # normalizza a int e crea tuples per executemany
+            params = [(int(eid), int(eid)) for eid in equipment_ids]
+            cur.executemany(sql, params)
+            self.conn.commit()
+            return True
+        except Exception as e:
+            if self.conn:
+                self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+        finally:
+            try:
+                if cur: cur.close()
+            except Exception:
+                pass
 
     def fetch_unassigned_submissions(self):
         query = """
@@ -421,6 +651,7 @@ class Database:
                 if cur: cur.close()
             except:
                 pass
+
     def get_scrap_label_info(self, label_code):
         """
         Verifica il codice etichetta (scheda scrap).
@@ -522,29 +753,61 @@ class Database:
             except:
                 pass
 
-    def insert_scrap_declaration(self, user_name, id_label_code, id_parent_phase, scrap_reason_id, note, picture_bytes):
+    # Sostituisci il metodo esistente con questo
+    def insert_scrap_declaration(self, user_name, id_label_code, id_parent_phase, scrap_reason_id,
+                                 note, picture_bytes, riferiments=None):
         """
-        Salva la dichiarazione nella tabella dbo.ScarpDeclarations (nome tabella fornito).
-        DateIn è GETDATE() lato SQL.
+        Salva la dichiarazione nella tabella dbo.ScarpDeclarations.
+        Tenta prima l'inserimento con la nuova colonna [Riferiments];
+        se la colonna non esiste, fa fallback al vecchio INSERT.
+
+        riferiments: stringa con riferimenti separati da ';' (può essere None o '')
         """
-        query = """
-            INSERT INTO dbo.ScarpDeclarations
-                ([User], [IdLabelCode], [IDParentPhase], [ScrapReasonId], [Note], [DateIn], [Picture])
-            VALUES (?, ?, ?, ?, ?, GETDATE(), ?);
-        """
+        if riferiments is None:
+            riferiments = ""
+
+        cur = None
         try:
             cur = self.conn.cursor()
-            cur.execute(query, user_name, id_label_code, id_parent_phase, scrap_reason_id, note, picture_bytes)
+
+            # Nuovo insert con Riferiments
+            query_new = """
+                INSERT INTO dbo.ScarpDeclarations
+                    ([User], [IdLabelCode], [IDParentPhase], [ScrapReasonId], [Note], [Riferiments], [DateIn], [Picture])
+                VALUES (?, ?, ?, ?, ?, ?, GETDATE(), ?);
+            """
+            cur.execute(query_new, user_name, id_label_code, id_parent_phase, scrap_reason_id,
+                        note, riferiments, picture_bytes)
             self.conn.commit()
             return True
+
         except Exception as e:
+            # Se la colonna non esiste, fallback al vecchio schema
             self.conn.rollback()
-            self.last_error_details = str(e)
-            return False
+            msg = str(e).lower()
+            if "invalid column" in msg and "riferiments" in msg:
+                try:
+                    cur = self.conn.cursor()
+                    query_old = """
+                        INSERT INTO dbo.ScarpDeclarations
+                            ([User], [IdLabelCode], [IDParentPhase], [ScrapReasonId], [Note], [DateIn], [Picture])
+                        VALUES (?, ?, ?, ?, ?, GETDATE(), ?);
+                    """
+                    cur.execute(query_old, user_name, id_label_code, id_parent_phase, scrap_reason_id,
+                                note, picture_bytes)
+                    self.conn.commit()
+                    return True
+                except Exception as e2:
+                    self.conn.rollback()
+                    self.last_error_details = str(e2)
+                    return False
+            else:
+                self.last_error_details = str(e)
+                return False
         finally:
             try:
-                cur.close()
-            except:
+                if cur: cur.close()
+            except Exception:
                 pass
 
     def authenticate_and_get_user(self, user_id, password):
@@ -3166,11 +3429,6 @@ class Database:
         """Inserisce record in LogManutenzioni per i compiti completati in una transazione batch."""
         if not completed_task_ids:
             return True
-
-        # ATTENZIONE: Modifica questa query se la struttura o lo schema di LogManutenzioni è diverso.
-        # Ho assunto lo schema 'eqp'.
-        # DataEsecuzione è impostata a GETDATE() (ora del server al momento del salvataggio).
-        # StartTime è l'ora passata dalla GUI (quando la scheda è stata caricata).
         query = """
                 INSERT INTO Traceability_rs.eqp.LogManutenzioni
                 (CompitoId, EquipmentId, UserName, DateStop, DateStart, NoteGenerali)
@@ -3865,6 +4123,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
+        logger.debug("INIT: start __init__")
         self.should_exit = False  # Flag to control shutdown
         self.geometry("1024x768")
 
@@ -3892,6 +4151,7 @@ class App(tk.Tk):
         self.db = Database(DB_CONN_STR)
         logger.info("Connessione al database stabilita con successo")
         if not self.db.connect():
+            logger.debug("INIT: DB connect OK")
             messagebox.showerror("Database Error",
                                  f"Impossibile connettersi al database.\n\nDetails: {self.db.last_error_details}")
             self.destroy()
@@ -3900,7 +4160,9 @@ class App(tk.Tk):
 
         # Carica la lingua salvata
         initial_lang = self._load_language_setting()
+        logger.debug("INIT: language setting loaded -> %s", initial_lang)
         self.lang = LanguageManager(self.db)
+        logger.debug("INIT: LanguageManager loaded")
         self.lang.set_language(initial_lang)
         self.doc_categories = self.db.fetch_doc_categories()
 
@@ -3908,18 +4170,207 @@ class App(tk.Tk):
         if self.check_version() is False:
             # check_version already handles shutdown, we just need to stop __init__
             return
+        logger.debug("INIT: after check_version")
 
         self.traceability_manager = TraceabilityManager(self, self.db, self.lang)
+        logger.debug("INIT: traceability manager OK")
 
         self.logo_label = None
         self.authenticated_user_for_maintenance = None
         self._create_widgets()
+        logger.debug("INIT: widgets created")
         self._create_menu()
+        self.update_idletasks()
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+        # Mettila topmost per mezzo secondo e poi rimuovi il flag
+        self.attributes('-topmost', True)
+        self.after(500, lambda: self.attributes('-topmost', False))
+
+        #self.after(1000, lambda: messagebox.showinfo("Test", "UI pronta e reattiva.", parent=self))
+
+        logger.debug("INIT: menu created")
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
         self.update_texts()
+        logger.debug("INIT: texts updated")
         self._update_clock()  # Avvia l'orologio
 
         self.after(100, self._post_startup_tasks)
+        logger.debug("INIT: scheduled post_startup_tasks")
+
+    def _check_calibration_warnings_startup_async(self):
+        #return
+        import threading, logging
+
+        logging.getLogger("TraceabilityRS").debug("Startup: launch calibration warning check in background thread")
+
+        try:
+            threading.Thread(
+                target=self._check_calibration_warnings_startup,
+                name="CalibWarnStartup",
+                daemon=True
+            ).start()
+            logging.info("Startup: controllo calibrazioni completato.")
+        except Exception as e:
+            logging.exception("Errore controllo calibrazioni in avvio: %s", e)
+
+
+
+    def _check_calibration_warnings_startup(self):
+        """
+        Controlla le calibrazioni in scadenza/mancanti e invia un avviso email una volta al giorno.
+        Non blocca l’avvio: eventuali errori vengono loggati.
+        """
+        #return
+        log = logging.getLogger("TraceabilityRS")
+        log.info("Startup: avvio controllo calibrazioni...")
+
+        try:
+            rows = self.db.fetch_calibration_warnings() or []
+            log.info("Startup: controllo calibrazioni -> %d righe da notificare", len(rows))
+            if not rows:
+                return
+
+            # Destinatari da settings (passa l'attributo dinamicamente)
+            try:
+                recipients = utils.get_email_recipients(self.db.conn, attribute='Sys_Email_Calibration')
+            except Exception as e:
+                log.error("Errore lettura destinatari calibrazioni: %s", e)
+                recipients = []
+
+            if not recipients:
+                log.warning("Nessun destinatario per Sys_Email_Calibration: avviso non inviato.")
+                return
+
+            # Prepara email HTML
+            import html as html_mod
+            from datetime import date as dtdate, datetime as dtdt
+
+            def nz(v):
+                return "#N/A" if v in (None, "", "None") else str(v)
+
+            def fmt_date(d):
+                try:
+                    if isinstance(d, (dtdt, dtdate)):
+                        return d.strftime("%d.%m.%Y")
+                    return nz(d)
+                except Exception:
+                    return nz(d)
+
+            def hesc(s):
+                return html_mod.escape(nz(s))
+
+            rows_html = []
+            cal_ids_to_mark = []
+            equip_ids_to_mark = []
+            today = dtdate.today()
+
+            for r in rows:
+                # Estrai campi con fallback sicuro
+                equip_id = getattr(r, 'EquipmentId', None)
+                equip = getattr(r, 'Equipment', None) or (r[1] if isinstance(r, (tuple, list)) and len(r) > 1 else None)
+                last_cal = getattr(r, 'LastCalibrationDate', None)
+                by = getattr(r, 'CalibratedBy', None)
+                cert = getattr(r, 'NrCertificate', None)
+                exp = getattr(r, 'ExpireOn', None)
+                note = getattr(r, 'Note', None)
+                cal_id = getattr(r, 'CalibrationId', None)
+                equip_id = getattr(r, 'EquipmentId', None)
+                if equip_id is None and isinstance(r, (tuple, list)) and len(r) > 0:
+                    equip_id = r[0]
+                if equip_id is not None:
+                    equip_ids_to_mark.append(int(equip_id))
+
+                # Calcolo stato e colore
+                if exp is None:
+                    status = "MISSING calibration"
+                    status_color = "#cc0000"
+                else:
+                    try:
+                        days = (exp - today).days if isinstance(exp, dtdate) else None
+                    except Exception:
+                        days = None
+                    if days is None:
+                        status = "#N/A"
+                        status_color = "#999999"
+                    elif days < 0:
+                        status = f"EXPIRED {-days} day(s) ago"
+                        status_color = "#cc0000"
+                    elif days <= 7:
+                        status = f"Expires in {days} day(s)"
+                        status_color = "#d17f00"  # arancione
+                    else:
+                        status = f"Expires in {days} day(s)"
+                        status_color = "#006600"  # verde (in pratica non dovrebbe capitare col filtro SQL)
+
+                rows_html.append(f"""
+                  <tr>
+                    <td>{hesc(equip)}</td>
+                    <td>{hesc(fmt_date(last_cal))}</td>
+                    <td>{hesc(by)}</td>
+                    <td>{hesc(cert)}</td>
+                    <td>{hesc(fmt_date(exp))}</td>
+                    <td style="color:{status_color}; font-weight:600;">{hesc(status)}</td>
+                    <td>{hesc(note)}</td>
+                  </tr>
+                """)
+
+                if cal_id is not None:
+                    cal_ids_to_mark.append(cal_id)
+
+            subject = f"[Calibration] Warning report - {len(rows_html)} item(s)"
+            body = f"""
+            <html>
+              <body style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#222; line-height:1.35;">
+                <p>Dear Colleagues,</p>
+                <p>
+                  Below is a list of equipment with missing or expiring calibrations.
+                  Unavailable values are indicated by  <strong>#N/A</strong>.
+                </p>
+                <table cellpadding="6" cellspacing="0" border="1" style="border-collapse:collapse; border-color:#bbb; width:100%; max-width:1200px;">
+                  <thead style="background:#f2f2f2;">
+                    <tr>
+                      <th align="left">Equipment</th>
+                      <th align="left">Last cal.</th>
+                      <th align="left">Calibrated by</th>
+                      <th align="left">Certificate</th>
+                      <th align="left">Expire on</th>
+                      <th align="left">Status</th>
+                      <th align="left">Note</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {''.join(rows_html)}
+                  </tbody>
+                </table>
+                <p style="margin-top:14px; color:#666; font-size:11px;">
+                  This message is automatically generated by the system.
+                </p>
+              </body>
+            </html>
+            """
+
+            # Invia come HTML
+            try:
+                utils.send_email(recipients=recipients, subject=subject, body=body, is_html=True)
+                log.info("Email calibrazioni inviata con successo a %d destinatari", len(recipients))
+            except Exception as e:
+                log.error("Errore invio email calibrazioni: %s", e)
+                return
+
+            # Dopo invio email riuscito:
+            if equip_ids_to_mark:
+                ok = self.db.mark_calibration_warning_sent(equip_ids_to_mark)
+                if not ok:
+                    log.warning("Impossibile registrare CalibrationWarnings: %s", self.db.last_error_details)
+                else:
+                    log.info("Registrati %d avvisi in eqp.CalibrationWarnings", len(equip_ids_to_mark))
+
+        except Exception as e:
+            log.exception("Errore controllo calibrazioni in avvio: %s", e)
+
+
 
     def open_assign_submissions_with_login(self):
         self._execute_authorized_action(
@@ -4239,16 +4690,18 @@ class App(tk.Tk):
         )
 
     def _post_startup_tasks(self):
-        """Esegue compiti che richiedono che la finestra principale sia completamente inizializzata."""
+        #logger.debug("POST: skipped by debug")
         print("DEBUG: Eseguo le operazioni post-avvio...")
         self._update_clock()
-
-        # Avvia il primo controllo periodico dopo 2 minuti dall'avvio
         self.periodic_check_job_id = self.after(120000, self._periodic_version_check)
 
         is_birthday = self._check_for_birthdays()
         if not is_birthday:
             self._setup_slideshow()
+
+        # PRIMA: self.after(500, self._check_calibration_warnings_startup)
+        # DOPO:
+        self.after(500, self._check_calibration_warnings_startup_async)
 
     def _setup_slideshow(self):
         """Legge le impostazioni e avvia il ciclo dello slideshow."""
@@ -4993,6 +5446,7 @@ class UpdateNotificationDialog(tk.Toplevel):
                            "È stata rilasciata una nuova versione del programma ({0}).\n"
                            "La tua versione attuale è la {1}.\n\n"
                            "Cosa vuoi fare?", new_version, current_version)
+
         ttk.Label(main_frame, text=message, justify=tk.LEFT).pack(pady=10)
 
         btn_frame = ttk.Frame(main_frame)

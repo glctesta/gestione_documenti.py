@@ -7,18 +7,9 @@ from datetime import datetime
 
 
 def open_scrap_declaration_window(parent, db_connection, lang_manager):
-    """
-    Finestra 'Dichiarazione scarti' con:
-    - Inserimento codice scheda (LabelCod) e verifica via DB
-    - Campi attivati solo dopo verifica positiva
-    - Quantità rimossa (si lavora per scheda singola)
-    - 'Area di provenienza' e 'Motivo' caricati da DB
-    - Operatore precompilato e non modificabile (ultimo utente autenticato)
-    - Salvataggio in dbo.ScarpDeclarations, con immagine opzionale
-    """
     win = tk.Toplevel(parent)
     win.title(lang_manager.get('scrap_title', "Dichiarazione scarti"))
-    win.geometry("580x520")
+    win.geometry("650x630")
     win.transient(parent)
     win.grab_set()
 
@@ -27,15 +18,14 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
     id_label_code_var = tk.IntVar(value=0)
     board_info = {"OrderNumber": "", "OrderDate": "", "OrderQuantity": "", "ProductCode": ""}
 
-    # Operatore (non modificabile)
     operator_name = getattr(parent, 'last_authenticated_user_name', '') or ""
     operator_var = tk.StringVar(value=operator_name)
 
-    # Immagine allegata (opzionale)
     picture_path_var = tk.StringVar(value="")
     picture_bytes = None
 
-    # UI
+    all_referiments = []
+
     main = ttk.Frame(win, padding=12)
     main.pack(fill="both", expand=True)
 
@@ -50,49 +40,67 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
     verify_btn.grid(row=row, column=2, sticky="w", padx=8)
     row += 1
 
-    # Info ordine/prodotto (read-only)
+    # Info ordine/prodotto
     ttk.Label(main, text=lang_manager.get('order_number', "Numero ordine")).grid(row=row, column=0, sticky="w", pady=4)
     order_number_var = tk.StringVar()
-    order_number_entry = ttk.Entry(main, textvariable=order_number_var, state="readonly", width=28)
-    order_number_entry.grid(row=row, column=1, sticky="w", pady=4)
+    ttk.Entry(main, textvariable=order_number_var, state="readonly", width=28).grid(row=row, column=1, sticky="w", pady=4)
     row += 1
 
     ttk.Label(main, text=lang_manager.get('order_date', "Data ordine")).grid(row=row, column=0, sticky="w", pady=4)
     order_date_var = tk.StringVar()
-    order_date_entry = ttk.Entry(main, textvariable=order_date_var, state="readonly", width=28)
-    order_date_entry.grid(row=row, column=1, sticky="w", pady=4)
+    ttk.Entry(main, textvariable=order_date_var, state="readonly", width=28).grid(row=row, column=1, sticky="w", pady=4)
     row += 1
 
     ttk.Label(main, text=lang_manager.get('order_qty', "Quantità ordine")).grid(row=row, column=0, sticky="w", pady=4)
     order_qty_var = tk.StringVar()
-    order_qty_entry = ttk.Entry(main, textvariable=order_qty_var, state="readonly", width=28)
-    order_qty_entry.grid(row=row, column=1, sticky="w", pady=4)
+    ttk.Entry(main, textvariable=order_qty_var, state="readonly", width=28).grid(row=row, column=1, sticky="w", pady=4)
     row += 1
 
     ttk.Label(main, text=lang_manager.get('scrap_product', "Prodotto")).grid(row=row, column=0, sticky="w", pady=4)
     product_code_var = tk.StringVar()
-    product_code_entry = ttk.Entry(main, textvariable=product_code_var, state="readonly", width=28)
-    product_code_entry.grid(row=row, column=1, sticky="w", pady=4)
+    ttk.Entry(main, textvariable=product_code_var, state="readonly", width=28).grid(row=row, column=1, sticky="w", pady=4)
     row += 1
 
-    # Area di provenienza (combo) - disabilitata fino a verifica
+    # Area di provenienza
     ttk.Label(main, text=lang_manager.get('scrap_origin_area', "Area di provenienza")).grid(row=row, column=0, sticky="w", pady=6)
     origin_area_var = tk.StringVar()
     origin_area_combo = ttk.Combobox(main, textvariable=origin_area_var, state="disabled", width=32)
     origin_area_combo.grid(row=row, column=1, sticky="w", pady=6)
     row += 1
 
-    # Motivo (combo da DB) - disabilitata fino a verifica
+    # Motivo
     ttk.Label(main, text=lang_manager.get('scrap_reason', "Motivo")).grid(row=row, column=0, sticky="w", pady=6)
     scrap_reason_var = tk.StringVar()
     scrap_reason_combo = ttk.Combobox(main, textvariable=scrap_reason_var, state="disabled", width=32)
     scrap_reason_combo.grid(row=row, column=1, sticky="w", pady=6)
     row += 1
 
-    # Operatore (non modificabile)
+    # Operatore
     ttk.Label(main, text=lang_manager.get('scrap_operator', "Operatore")).grid(row=row, column=0, sticky="w", pady=6)
-    operator_entry = ttk.Entry(main, textvariable=operator_var, state="readonly", width=32)
-    operator_entry.grid(row=row, column=1, sticky="w", pady=6)
+    ttk.Entry(main, textvariable=operator_var, state="readonly", width=32).grid(row=row, column=1, sticky="w", pady=6)
+    row += 1
+
+    # Riferimenti scheda (nuovi widget)
+    ttk.Label(main, text=lang_manager.get('scrap_ref_label', "Riferimento scheda")).grid(row=row, column=0, sticky="w",
+                                                                                         pady=6)
+    referiment_var = tk.StringVar()
+    referiment_combo = ttk.Combobox(main, textvariable=referiment_var, state="disabled", width=32)
+    referiment_combo.grid(row=row, column=1, sticky="w", pady=6)
+
+    refs_btns = ttk.Frame(main)
+    refs_btns.grid(row=row, column=2, sticky="w")
+    add_ref_btn = ttk.Button(refs_btns, text=lang_manager.get('add_button', "Aggiungi"), state="disabled")
+    add_ref_btn.pack(side="top", padx=6, pady=(0, 3))
+    remove_ref_btn = ttk.Button(refs_btns, text=lang_manager.get('remove_button', "Rimuovi"), state="disabled")
+    remove_ref_btn.pack(side="top", padx=6)
+    row += 1
+
+    ttk.Label(main, text=lang_manager.get('scrap_selected_refs_label', "Riferimenti selezionati")).grid(row=row,
+                                                                                                        column=0,
+                                                                                                        sticky="nw",
+                                                                                                        pady=(0, 6))
+    refs_listbox = tk.Listbox(main, height=5, selectmode="extended")
+    refs_listbox.grid(row=row, column=1, sticky="ew", pady=(0, 6))
     row += 1
 
     # Note
@@ -119,9 +127,9 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
     save_btn.pack(side="right", padx=8)
     cancel_btn.pack(side="right")
 
-    # Dizionari per mapping ID/descrizione
-    origin_map = {}   # nome -> id
-    reason_map = {}   # reason -> id
+    # Mappe ID
+    origin_map = {}
+    reason_map = {}
 
     def enable_fields():
         origin_area_combo.config(state="readonly")
@@ -129,6 +137,10 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
         notes_txt.config(state="normal")
         select_pic_btn.config(state="normal")
         save_btn.config(state="normal")
+        # riferimenti
+        referiment_combo.config(state="normal")  # editabile
+        add_ref_btn.config(state="normal")
+        remove_ref_btn.config(state="normal")
 
     def disable_fields():
         origin_area_combo.config(state="disabled", values=[])
@@ -140,6 +152,12 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
         picture_path_var.set("")
         nonlocal picture_bytes
         picture_bytes = None
+        # riferimenti
+        referiment_combo.set("")
+        referiment_combo.config(state="disabled", values=[])
+        refs_listbox.delete(0, tk.END)
+        add_ref_btn.config(state="disabled")
+        remove_ref_btn.config(state="disabled")
 
     def do_verify():
         disable_fields()
@@ -164,20 +182,18 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
         order_qty_var.set(str(getattr(info, 'OrderQuantity', '') or ''))
         product_code_var.set(getattr(info, 'ProductCode', '') or '')
 
-        # Ricava IDLabelCode (se non presente, tenta con helper)
+        # ID Label
         label_id = getattr(info, 'IDLabelCode', None)
         if label_id is None:
             label_id = db_connection.get_label_id_by_code(code)
         if not label_id:
-            # Non blocchiamo la UI, ma non abilitiamo salvataggio
             messagebox.showerror(lang_manager.get('error', "Errore"),
                                  "Impossibile determinare l'ID della scheda (LabelCode).",
                                  parent=win)
             return
-
         id_label_code_var.set(int(label_id))
 
-        # Carica combo Area di provenienza
+        # Aree
         areas = db_connection.fetch_origin_areas_for_scrap()
         names = []
         origin_map.clear()
@@ -188,7 +204,7 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
         if names:
             origin_area_combo.set(names[0])
 
-        # Carica combo motivi
+        # Motivi
         reasons = db_connection.fetch_scrap_reasons()
         reason_names = []
         reason_map.clear()
@@ -198,6 +214,18 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
         scrap_reason_combo['values'] = reason_names
         if reason_names:
             scrap_reason_combo.set(reason_names[0])
+
+        # Riferimenti scheda dalla query
+        try:
+            ref_values = db_connection.fetch_card_referiments(code) or []
+        except Exception:
+            ref_values = []
+
+        all_referiments.clear()
+        all_referiments.extend(ref_values)
+
+        referiment_combo['values'] = all_referiments
+        referiment_combo.set(all_referiments[0] if all_referiments else "")
 
         verified.set(True)
         enable_fields()
@@ -220,11 +248,90 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
                 messagebox.showerror(lang_manager.get('error', "Errore"),
                                      f"Impossibile leggere il file immagine: {e}", parent=win)
 
+    def _ref_reset_values():
+        # ripristina l’elenco completo nel combo
+        referiment_combo['values'] = all_referiments
+
+    # def on_ref_keyrelease(event=None):
+    #     # Filtra in base al testo digitato (case-insensitive “contiene”)
+    #     text = (referiment_var.get() or "").strip()
+    #     if not all_referiments:
+    #         return
+    #     if not text:
+    #         _ref_reset_values()
+    #         return
+    #     patt = text.casefold()
+    #     filtered = [x for x in all_referiments if patt in x.casefold()]
+    #     referiment_combo['values'] = filtered if filtered else all_referiments
+    def on_ref_keyrelease(event=None):
+        text = (referiment_var.get() or "").strip()
+        if not all_referiments:
+            return
+        patt = text.casefold()
+        filtered = [x for x in all_referiments if text and patt in x.casefold()]
+        referiment_combo['values'] = filtered if filtered else all_referiments
+        # Apri il dropdown per mostrare i suggerimenti
+        try:
+            referiment_combo.event_generate('<Down>')
+        except Exception:
+            pass
+    def on_ref_escape(event=None):
+        # Cancella filtro e testo
+        referiment_var.set("")
+        _ref_reset_values()
+
+    referiment_combo.bind("<KeyRelease>", on_ref_keyrelease)
+    referiment_combo.bind("<Escape>", on_ref_escape)
+    referiment_combo.bind("<Return>", lambda e: add_reference())
+
+    def add_reference(event=None):
+        # Consenti aggiunta solo se la voce è nell’elenco originale
+        val_typed = (referiment_var.get() or "").strip()
+        if not val_typed:
+            return
+
+        # Mappa al valore “canone” presente in all_referiments (case-insensitive)
+        canonical = next((x for x in all_referiments if x.casefold() == val_typed.casefold()), None)
+        if canonical is None:
+            # Se il filtro attuale ha una sola voce, usala
+            current_values = list(referiment_combo.cget('values'))
+            if len(current_values) == 1:
+                canonical = current_values[0]
+            else:
+                messagebox.showwarning(
+                    lang_manager.get('warning_title', 'Attenzione'),
+                    lang_manager.get('error_ref_must_be_from_list', "Selezionare un riferimento dall'elenco."),
+                    parent=win
+                )
+                return
+
+        # Evita duplicati
+        existing = [refs_listbox.get(i) for i in range(refs_listbox.size())]
+        if canonical in existing:
+            return
+
+        refs_listbox.insert(tk.END, canonical)
+        # prepara al prossimo inserimento
+        referiment_var.set("")
+        _ref_reset_values()
+
+    def remove_reference():
+        sel = list(refs_listbox.curselection())
+        sel.reverse()
+        for idx in sel:
+            refs_listbox.delete(idx)
+
     def do_save():
         if not verified.get():
             return
 
-        user_name = operator_var.get().strip()[:40]  # rispetto nvarchar(40)
+        # Almeno un riferimento richiesto
+        if refs_listbox.size() < 1:
+            messagebox.showerror(lang_manager.get('error', "Errore"),
+                                 "Inserire almeno un riferimento scheda.", parent=win)
+            return
+
+        user_name = operator_var.get().strip()[:40]
         id_label = id_label_code_var.get()
         origin_name = origin_area_var.get()
         reason_name = scrap_reason_var.get()
@@ -237,13 +344,17 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
             messagebox.showerror(lang_manager.get('error', "Errore"), "Selezionare il Motivo.", parent=win)
             return
 
+        # Riferimenti uniti da ';'
+        riferiments = ";".join([refs_listbox.get(i) for i in range(refs_listbox.size())])[:500]
+
         ok = db_connection.insert_scrap_declaration(
             user_name=user_name,
             id_label_code=id_label,
             id_parent_phase=origin_map[origin_name],
             scrap_reason_id=reason_map[reason_name],
             note=note,
-            picture_bytes=picture_bytes
+            picture_bytes=picture_bytes,
+            riferiments=riferiments
         )
         if ok:
             messagebox.showinfo(lang_manager.get('info', "Informazione"),
@@ -256,9 +367,26 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
                                  parent=win)
 
     # Bind bottoni
+    verify_btn.config(default='active')
     verify_btn.config(command=do_verify)
+    verify_btn.config(default='active')
+    verify_btn.config(command=do_verify)
+
+    def _on_label_enter(event=None):
+        # Richiama la stessa azione del pulsante "Verifica"
+        verify_btn.invoke()
+        return "break"  # evita beep/propagazione
+
+    label_code_entry.bind("<Return>", _on_label_enter)
+    label_code_entry.bind("<KP_Enter>", _on_label_enter)
+
     select_pic_btn.config(command=select_picture)
     save_btn.config(command=do_save)
+    add_ref_btn.config(command=add_reference)
+    remove_ref_btn.config(command=remove_reference)
+    referiment_combo.bind("<Return>", lambda e: add_reference())
+    referiment_combo.bind("<KeyRelease>", on_ref_keyrelease)
+    referiment_combo.bind("<Escape>", on_ref_escape)
 
     # Layout
     for c in (0, 1):
