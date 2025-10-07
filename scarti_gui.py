@@ -204,6 +204,7 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
         if names:
             origin_area_combo.set(names[0])
 
+
         # Motivi
         reasons = db_connection.fetch_scrap_reasons()
         reason_names = []

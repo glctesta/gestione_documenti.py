@@ -214,6 +214,7 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
+
 # --- CONFIGURAZIONE APPLICAZIONE ---
 APP_VERSION = "1.7.4"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
