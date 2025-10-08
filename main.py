@@ -3,9 +3,14 @@
 import shutil
 import sys, os, atexit
 from pathlib import Path
+import sys
+import os
 
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, 'w')
 _STDOUT_FILE = None
 _STDERR_FILE = None
+
 
 try:
     base = Path(os.getenv("LOCALAPPDATA", ".")) / "TraceabilityRS" / "logs"
@@ -95,7 +100,7 @@ logger.info("Logging avviato. File: %s", LOG_FILE_PATH)
 
 import re
 import subprocess
-import sys, os, atexit
+import atexit
 import tkinter as tk
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -6587,7 +6592,7 @@ class App(tk.Tk):
         self.deiconify()
         self.lift()
         self.focus_force()
-        # Mettila topmost per mezzo secondo e poi rimuovi il flag
+
         self.attributes('-topmost', True)
         self.after(500, lambda: self.attributes('-topmost', False))
 
@@ -7155,12 +7160,6 @@ class App(tk.Tk):
     def open_kanban_materials_management(self):
         KanbanMaterialsManagementForm(self, self.db, self.lang)
 
-    # KanBan
-    # def open_kanban_move(self):
-    #     self._not_implemented('KanBan', 'Movimenta')
-
-    def open_kanban_verify(self):
-        self._not_implemented('KanBan', 'Verifica')
 
     def open_kanban_manage(self):
         self._not_implemented('KanBan', 'Gestione')
@@ -7174,10 +7173,7 @@ class App(tk.Tk):
 
     def open_scrap_declaration_with_login(self):
         """Apre la finestra per la dichiarazione scarti con autenticazione e autorizzazione."""
-        # self._execute_authorized_action(
-        #     menu_translation_key='submenu_scrap_declaration',
-        #     action_callback=lambda: scarti_gui.open_scrap_declaration_window(self, self.db, self.lang)
-        # )
+
         self._execute_authorized_action(
             menu_translation_key='submenu_scrap_declaration',
             action_callback=lambda:scarti_gui.open_scrap_declaration_window(self, self.db, self.lang)
@@ -7494,7 +7490,6 @@ class App(tk.Tk):
         if not is_birthday:
             self._setup_slideshow()
 
-        # PRIMA: self.after(500, self._check_calibration_warnings_startup)
         # DOPO:
         logger.info('Avviato controllo calibrazioni effettuate')
         self.after(500, self._check_calibration_warnings_startup_async)
@@ -8051,7 +8046,7 @@ class App(tk.Tk):
         )
         self.kanban_core_submenu.add_command(
             label=self.lang.get('kanban_verify', 'Verifica'),
-            command=self.open_kanban_verify
+            command=self._schedule_kanban_refill_check
         )
         self.kanban_core_submenu.add_command(
             label=self.lang.get('submenu_manage', 'Gestione'),
