@@ -222,7 +222,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.7.6"  # Versione aggiornata
+APP_VERSION = "1.7.9"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -1719,7 +1719,7 @@ class Database:
         """
         # 1. Eseguiamo l'autenticazione esistente per verificare le credenziali
         employee_name = self.authenticate_user(user_id, password)
-        logger.debug("authenticate_user result for user_id=%r: %s", user_id,
+        logger.info("authenticate_user result for user_id=%r: %s", user_id,
                      "OK" if employee_name else "FAILED")
 
         if not employee_name:
@@ -1737,7 +1737,7 @@ class Database:
         cursor = None
         try:
             cursor = self.conn.cursor()
-            logger.debug("Executing permissions query with param user_id=%r", user_id)
+            logger.info("Executing permissions query with param user_id=%r", user_id)
             # Usiamo lo user_id numerico per la ricerca dei permessi
             cursor.execute(permissions_query, user_id)
             # Creiamo un set con tutte le chiavi di permesso trovate
@@ -2964,8 +2964,10 @@ class Database:
 
     def grant_permission(self, employee_hire_history_id, translation_key):
         """Assegna un permesso a un utente."""
-        query = "INSERT INTO AutorizedUsers (EmployeeHireHistoryId, TranslationKey) VALUES (?, ?);"
+        query = "INSERT INTO AutorizedUsers (EmployeeHireHistoryId ,TranslationKey) VALUES (?, ?);"
+        query2 = "INSERT INTO [Traceability_RS].[dbo].[EmployeePermissions] ("
         try:
+            logger.info(f"HistoryHireId:{employee_hire_history_id} per argomento  {translation_key}")
             self.cursor.execute(query, employee_hire_history_id, translation_key)
             self.conn.commit()
             return True
@@ -3136,6 +3138,7 @@ class Database:
                 """
         try:
             # L'ordine dei parametri è fondamentale: TranslationKey, Nomeuser, Pass
+            logger.info(f"Chiave per accesso speciale:{menu_translation_key} per user:{user_id}")
 
             self.cursor.execute(query, menu_translation_key, user_id, password)
             return self.cursor.fetchone()
@@ -3969,7 +3972,7 @@ class Database:
     def fetch_all_equipments(self):
         """Recupera ID, Nome Interno e Seriale di tutte le macchine per la selezione."""
         #query = "SELECT EquipmentId, InternalName, SerialNumber FROM eqp.Equipments ORDER BY InternalName, SerialNumber;"
-        query = "SELECT  distinct e.EquipmentId, InternalName, SerialNumber FROM eqp.Equipments E inner join [eqp].[CompitiManutenzione] CM on e.EquipmentId=cm.EquipmentId ORDER BY InternalName, SerialNumber;"
+        query = "SELECT  distinct e.EquipmentId, InternalName +  + iif(cm.CompitoId is null, '',' (*) ') As InternalName, SerialNumber FROM eqp.Equipments E left join [eqp].[CompitiManutenzione] CM on e.EquipmentId=cm.EquipmentId ORDER BY InternalName, SerialNumber;"
         try:
             self.cursor.execute(query)
             return self.cursor.fetchall()
@@ -6034,11 +6037,9 @@ class KanbanMoveForm(tk.Toplevel):
         self.lbl_other_balance.config(text=self.lang.get('balance_other', 'Altrove: {qty}').format(qty=other))
 
     def _get_app_username(self):
-        """
-        Prova a leggere l'utente corrente dall'App (master) usando attributi comuni.
-        """
         app = self.master
-        for attr in ('current_user', 'logged_user', 'current_username', 'username', 'user_name', 'session_user'):
+        for attr in ('last_authenticated_user_name', 'current_user', 'logged_user',
+                     'current_username', 'username', 'user_name', 'session_user'):
             if hasattr(app, attr):
                 val = getattr(app, attr)
                 if isinstance(val, dict):
@@ -6057,20 +6058,41 @@ class KanbanMoveForm(tk.Toplevel):
         """
         if self._load_user:
             return True
+
         app = self.master
         did_login = {'ok': False}
 
         def _after_login():
-            user = self._get_app_username()
+            # Preferisci il nome impostato da _execute_authorized_action; fallback a _get_app_username
+            user = getattr(app, 'last_authenticated_user_name', None) or self._get_app_username()
             if user:
                 self._load_user = user
                 did_login['ok'] = True
 
-        if hasattr(app, '_execute_authorized_action'):
-            ok = app._execute_authorized_action(menu_translation_key='kanban_load', action_callback=_after_login)
-            return bool(ok and did_login['ok'])
-        # Se non esiste un sistema di login, neghiamo l'operazione di carico
-        return False
+        # NB: non affidarti al valore di ritorno (None); usa il flag did_login
+        app._execute_authorized_action(menu_translation_key='kanban_load', action_callback=_after_login)
+        return did_login['ok']
+
+        def _after_login():
+            # Preferisci il nome impostato da _execute_authorized_action; fallback a _get_app_username
+            user = getattr(app, 'last_authenticated_user_name', None) or self._get_app_username()
+            if user:
+                self._load_user = user
+                did_login['ok'] = True
+
+        # NB: non affidarti al valore di ritorno (None); usa il flag did_login
+        app._execute_authorized_action(menu_translation_key='kanban_load', action_callback=_after_login)
+        return did_login['ok']
+        def _after_login():
+            # Preferisci il nome impostato da _execute_authorized_action; fallback a _get_app_username
+            user = getattr(app, 'last_authenticated_user_name', None) or self._get_app_username()
+            if user:
+                self._load_user = user
+                did_login['ok'] = True
+
+        # NB: non affidarti al valore di ritorno (None); usa il flag did_login
+        app._execute_authorized_action(menu_translation_key='kanban_load', action_callback=_after_login)
+        return did_login['ok']
 
 class PrinterSetupDialog(tk.Toplevel):
     def __init__(self, master, lang):
@@ -6607,7 +6629,7 @@ class App(tk.Tk):
         self.after(100, self._post_startup_tasks)
         logger.debug("INIT: scheduled post_startup_tasks")
 
-    def _schedule_kanban_refill_check(self):
+    def _schedule_kanban_refill_check(self, manual=False):
         """
         Pianifica il controllo refill Kanban su base configurabile (JSON stampante).
         """
@@ -6622,6 +6644,8 @@ class App(tk.Tk):
         if not enabled or minutes <= 0:
             return
 
+        self._kanban_refill_check_async(manual=manual)
+
         # Esegui subito la prima volta in background
         self._kanban_refill_check_async()
 
@@ -6630,14 +6654,18 @@ class App(tk.Tk):
         # Salva l'id per eventuale cancel
         self.kanban_refill_job_id = self.after(interval_ms, self._schedule_kanban_refill_check)
 
-    def _kanban_refill_check_async(self):
+    def _kanban_refill_check_async(self, manual=False):
         """
         Avvia il controllo in un thread per non bloccare la UI.
         """
         import threading
-        threading.Thread(target=self._kanban_refill_check_worker, name="KanbanRefillCheck", daemon=True).start()
+        threading.Thread(
+            target=self._kanban_refill_check_worker,
+            kwargs={'manual': manual},
+            name="KanbanRefillCheck",
+            daemon=True).start()
 
-    def _kanban_refill_check_worker(self):
+    def _kanban_refill_check_worker(self, manual=False):
         """
         Logica di controllo:
         - calcola stock correnti per componente
@@ -6652,6 +6680,11 @@ class App(tk.Tk):
             stock_map = self.db.fetch_kanban_current_stock_by_component()  # {comp: stock}
 
             if not stock_map:
+                if manual:
+                    self.after(0, lambda: messagebox.showinfo(
+                        self.lang.get('info_title', 'Informazione'),
+                        self.lang.get('kanban_refill_none', 'Nessun componente da richiedere.')
+                    ))
                 return
 
             comp_ids = list(stock_map.keys())
@@ -6716,6 +6749,11 @@ class App(tk.Tk):
                     })
 
             if not requests:
+                if manual:
+                    self.after(0, lambda: messagebox.showinfo(
+                        self.lang.get('info_title', 'Informazione'),
+                        self.lang.get('kanban_refill_none', 'Nessun componente da richiedere.')
+                    ))
                 return
 
             # 7. Genera Excel in memoria
@@ -7181,10 +7219,10 @@ class App(tk.Tk):
     def open_calibrations_manager_with_login(self):
         logger = logging.getLogger("TraceabilityRS")
         required = 'calibration_management'
-        logger.debug("Request to open CalibrationsWindow; required_permission=%r", required)
+        logger.info("Request to open CalibrationsWindow; required_permission=%r", required)
         # Chiama il login in modalità "gatekeeper"
         user = self._execute_simple_login(required_permission=required)
-        logger.debug("Login result for calibrations: %s", "OK" if user else "FAILED")
+        logger.info("Login result for calibrations: %s", "OK" if user else "FAILED")
 
         # Questo `if` è il controllo di sicurezza.
         # Il codice al suo interno viene eseguito solo se _execute_simple_login
@@ -7626,23 +7664,23 @@ class App(tk.Tk):
         self.wait_window(view_form)
 
     def _execute_simple_login(self, action_callback=None, required_permission=None):
-        logger.debug("_execute_simple_login called; required_permission=%r", required_permission)
+        logger.info("_execute_simple_login called; required_permission=%r", required_permission)
 
         login_form = LoginWindow(self, self.db, self.lang)
         self.wait_window(login_form)
 
         if not login_form.clicked_login:
-            logger.debug("Login window closed without login.")
+            logger.info("Login window closed without login.")
             return None
 
         user_id = login_form.user_id
-        logger.debug("LoginWindow returned user_id=%r", user_id)
+        logger.info("LoginWindow returned user_id=%r", user_id)
 
         password = login_form.password
         user = self.db.authenticate_and_get_user(user_id, password)
 
         if not user:
-            logger.debug("Authentication failed for user_id=%r", user_id)
+            logger.info("Authentication failed for user_id=%r", user_id)
             messagebox.showerror(self.lang.get('login_title'),
                                  self.lang.get('login_auth_failed'), parent=self)
             return None
@@ -7651,7 +7689,7 @@ class App(tk.Tk):
                      sorted(user.permissions))
 
         if required_permission and not user.has_permission(required_permission):
-            logger.debug("Permission check FAILED for %r -> required=%r",
+            logger.info("Permission check FAILED for %r -> required=%r",
                          user.name, required_permission)
             messagebox.showwarning(
                 self.lang.get('access_denied', "Accesso Negato"),
@@ -7666,38 +7704,74 @@ class App(tk.Tk):
 
         return user
 
+    # def _execute_authorized_action(self, menu_translation_key, action_callback):
+    #     """
+    #     Gestisce il processo di login e autorizzazione per un'azione.
+    #     :param menu_translation_key: La chiave di traduzione del menu per il controllo permessi.
+    #     :param action_callback: La funzione da eseguire in caso di successo.
+    #     """
+    #     logger.debug("_execute_authorized_action called; menu_translation_key=%r", menu_translation_key)
+    #
+    #     login_form = LoginWindow(self, self.db, self.lang)
+    #     self.wait_window(login_form)
+    #
+    #     # Procede solo se l'utente ha premuto "Login"
+    #     if not login_form.clicked_login:
+    #         return
+    #
+    #     user_id = login_form.user_id
+    #     logger.debug("LoginWindow returned user_id=%r for authorized action %r", user_id, menu_translation_key)
+    #     password = login_form.password
+    #
+    #     # Controlla autenticazione e autorizzazione
+    #     auth_result = self.db.authenticate_and_authorize(user_id, password, menu_translation_key)
+    #
+    #     if auth_result is None:
+    #         # Caso 1: Username o Password errati
+    #         messagebox.showerror(self.lang.get('login_title'), self.lang.get('login_auth_failed'), parent=self)
+    #     elif auth_result.AuthorizedUsedId is None:
+    #         logger.debug("User %r authenticated but NOT authorized for %r", user_id, menu_translation_key)
+    #         # Caso 2: Utente valido, ma NON autorizzato per questa funzione
+    #         messagebox.showwarning(self.lang.get('auth_access_denied_title', "Accesso Negato"),
+    #                                self.lang.get('auth_access_denied_message',
+    #                                              "Non si dispone delle autorizzazioni necessarie per accedere a questa funzione."),
+    #                                parent=self)
+    #     else:
+    #         logger.debug("User %r authorized for %r; executing action.", user_id, menu_translation_key)
+    #         try:
+    #             self.last_authenticated_user_name = auth_result.EmployeeName
+    #         except Exception:
+    #             self.last_authenticated_user_name = None
+    #
+    #         action_callback()
+
     def _execute_authorized_action(self, menu_translation_key, action_callback):
-        """
-        Gestisce il processo di login e autorizzazione per un'azione.
-        :param menu_translation_key: La chiave di traduzione del menu per il controllo permessi.
-        :param action_callback: La funzione da eseguire in caso di successo.
-        """
         logger.debug("_execute_authorized_action called; menu_translation_key=%r", menu_translation_key)
 
         login_form = LoginWindow(self, self.db, self.lang)
         self.wait_window(login_form)
 
-        # Procede solo se l'utente ha premuto "Login"
         if not login_form.clicked_login:
-            return
+            return False
 
         user_id = login_form.user_id
         logger.debug("LoginWindow returned user_id=%r for authorized action %r", user_id, menu_translation_key)
         password = login_form.password
 
-        # Controlla autenticazione e autorizzazione
         auth_result = self.db.authenticate_and_authorize(user_id, password, menu_translation_key)
 
         if auth_result is None:
-            # Caso 1: Username o Password errati
             messagebox.showerror(self.lang.get('login_title'), self.lang.get('login_auth_failed'), parent=self)
+            return False
         elif auth_result.AuthorizedUsedId is None:
             logger.debug("User %r authenticated but NOT authorized for %r", user_id, menu_translation_key)
-            # Caso 2: Utente valido, ma NON autorizzato per questa funzione
-            messagebox.showwarning(self.lang.get('auth_access_denied_title', "Accesso Negato"),
-                                   self.lang.get('auth_access_denied_message',
-                                                 "Non si dispone delle autorizzazioni necessarie per accedere a questa funzione."),
-                                   parent=self)
+            messagebox.showwarning(
+                self.lang.get('auth_access_denied_title', "Accesso Negato"),
+                self.lang.get('auth_access_denied_message',
+                              "Non si dispone delle autorizzazioni necessarie per accedere a questa funzione."),
+                parent=self
+            )
+            return False
         else:
             logger.debug("User %r authorized for %r; executing action.", user_id, menu_translation_key)
             try:
@@ -7706,6 +7780,7 @@ class App(tk.Tk):
                 self.last_authenticated_user_name = None
 
             action_callback()
+            return True
 
     def open_maint_cycles_manager_with_login(self):
         self._execute_authorized_action(
@@ -8238,13 +8313,33 @@ class App(tk.Tk):
 
         # Aggiorna le etichette dei menu principali (indici 0..6)
         try:
-            self.menubar.entryconfig(0, label=self.lang.get('menu_documents', "Documenti di Produzione"))
-            self.menubar.entryconfig(1, label=self.lang.get('menu_general_docs', "Documenti Generali"))
-            self.menubar.entryconfig(2, label=self.lang.get('menu_operations', "Operazioni"))
-            self.menubar.entryconfig(3, label=self.lang.get('menu_maintenance', "Manutenzione"))
-            self.menubar.entryconfig(4, label=self.lang.get('menu_submissions', "Segnalazioni"))
-            self.menubar.entryconfig(5, label=self.lang.get('menu_tools', "Strumenti"))
-            self.menubar.entryconfig(6, label=self.lang.get('menu_help', "Aiuto"))
+            # self.menubar.entryconfig(0, label=self.lang.get('menu_documents', "Documenti di Produzione"))
+            # self.menubar.entryconfig(1, label=self.lang.get('menu_general_docs', "Documenti Generali"))
+            # self.menubar.entryconfig(2, label=self.lang.get('menu_operations', "Operazioni"))
+            # self.menubar.entryconfig(3, label=self.lang.get('menu_maintenance', "Manutenzione"))
+            # self.menubar.entryconfig(4, label=self.lang.get('menu_submissions', "Segnalazioni"))
+            # self.menubar.entryconfig(5, label=self.lang.get('menu_tools', "Strumenti"))
+            # self.menubar.entryconfig(6, label=self.lang.get('menu_help', "Aiuto"))
+            self.menubar.delete(0, 'end')
+
+            self.menubar.add_cascade(label=self.lang.get('menu_documents', "Documenti di Produzione"),
+                                     menu=self.document_menu)
+            self.menubar.add_cascade(label=self.lang.get('menu_general_docs', "Documenti Generali"),
+                                     menu=self.general_docs_menu)
+            self.menubar.add_cascade(label=self.lang.get('menu_operations', "Operazioni"),
+                                     menu=self.operations_menu)
+            self.menubar.add_cascade(label=self.lang.get('menu_maintenance', "Manutenzione"),
+                                     menu=self.maintenance_menu)
+            self.menubar.add_cascade(label=self.lang.get('menu_submissions', "Segnalazioni"),
+                                     menu=self.submissions_menu)
+            self.menubar.add_cascade(label=self.lang.get('menu_tools', "Strumenti"),
+                                     menu=self.tools_menu)
+            self.menubar.add_cascade(label=self.lang.get('menu_help', "Aiuto"),
+                                     menu=self.help_menu)
+
+            # opzionale, per sicurezza su alcune piattaforme:
+            self.config(menu=self.menubar)
+            self.update_idletasks()
         except tk.TclError:
             pass
 
