@@ -231,7 +231,8 @@ DB_SERVER = 'roghipsql01.vandewiele.local\\emsreset'
 DB_DATABASE = 'Traceability_rs'
 DB_UID = 'emsreset'
 DB_PWD = 'E6QhqKUxHFXTbkB7eA8c9ya'
-DB_CONN_STR = f'DRIVER={DB_DRIVER};SERVER={DB_SERVER};DATABASE={DB_DATABASE};UID={DB_UID};PWD={DB_PWD};'
+DB_CONN_STR = (f'DRIVER={DB_DRIVER};SERVER={DB_SERVER};DATABASE={DB_DATABASE};'
+               f'UID={DB_UID};PWD={DB_PWD};MARS_Connection=Yes;')
 
 
 def is_update_needed(current_ver_str, db_ver_str):
@@ -545,11 +546,25 @@ class Database:
         WHERE DateOut IS NULL
         GROUP BY IdComponent;
         """
-        cur = self.conn.cursor()
-        cur.execute(sql)
-        out = {int(r.IdComponent): int(r.Stock or 0) for r in cur.fetchall()}
-        cur.close()
-        return out
+        cur = None
+        try:
+            cur = self.conn.cursor()
+            cur.execute(sql)
+            rows = cur.fetchall()
+            out = {int(r.IdComponent): int(r.Stock or 0) for r in rows}
+            return out
+            #cur.close()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            logger.error(f"Error in fetch_kanban_current_stock_by_component: {e}")
+            return {}
+        finally:
+            # IMPORTANTE: Chiudi sempre il cursore
+            if cur:
+                try:
+                    cur.close()
+                except:
+                    pass
 
     def fetch_active_rules_by_component(self) -> dict[int, dict]:
         """
@@ -562,17 +577,30 @@ class Database:
         INNER JOIN knb.KanBanRules r ON r.KanBanRuleID = rr.KanBanRuleId
         WHERE rr.DateOut IS NULL;
         """
-        cur = self.conn.cursor()
-        cur.execute(sql)
-        out = {}
-        for r in cur.fetchall():
-            out[int(r.IdComponent)] = {
-                'rule_id': int(r.KanBanRuleID),
-                'min_qty': (int(r.MinimumQty) if getattr(r, 'MinimumQty', None) is not None else None),
-                'min_pct': (int(r.MinimumProcent) if getattr(r, 'MinimumProcent', None) is not None else None)
-            }
-        cur.close()
-        return out
+        cur = None
+        try:
+            cur = self.conn.cursor()
+            cur.execute(sql)
+            rows = cur.fetchall()
+            out = {}
+            for r in rows:
+                out[int(r.IdComponent)] = {
+                    'rule_id': int(r.KanBanRuleID),
+                    'min_qty': (int(r.MinimumQty) if getattr(r, 'MinimumQty', None) is not None else None),
+                    'min_pct': (int(r.MinimumProcent) if getattr(r, 'MinimumProcent', None) is not None else None)
+                }
+            #cur.close()
+            return out
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            logger.error(f"Error in fetch_active_rules_by_component: {e}")
+            return {}
+        finally:
+            if cur:
+                try:
+                    cur.close()
+                except:
+                    pass
 
     def fetch_first_load_qty_by_component(self, comp_ids: list[int]) -> dict[int, int]:
         """
@@ -592,11 +620,24 @@ class Database:
         )
         SELECT IdComponent, Quantity FROM ranked WHERE rn = 1;
         """
-        cur = self.conn.cursor()
-        cur.execute(sql, comp_ids)
-        out = {int(r.IdComponent): int(r.Quantity) for r in cur.fetchall()}
-        cur.close()
-        return out
+        cur = None
+        try:
+            cur = self.conn.cursor()
+            cur.execute(sql, comp_ids)
+            rows = cur.fetchall()
+            out = {int(r.IdComponent): int(r.Quantity) for r in rows}
+            #cur.close()
+            return out
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            logger.error(f"Error in fetch_first_load_qty_by_component: {e}")
+            return {}
+        finally:
+            if cur:
+                try:
+                    cur.close()
+                except:
+                    pass
 
     def fetch_max_single_load_by_component(self, comp_ids: list[int]) -> dict[int, dict]:
         """
@@ -616,12 +657,26 @@ class Database:
         SELECT IdComponent, Quantity AS MaxQty, KanBanRecordId
         FROM ranked WHERE rn = 1;
         """
-        cur = self.conn.cursor()
-        cur.execute(sql, comp_ids)
-        out = {int(r.IdComponent): {'max_qty': int(r.MaxQty), 'record_id': int(r.KanBanRecordId)} for r in
-               cur.fetchall()}
-        cur.close()
-        return out
+        cur = None
+        try:
+            cur = self.conn.cursor()
+            cur.execute(sql, comp_ids)
+            rows = cur.fetchall()
+            out = {int(r.IdComponent): {'max_qty': int(r.MaxQty), 'record_id': int(r.KanBanRecordId)} for r in
+               rows}
+            #cur.close()
+            return out
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            logger.error(f"Error in fetch_max_single_load_by_component: {e}")
+            return {}
+        finally:
+            if cur:
+                try:
+                    cur.close()
+                except:
+                    pass
+
 
     def fetch_components_master(self, comp_ids: list[int]) -> dict[int, dict]:
         """
@@ -631,14 +686,26 @@ class Database:
             return {}
         placeholders = ",".join("?" for _ in comp_ids)
         sql = f"SELECT IdComponent, ComponentCode, ComponentDescription FROM dbo.Components WHERE IdComponent IN ({placeholders});"
-        cur = self.conn.cursor()
-        cur.execute(sql, comp_ids)
-        out = {
-            int(r.IdComponent): {'code': r.ComponentCode, 'desc': getattr(r, 'ComponentDescription', '') or ''}
-            for r in cur.fetchall()
-        }
-        cur.close()
-        return out
+        cur = None
+        try:
+            cur = self.conn.cursor()
+            cur.execute(sql, comp_ids)
+            rows = cur.fetchall()
+            out = {
+                int(r.IdComponent): {'code': r.ComponentCode, 'desc': getattr(r, 'ComponentDescription', '') or ''}
+                for r in rows
+            }
+            return out
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            logger.error(f"Error in fetch_components_master: {e}")
+            return {}
+        finally:
+            if cur:
+                try:
+                    cur.close()
+                except:
+                    pass
 
     def has_refill_request_today(self, kanban_record_id: int) -> bool:
         """
