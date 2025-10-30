@@ -240,7 +240,7 @@ class RequestWindow(tk.Toplevel):
     Questa è una email automatica, si prega di non rispondere.
     """
                 # Recupero dei destinatari dal database
-                recipients = utils.get_email_recipients(self.db.conn)
+                recipients = utils.get_email_recipients(self.db.conn, 'Sys_Email_Purchase')
 
                 # Invio dell'email
                 utils.send_email(

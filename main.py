@@ -121,8 +121,10 @@ import tools_gui
 from traceability import TraceabilityManager
 import logging.handlers
 from calibration_gui import CalibrationsWindow
+import fct_transfer
 import collections.abc
 import scarti_gui
+import coating_gui
 import tempfile
 import assign_submissions_gui
 import utils
@@ -222,7 +224,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.7.9"  # Versione aggiornata
+APP_VERSION = "1.8.0"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -6696,6 +6698,22 @@ class App(tk.Tk):
         self.after(100, self._post_startup_tasks)
         logger.debug("INIT: scheduled post_startup_tasks")
 
+        # Aggiungi questi attributi per FCT Transfer
+        self.fct_config = fct_transfer.FCTTransferConfig()
+        self.fct_manager = fct_transfer.FCTTransferManager(DB_CONN_STR, self.fct_config)
+        self.fct_run_menu_index = None  # Per tenere traccia del menu item
+
+    def open_coating_reports_direct(self):
+        """Apre i report coating SENZA login"""
+        try:
+            from coating_gui import show_coating_reports_direct
+            show_coating_reports_direct()
+        except Exception as e:
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"{self.lang.get('error_opening_coating_reports', 'Errore apertura report coating')}: {str(e)}"
+            )
+
     def _schedule_kanban_refill_check(self, manual=False):
         """
         Pianifica il controllo refill Kanban su base configurabile (JSON stampante).
@@ -7473,7 +7491,7 @@ class App(tk.Tk):
             message = f"LA MULȚI ANI {employee.EmployeeName.upper()} ({employee.EmployeeSurname.upper()}) !!!"
             self._display_special_image(image_path, message)
             self._flash_birthday_message(message)
-            duration_ms = 3 * 60 * 1000
+            duration_ms = 2 * 60 * 1000
             self.birthday_stop_job_id = self.after(duration_ms, self._stop_birthday_display)
             return True
 
@@ -7486,7 +7504,7 @@ class App(tk.Tk):
 
             self._display_special_image(image_path, "Compleanni di Oggi!")  # Un messaggio generico sull'immagine
             self._start_scrolling_message(full_message)
-            duration_ms = 3 * 60 * 1000
+            duration_ms = 2 * 60 * 1000
             self.birthday_stop_job_id = self.after(duration_ms, self._stop_birthday_display)
             return True
 
@@ -7771,47 +7789,6 @@ class App(tk.Tk):
 
         return user
 
-    # def _execute_authorized_action(self, menu_translation_key, action_callback):
-    #     """
-    #     Gestisce il processo di login e autorizzazione per un'azione.
-    #     :param menu_translation_key: La chiave di traduzione del menu per il controllo permessi.
-    #     :param action_callback: La funzione da eseguire in caso di successo.
-    #     """
-    #     logger.debug("_execute_authorized_action called; menu_translation_key=%r", menu_translation_key)
-    #
-    #     login_form = LoginWindow(self, self.db, self.lang)
-    #     self.wait_window(login_form)
-    #
-    #     # Procede solo se l'utente ha premuto "Login"
-    #     if not login_form.clicked_login:
-    #         return
-    #
-    #     user_id = login_form.user_id
-    #     logger.debug("LoginWindow returned user_id=%r for authorized action %r", user_id, menu_translation_key)
-    #     password = login_form.password
-    #
-    #     # Controlla autenticazione e autorizzazione
-    #     auth_result = self.db.authenticate_and_authorize(user_id, password, menu_translation_key)
-    #
-    #     if auth_result is None:
-    #         # Caso 1: Username o Password errati
-    #         messagebox.showerror(self.lang.get('login_title'), self.lang.get('login_auth_failed'), parent=self)
-    #     elif auth_result.AuthorizedUsedId is None:
-    #         logger.debug("User %r authenticated but NOT authorized for %r", user_id, menu_translation_key)
-    #         # Caso 2: Utente valido, ma NON autorizzato per questa funzione
-    #         messagebox.showwarning(self.lang.get('auth_access_denied_title', "Accesso Negato"),
-    #                                self.lang.get('auth_access_denied_message',
-    #                                              "Non si dispone delle autorizzazioni necessarie per accedere a questa funzione."),
-    #                                parent=self)
-    #     else:
-    #         logger.debug("User %r authorized for %r; executing action.", user_id, menu_translation_key)
-    #         try:
-    #             self.last_authenticated_user_name = auth_result.EmployeeName
-    #         except Exception:
-    #             self.last_authenticated_user_name = None
-    #
-    #         action_callback()
-
     def _execute_authorized_action(self, menu_translation_key, action_callback):
         logger.debug("_execute_authorized_action called; menu_translation_key=%r", menu_translation_key)
 
@@ -8029,6 +8006,45 @@ class App(tk.Tk):
             except Exception as e:
                 messagebox.showerror("Errore", f"Impossibile aprire il modulo di calibrazione: {e}")
 
+    def _open_coating_settings(self):
+        """Apre la finestra di gestione tipi vernice"""
+        try:
+            window = coating_gui.CoatingSettingsWindow(
+                self.root,
+                DB_CONN_STR,
+                self.lang.current_language
+            )
+            window.show()
+        except Exception as e:
+            logger.error(f"Errore apertura Coating Settings: {e}")
+            messagebox.showerror("Errore", f"Impossibile aprire la finestra: {str(e)}")
+
+    def _open_coating_viscosity(self):
+        """Apre la finestra di registrazione viscosità"""
+        try:
+            window = coating_gui.CoatingViscosityWindow(
+                self.root,
+                DB_CONN_STR,
+                self.lang.current_language
+            )
+            window.show()
+        except Exception as e:
+            logger.error(f"Errore apertura Coating Viscosity: {e}")
+            messagebox.showerror("Errore", f"Impossibile aprire la finestra: {str(e)}")
+
+    def _open_coating_reports(self):
+        """Apre la finestra dei report coating"""
+        try:
+            window = coating_gui.CoatingReportsWindow(
+                self.root,
+                DB_CONN_STR,
+                self.lang.current_language
+            )
+            window.show()
+        except Exception as e:
+            logger.error(f"Errore apertura Coating Reports: {e}")
+            messagebox.showerror("Errore", f"Impossibile aprire la finestra: {str(e)}")
+
     def _create_menu(self):
         self.menubar = tk.Menu(self)
         self.config(menu=self.menubar)
@@ -8057,11 +8073,17 @@ class App(tk.Tk):
         self.kanban_core_submenu = tk.Menu(self.kanban_root_submenu, tearoff=0)  # KanBan
 
         self.traceability_submenu = tk.Menu(self.production_submenu, tearoff=0)
+        #FCT TRansfer
+        self.fct_transfer_submenu = tk.Menu(self.traceability_submenu, tearoff=0)
+
         self.reports_submenu = tk.Menu(self.production_submenu, tearoff=0)
         self.operativity_submenu = tk.Menu(self.reports_submenu, tearoff=0)
 
         # Crea il contenitore per il nuovo sottomenu "Calibrazioni"
         self.calibrations_submenu = tk.Menu(self.production_submenu, tearoff=0)
+
+        # ✅ NUOVO: Sottomenu Coating
+        self.coating_submenu = tk.Menu(self.production_submenu, tearoff=0)
 
         # Sottomenu di Strumenti
         self.permissions_submenu = tk.Menu(self.tools_menu, tearoff=0)
@@ -8083,7 +8105,7 @@ class App(tk.Tk):
         self.menubar.add_cascade(label=self.lang.get('menu_help', "Aiuto"),
                                  menu=self.help_menu)
 
-        # Il sottomenu della lingua è un caso speciale, dentro il menu Aiuto
+        # Il sottomenu della lingua
         self.language_menu = tk.Menu(self.help_menu, tearoff=0)
         self.language_menu.add_command(label="Italiano", command=lambda: self._change_language('it'))
         self.language_menu.add_command(label="English", command=lambda: self._change_language('en'))
@@ -8264,6 +8286,46 @@ class App(tk.Tk):
             label=self.lang.get('verification_association', "Verifica Associazione"),
             command=self.open_verification_association_with_login)
 
+        # Aggiungi il sottomenu FCT Transfer
+        self.traceability_submenu.add_cascade(
+            label=self.lang.get('menu_fct_transfer', "FCT Transfer"),
+            menu=self.fct_transfer_submenu
+        )
+
+        self.fct_transfer_submenu.delete(0, 'end')
+        self.fct_transfer_submenu.add_command(
+            label=self.lang.get('menu_fct_settings', "Settings"),
+            command=self._open_fct_settings
+        )
+        self.fct_transfer_submenu.add_command(
+            label=self.lang.get('menu_fct_run', "Run"),
+            command=self._toggle_fct_execution
+        )
+        # ✅ ===== FINE AGGIUNTA FCT TRANSFER =====
+
+        # ✅ ===== NUOVO: MENU COATING =====
+        self.production_submenu.add_cascade(
+            label=self.lang.get('menu_coating', "Coating"),
+            menu=self.coating_submenu
+        )
+
+        self.coating_submenu.delete(0, 'end')
+        self.coating_submenu.add_command(
+            label=self.lang.get('submenu_coating_settings', "📊 Settings"),
+            command=self.open_coating_settings_with_login
+
+        )
+        self.coating_submenu.add_command(
+            label=self.lang.get('submenu_coating_viscosity', "🧪 Controllo Viscosità"),
+            command=self.open_coating_viscosity_with_login
+        )
+        self.coating_submenu.add_separator()
+        self.coating_submenu.add_command(
+            label=self.lang.get('submenu_coating_reports', "📊 Rapporti"),
+            command=self.open_coating_reports_with_login
+        )
+        # ✅ ===== FINE MENU COATING =====
+
         # Aggiungi il sottomenu Rapporti
         self.production_submenu.add_cascade(label=self.lang.get('submenu_reports_prod', "Rapporti"),
                                             menu=self.reports_submenu)
@@ -8410,6 +8472,122 @@ class App(tk.Tk):
         except tk.TclError:
             pass
 
+    # ✅ ===== METODI COATING =====
+    def open_coating_settings_with_login(self):
+        """Apre la finestra di gestione tipi vernice con autenticazione autorizzata"""
+
+        def action():
+            try:
+                window = coating_gui.CoatingSettingsWindow(
+                    self,
+                    DB_CONN_STR,
+                    self.lang.current_language
+                )
+                window.show()
+                logger.info("Aperta finestra Coating Settings")
+            except Exception as e:
+                logger.error(f"Errore apertura Coating Settings: {e}")
+                messagebox.showerror(
+                    self.lang.get('error', "Errore"),
+                    f"{self.lang.get('window_open_error', 'Impossibile aprire la finestra')}: {str(e)}"
+                )
+
+        self._execute_authorized_action('submenu_coating_viscosity', action)
+
+    def open_coating_viscosity_with_login(self):
+        """Apre la finestra di registrazione viscosità con login semplice"""
+
+        def action(user_name):  # ← Riceve il nome utente
+            try:
+                window = coating_gui.CoatingViscosityWindow(
+                    self,
+                    DB_CONN_STR,
+                    self.lang.current_language
+                )
+                window.show()
+                logger.info(f"Aperta finestra Coating Viscosity da utente: {user_name}")
+            except Exception as e:
+                logger.error(f"Errore apertura Coating Viscosity: {e}")
+                messagebox.showerror(
+                    self.lang.get('error', "Errore"),
+                    f"{self.lang.get('window_open_error', 'Impossibile aprire la finestra')}: {str(e)}"
+                )
+
+        self._execute_simple_login(action)
+
+    def open_coating_reports_with_login(self):
+        """Apre la finestra dei report coating senza login"""
+        try:
+            window = coating_gui.CoatingReportsWindow(
+                self,
+                DB_CONN_STR,
+                self.lang.current_language
+            )
+            window.show()
+            logger.info("Aperta finestra Coating Reports")
+        except Exception as e:
+            logger.error(f"Errore apertura Coating Reports: {e}")
+            messagebox.showerror(
+                self.lang.get('error', "Errore"),
+                f"{self.lang.get('window_open_error', 'Impossibile aprire la finestra')}: {str(e)}"
+            )
+
+    # ✅ ===== FINE METODI COATING =====
+
+
+
+    def stop_fct_loop(self):
+        """Ferma il loop FCT e invia notifica email"""
+        if self.fct_loop_running:
+            self.fct_loop_running = False
+            # Cancella il timer se esiste
+            if hasattr(self, 'fct_timer_id') and self.fct_timer_id:
+                self.after_cancel(self.fct_timer_id)
+                self.fct_timer_id = None
+
+            # Invia email in background
+            self._send_fct_stop_notification()
+
+            # Aggiorna UI
+            if hasattr(self, 'fct_status_label'):
+                self.fct_status_label.config(text=self.lang.get('fct_stopped', 'FCT Loop Fermato'))
+
+    def _send_fct_stop_notification(self):
+        """Invia notifica email in background quando FCT loop viene fermato"""
+        import threading
+
+        def send_email_thread():
+            try:
+                # Recupero dei destinatari dal database
+                recipients = utils.get_email_recipients(self.db.conn, 'Sys_fct_settings')
+
+                if not recipients:
+                    logging.info("Nessun destinatario configurato per notifiche FCT")
+                    return
+
+                # Prepara il messaggio
+                subject = self.lang.get('fct_loop_stopped_subject', 'FCT Transfer Loop Fermato')
+                body = self.lang.get(
+                    'fct_loop_stopped_body',
+                    f'Il loop FCT Transfer è stato fermato dall\'utente {getattr(self, "current_user", "N/A")} alle {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'
+                )
+
+                # Invio dell'email
+                utils.send_email(
+                    recipients=recipients,
+                    subject=subject,
+                    body=body
+                )
+
+                logging.info(f"Notifica FCT stop inviata a: {recipients}")
+
+            except Exception as e:
+                logging.error(f"Errore nell'invio della notifica FCT: {str(e)}")
+
+        # Avvia il thread in background
+        thread = threading.Thread(target=send_email_thread, daemon=True)
+        thread.start()
+
     def open_scrap_types_with_login(self):
         # Usa il gate "per menù" con chiave di traduzione dedicata
         self._execute_authorized_action(
@@ -8429,6 +8607,108 @@ class App(tk.Tk):
                           "The language has been updated. Please reopen any open windows to apply the changes."),
             parent=self
         )
+
+    def _open_fct_settings(self):
+        """Apre la finestra di configurazione FCT Transfer (con controllo login)"""
+        ok = self._execute_authorized_action(
+            menu_translation_key='menu_fct_settings',
+            action_callback=lambda: fct_transfer.FCTTransferSettingsWindow(
+                self,
+                self.db,
+                self.lang,
+                self.fct_config
+            )
+        )
+        if not ok:
+            return
+
+    def _toggle_fct_execution(self):
+        """Avvia o ferma l'esecuzione FCT Transfer"""
+        if not self.fct_config.bat_file_path:
+            messagebox.showwarning(
+                self.lang.get('warning', "Attenzione"),
+                self.lang.get('fct_configure_first', "Configurare prima il file batch in Settings"),
+                parent=self
+            )
+            return
+
+        # Verifica stato attuale
+        is_running, instances = self.fct_manager.check_bat_running_status()
+
+        if not self.fct_manager.is_running:
+            # Avvia esecuzione
+            if is_running:
+                # Già in esecuzione su altra istanza
+                messagebox.showinfo(
+                    self.lang.get('info', "Informazione"),
+                    self.lang.get('fct_already_running', "Batch già in esecuzione su un'altra istanza"),
+                    parent=self
+                )
+                # Cambia comunque il menu in Stop (per coerenza UI)
+                self._update_fct_menu_label("Stop")
+            else:
+                # Avvia nuova esecuzione
+                if self.fct_manager.start_bat_execution():
+                    self._update_fct_menu_label("Stop")
+                    messagebox.showinfo(
+                        self.lang.get('success', "Successo"),
+                        self.lang.get('fct_started', "Esecuzione FCT Transfer avviata"),
+                        parent=self
+                    )
+                else:
+                    messagebox.showerror(
+                        self.lang.get('error', "Errore"),
+                        self.lang.get('fct_start_error', "Errore durante l'avvio"),
+                        parent=self
+                    )
+        else:
+            # Ferma esecuzione
+            _, active_instances = self.fct_manager.check_bat_running_status()
+
+            if len(active_instances) == 0:
+                # Nessuna istanza attiva (stato inconsistente)
+                self.fct_manager.is_running = False
+                self._update_fct_menu_label("Run")
+
+            elif len(active_instances) == 1:
+                # Una sola istanza: ferma direttamente
+                if self.fct_manager.stop_bat_execution():
+                    self._update_fct_menu_label("Run")
+                    messagebox.showinfo(
+                        self.lang.get('success', "Successo"),
+                        self.lang.get('fct_stopped', "Esecuzione FCT Transfer fermata"),
+                        parent=self
+                    )
+
+            else:
+                # Multiple istanze: chiedi quale fermare
+                dialog = fct_transfer.FCTTransferStopDialog(self, self.lang, active_instances)
+                self.wait_window(dialog)
+
+                if dialog.selected_instances:
+                    # Ferma le istanze selezionate
+                    for inst in dialog.selected_instances:
+                        self.fct_manager.stop_bat_execution(inst['DateStart'])
+
+                    # Verifica se ci sono ancora istanze attive
+                    _, remaining = self.fct_manager.check_bat_running_status()
+                    if not remaining:
+                        self._update_fct_menu_label("Run")
+
+                    messagebox.showinfo(
+                        self.lang.get('success', "Successo"),
+                        self.lang.get('fct_instances_stopped', f"{len(dialog.selected_instances)} istanze fermate"),
+                        parent=self
+                    )
+
+    def _update_fct_menu_label(self, label_key: str):
+        """Aggiorna l'etichetta del menu Run/Stop"""
+        if hasattr(self, 'fct_menu') and self.fct_run_menu_index is not None:
+            new_label = self.lang.get(f'menu_fct_{label_key.lower()}', label_key)
+            self.fct_menu.entryconfig(
+                self.fct_run_menu_index,
+                label=new_label
+            )
 
     def _show_about(self):
         """Mostra la finestra di dialogo 'About' con le informazioni del software."""
