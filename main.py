@@ -124,6 +124,7 @@ from calibration_gui import CalibrationsWindow
 import fct_transfer
 import collections.abc
 import scarti_gui
+import scrap_reports_gui
 import coating_gui
 import tempfile
 import assign_submissions_gui
@@ -8350,6 +8351,11 @@ class App(tk.Tk):
             label=self.lang.get('submenu_line_stoppage_reports', "Rapporti di fermo linea"),
             command=self.open_line_stoppage_report)
 
+        self.reports_submenu.add_command(
+            label=self.lang.get("scrap_reports", "Rapporto Scarti"),
+            command=self.open_scrap_reports
+        )
+
         self.operations_menu.add_separator()
         self.operations_menu.add_command(label=self.lang.get('submenu_materials_ops', "Materiali"), state="disabled")
         self.operations_menu.add_command(label=self.lang.get('submenu_hr', "Risorse Umane"), state="disabled")
@@ -8471,6 +8477,13 @@ class App(tk.Tk):
             self.update_idletasks()
         except tk.TclError:
             pass
+
+    def open_scrap_reports(self):
+        try:
+            # Usa self direttamente come parent
+            scrap_reports_gui.ScrapReportsWindow(self, self.db, self.lang)
+        except Exception as e:
+            logger.error(f"Errore apertura rapporti scarti: {e}")
 
     # ✅ ===== METODI COATING =====
     def open_coating_settings_with_login(self):

@@ -253,17 +253,6 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
         # ripristina l’elenco completo nel combo
         referiment_combo['values'] = all_referiments
 
-    # def on_ref_keyrelease(event=None):
-    #     # Filtra in base al testo digitato (case-insensitive “contiene”)
-    #     text = (referiment_var.get() or "").strip()
-    #     if not all_referiments:
-    #         return
-    #     if not text:
-    #         _ref_reset_values()
-    #         return
-    #     patt = text.casefold()
-    #     filtered = [x for x in all_referiments if patt in x.casefold()]
-    #     referiment_combo['values'] = filtered if filtered else all_referiments
     def on_ref_keyrelease(event=None):
         text = (referiment_var.get() or "").strip()
         if not all_referiments:
@@ -276,6 +265,8 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
             referiment_combo.event_generate('<Down>')
         except Exception:
             pass
+
+
     def on_ref_escape(event=None):
         # Cancella filtro e testo
         referiment_var.set("")
