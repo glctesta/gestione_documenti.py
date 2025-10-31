@@ -129,6 +129,7 @@ import coating_gui
 import tempfile
 import assign_submissions_gui
 import utils
+import submissions_management_gui
 import logging
 import logging.config
 from pathlib import Path
@@ -225,7 +226,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.8.0"  # Versione aggiornata
+APP_VERSION = "1.8.1"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -538,6 +539,160 @@ class LanguageManager:
 
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
+
+    def fetch_assigned_submissions(self, employee_hire_history_id: int):
+        """Carica segnalazioni assegnate all'utente"""
+        sql = """
+              SELECT s.SegnalazioneId, \
+                     ts.NomeTipo, \
+                     s.Titolo, \
+                     s.Descrizione,
+                     e.EmployeeName + ' ' + e.EmployeeSurname   as Segnalatore,
+                     sst.TipoStato, \
+                     e1.EmployeeName + ' ' + e1.EmployeeSurname as Assegnatario,
+                     ass.NomeFile, \
+                     ass.DatiFile
+              FROM employee.dbo.Segnalazioni s
+                       INNER JOIN employee.dbo.EmployeeHireHistory h ON s.IdDipendente = h.EmployeeHireHistoryId
+                       INNER JOIN employee.dbo.employees e ON h.EmployeeId = e.EmployeeId
+                       INNER JOIN employee.dbo.SegnalazioneStati ss ON s.SegnalazioneId = ss.SegnalazioneId
+                       INNER JOIN employee.dbo.SegnalazioniTipoStati sst \
+                                  ON sst.SegnalazioniTipoStatoId = ss.SegnalazioniTipoStatoId
+                       INNER JOIN employee.dbo.TipiSegnalazione ts ON ts.TipoSegnalazioneId = s.TipoSegnalazioneId
+                       LEFT JOIN employee.dbo.SegnalazioneAllegati ass ON ass.SegnalazioneId = s.SegnalazioneId
+                       INNER JOIN employee.dbo.SegnalazioneAssegnazioni sa ON sa.SegnalazioneId = s.SegnalazioneId
+                       INNER JOIN employee.dbo.employeehirehistory h1 \
+                                  ON h1.EmployeeHireHistoryId = sa.EmployeeHireHistoryId
+                       INNER JOIN employee.dbo.employees e1 ON e1.employeeid = h1.EmployeeId
+              WHERE sa.EmployeeHireHistoryId = ?
+                AND NOT EXISTS (SELECT 1 \
+                                FROM [Employee].[dbo].[SegnalazioneStati] ss2 
+            INNER JOIN employee.dbo.segnalazioniTipoStati sst2 
+                ON sst2.SegnalazioniTipoStatoId = ss2.SegnalazioniTipoStatoId
+            WHERE ss2.SegnalazioneId = s.SegnalazioneId AND sst2.statochiuso = 1)
+                AND sst.SegnalazioniTipoStatoId IN (1, 2)
+              ORDER BY s.SegnalazioneId, sa.DateSys; \
+              """
+        try:
+            self.cursor.execute(sql, employee_hire_history_id)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            logger.error(f"Error fetching assigned submissions: {e}")
+            return []
+
+    def fetch_submission_activities(self, segnalazione_id: int):
+        """Carica attività svolte per una segnalazione"""
+        sql = """
+              SELECT sv.[SegnalazioneSvolgimentoId], \
+                     sa.Note, \
+                     sv.[DescrizioneAttivita],
+                     sv.[Documentazione], \
+                     sv.DateSys as DataAzione
+              FROM [Employee].[dbo].[SegnalazioneSvolgimenti] sv
+                  INNER JOIN employee.dbo.SegnalazioneAssegnazioni sa
+              ON sv.SegnalazioneAssegnazioneId=sa.SegnalazioniAssegnazioniID
+                  INNER JOIN employee.dbo.Segnalazioni s ON s.SegnalazioneId=sa.SegnalazioneId
+              WHERE s.SegnalazioneId=?
+              ORDER BY sv.DateSys DESC; \
+              """
+        try:
+            self.cursor.execute(sql, segnalazione_id)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            logger.error(f"Error fetching activities: {e}")
+            return []
+
+    def fetch_submission_status_types(self):
+        """Carica tipi stato per combo"""
+        sql = """
+              SELECT [SegnalazioniTipoStatoId], [TipoStato], Statochiuso
+              FROM [Employee].[dbo].[SegnalazioniTipoStati]
+              WHERE SegnalazioniTipoStatoId IN (3, 2, 5, 4)
+              ORDER BY [TipoStato]; \
+              """
+        try:
+            self.cursor.execute(sql)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def insert_submission_activity(self, assegnazione_id: int, descrizione: str):
+        """Inserisce nuova attività"""
+        sql = """
+              INSERT INTO [Employee].[dbo].[SegnalazioneSvolgimenti]
+                  ([SegnalazioneAssegnazioneId], [DescrizioneAttivita], [DateSys])
+              VALUES (?, ?, GETDATE());
+              SELECT SCOPE_IDENTITY(); \
+              """
+        try:
+            self.conn.autocommit = False
+            self.cursor.execute(sql, assegnazione_id, descrizione)
+            svolgimento_id = int(self.cursor.fetchone()[0])
+            self.conn.commit()
+            return True, svolgimento_id
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            logger.error(f"Error inserting activity: {e}")
+            return False, None
+        finally:
+            self.conn.autocommit = True
+
+    def insert_activity_attachment(self, svolgimento_id: int, descrizione: str, file_data: bytes):
+        """Inserisce allegato per attività"""
+        sql = """
+              INSERT INTO [Employee].[dbo].[SegnalazioniStatiAllegati]
+              ([SegnalazioneSvolgimentoId], [DescrizioneDocumento], [Allegato], [DateIn])
+              VALUES (?, ?, ?, GETDATE()); \
+              """
+        try:
+            self.cursor.execute(sql, svolgimento_id, descrizione, file_data)
+            self.conn.commit()
+            return True, None
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False, str(e)
+
+    def update_submission_status(self, segnalazione_id: int, tipo_stato_id: int,
+                                 nota: str, operato_da: str):
+        """Aggiorna stato segnalazione"""
+        sql = """
+              INSERT INTO [Employee].[dbo].[SegnalazioneStati]
+              ([SegnalazioneId], [SegnalazioniTipoStatoId], [DataAttivita], [Nota], [OperatoDa])
+              VALUES (?, ?, GETDATE(), ?, ?); \
+              """
+        try:
+            self.conn.autocommit = False
+            self.cursor.execute(sql, segnalazione_id, tipo_stato_id, nota, operato_da)
+            self.conn.commit()
+            return True, None
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False, str(e)
+        finally:
+            self.conn.autocommit = True
+
+    def get_submission_assignment_id(self, segnalazione_id: int, employee_hire_history_id: int):
+        """Recupera ID assegnazione per inserire attività"""
+        sql = """
+              SELECT SegnalazioniAssegnazioniID
+              FROM employee.dbo.SegnalazioneAssegnazioni
+              WHERE SegnalazioneId = ? \
+                AND EmployeeHireHistoryId = ?; \
+              """
+        try:
+            self.cursor.execute(sql, segnalazione_id, employee_hire_history_id)
+            row = self.cursor.fetchone()
+            return row.SegnalazioniAssegnazioniID if row else None
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return None
+
 
     def fetch_kanban_current_stock_by_component(self) -> dict[int, int]:
         """
@@ -1461,7 +1616,8 @@ class Database:
             IIF(sa.SegnalazioneStatoAllegatoID IS NULL, 'No attached doc', sa.DescrizioneDocumento) AS Documents,
             sts.TipoStato,
             IIF(sts.StatoChiuso = 0, 'OPEN', 'CLOSED') AS StatoType,
-            eaFrom.WorkEmail AS Email
+            eaFrom.WorkEmail AS Email,
+            sa.
         FROM Employee.dbo.Segnalazioni se
         INNER JOIN Employee.dbo.SegnalazioneStati ss
             ON ss.SegnalazioneId = se.SegnalazioneId              -- join corretto sull'ID segnalazione
@@ -7824,6 +7980,8 @@ class App(tk.Tk):
             except Exception:
                 self.last_authenticated_user_name = None
 
+            self._temp_authorized_user_id = user_id
+
             action_callback()
             return True
 
@@ -8402,8 +8560,15 @@ class App(tk.Tk):
             label=self.lang.get('submenu_assign', 'Assegna'),
             command=self.open_assign_submissions_with_login
         )
-        self.submissions_menu.add_command(label=self.lang.get('submenu_view_submissions', "Visualizza Segnalazioni"),
-                                          state="disabled")
+        #self.submissions_menu.add_command(label=self.lang.get('submenu_view_submissions', "Visualizza Segnalazioni"),
+        #                                  state="disabled")
+        self.submissions_menu.add_command(
+            label=self.lang.get('menu_submissions_management', "Gestione"),
+            command=lambda: self._execute_authorized_action(
+                'management_submissions',
+                lambda: self._open_submissions_management()
+            )
+        )
 
         # --- 6. Menu Strumenti ---
         self.tools_menu.delete(0, 'end')
@@ -8485,8 +8650,37 @@ class App(tk.Tk):
         except Exception as e:
             logger.error(f"Errore apertura rapporti scarti: {e}")
 
+    def _open_submissions_management(self, user_id=None):
+        """Apre la finestra di gestione segnalazioni"""
+        # 🔍 DEBUG: Stampa tutti gli attributi che contengono "user" o "employee"
+        print("\n=== ATTRIBUTI DISPONIBILI ===")
+        for attr in dir(self):
+            if not attr.startswith('_'):  # Escludi attributi privati
+                if 'user' in attr.lower() or 'employee' in attr.lower() or 'logged' in attr.lower():
+                    try:
+                        value = getattr(self, attr)
+                        if not callable(value):  # Escludi metodi
+                            print(f"  {attr} = {value}")
+                    except:
+                        pass
+        print("=============================\n")
+        import submissions_management_gui
+        user_id = getattr(self, '_temp_authorized_user_id', None)
+
+        # if user_id is None:
+        #     messagebox.showerror(
+        #         "Errore",
+        #         "Impossibile recuperare l'ID utente autenticato.",
+        #         parent=self
+        #     )
+        #     return
+
+        submissions_management_gui.SubmissionsManagementWindow(
+            self, self.db, self.lang, user_id
+        )
+
     # ✅ ===== METODI COATING =====
-    def open_coating_settings_with_login(self):
+    def open_coating_settings_with_login(self,user_id=None):
         """Apre la finestra di gestione tipi vernice con autenticazione autorizzata"""
 
         def action():

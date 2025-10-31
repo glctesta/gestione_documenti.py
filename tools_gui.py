@@ -155,7 +155,7 @@ class MaintCyclesManagerWindow(tk.Toplevel):
                 messagebox.showerror("Errore", message, parent=self)
 
 
-def open_maint_cycles_manager(parent, db, lang):
+def open_maint_cycles_manager(parent, db, lang, user_id=None):
     MaintCyclesManagerWindow(parent, db, lang)
 
 
@@ -955,5 +955,5 @@ def open_company_manager(parent, db, lang, user_name):
 def open_maintenance_times_manager(parent, db, lang, user_name):
     MaintenanceTimesManagerWindow(parent, db, lang, user_name)
 
-def open_suppliers_manager(parent, db, lang):
+def open_suppliers_manager(parent, db, lang, user_id=None):
     SuppliersManagerWindow(parent, db, lang)
