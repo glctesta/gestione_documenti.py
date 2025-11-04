@@ -126,6 +126,7 @@ import collections.abc
 import scarti_gui
 import scrap_reports_gui
 import coating_gui
+import product_checks_gui
 import tempfile
 import assign_submissions_gui
 import utils
@@ -135,6 +136,9 @@ import logging.config
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 import json, socket
+import threading
+import time
+import scrap_validation_gui
 
 def _detect_log_file_path(logger_name: str) -> str:
     """
@@ -226,7 +230,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.8.1"  # Versione aggiornata
+APP_VERSION = "1.8.3"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -236,7 +240,7 @@ DB_DATABASE = 'Traceability_rs'
 DB_UID = 'emsreset'
 DB_PWD = 'E6QhqKUxHFXTbkB7eA8c9ya'
 DB_CONN_STR = (f'DRIVER={DB_DRIVER};SERVER={DB_SERVER};DATABASE={DB_DATABASE};'
-               f'UID={DB_UID};PWD={DB_PWD};MARS_Connection=Yes;')
+               f'UID={DB_UID};PWD={DB_PWD};MARS_Connection=Yes;TrustServerCertificate=Yes')
 
 
 def is_update_needed(current_ver_str, db_ver_str):
@@ -539,6 +543,507 @@ class LanguageManager:
 
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
+
+    def fetch_products_for_checks(self):
+        """Recupera prodotti per combo gestione verifiche"""
+        query = """
+                SELECT p.IDProduct, ProductCode, ProductName
+                FROM traceability_rs.dbo.products AS P
+                         LEFT JOIN traceability_rs.dbo.PeriodicalProductChecks AS PC
+                                   ON p.idproduct = pc.idproduct AND pc.datestop IS NULL
+                WHERE CHARINDEX('MICR', ProductName, 1) = 0
+                ORDER BY ProductCode; \
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    #moduli di ricerca sql di scrap_validation_gui
+    def fetch_scrap_declarations_pending(self):
+        """Recupera le dichiarazioni di scrap in attesa di validazione"""
+        query = """
+                SELECT s.ScrapDeclarationId
+                     , S.[User] as DECLAREDBY
+                     , l.labelcod
+                     , A.AreaName
+                     , a.IDArea
+                     , [Riferiments]
+                     , d.IDDefect
+                     , d.DefectNameRO as Defect
+                     , [Picture]
+                FROM [Traceability_RS].[dbo].ScarpDeclarations S
+                    INNER JOIN Traceability_RS.dbo.LabelCodes L
+                ON l.IDLabelCode=s.IdLabelCode
+                    INNER JOIN [Traceability_RS].dbo.Areas A ON a.IDArea=s.IDParentPhase
+                    INNER JOIN [Traceability_RS].dbo.defects D ON d.IDDefect=s.ScrapReasonId
+                WHERE NOT s.ScrapDeclarationId IN (
+                    SELECT sd.ScrapDeclarationId
+                    FROM Scannings s
+                    INNER JOIN Boards B ON b.idboard=s.IDBoard
+                    INNER JOIN LabelCodes L ON l.IDBoard=b.IDBoard
+                    INNER JOIN ScarpDeclarations sd ON sd.IdLabelCode=l.IDLabelCode
+                    WHERE b.BoardState=4
+                    )
+                ORDER BY S.DateIn
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            logger.error(f"Errore fetch dichiarazioni scrap: {e}")
+            return []
+
+    def fetch_scrap_declaration_by_id(self, declaration_id):
+        """Recupera una singola dichiarazione di scrap per ID"""
+        query = """
+                SELECT sd.ScrapDeclarationId, \
+                       sd.DeclarationDate, \
+                       sd.ProductionOrderId, \
+                       po.OrderNumber, \
+                       p.ProductCode, \
+                       p.ProductName, \
+                       sd.ScrapQuantity, \
+                       sd.ScrapReasonId, \
+                       sr.ReasonDescription, \
+                       sd.Notes, \
+                       sd.ValidationStatus, \
+                       sd.ValidationDate, \
+                       sd.ValidatorNotes, \
+                       e.EmployeeName + ' ' + e.EmployeeSurname AS DeclaredBy
+                FROM [Traceability_RS].[dbo].[ScarpDeclarations] sd
+                    INNER JOIN [Traceability_RS].[dbo].[Orders] po
+                ON sd.ProductionOrderId = po.ProductionOrderId
+                    INNER JOIN [Traceability_RS].[dbo].[Products] p
+                    ON po.ProductId = p.IDProduct
+                    INNER JOIN [Traceability_RS].[dbo].[ScrapReasons] sr
+                    ON sd.ScrapReasonId = sr.ScrapReasonId
+                    INNER JOIN [Employee].[dbo].[EmployeeHireHistory] h
+                    ON sd.EmployeeHireHistoryId = h.EmployeeHireHistoryId
+                    INNER JOIN [Employee].[dbo].[Employees] e
+                    ON h.EmployeeId = e.EmployeeId
+                WHERE sd.ScrapDeclarationId = ?; \
+                """
+        try:
+            self.cursor.execute(query, (declaration_id,))
+            return self.cursor.fetchone()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            logger.error(f"Errore fetch dichiarazione scrap {declaration_id}: {e}")
+            return None
+
+    def validate_scrap_declaration(self, declaration_id, validation_status, validator_notes, validator_name):
+        """Valida o rifiuta una dichiarazione di scrap"""
+        query = """
+                UPDATE [Traceability_RS].[dbo].[ScarpDeclarations]
+                SET ValidationStatus = ?, ValidationDate = GETDATE(), ValidatorNotes = ?, ValidatedBy = ?
+                WHERE ScrapDeclarationId = ?; \
+                """
+        try:
+            self.cursor.execute(query, (validation_status, validator_notes, validator_name, declaration_id))
+            self.conn.commit()
+            logger.info(f"Dichiarazione scrap {declaration_id} validata: {validation_status}")
+            return True, None
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            logger.error(f"Errore validazione dichiarazione scrap {declaration_id}: {e}")
+            return False, str(e)
+
+    def fetch_scrap_reasons(self):
+        """Recupera le causali di scarto"""
+        query = """
+                SELECT ScrapReasonId, ReasonCode, ReasonDescription
+                FROM [Traceability_RS].[dbo].[ScrapReasons]
+                WHERE DateStop IS NULL
+                ORDER BY ReasonCode; \
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            logger.error(f"Errore fetch causali scrap: {e}")
+            return []
+
+
+    def fetch_all_product_checks(self):
+        """Recupera tutte le verifiche configurate"""
+        query = """
+                SELECT pc.PeriodicalProductCheckId, \
+                       pc.IdProduct, \
+                       pc.PeriodicityInQty,
+                       p.ProductCode, \
+                       p.ProductName
+                FROM [Traceability_RS].[dbo].[PeriodicalProductChecks] pc
+                    INNER JOIN dbo.products p \
+                ON p.IDProduct = pc.IdProduct
+                WHERE pc.datestop IS NULL
+                ORDER BY p.ProductCode; \
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def insert_product_check(self, product_id, periodicity):
+        """Inserisce una nuova verifica prodotto"""
+        query = """
+                INSERT INTO [Traceability_RS].[dbo].[PeriodicalProductChecks]
+                    (IdProduct, PeriodicityInQty)
+                VALUES (?, ?); \
+                """
+        try:
+            self.cursor.execute(query, product_id, periodicity)
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+
+    def update_product_check(self, check_id, product_id, periodicity):
+        """Aggiorna una verifica prodotto"""
+        query = """
+                UPDATE [Traceability_RS].[dbo].[PeriodicalProductChecks]
+                SET IdProduct = ?, PeriodicityInQty = ?
+                WHERE PeriodicalProductCheckId = ?; \
+                """
+        try:
+            self.cursor.execute(query, product_id, periodicity, check_id)
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+
+    def delete_product_check(self, check_id):
+        """Elimina (soft delete) una verifica prodotto"""
+        query = """
+                UPDATE [Traceability_RS].[dbo].[PeriodicalProductChecks]
+                SET datestop = GETDATE()
+                WHERE PeriodicalProductCheckId = ?; \
+                """
+        try:
+            self.cursor.execute(query, check_id)
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+
+    def fetch_products_with_checks(self):
+        """Recupera prodotti con verifiche configurate"""
+        query = """
+                SELECT pc.PeriodicalProductCheckId, p.ProductCode, p.ProductName
+                FROM [Traceability_RS].[dbo].[PeriodicalProductChecks] pc
+                    INNER JOIN dbo.products p \
+                ON p.IDProduct = pc.IdProduct
+                WHERE pc.datestop IS NULL
+                ORDER BY p.ProductCode; \
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_all_check_tasks(self):
+        """Recupera tutti i task di verifica"""
+        query = """
+                SELECT ppl.PriodicalProductCheckListId, \
+                       ppl.ItemToCheck, \
+                       ppl.IsGeneric,
+                       ppl.UserType, \
+                       ppl.Doc, \
+                       ppl.DateIn,
+                       p.ProductCode, \
+                       p.ProductName
+                FROM [Traceability_RS].[dbo].[PeriodicalProductCheckLists] ppl
+                    LEFT JOIN [Traceability_RS].[dbo].[PeriodicProductCheckListSpecifics] ps
+                ON ps.PriodicalProductCheckListId = ppl.PriodicalProductCheckListId
+                    AND ps.dateout IS NULL
+                    LEFT JOIN [Traceability_RS].[dbo].[PeriodicalProductChecks] pc
+                    ON pc.PeriodicalProductCheckId = ps.PeriodicalProductCheckId
+                    LEFT JOIN dbo.products p ON p.IDProduct = pc.IdProduct
+                WHERE ppl.dateout IS NULL
+                ORDER BY ppl.IsGeneric DESC, p.ProductCode, ppl.DateIn DESC; \
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_check_task_by_id(self, task_id):
+        """Recupera un task specifico per ID"""
+        query = """
+                SELECT ppl.PriodicalProductCheckListId, \
+                       ppl.ItemToCheck, \
+                       ppl.IsGeneric,
+                       ppl.UserType, \
+                       ppl.Doc, \
+                       ppl.DateIn,
+                       p.ProductCode, \
+                       p.ProductName
+                FROM [Traceability_RS].[dbo].[PeriodicalProductCheckLists] ppl
+                    LEFT JOIN [Traceability_RS].[dbo].[PeriodicProductCheckListSpecifics] ps
+                ON ps.PriodicalProductCheckListId = ppl.PriodicalProductCheckListId
+                    LEFT JOIN [Traceability_RS].[dbo].[PeriodicalProductChecks] pc
+                    ON pc.PeriodicalProductCheckId = ps.PeriodicalProductCheckId
+                    LEFT JOIN dbo.products p ON p.IDProduct = pc.IdProduct
+                WHERE ppl.PriodicalProductCheckListId = ?; \
+                """
+        try:
+            self.cursor.execute(query, task_id)
+            return self.cursor.fetchone()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return None
+
+    def insert_check_task(self, item_to_check, is_generic, user_type, doc_data, product_check_id=None):
+        """Inserisce un nuovo task di verifica"""
+        try:
+            self.conn.autocommit = False
+
+            # Inserisci in PeriodicalProductCheckLists
+            query1 = """
+                     SET NOCOUNT ON;
+                     INSERT INTO [Traceability_RS].[dbo].[PeriodicalProductCheckLists]
+                         (ItemToCheck, IsGeneric, UserType, Doc, DateIn)
+                     VALUES (?, ?, ?, ?, GETDATE());
+                     SELECT CAST(SCOPE_IDENTITY() AS INT) AS NewID;
+                     """
+            self.cursor.execute(query1, item_to_check, 1 if is_generic else 0, user_type, doc_data)
+            result = self.cursor.fetchone()
+
+            if not result:
+                raise Exception("Impossibile recuperare l'ID del task inserito")
+
+            task_id = result[0]
+
+            # Se non è generico, inserisci anche in PeriodicProductCheckListSpecifics
+            if not is_generic and product_check_id:
+                query2 = """
+                         INSERT INTO [Traceability_RS].[dbo].[PeriodicProductCheckListSpecifics]
+                             (PeriodicalProductCheckId, PriodicalProductCheckListId)
+                         VALUES (?, ?);
+                         """
+                self.cursor.execute(query2, product_check_id, task_id)
+
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            print(f"❌ Errore insert_check_task: {e}")
+            return False
+        finally:
+            self.conn.autocommit = True
+
+    def delete_check_task(self, task_id):
+        """Elimina (soft delete) un task di verifica"""
+        try:
+            self.conn.autocommit = False
+
+            # Soft delete in PeriodicalProductCheckLists
+            query1 = """
+                     UPDATE [Traceability_RS].[dbo].[PeriodicalProductCheckLists]
+                     SET dateout = GETDATE()
+                     WHERE PriodicalProductCheckListId = ?; \
+                     """
+            self.cursor.execute(query1, task_id)
+
+            # Soft delete anche in PeriodicProductCheckListSpecifics
+            query2 = """
+                     UPDATE [Traceability_RS].[dbo].[PeriodicProductCheckListSpecifics]
+                     SET dateout = GETDATE()
+                     WHERE PriodicalProductCheckListId = ? AND dateout IS NULL; \
+                     """
+            self.cursor.execute(query2, task_id)
+
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False
+        finally:
+            self.conn.autocommit = True
+
+    def check_label_code_exists(self, label_code, must_check_id):
+        """Verifica se il label code esiste ed è relativo all'ordine selezionato e restituisce l'IDLabelCode"""
+        try:
+            query = """
+                    SELECT l.IDLabelCode
+                    FROM traceability_rs.dbo.orders O
+                             INNER JOIN traceability_rs.dbo.boards b ON o.IDOrder = b.IDOrder
+                             INNER JOIN traceability_rs.dbo.LabelCodes l ON l.IDBoard = b.IDBoard
+                             INNER JOIN traceability_rs.dbo.PeriodicalProductCheckMustLists M ON m.idorder = o.IDOrder
+                             INNER JOIN traceability_rs.dbo.products p ON p.idproduct = o.IDProduct
+                    WHERE l.LabelCod = ?
+                      AND m.PeriodicalProductCheckMustListId = ?; \
+                    """
+
+            self.cursor.execute(query, label_code, must_check_id)
+            result = self.cursor.fetchone()
+
+            if result:
+                return result.IDLabelCode  # Restituisce l'IDLabelCode se trovato
+            else:
+                return None  # Restituisce None se non trovato
+        except pyodbc.Error as e:
+            logger.error(f"Error checking label code: {e}")
+            return None
+
+    def fetch_products_must_check(self):
+        """Recupera prodotti che necessitano verifica"""
+        query = """
+                SELECT M.PeriodicalProductCheckMustListId, \
+                       o.ordernumber, \
+                       p.productcode, \
+                       pa.PhaseName,
+                       FORMAT([Date], 'd', 'it-it') AS [Date], [Ora]
+                FROM [Traceability_RS].[dbo].[PeriodicalProductCheckMustLists] M
+                    INNER JOIN [Traceability_RS].[dbo].Orders O \
+                ON M.[IdOrder] = o.idorder
+                    INNER JOIN [Traceability_RS].[dbo].products P ON p.idproduct = M.idproduct
+                    INNER JOIN traceability_rs.dbo.Phases pa ON pa.IDPhase = m.idphase
+                    LEFT JOIN [Traceability_RS].[dbo].PeriodicalProductChecks PP ON PP.IdProduct = M.idproduct
+                    LEFT JOIN [Traceability_RS].[dbo].[PeriodicProductCheckListSpecifics] PS
+                    ON PS.PeriodicalProductCheckId = pp.PeriodicalProductCheckId
+                    LEFT JOIN [Traceability_RS].[dbo].PeriodicalProductCheckLogs L
+                    ON l.PeriodicalProductCheckMustListId = m.PeriodicalProductCheckMustListId
+                WHERE L.PeriodicalProductCheckMustListId IS NULL
+                ORDER BY p.productcode, pa.PhaseName; \
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_generic_check_tasks(self):
+        """Recupera task generici"""
+        query = """
+                SELECT ppl.PriodicalProductCheckListId, ppl.ItemToCheck, ppl.Doc
+                FROM [Traceability_RS].[dbo].[PeriodicalProductCheckLists] AS ppl
+                WHERE isgeneric = 1 AND ppl.dateout IS NULL
+                ORDER BY ppl.DateIn; \
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def fetch_specific_check_tasks(self, must_check_id):
+        """Recupera task specifici per un prodotto"""
+        # Prima recupera il PeriodicalProductCheckId dal must_check_id
+        query1 = """
+                 SELECT pp.PeriodicalProductCheckId
+                 FROM [Traceability_RS].[dbo].[PeriodicalProductCheckMustLists] M
+                     INNER JOIN [Traceability_RS].[dbo].PeriodicalProductChecks PP \
+                 ON PP.IdProduct = M.idproduct
+                 WHERE M.PeriodicalProductCheckMustListId = ?; \
+                 """
+        try:
+            self.cursor.execute(query1, must_check_id)
+            row = self.cursor.fetchone()
+            if not row:
+                return []
+
+            product_check_id = row.PeriodicalProductCheckId
+
+            # Ora recupera i task specifici
+            query2 = """
+                     SELECT ppl.PriodicalProductCheckListId, ppl.ItemToCheck, ppl.Doc
+                     FROM [Traceability_RS].[dbo].[PeriodicalProductCheckLists] AS ppl
+                         INNER JOIN [Traceability_RS].[dbo].[PeriodicProductCheckListSpecifics] AS ps
+                     ON ps.PriodicalProductCheckListId = ppl.PriodicalProductCheckListId
+                     WHERE isgeneric = 0
+                       AND ppl.dateout IS NULL
+                       AND ps.dateout IS NULL
+                       AND ps.PeriodicalProductCheckId = ?
+                     ORDER BY ppl.DateIn; \
+                     """
+            self.cursor.execute(query2, product_check_id)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            return []
+
+    def save_product_verification(self, must_check_id, user_name, label_code_id, status, comments=None):
+        """Salva una verifica prodotto completata usando l'IDLabelCode"""
+        try:
+            self.conn.autocommit = False
+
+            # Inserisci in PeriodicalProductCheckLogs usando IDLabelCode
+            query1 = """
+                     INSERT INTO [Traceability_RS].[dbo].[PeriodicalProductCheckLogs]
+                     (PeriodicalProductCheckMustListId, CheckTime, UserCheck, IDLabelCode, Status, Comments)
+                     VALUES (?, GETDATE(), ?, ?, ?, ?);
+                     """
+            self.cursor.execute(query1, must_check_id, user_name, label_code_id, status, comments)
+
+            # Aggiorna AllertActiveted in PeriodicalProductCheckMustLists
+            query2 = """
+                     UPDATE [dbo].[PeriodicalProductCheckMustLists]
+                     SET AllertActiveted = 0
+                     WHERE PeriodicalProductCheckMustListId = ?;
+                     """
+            self.cursor.execute(query2, must_check_id)
+
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            logger.error(f"Error saving product verification: {e}")
+            return False
+        finally:
+            self.conn.autocommit = True
+
+
+    def execute_product_check_sp(self):
+        """Esegue la stored procedure InsertProductToCheck"""
+        try:
+            self.cursor.execute("{CALL Traceability_rs.dbo.InsertProductToCheck}")
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            logger.error(f"Error executing InsertProductToCheck SP: {e}")
+            return False
+
+    def get_product_check_interval(self):
+        """Recupera l'intervallo di controllo prodotti (in minuti)"""
+        query = """
+                SELECT [value]
+                FROM traceability_rs.dbo.settings
+                WHERE atribute = 'Sys_CheckTimeProduct'; \
+                """
+        try:
+            self.cursor.execute(query)
+            row = self.cursor.fetchone()
+            if row and row.value:
+                return int(row.value)
+            return 30  # Default: 30 minuti
+        except (pyodbc.Error, ValueError) as e:
+            self.last_error_details = str(e)
+            logger.error(f"Error fetching check interval: {e}")
+            return 30
 
     def fetch_assigned_submissions(self, employee_hire_history_id: int):
         """Carica segnalazioni assegnate all'utente"""
@@ -1485,7 +1990,7 @@ class Database:
         """
         query = """
         select 
-            ProductRiferiments.CodRiferimento + ' [' + ParentPhases.ParentPhaseName + ']' As Referiment
+            ProductRiferiments.CodRiferimento As Referiment
         from LabelCodes 
         inner join Boards on LabelCodes.IDBoard=Boards.IDBoard
         inner join Orders on Orders.IDOrder = Boards.IDOrder
@@ -1841,11 +2346,9 @@ class Database:
         Carica la combo 'Area di provenienza' dalle ParentPhases (filtrate).
         """
         query = """
-            SELECT idParentPhase, ParentPhaseName
-            FROM Traceability_RS.dbo.ParentPhases
-            WHERE (CHARINDEX('Incoming', ParentPhaseName) = 0)
-              AND (CHARINDEX('Instru', ParentPhaseName) = 0)
-            ORDER BY ParentPhaseName;
+            SELECT idArea as idParentPhase, AreaName as ParentPhaseName
+            FROM Traceability_RS.dbo.Areas           
+            ORDER BY AreaName;
         """
         try:
             cur = self.conn.cursor()
@@ -6860,6 +7363,170 @@ class App(tk.Tk):
         self.fct_manager = fct_transfer.FCTTransferManager(DB_CONN_STR, self.fct_config)
         self.fct_run_menu_index = None  # Per tenere traccia del menu item
 
+        # Inizializza il thread per il controllo periodico prodotti
+        self._product_check_thread = None
+        self._product_check_stop_event = threading.Event()
+
+        # Avvia la routine di controllo prodotti
+        self._start_product_check_routine()
+        self.protocol("WM_DELETE_WINDOW", self._on_closing)
+        self._start_product_check_background_task()
+
+    def open_scrap_validation_with_login(self):
+        """Apre la finestra di validazione scarti dopo login."""
+
+        def action():
+            user_name = getattr(self, 'last_authenticated_user_name', 'Unknown')
+            scrap_validation_gui.open_scrap_validation(self, self.db, self.lang, user_name)
+
+        self._execute_authorized_action('validate_scrap', action)
+
+    def _start_product_check_background_task(self):
+        """Avvia il thread per il controllo periodico dei prodotti"""
+        if self._product_check_thread is None or not self._product_check_thread.is_alive():
+            self._product_check_stop_event.clear()
+            self._product_check_thread = threading.Thread(
+                target=self._product_check_worker,
+                daemon=True,  # Il thread termina quando l'app si chiude
+                name="ProductCheckWorker"
+            )
+            self._product_check_thread.start()
+            logger.info("Background task per controllo prodotti avviato")
+
+    def _product_check_worker(self):
+        """Worker thread che esegue periodicamente la SP InsertProductToCheck"""
+        while not self._product_check_stop_event.is_set():
+            try:
+                # 1. Leggi l'intervallo in minuti dal database
+                interval_minutes = self.db.get_product_check_interval()
+
+                if interval_minutes <= 0:
+                    logger.warning("Intervallo controllo prodotti non valido, uso default 30 min")
+                    interval_minutes = 30
+
+                logger.info(f"Prossimo controllo prodotti tra {interval_minutes} minuti")
+
+                # 2. Attendi per l'intervallo specificato (con controllo stop ogni 10 secondi)
+                wait_seconds = interval_minutes * 60
+                elapsed = 0
+                while elapsed < wait_seconds and not self._product_check_stop_event.is_set():
+                    time.sleep(10)  # Check ogni 10 secondi per permettere stop rapido
+                    elapsed += 10
+
+                if self._product_check_stop_event.is_set():
+                    break
+
+                # 3. Esegui la stored procedure
+                logger.info("Esecuzione SP InsertProductToCheck...")
+                success = self.db.execute_product_check_sp()
+
+                if success:
+                    logger.info("✓ SP InsertProductToCheck eseguita con successo")
+
+                    # 4. (Opzionale) Verifica se ci sono nuovi prodotti da controllare
+                    # e mostra una notifica all'utente
+                    self._check_and_notify_pending_verifications()
+                else:
+                    logger.error(f"✗ Errore esecuzione SP: {self.db.last_error_details}")
+
+            except Exception as e:
+                logger.error(f"Errore nel worker controllo prodotti: {e}", exc_info=True)
+                # In caso di errore, attendi 5 minuti prima di riprovare
+                time.sleep(300)
+
+        logger.info("Background task controllo prodotti terminato")
+
+    def _show_verification_notification(self, count):
+        """Mostra una notifica all'utente (eseguito nel thread principale)"""
+        msg = f"⚠️ Ci sono {count} prodotti che necessitano verifica!"
+        logger.info(msg)
+
+        # Opzione 1: Messagebox (invasivo)
+        # messagebox.showinfo(self.lang.get('app_title'), msg)
+
+        # Opzione 2: Label temporanea nella status bar (meno invasivo)
+        if hasattr(self, 'status_label'):
+            original_text = self.status_label.cget('text')
+            self.status_label.config(text=f"⚠️ {msg}", foreground='orange')
+            # Ripristina dopo 10 secondi
+            self.after(10000, lambda: self.status_label.config(
+                text=original_text, foreground='black'))
+
+    def _stop_product_check_background_task(self):
+        """Ferma il thread di controllo prodotti (chiamato alla chiusura app)"""
+        if self._product_check_thread and self._product_check_thread.is_alive():
+            logger.info("Arresto background task controllo prodotti...")
+            self._product_check_stop_event.set()
+            self._product_check_thread.join(timeout=5)
+
+    def _check_and_notify_pending_verifications(self):
+        """Controlla se ci sono verifiche pendenti e notifica l'utente"""
+        try:
+            pending = self.db.fetch_products_must_check()
+
+            if pending:
+                count = len(pending)
+                # Mostra notifica nella UI (thread-safe)
+                self.after(0, lambda: self._show_verification_notification(count))
+        except Exception as e:
+            logger.error(f"Errore controllo verifiche pendenti: {e}")
+
+    def _open_product_checks_management(self):
+        """Apre la finestra di gestione periodicità verifiche prodotti"""
+        import product_checks_gui
+        product_checks_gui.ProductChecksManagementWindow(
+            self, self.db, self.lang, self._temp_authorized_user_id
+        )
+
+    def _open_check_tasks_management(self):
+        """Apre la finestra di gestione task di verifica"""
+        import product_checks_gui
+        product_checks_gui.CheckTasksManagementWindow(
+            self, self.db, self.lang, self._temp_authorized_user_id
+        )
+
+    def _open_product_verification(self):
+        """Apre la finestra di esecuzione verifiche prodotti"""
+        import product_checks_gui
+        product_checks_gui.ProductVerificationWindow(
+            self, self.db, self.lang, self._temp_authorized_user_id
+        )
+
+    def _start_product_check_routine(self):
+        """
+        Avvia la routine periodica di controllo prodotti.
+        Esegue la SP InsertProductToCheck ogni X minuti (da settings).
+        """
+
+        def check_products():
+            try:
+                # Esegui la stored procedure
+                success = self.db.execute_product_check_sp()
+                if success:
+                    # Verifica se ci sono prodotti da controllare
+                    products = self.db.fetch_products_must_check()
+                    if products:
+                        # Mostra notifica
+                        count = len(products)
+                        messagebox.showinfo(
+                            self.lang.get('product_check_alert', 'Verifiche Prodotti'),
+                            self.lang.get('products_need_check',
+                                          f'Ci sono {count} prodotti che necessitano verifica.')
+                        )
+            except Exception as e:
+                logger.error(f"Error in product check routine: {e}")
+            finally:
+                # Richiama la funzione dopo l'intervallo specificato
+                interval_minutes = self.db.get_product_check_interval()
+                interval_ms = interval_minutes * 60 * 1000
+                self.after(interval_ms, check_products)
+
+        # Avvia il primo controllo dopo 1 minuto dall'avvio
+        self.after(60000, check_products)
+
+    def _start_product_check_routine(self):
+        """Avvia la routine periodica di controllo prodotti"""
+
     def open_coating_reports_direct(self):
         """Apre i report coating SENZA login"""
         try:
@@ -8171,6 +8838,7 @@ class App(tk.Tk):
             window = coating_gui.CoatingSettingsWindow(
                 self.root,
                 DB_CONN_STR,
+                self.user_name,
                 self.lang.current_language
             )
             window.show()
@@ -8184,6 +8852,7 @@ class App(tk.Tk):
             window = coating_gui.CoatingViscosityWindow(
                 self.root,
                 DB_CONN_STR,
+                self.user_name,
                 self.lang.current_language
             )
             window.show()
@@ -8243,6 +8912,9 @@ class App(tk.Tk):
 
         # ✅ NUOVO: Sottomenu Coating
         self.coating_submenu = tk.Menu(self.production_submenu, tearoff=0)
+
+        # ✅ NUOVO: Sottomenu Verifiche Periodiche Prodotti
+        self.product_checks_submenu = tk.Menu(self.production_submenu, tearoff=0)
 
         # Sottomenu di Strumenti
         self.permissions_submenu = tk.Menu(self.tools_menu, tearoff=0)
@@ -8320,6 +8992,21 @@ class App(tk.Tk):
         self.declarations_submenu.add_command(
             label=self.lang.get('submenu_interruptions', "Interruzioni di produzione"),
             command=self.open_add_interruption_window_with_login)
+
+        # ✅ SEPARATORE
+        self.declarations_submenu.add_separator()
+
+        # #Aggiungi la nuova voce di menu per la dichiarazione degli scarti
+        # self.declarations_submenu.add_command(
+        #     label=self.lang.get('submenu_scrap_declaration', "Dichiarazione scarti"),
+        #     command=self.open_scrap_declaration_with_login
+        # )
+
+        #✅ NUOVO: Validazione scarti
+        self.declarations_submenu.add_command(
+            label=self.lang.get('submenu_scrap_validation', "Validazione scarti"),
+            command=self.open_scrap_validation_with_login
+        )
 
         # --- KanBan come SECONDA VOCE sotto Produzione ---
         # Pulisci eventuali voci precedenti
@@ -8484,7 +9171,55 @@ class App(tk.Tk):
             command=self.open_coating_reports_with_login
         )
         # ✅ ===== FINE MENU COATING =====
+        # ✅ ===== NUOVO: MENU VERIFICHE PERIODICHE PRODOTTI =====
+        # Aggiungi il menu Verifiche dopo Coating
+        self.production_submenu.add_cascade(
+            label=self.lang.get('menu_product_checks', "Verifiche"),
+            menu=self.product_checks_submenu
+        )
 
+        self.product_checks_submenu.delete(0, 'end')
+
+        # Sottomenu: Gestione Prodotti
+        self.product_checks_submenu.add_command(
+            label=self.lang.get('submenu_manage_product_checks', "Gestione Prodotti"),
+            command=lambda: self._execute_authorized_action(
+                'manage_product_check',
+                lambda: self._open_product_checks_management()
+            )
+        )
+
+        # Sottomenu: Gestione Regole (Task)
+        self.product_checks_submenu.add_command(
+            label=self.lang.get('submenu_manage_check_rules', "Gestione Regole"),
+            command=lambda: self._execute_authorized_action(
+                'manage_check_rules',
+                lambda: self._open_check_tasks_management()
+            )
+        )
+
+        self.product_checks_submenu.add_separator()
+
+        # Sottomenu: Esecuzione Verifiche
+        self.product_checks_submenu.add_command(
+            label=self.lang.get('submenu_verify_products', "Verifiche"),
+            command=lambda: self._execute_authorized_action(
+                'verify_product_check',
+                lambda: self._open_product_verification()
+            )
+        )
+
+        # Sottomenu: Rapporti (disabilitato per ora)
+        self.product_checks_submenu.add_separator()
+        self.product_checks_submenu.add_command(
+            label=self.lang.get('submenu_verification_reports', "Rapporti"),
+            command=lambda: messagebox.showinfo(
+                self.lang.get('info', 'Informazione'),
+                self.lang.get('feature_coming_soon', 'Funzionalità in arrivo')
+            ),
+            state='disabled'  # Disabilitato fino all'implementazione
+        )
+        # ✅ ===== FINE MENU VERIFICHE =====
         # Aggiungi il sottomenu Rapporti
         self.production_submenu.add_cascade(label=self.lang.get('submenu_reports_prod', "Rapporti"),
                                             menu=self.reports_submenu)
@@ -8667,14 +9402,6 @@ class App(tk.Tk):
         import submissions_management_gui
         user_id = getattr(self, '_temp_authorized_user_id', None)
 
-        # if user_id is None:
-        #     messagebox.showerror(
-        #         "Errore",
-        #         "Impossibile recuperare l'ID utente autenticato.",
-        #         parent=self
-        #     )
-        #     return
-
         submissions_management_gui.SubmissionsManagementWindow(
             self, self.db, self.lang, user_id
         )
@@ -8706,9 +9433,11 @@ class App(tk.Tk):
 
         def action(user_name):  # ← Riceve il nome utente
             try:
+                logger.debug(f"[main.py] Apertura CoatingViscosityWindow con user_name: '{user_name}'")
                 window = coating_gui.CoatingViscosityWindow(
                     self,
                     DB_CONN_STR,
+                    user_name,
                     self.lang.current_language
                 )
                 window.show()
@@ -8961,6 +9690,8 @@ class App(tk.Tk):
         if self.birthday_flash_job_id: self.after_cancel(self.birthday_flash_job_id)
         if self.birthday_stop_job_id: self.after_cancel(self.birthday_stop_job_id)
         if self.periodic_check_job_id: self.after_cancel(self.periodic_check_job_id)
+
+        self._stop_product_check_background_task()
 
         if force_quit or messagebox.askokcancel(self.lang.get('quit_title'), self.lang.get('quit_message')):
             self.db.disconnect()

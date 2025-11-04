@@ -266,7 +266,6 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
         except Exception:
             pass
 
-
     def on_ref_escape(event=None):
         # Cancella filtro e testo
         referiment_var.set("")
@@ -337,7 +336,7 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
             return
 
         # Riferimenti uniti da ';'
-        riferiments = ";".join([refs_listbox.get(i) for i in range(refs_listbox.size())])[:500]
+        riferiments = ",".join([refs_listbox.get(i) for i in range(refs_listbox.size())])[:500]
 
         ok = db_connection.insert_scrap_declaration(
             user_name=user_name,

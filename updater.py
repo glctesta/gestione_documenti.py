@@ -9,8 +9,12 @@ from datetime import datetime
 
 
 def log(message):
-    # ... (funzione di log invariata)
-    pass
+    log_file_path = os.path.join(os.path.expanduser("~"), "Downloads", "maintenance_app_updater.log")
+    try:
+        with open(log_file_path, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now()}: {message}\n")
+    except Exception as e:
+        print(f"Failed to write to log: {e}")
 
 
 class UpdateProgressWindow(tk.Tk):
@@ -34,8 +38,8 @@ class UpdateProgressWindow(tk.Tk):
 
         # Label del progresso
         self.progress_label = ttk.Label(
-            main_frame, 
-            text="Aggiornamento in corso, attendere...", 
+            main_frame,
+            text="Aggiornamento in corso, attendere...",
             font=("Helvetica", 10)
         )
         self.progress_label.pack(pady=(5, 10))
@@ -60,16 +64,15 @@ class UpdateProgressWindow(tk.Tk):
             text="",
             font=("Helvetica", 8),
             foreground="grey",
-            anchor="w",
+            anchor="w",  # Questo anchor è per l'allineamento del testo DENTRO la label
             width=80
         )
-        self.file_label.pack(anchor='x')
+        self.file_label.pack(fill='x')  # ✅ CORRETTO - riempie tutta la larghezza disponibile
 
-        self.after(200, self.start_update)
+        self.after(500, self.start_update)
 
     def update_file_label(self, text):
         """Aggiorna il testo della label del file senza artefatti grafici."""
-        # 1) Pulisce la label scrivendo spazi su tutta la sua larghezza
         try:
             width = int(self.file_label.cget('width')) or 0
         except Exception:
@@ -78,13 +81,72 @@ class UpdateProgressWindow(tk.Tk):
             self.file_label.configure(text=" " * width)
             self.file_label.update_idletasks()
 
-        # 2) Imposta il nuovo testo
+        # Imposta il nuovo testo
         self.file_label.configure(text=text or "")
         self.file_label.update_idletasks()
 
+    def copy_files_safely(self, file_list):
+        """Copia i file con gestione degli errori."""
+        for i, (root, name) in enumerate(file_list):
+            # Aggiorna il nome del file corrente
+            self.update_file_label(f"Copia di: {name}")
+            self.update_idletasks()
+
+            if name.lower() == 'updater.exe':
+                self.progress_bar["value"] = i + 1
+                continue
+
+            try:
+                source_file = os.path.join(root, name)
+                relative_path = os.path.relpath(root, self.source_path)
+                dest_dir = os.path.join(self.dest_path, relative_path)
+
+                # Crea directory se non esiste
+                os.makedirs(dest_dir, exist_ok=True)
+
+                # File di destinazione
+                dest_file = os.path.join(dest_dir, name)
+
+                # Tentativo di copia con ritry
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        shutil.copy2(source_file, dest_file)
+                        break
+                    except PermissionError:
+                        if attempt < max_retries - 1:
+                            time.sleep(1)  # Aspetta 1 secondo prima di ritentare
+                            continue
+                        else:
+                            raise
+
+                # Aggiorna la barra di progresso
+                self.progress_bar["value"] = i + 1
+                self.update_idletasks()
+
+            except Exception as e:
+                log(f"Errore nella copia di {name}: {e}")
+                # Continua con il prossimo file invece di fermarsi completamente
+
     def start_update(self):
         try:
-            time.sleep(2)
+            # Attesa iniziale per permettere all'app principale di chiudersi
+            self.after(2000, self._perform_update)
+
+        except Exception as e:
+            log(f"ERRORE CRITICO nell'updater: {e}")
+            messagebox.showerror("Errore di Aggiornamento", f"Si è verificato un errore:\n{e}")
+            self.destroy()
+
+    def _perform_update(self):
+        """Esegue l'aggiornamento vero e proprio."""
+        try:
+            # Verifica che le directory esistano
+            if not os.path.exists(self.source_path):
+                raise FileNotFoundError(f"Directory sorgente non trovata: {self.source_path}")
+
+            if not os.path.exists(self.dest_path):
+                os.makedirs(self.dest_path, exist_ok=True)
 
             # Crea la lista dei file da copiare
             file_list = []
@@ -92,35 +154,32 @@ class UpdateProgressWindow(tk.Tk):
                 for name in files:
                     file_list.append((root, name))
 
+            if not file_list:
+                raise Exception("Nessun file trovato nella directory sorgente")
+
             self.progress_bar["maximum"] = len(file_list)
+            self.progress_bar["value"] = 0
 
-            for i, (root, name) in enumerate(file_list):
-                # Aggiorna il nome del file corrente
-                self.update_file_label(f"Copia di: {name}")
-
-                if name.lower() == 'updater.exe':
-                    self.progress_bar["value"] = i + 1
-                    continue
-
-                # Copia il file
-                source_file = os.path.join(root, name)
-                relative_path = os.path.relpath(root, self.source_path)
-                dest_dir = os.path.join(self.dest_path, relative_path)
-
-                os.makedirs(dest_dir, exist_ok=True)
-                shutil.copy2(source_file, dest_dir)
-
-                # Aggiorna la barra di progresso
-                self.progress_bar["value"] = i + 1
+            # Copia i file
+            self.copy_files_safely(file_list)
 
             # Aggiornamento completato
             self.progress_label.config(text="Aggiornamento completato con successo!")
-            self.update_file_label("")  # Pulisce la label del file
+            self.update_file_label("")
 
             # Chiedi all'utente se vuole riavviare l'applicazione
             if messagebox.askyesno("Riavvio", "Aggiornamento completato. Vuoi riavviare l'applicazione ora?"):
                 new_exe_path = os.path.join(self.dest_path, self.exe_name)
-                subprocess.Popen([new_exe_path])
+
+                # Verifica che l'exe esista
+                if not os.path.exists(new_exe_path):
+                    raise FileNotFoundError(f"File eseguibile non trovato: {new_exe_path}")
+
+                # Avvia il nuovo processo gestendo correttamente i percorsi con spazi
+                if os.name == 'nt':  # Windows
+                    subprocess.Popen(f'"{new_exe_path}"')
+                else:  # Linux/Mac
+                    subprocess.Popen([new_exe_path])
 
             self.destroy()
 
@@ -132,11 +191,14 @@ class UpdateProgressWindow(tk.Tk):
 
 if __name__ == "__main__":
     if len(sys.argv) < 4:
+        log(f"Numero insufficiente di argomenti: {len(sys.argv)}")
         sys.exit(1)
 
     source = sys.argv[1]
     dest = sys.argv[2]
     exe = sys.argv[3]
+
+    log(f"Avvio updater: source={source}, dest={dest}, exe={exe}")
 
     app = UpdateProgressWindow(source, dest, exe)
     app.mainloop()

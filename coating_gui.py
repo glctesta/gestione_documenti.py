@@ -24,17 +24,29 @@ logger = logging.getLogger("TraceabilityRS")
 class CoatingViscosityWindow:
     """Finestra per la registrazione delle misurazioni di viscosità"""
 
-    def __init__(self, parent, conn_str, language_code='it'):
+    def __init__(self, parent, conn_str, username, language_code='it'):
+        """
+        Args:
+            parent: Finestra padre
+            conn_str: Stringa di connessione al database
+            username: ID utente loggato (da funzione di login)
+            language_code: Codice lingua
+        """
         self.parent = parent
         self.conn_str = conn_str
+        self.username = username
         self.window = None
         self.translator = TranslationManager(conn_str, language_code)
+        logger.debug(
+            f"[CoatingViscosityWindow.__init__] username ricevuto: '{username}' (tipo: {type(username).__name__})")
 
     def show(self):
         """Mostra la finestra di registrazione viscosità"""
+        logger.debug(f"[CoatingViscosityWindow.show] Apertura finestra - self.username: '{self.username}'")
+
         self.window = tk.Toplevel(self.parent)
         self.window.title(self.translator.get("coating_viscosity_title", "Coating - Registrazione Viscosità"))
-        self.window.geometry("1200x600")
+        self.window.geometry("1200x650")
 
         main_frame = ttk.Frame(self.window, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
@@ -44,55 +56,87 @@ class CoatingViscosityWindow:
                                      padding="10")
         input_frame.pack(fill=tk.X, pady=(0, 10))
 
-        # Data misurazione
-        ttk.Label(input_frame, text=f"{self.translator.get('date', 'Data')}:").grid(row=0, column=0, padx=5, pady=5,
-                                                                                    sticky="e")
-        self.date_entry = DateEntry(input_frame, width=15, date_pattern='dd/mm/yyyy')
-        self.date_entry.grid(row=0, column=1, padx=5, pady=5, sticky="w")
+        # ========================================
+        # RIGA 0: Data e Tipo Vernice
+        # ========================================
+        ttk.Label(input_frame, text=f"{self.translator.get('date', 'Data')}:").grid(
+            row=0, column=0, padx=5, pady=5, sticky="e")
 
-        # Tipo vernice (Componente)
-        ttk.Label(input_frame, text=f"{self.translator.get('coating_type', 'Tipo Vernice')}:").grid(row=0, column=2,
-                                                                                                    padx=5, pady=5,
-                                                                                                    sticky="e")
+        # ✅ MODIFICATO: Label invece di DateEntry per mostrare data/ora corrente
+        current_datetime = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+        self.date_label = ttk.Label(input_frame, text=current_datetime,
+                                    font=("", 10, "bold"),
+                                    foreground="#1f4788")
+        self.date_label.grid(row=0, column=1, padx=5, pady=5, sticky="w")
+
+        ttk.Label(input_frame, text=f"{self.translator.get('coating_type', 'Tipo Vernice')}:").grid(
+            row=0, column=2, padx=5, pady=5, sticky="e")
         self.coating_combo = ttk.Combobox(input_frame, width=30, state="readonly")
         self.coating_combo.grid(row=0, column=3, padx=5, pady=5, sticky="w")
 
-        # Operatore (UserName)
-        ttk.Label(input_frame, text=f"{self.translator.get('operator', 'Operatore')}:").grid(row=1, column=0, padx=5,
-                                                                                             pady=5, sticky="e")
-        self.operator_var = tk.StringVar()
-        ttk.Entry(input_frame, textvariable=self.operator_var, width=15).grid(row=1, column=1, padx=5, pady=5,
-                                                                              sticky="w")
+        # ========================================
+        # RIGA 1: Operatore (SOLO VISUALIZZAZIONE)
+        # ========================================
+        ttk.Label(input_frame, text=f"{self.translator.get('operator', 'Operatore')}:").grid(
+            row=1, column=0, padx=5, pady=5, sticky="e")
 
-        # Qtà Materiale Usato
-        ttk.Label(input_frame, text=f"{self.translator.get('qty_mat_used', 'Qtà Materiale')}:").grid(row=1, column=2,
-                                                                                                     padx=5, pady=5,
-                                                                                                     sticky="e")
+        self.operator_label = ttk.Label(input_frame, text=self.username,
+                                        font=("", 10, "bold"),
+                                        foreground="#1f4788")
+        self.operator_label.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+
+        # ========================================
+        # RIGA 1b: Tipo Analisi (Radio Buttons)
+        # ========================================
+        ttk.Label(input_frame, text=f"{self.translator.get('analysis_type', 'Analisi')}:").grid(
+            row=1, column=2, padx=5, pady=5, sticky="e")
+
+        analysis_frame = ttk.Frame(input_frame)
+        analysis_frame.grid(row=1, column=3, padx=5, pady=5, sticky="w")
+
+        self.analysis_type_var = tk.IntVar(value=1)
+
+        ttk.Radiobutton(analysis_frame,
+                        text=self.translator.get('viscosity_materials', 'Viscosità materiali'),
+                        variable=self.analysis_type_var,
+                        value=1,
+                        command=self._on_analysis_type_change).pack(side=tk.LEFT, padx=5)
+
+        ttk.Radiobutton(analysis_frame,
+                        text=self.translator.get('periodic_check', 'Controllo periodico'),
+                        variable=self.analysis_type_var,
+                        value=2,
+                        command=self._on_analysis_type_change).pack(side=tk.LEFT, padx=5)
+
+        # ========================================
+        # RIGA 2: Quantità Materiale e Diluente
+        # ========================================
+        ttk.Label(input_frame, text=f"{self.translator.get('qty_mat_used', 'Qtà Materiale')}:").grid(
+            row=2, column=0, padx=5, pady=5, sticky="e")
         self.qty_mat_var = tk.StringVar()
-        ttk.Entry(input_frame, textvariable=self.qty_mat_var, width=15).grid(row=1, column=3, padx=5, pady=5,
-                                                                             sticky="w")
+        self.qty_mat_entry = ttk.Entry(input_frame, textvariable=self.qty_mat_var, width=15)
+        self.qty_mat_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
 
-        # Qtà Diluente Usato
-        ttk.Label(input_frame, text=f"{self.translator.get('qty_diluant_used', 'Qtà Diluente')}:").grid(row=2, column=0,
-                                                                                                        padx=5, pady=5,
-                                                                                                        sticky="e")
+        ttk.Label(input_frame, text=f"{self.translator.get('qty_diluant_used', 'Qtà Diluente')}:").grid(
+            row=2, column=2, padx=5, pady=5, sticky="e")
         self.qty_diluant_var = tk.StringVar()
-        ttk.Entry(input_frame, textvariable=self.qty_diluant_var, width=15).grid(row=2, column=1, padx=5, pady=5,
-                                                                                 sticky="w")
+        self.qty_diluant_entry = ttk.Entry(input_frame, textvariable=self.qty_diluant_var, width=15)
+        self.qty_diluant_entry.grid(row=2, column=3, padx=5, pady=5, sticky="w")
 
-        # Misurazione Coppa Ford
-        ttk.Label(input_frame, text=f"{self.translator.get('measurement_ford', 'Misurazione (s)')}:").grid(row=2,
-                                                                                                           column=2,
-                                                                                                           padx=5,
-                                                                                                           pady=5,
-                                                                                                           sticky="e")
+        # ========================================
+        # RIGA 3: Misurazione Coppa Ford
+        # ========================================
+        ttk.Label(input_frame, text=f"{self.translator.get('measurement_ford', 'Misurazione (s)')}:").grid(
+            row=3, column=0, padx=5, pady=5, sticky="e")
         self.measurement_var = tk.StringVar()
-        ttk.Entry(input_frame, textvariable=self.measurement_var, width=15).grid(row=2, column=3, padx=5, pady=5,
-                                                                                 sticky="w")
+        ttk.Entry(input_frame, textvariable=self.measurement_var, width=15).grid(
+            row=3, column=1, padx=5, pady=5, sticky="w")
 
-        # Pulsanti azione
+        # ========================================
+        # RIGA 4: Pulsanti azione
+        # ========================================
         btn_frame = ttk.Frame(input_frame)
-        btn_frame.grid(row=3, column=0, columnspan=4, pady=10)
+        btn_frame.grid(row=4, column=0, columnspan=4, pady=10)
 
         ttk.Button(btn_frame, text=f"💾 {self.translator.get('btn_save', 'Salva')}",
                    command=self._save_measurement).pack(side=tk.LEFT, padx=5)
@@ -104,12 +148,14 @@ class CoatingViscosityWindow:
                                     padding="10")
         tree_frame.pack(fill=tk.BOTH, expand=True)
 
-        columns = ("ID", "UserName", "Component", "QtyMat", "QtyDiluant", "RegDate", "Measurement", "MeasDate")
+        columns = ("ID", "UserName", "Component", "TipoVerifica", "QtyMat", "QtyDiluant",
+                   "RegDate", "Measurement", "MeasDate")
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=15)
 
         self.tree.heading("ID", text="ID")
         self.tree.heading("UserName", text=self.translator.get("operator", "Operatore"))
         self.tree.heading("Component", text=self.translator.get("component", "Componente"))
+        self.tree.heading("TipoVerifica", text=self.translator.get("analysis_type", "Tipo Analisi"))
         self.tree.heading("QtyMat", text=self.translator.get("qty_mat", "Qtà Mat."))
         self.tree.heading("QtyDiluant", text=self.translator.get("qty_diluant", "Qtà Dil."))
         self.tree.heading("RegDate", text=self.translator.get("reg_date", "Data Reg."))
@@ -118,7 +164,8 @@ class CoatingViscosityWindow:
 
         self.tree.column("ID", width=50)
         self.tree.column("UserName", width=100)
-        self.tree.column("Component", width=250)
+        self.tree.column("Component", width=200)
+        self.tree.column("TipoVerifica", width=120)
         self.tree.column("QtyMat", width=80)
         self.tree.column("QtyDiluant", width=80)
         self.tree.column("RegDate", width=100)
@@ -135,6 +182,27 @@ class CoatingViscosityWindow:
         self._load_coatings()
         self._load_measurements()
 
+        # ✅ AGGIUNTO: Chiamata iniziale per impostare lo stato dei campi
+        self._on_analysis_type_change()
+
+    # ========================================
+    # ✅ AGGIUNTO: Metodo per gestione cambio tipo analisi
+    # ========================================
+    def _on_analysis_type_change(self):
+        """Gestisce il cambio del tipo di analisi"""
+        if self.analysis_type_var.get() == 2:  # Controllo periodico
+            # Disabilita e azzera i campi quantità
+            self.qty_mat_var.set("0")
+            self.qty_diluant_var.set("0")
+            self.qty_mat_entry.config(state="disabled")
+            self.qty_diluant_entry.config(state="disabled")
+        else:  # Viscosità materiali
+            # Riabilita i campi
+            self.qty_mat_entry.config(state="normal")
+            self.qty_diluant_entry.config(state="normal")
+            self.qty_mat_var.set("")
+            self.qty_diluant_var.set("")
+
     def _load_coatings(self):
         """Carica i tipi di vernice nella combo"""
         try:
@@ -145,7 +213,7 @@ class CoatingViscosityWindow:
                     SELECT IDCOMPONENT, ComponentCode, ComponentDescription
                     FROM Traceability_RS.dbo.components
                     WHERE IDCOMPONENTTYPE = 24
-                    ORDER BY ComponentCode \
+                    ORDER BY ComponentCode
                     """
             cursor.execute(query)
             rows = cursor.fetchall()
@@ -168,20 +236,21 @@ class CoatingViscosityWindow:
             cursor = conn.cursor()
 
             query = """
-                    SELECT v.[ViscosityControlId], \
-                           v.[UserName], \
-                           v.[QtyMatUsed], \
-                           v.[QtyDiluantUsed], \
-                           c.ComponentCode + ' ' + c.ComponentDescription as Component, \
-                           CAST(v.DateSys as date)                        as RegistrationDate, \
-                           vc.MeasuramentCupFord                          as Measurement, \
+                    SELECT v.[ViscosityControlId],
+                           v.[UserName],
+                           v.[QtyMatUsed],
+                           v.[QtyDiluantUsed],
+                           v.[TipoVerifica],
+                           c.ComponentCode + ' ' + c.ComponentDescription as Component,
+                           CAST(v.DateSys as date)                        as RegistrationDate,
+                           vc.MeasuramentCupFord                          as Measurement,
                            CONVERT(varchar, vc.DateSys, 103)              as MeasuramentDate
                     FROM [Traceability_RS].[dbo].[ViscosityControls] as v
                         INNER JOIN [Traceability_RS].[dbo].ViscosyContronCheckCups vc
                     ON v.ViscosityControlId = vc.ViscosytyControlId
                         INNER JOIN Traceability_RS.dbo.components c
                         ON v.IdComponent = c.IDComponent
-                    ORDER BY v.DateSys DESC \
+                    ORDER BY v.DateSys DESC
                     """
             cursor.execute(query)
             rows = cursor.fetchall()
@@ -192,10 +261,17 @@ class CoatingViscosityWindow:
 
             # Inserisci dati
             for row in rows:
+                tipo_verifica_text = (
+                    self.translator.get('viscosity_materials', 'Viscosità materiali')
+                    if row.TipoVerifica == 1
+                    else self.translator.get('periodic_check', 'Controllo periodico')
+                )
+
                 self.tree.insert("", tk.END, values=(
                     row.ViscosityControlId,
                     row.UserName or "",
                     row.Component,
+                    tipo_verifica_text,
                     row.QtyMatUsed or "",
                     row.QtyDiluantUsed or "",
                     row.RegistrationDate,
@@ -216,23 +292,17 @@ class CoatingViscosityWindow:
     def _save_measurement(self):
         """Salva la misurazione nel database (Testata + Righe)"""
         coating_text = self.coating_combo.get()
-        operator = self.operator_var.get().strip()
+        operator = self.username
         qty_mat = self.qty_mat_var.get().strip()
         qty_diluant = self.qty_diluant_var.get().strip()
         measurement = self.measurement_var.get().strip()
+        tipo_verifica = self.analysis_type_var.get()
 
         # Validazioni
         if not coating_text:
             messagebox.showwarning(
                 self.translator.get("warning", "Attenzione"),
                 self.translator.get("select_coating", "Selezionare un tipo di vernice")
-            )
-            return
-
-        if not operator:
-            messagebox.showwarning(
-                self.translator.get("warning", "Attenzione"),
-                self.translator.get("enter_operator", "Inserire il nome dell'operatore")
             )
             return
 
@@ -245,8 +315,14 @@ class CoatingViscosityWindow:
 
         try:
             measurement_value = float(measurement)
-            qty_mat_value = float(qty_mat) if qty_mat else None
-            qty_diluant_value = float(qty_diluant) if qty_diluant else None
+
+            if tipo_verifica == 2:
+                qty_mat_value = 0.0
+                qty_diluant_value = 0.0
+            else:
+                qty_mat_value = float(qty_mat) if qty_mat else None
+                qty_diluant_value = float(qty_diluant) if qty_diluant else None
+
         except ValueError:
             messagebox.showwarning(
                 self.translator.get("warning", "Attenzione"),
@@ -255,29 +331,29 @@ class CoatingViscosityWindow:
             return
 
         component_id = self.coating_data.get(coating_text)
-        measurement_date = self.date_entry.get_date()
+
+        # ✅ MODIFICATO: Usa la data/ora corrente invece di quella dal DateEntry
+        measurement_date = datetime.now()
 
         try:
             conn = pyodbc.connect(self.conn_str)
             cursor = conn.cursor()
 
-            # 1. Inserisci TESTATA in ViscosityControls
             query_header = """
                            INSERT INTO [Traceability_RS].[dbo].[ViscosityControls]
-                           ([UserName], [QtyMatUsed], [QtyDiluantUsed], [IdComponent], [DateSys])
+                           ([UserName], [QtyMatUsed], [QtyDiluantUsed], [IdComponent], [DateSys], [TipoVerifica])
                                OUTPUT INSERTED.ViscosityControlId
-                           VALUES (?, ?, ?, ?, ?) \
+                           VALUES (?, ?, ?, ?, ?, ?)
                            """
-            cursor.execute(query_header, operator, qty_mat_value, qty_diluant_value, component_id, measurement_date)
+            cursor.execute(query_header, operator, qty_mat_value, qty_diluant_value,
+                           component_id, measurement_date, tipo_verifica)
 
-            # Recupera l'ID appena inserito
             viscosity_control_id = cursor.fetchone()[0]
 
-            # 2. Inserisci RIGA in ViscosyContronCheckCups
             query_detail = """
                            INSERT INTO [Traceability_RS].[dbo].[ViscosyContronCheckCups]
                                ([ViscosytyControlId], [MeasuramentCupFord], [DateSys])
-                           VALUES (?, ?, ?) \
+                           VALUES (?, ?, ?)
                            """
             cursor.execute(query_detail, viscosity_control_id, measurement_value, measurement_date)
 
@@ -292,7 +368,8 @@ class CoatingViscosityWindow:
             self._clear_form()
             self._load_measurements()
             logger.info(
-                f"Misurazione viscosità salvata: ID={viscosity_control_id}, Coating={coating_text}, Misurazione={measurement_value}")
+                f"Misurazione viscosità salvata: ID={viscosity_control_id}, Coating={coating_text}, "
+                f"TipoVerifica={tipo_verifica}, Misurazione={measurement_value}")
 
         except Exception as e:
             logger.error(f"Errore salvataggio misurazione: {e}")
@@ -304,11 +381,15 @@ class CoatingViscosityWindow:
     def _clear_form(self):
         """Pulisce il form"""
         self.coating_combo.set("")
-        self.operator_var.set("")
         self.qty_mat_var.set("")
         self.qty_diluant_var.set("")
         self.measurement_var.set("")
-        self.date_entry.set_date(datetime.now())
+        self.analysis_type_var.set(1)
+        self._on_analysis_type_change()
+
+        # ✅ MODIFICATO: Aggiorna la data corrente quando si pulisce il form
+        current_datetime = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+        self.date_label.config(text=current_datetime)
 
 
 class TranslationManager:
@@ -690,465 +771,6 @@ class CoatingEditDialog:
             )
 
 
-class ViscosityControlWindow:
-    """Finestra per la registrazione dei controlli di viscosità"""
-
-    def __init__(self, parent, conn_str, language_code='it'):
-        self.parent = parent
-        self.conn_str = conn_str
-        self.window = None
-        self.username = None
-        self.current_control_id = None
-        self.measurements_tree = None
-        self.translator = TranslationManager(conn_str, language_code)
-
-    def show(self):
-        """Mostra la finestra dopo login speciale"""
-        if not self._special_login():
-            return
-
-        self.window = tk.Toplevel(self.parent)
-        title = f"{self.translator.get('viscosity_control_title')} - {self.translator.get('user')}: {self.username}"
-        self.window.title(title)
-        self.window.geometry("900x700")
-
-        # Frame principale
-        main_frame = ttk.Frame(self.window, padding="10")
-        main_frame.pack(fill=tk.BOTH, expand=True)
-
-        # --- SEZIONE TESTATA ---
-        header_frame = ttk.LabelFrame(main_frame, text=self.translator.get("control_data"), padding="10")
-        header_frame.pack(fill=tk.X, pady=(0, 10))
-
-        # Riga 1: Utente e Data/Ora
-        row1 = ttk.Frame(header_frame)
-        row1.pack(fill=tk.X, pady=5)
-
-        ttk.Label(row1, text=f"{self.translator.get('user')}:").pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Label(row1, text=self.username, font=("", 10, "bold")).pack(side=tk.LEFT, padx=(0, 20))
-
-        ttk.Label(row1, text=f"{self.translator.get('datetime')}:").pack(side=tk.LEFT, padx=(0, 5))
-        self.datetime_label = ttk.Label(row1, text=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), font=("", 10, "bold"))
-        self.datetime_label.pack(side=tk.LEFT)
-
-        # Riga 2: Materiale (Coating)
-        row2 = ttk.Frame(header_frame)
-        row2.pack(fill=tk.X, pady=5)
-
-        ttk.Label(row2, text=f"{self.translator.get('coating_material')}:").pack(side=tk.LEFT, padx=(0, 5))
-        self.coating_combo = ttk.Combobox(row2, state="readonly", width=40)
-        self.coating_combo.pack(side=tk.LEFT, padx=(0, 20))
-        self._load_coatings()
-
-        # Riga 3: Quantità materiale e diluente
-        row3 = ttk.Frame(header_frame)
-        row3.pack(fill=tk.X, pady=5)
-
-        ttk.Label(row3, text=f"{self.translator.get('qty_material_used')} (g):").pack(side=tk.LEFT, padx=(0, 5))
-        self.qty_material_var = tk.StringVar()
-        ttk.Entry(row3, textvariable=self.qty_material_var, width=15).pack(side=tk.LEFT, padx=(0, 20))
-
-        ttk.Label(row3, text=f"{self.translator.get('qty_diluent_used')} (g):").pack(side=tk.LEFT, padx=(0, 5))
-        self.qty_diluent_var = tk.StringVar()
-        ttk.Entry(row3, textvariable=self.qty_diluent_var, width=15).pack(side=tk.LEFT)
-
-        # Pulsanti testata
-        btn_header_frame = ttk.Frame(header_frame)
-        btn_header_frame.pack(fill=tk.X, pady=10)
-
-        ttk.Button(btn_header_frame, text=f"💾 {self.translator.get('btn_save_header')}",
-                   command=self._save_header).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_header_frame, text=f"🆕 {self.translator.get('btn_new_control')}",
-                   command=self._new_control).pack(side=tk.LEFT, padx=5)
-
-        # --- SEZIONE MISURAZIONI ---
-        measurements_frame = ttk.LabelFrame(main_frame, text=self.translator.get("measurements"), padding="10")
-        measurements_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-
-        # Campo per nuova misurazione
-        input_frame = ttk.Frame(measurements_frame)
-        input_frame.pack(fill=tk.X, pady=(0, 10))
-
-        ttk.Label(input_frame, text=f"{self.translator.get('ford_cup_measurement')}:").pack(side=tk.LEFT, padx=(0, 5))
-        self.measurement_var = tk.StringVar()
-        measurement_entry = ttk.Entry(input_frame, textvariable=self.measurement_var, width=15)
-        measurement_entry.pack(side=tk.LEFT, padx=(0, 10))
-
-        ttk.Button(input_frame, text=f"➕ {self.translator.get('btn_add_measurement')}",
-                   command=self._add_measurement).pack(side=tk.LEFT, padx=5)
-        ttk.Button(input_frame, text=f"🗑️ {self.translator.get('btn_delete_measurement')}",
-                   command=self._delete_measurement).pack(side=tk.LEFT, padx=5)
-
-        measurement_entry.bind('<Return>', lambda e: self._add_measurement())
-
-        # Treeview misurazioni
-        tree_frame = ttk.Frame(measurements_frame)
-        tree_frame.pack(fill=tk.BOTH, expand=True)
-
-        columns = ("ID", "Measurement")
-        self.measurements_tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=10)
-
-        self.measurements_tree.heading("ID", text="ID")
-        self.measurements_tree.heading("Measurement", text=self.translator.get("ford_cup_value"))
-
-        self.measurements_tree.column("ID", width=100)
-        self.measurements_tree.column("Measurement", width=200)
-
-        scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.measurements_tree.yview)
-        self.measurements_tree.configure(yscrollcommand=scrollbar.set)
-
-        self.measurements_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        # Statistiche
-        stats_frame = ttk.Frame(measurements_frame)
-        stats_frame.pack(fill=tk.X, pady=(10, 0))
-
-        self.stats_label = ttk.Label(stats_frame, text="", font=("", 9))
-        self.stats_label.pack(side=tk.LEFT)
-
-        self._update_datetime()
-
-    def _special_login(self):
-        """Login speciale per controllo viscosità"""
-        dialog = tk.Toplevel(self.parent)
-        dialog.title(self.translator.get("login_viscosity_title"))
-        dialog.geometry("300x150")
-        dialog.transient(self.parent)
-        dialog.grab_set()
-
-        ttk.Label(dialog, text=f"{self.translator.get('username')}:").grid(row=0, column=0, padx=10, pady=10,
-                                                                           sticky="e")
-        ttk.Label(dialog, text=f"{self.translator.get('password')}:").grid(row=1, column=0, padx=10, pady=10,
-                                                                           sticky="e")
-
-        username_var = tk.StringVar()
-        password_var = tk.StringVar()
-
-        username_entry = ttk.Entry(dialog, textvariable=username_var, width=20)
-        password_entry = ttk.Entry(dialog, textvariable=password_var, width=20, show="*")
-
-        username_entry.grid(row=0, column=1, padx=10, pady=10)
-        password_entry.grid(row=1, column=1, padx=10, pady=10)
-
-        result = {"authenticated": False, "username": None}
-
-        def on_login():
-            username = username_var.get().strip()
-            password = password_var.get().strip()
-
-            if self._validate_special_user(username, password):
-                result["authenticated"] = True
-                result["username"] = username
-                dialog.destroy()
-            else:
-                messagebox.showerror(
-                    self.translator.get("error"),
-                    self.translator.get("invalid_credentials"),
-                    parent=dialog
-                )
-
-        def on_cancel():
-            dialog.destroy()
-
-        btn_frame = ttk.Frame(dialog)
-        btn_frame.grid(row=2, column=0, columnspan=2, pady=10)
-
-        ttk.Button(btn_frame, text=self.translator.get("btn_login"), command=on_login).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text=self.translator.get("btn_cancel"), command=on_cancel).pack(side=tk.LEFT, padx=5)
-
-        username_entry.focus()
-        password_entry.bind('<Return>', lambda e: on_login())
-
-        dialog.wait_window()
-
-        if result["authenticated"]:
-            self.username = result["username"]
-            return True
-        return False
-
-    def _validate_special_user(self, username, password):
-        """Valida le credenziali utente per controllo viscosità"""
-        try:
-            conn = pyodbc.connect(self.conn_str)
-            cursor = conn.cursor()
-
-            # Verifica credenziali e permessi speciali
-            query = "SELECT iduserkey FROM resetservices.dbo.tbuserkey WHERE NomeUser = ? AND pass = ?"
-            cursor.execute(query, (username, password))
-            result = cursor.fetchone()
-
-            conn.close()
-            return result is not None
-
-        except Exception as e:
-            logger.error(f"Errore validazione utente: {e}")
-            messagebox.showerror(
-                self.translator.get("error"),
-                f"{self.translator.get('connection_error')}: {str(e)}"
-            )
-            return False
-
-    def _update_datetime(self):
-        """Aggiorna data/ora ogni secondo"""
-        if self.window and self.window.winfo_exists():
-            self.datetime_label.config(text=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-            self.window.after(1000, self._update_datetime)
-
-    def _load_coatings(self):
-        """Carica i materiali coating nel combo"""
-        try:
-            conn = pyodbc.connect(self.conn_str)
-            cursor = conn.cursor()
-
-            query = """
-                SELECT IDCOMPONENT, ComponentCode, ComponentDescription
-                FROM Traceability_RS.dbo.components
-                WHERE IdComponentType = 24
-                ORDER BY ComponentCode
-            """
-            cursor.execute(query)
-            rows = cursor.fetchall()
-
-            self.coatings_data = {f"{row.ComponentCode} - {row.ComponentDescription}": row.IDCOMPONENT
-                                  for row in rows}
-
-            self.coating_combo['values'] = list(self.coatings_data.keys())
-            if self.coating_combo['values']:
-                self.coating_combo.current(0)
-
-            conn.close()
-
-        except Exception as e:
-            logger.error(f"Errore caricamento coating: {e}")
-            messagebox.showerror(
-                self.translator.get("error"),
-                f"{self.translator.get('load_error')}: {str(e)}"
-            )
-
-    def _save_header(self):
-        """Salva la testata del controllo viscosità"""
-        coating_selected = self.coating_combo.get()
-        qty_material = self.qty_material_var.get().strip()
-        qty_diluent = self.qty_diluent_var.get().strip()
-
-        if not coating_selected:
-            messagebox.showwarning(
-                self.translator.get("warning"),
-                self.translator.get("select_coating_material")
-            )
-            return
-
-        if not qty_material or not qty_diluent:
-            messagebox.showwarning(
-                self.translator.get("warning"),
-                self.translator.get("enter_quantities")
-            )
-            return
-
-        try:
-            qty_mat = float(qty_material)
-            qty_dil = float(qty_diluent)
-
-            if qty_mat <= 0 or qty_dil <= 0:
-                raise ValueError()
-
-        except ValueError:
-            messagebox.showerror(
-                self.translator.get("error"),
-                self.translator.get("invalid_quantities")
-            )
-            return
-
-        try:
-            conn = pyodbc.connect(self.conn_str)
-            cursor = conn.cursor()
-
-            id_component = self.coatings_data[coating_selected]
-            control_datetime = datetime.now()
-
-            if self.current_control_id:
-                # Aggiorna testata esistente
-                query = """
-                    UPDATE Traceability_RS.dbo.ViscosityControls
-                    SET QtyMatUsed = ?,
-                        QtyDiluantUsed = ?,
-                        IdComponent = ?,
-                        ControlDateTime = ?
-                    WHERE ViscosityControlId = ?
-                """
-                cursor.execute(query, (qty_mat, qty_dil, id_component, control_datetime, self.current_control_id))
-            else:
-                # Nuova testata
-                query = """
-                    INSERT INTO Traceability_RS.dbo.ViscosityControls
-                        (UserName, QtyMatUsed, QtyDiluantUsed, IdComponent, ControlDateTime)
-                    VALUES (?, ?, ?, ?, ?)
-                """
-                cursor.execute(query, (self.username, qty_mat, qty_dil, id_component, control_datetime))
-
-                # Recupera ID generato
-                cursor.execute("SELECT @@IDENTITY AS ID")
-                self.current_control_id = cursor.fetchone()[0]
-
-            conn.commit()
-            conn.close()
-
-            messagebox.showinfo(
-                self.translator.get("success"),
-                self.translator.get("header_saved_success")
-            )
-            logger.info(f"Testata controllo salvata: ID={self.current_control_id}")
-
-        except Exception as e:
-            logger.error(f"Errore salvataggio testata: {e}")
-            messagebox.showerror(
-                self.translator.get("error"),
-                f"{self.translator.get('save_error')}: {str(e)}"
-            )
-
-    def _add_measurement(self):
-        """Aggiunge una misurazione"""
-        if not self.current_control_id:
-            messagebox.showwarning(
-                self.translator.get("warning"),
-                self.translator.get("save_header_first")
-            )
-            return
-
-        measurement = self.measurement_var.get().strip()
-
-        if not measurement:
-            messagebox.showwarning(
-                self.translator.get("warning"),
-                self.translator.get("enter_measurement")
-            )
-            return
-
-        try:
-            meas_value = float(measurement)
-            if meas_value <= 0:
-                raise ValueError()
-        except ValueError:
-            messagebox.showerror(
-                self.translator.get("error"),
-                self.translator.get("invalid_measurement")
-            )
-            return
-
-        try:
-            conn = pyodbc.connect(self.conn_str)
-            cursor = conn.cursor()
-
-            query = """
-                INSERT INTO Traceability_RS.dbo.ViscosyContronCheckCups
-                    (ViscosytyControlId, MeasuramentCupFord)
-                VALUES (?, ?)
-            """
-            cursor.execute(query, (self.current_control_id, meas_value))
-            conn.commit()
-
-            # Recupera ID generato
-            cursor.execute("SELECT @@IDENTITY AS ID")
-            new_id = cursor.fetchone()[0]
-
-            conn.close()
-
-            # Aggiungi alla treeview
-            self.measurements_tree.insert("", tk.END, values=(new_id, meas_value))
-            self.measurement_var.set("")
-            self._update_statistics()
-
-            logger.info(f"Misurazione aggiunta: {meas_value}")
-
-        except Exception as e:
-            logger.error(f"Errore aggiunta misurazione: {e}")
-            messagebox.showerror(
-                self.translator.get("error"),
-                f"{self.translator.get('save_error')}: {str(e)}"
-            )
-
-    def _delete_measurement(self):
-        """Elimina la misurazione selezionata"""
-        selection = self.measurements_tree.selection()
-        if not selection:
-            messagebox.showwarning(
-                self.translator.get("warning"),
-                self.translator.get("select_measurement_to_delete")
-            )
-            return
-
-        item = self.measurements_tree.item(selection[0])
-        measurement_id = item['values'][0]
-
-        if not messagebox.askyesno(
-                self.translator.get("confirm"),
-                self.translator.get("confirm_delete_measurement")
-        ):
-            return
-
-        try:
-            conn = pyodbc.connect(self.conn_str)
-            cursor = conn.cursor()
-
-            query = "DELETE FROM Traceability_RS.dbo.ViscosyContronCheckCups WHERE ViscosytyControlId = ?"
-            cursor.execute(query, (measurement_id,))
-            conn.commit()
-            conn.close()
-
-            self.measurements_tree.delete(selection[0])
-            self._update_statistics()
-
-            logger.info(f"Misurazione eliminata: ID={measurement_id}")
-
-        except Exception as e:
-            logger.error(f"Errore eliminazione misurazione: {e}")
-            messagebox.showerror(
-                self.translator.get("error"),
-                f"{self.translator.get('delete_error')}: {str(e)}"
-            )
-
-    def _update_statistics(self):
-        """Aggiorna le statistiche delle misurazioni"""
-        measurements = []
-        for item in self.measurements_tree.get_children():
-            values = self.measurements_tree.item(item)['values']
-            measurements.append(float(values[1]))
-
-        if measurements:
-            count = len(measurements)
-            avg = sum(measurements) / count
-            min_val = min(measurements)
-            max_val = max(measurements)
-
-            count_text = self.translator.get('measurements_count')
-            avg_text = self.translator.get('average')
-            min_text = self.translator.get('min')
-            max_text = self.translator.get('max')
-
-            stats_text = f"{count_text}: {count} | {avg_text}: {avg:.2f} | {min_text}: {min_val:.2f} | {max_text}: {max_val:.2f}"
-            self.stats_label.config(text=stats_text)
-        else:
-            self.stats_label.config(text="")
-
-    def _new_control(self):
-        """Inizia un nuovo controllo"""
-        if messagebox.askyesno(
-                self.translator.get("confirm"),
-                self.translator.get("confirm_new_control")
-        ):
-            self.current_control_id = None
-            self.qty_material_var.set("")
-            self.qty_diluent_var.set("")
-            self.measurement_var.set("")
-
-            for item in self.measurements_tree.get_children():
-                self.measurements_tree.delete(item)
-
-            self._update_statistics()
-            logger.info("Nuovo controllo iniziato")
-
-
 class CoatingReportsWindow:
     """Finestra per la generazione dei report Coating"""
 
@@ -1519,7 +1141,7 @@ def open_coating_settings(parent, conn_str, language_code='it'):
 
 def open_viscosity_control(parent, conn_str, language_code='it'):
     """Apre la finestra Controllo Viscosità"""
-    window = ViscosityControlWindow(parent, conn_str, language_code)
+    window = CoatingViscosityWindow(parent, conn_str, language_code)
     window.show()
 
 

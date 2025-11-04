@@ -134,7 +134,7 @@ class ScrapReportsWindow(tk.Toplevel):
         tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
         # Treeview
-        columns = ("ID", "User", "LabelCode", "Phase", "Reason", "Reference", "Note", "DateIn")
+        columns = ("ID", "User", "LabelCode","Productcode", "Phase", "Reason", "Reference", "Note", "DateIn")
         self.tree = ttk.Treeview(
             tree_frame,
             columns=columns,
@@ -148,6 +148,7 @@ class ScrapReportsWindow(tk.Toplevel):
         self.tree.heading("ID", text="ID")
         self.tree.heading("User", text=self.translator.get("user", "Utente"))
         self.tree.heading("LabelCode", text=self.translator.get("label_code", "Codice Etichetta"))
+        self.tree.heading("Productcode", text=self.translator.get("Productcode", "Productcode"))
         self.tree.heading("Phase", text=self.translator.get("phase", "Fase"))
         self.tree.heading("Reason", text=self.translator.get("reason", "Motivo"))
         self.tree.heading("Reference", text=self.translator.get("reference", "Riferimento"))
@@ -158,6 +159,7 @@ class ScrapReportsWindow(tk.Toplevel):
         self.tree.column("ID", width=50, anchor=tk.CENTER)
         self.tree.column("User", width=100)
         self.tree.column("LabelCode", width=120)
+        self.tree.column("Productcode", width=120)
         self.tree.column("Phase", width=120)
         self.tree.column("Reason", width=150)
         self.tree.column("Reference", width=100)
@@ -195,12 +197,12 @@ class ScrapReportsWindow(tk.Toplevel):
             date_from = self.date_from.get_date()
             date_to = self.date_to.get_date()
 
-            query = """
-                SELECT 
+            query = """SELECT 
                     [ScrapDeclarationId],
                     [User],
-                    [IdLabelCode] as LabelCode,
-                    pp.ParentPhaseName,
+                    l.LabelCod   as LabelCode,
+                    p.ProductCode as Productcode,
+                    pp.AreaName as ParentPhaseName,
                     sr.Reason,
                     [Riferiments],
                     [Note],
@@ -209,8 +211,11 @@ class ScrapReportsWindow(tk.Toplevel):
                 FROM [Traceability_RS].[dbo].[ScarpDeclarations] as S 
                 INNER JOIN [Traceability_RS].[dbo].[ScrapResons] as sr 
                     ON s.ScrapReasonId = sr.ScrapReasonId
-                INNER JOIN [Traceability_RS].[dbo].[ParentPhases] pp 
-                    ON S.IDParentPhase = pp.IDParentPhase
+                inner join[Traceability_RS].[dbo].[Area] pp on pp.idArea=s.[IDParentPhase]                 
+                inner join traceability_rs.dbo.LabelCodes as L on s.IdLabelCode=l.IDLabelCode
+                inner join traceability_rs.dbo.boards B on b.IDBoard=l.IDBoard
+                inner join traceability_rs.dbo.orders o on b.IDOrder=o.idorder
+                inner join traceability_rs.dbo.products p on p.idproduct=o.idproduct
                 WHERE CAST(DateIn as date) BETWEEN ? AND ?
                 ORDER BY DateIn DESC;
             """
@@ -229,6 +234,7 @@ class ScrapReportsWindow(tk.Toplevel):
                     row.ScrapDeclarationId,
                     row.User or "",
                     row.LabelCode or "",
+                    row.Productcode or "",
                     row.ParentPhaseName or "",
                     row.Reason or "",
                     row.Riferiments or "",
@@ -324,6 +330,7 @@ class ScrapReportsWindow(tk.Toplevel):
                     'ID': row.ScrapDeclarationId,
                     'Utente': row.User or "",
                     'Codice Etichetta': row.LabelCode or "",
+                    'Codice prodotto:': row.Productcode or "",
                     'Fase': row.ParentPhaseName or "",
                     'Motivo': row.Reason or "",
                     'Riferimento': row.Riferiments or "",
@@ -376,11 +383,15 @@ class ScrapReportsWindow(tk.Toplevel):
             bottom=Side(style='thin')
         )
 
+        from datetime import datetime
+
         # Inserisci riga titolo
         ws.insert_rows(1, 2)
         ws.merge_cells('A1:H1')
         title_cell = ws['A1']
-        title_cell.value = f"REPORT SCARTI - Periodo: {date_from_str} / {date_to_str}"
+        date_from_formatted = datetime.strptime(date_from_str, "%Y%m%d").strftime("%d-%m-%Y")
+        date_to_formatted = datetime.strptime(date_to_str, "%Y%m%d").strftime("%d-%m-%Y")
+        title_cell.value = f"REPORT SCARTI - Periodo: {date_from_formatted} / {date_to_formatted}"
         title_cell.font = title_font
         title_cell.alignment = Alignment(horizontal='center', vertical='center')
 
@@ -403,11 +414,12 @@ class ScrapReportsWindow(tk.Toplevel):
             'A': 8,   # ID
             'B': 15,  # Utente
             'C': 20,  # Codice Etichetta
-            'D': 20,  # Fase
-            'E': 25,  # Motivo
-            'F': 20,  # Riferimento
-            'G': 30,  # Note
-            'H': 18   # Data
+            'D': 20,  # ProductCode
+            'E': 20,  # Fase
+            'F': 25,  # Motivo
+            'G': 20,  # Riferimento
+            'H': 30,  # Note
+            'I': 18   # Data
         }
 
         for col, width in column_widths.items():
