@@ -92,7 +92,48 @@ class ScrapValidationWindow(tk.Toplevel):
         self.tree.column('status', width=100, anchor='center')
 
         self.tree.pack(fill=tk.BOTH, expand=True)
-        self.tree.bind('<<TreeviewSelect>>', self._on_select_declaration)
+
+        # ========== SEZIONE CENTRALE: INSERIMENTO LABELCODE ==========
+        input_frame = ttk.LabelFrame(
+            main_frame,
+            text=self.lang.get('enter_labelcode', 'Inserisci Label Code per Validazione'),
+            padding=10
+        )
+        input_frame.pack(fill=tk.X, pady=(0, 10))
+
+        # Frame per input labelcode
+        labelcode_frame = ttk.Frame(input_frame)
+        labelcode_frame.pack(fill=tk.X)
+
+        ttk.Label(
+            labelcode_frame,
+            text=self.lang.get('label_code', 'Label Code:'),
+            font=('Arial', 10, 'bold')
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        self.labelcode_var = tk.StringVar()
+        self.labelcode_entry = ttk.Entry(
+            labelcode_frame,
+            textvariable=self.labelcode_var,
+            font=('Arial', 12),
+            width=20
+        )
+        self.labelcode_entry.pack(side=tk.LEFT, padx=(0, 10))
+        self.labelcode_entry.bind('<Return>', self._on_labelcode_entered)
+
+        ttk.Button(
+            labelcode_frame,
+            text=self.lang.get('validate_code', 'Valida Code'),
+            command=self._on_labelcode_entered
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        # Label per messaggi di stato
+        self.validation_status_label = ttk.Label(
+            labelcode_frame,
+            text='',
+            font=('Arial', 10)
+        )
+        self.validation_status_label.pack(side=tk.LEFT, padx=(10, 0))
 
         # ========== SEZIONE INFERIORE: DETTAGLI E AZIONI ==========
         details_frame = ttk.LabelFrame(
@@ -114,8 +155,7 @@ class ScrapValidationWindow(tk.Toplevel):
             ('quantity', 'Quantità Scartata'),
             ('reason', 'Causale'),
             ('declared_by', 'Dichiarato da'),
-            ('date', 'Data Dichiarazione')#,
-            #('notes', 'Note Operatore')
+            ('date', 'Data Dichiarazione')
         ]
 
         for i, (key, label) in enumerate(details):
@@ -132,36 +172,27 @@ class ScrapValidationWindow(tk.Toplevel):
             )
             self.detail_labels[key].grid(row=i, column=1, sticky='w', padx=(10, 0), pady=2)
 
-        # Frame note validatore (destra)
-        #notes_frame = ttk.Frame(details_frame)
-        #notes_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
-
-        # ttk.Label(
-        #     notes_frame,
-        #     text=self.lang.get('validator_notes', 'Note Validatore:'),
-        #     font=('Arial', 9, 'bold')
-        # ).pack(anchor='w')
-
-        #self.notes_text = tk.Text(notes_frame, height=6, width=40, wrap=tk.WORD)
-        #self.notes_text.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
-
         # ========== PULSANTI AZIONE ==========
         buttons_frame = ttk.Frame(main_frame)
         buttons_frame.pack(fill=tk.X, pady=(10, 0))
 
-        ttk.Button(
+        self.approve_button = ttk.Button(
             buttons_frame,
             text=self.lang.get('approve', '✓ Approva'),
             command=lambda: self._validate_declaration('Approved'),
-            style='Success.TButton'
-        ).pack(side=tk.LEFT, padx=5)
+            style='Success.TButton',
+            state='disabled'  # Disabilitato inizialmente
+        )
+        self.approve_button.pack(side=tk.LEFT, padx=5)
 
-        ttk.Button(
+        self.reject_button = ttk.Button(
             buttons_frame,
             text=self.lang.get('reject', '✗ Rifiuta'),
             command=lambda: self._validate_declaration('Rejected'),
-            style='Danger.TButton'
-        ).pack(side=tk.LEFT, padx=5)
+            style='Danger.TButton',
+            state='disabled'  # Disabilitato inizialmente
+        )
+        self.reject_button.pack(side=tk.LEFT, padx=5)
 
         ttk.Button(
             buttons_frame,
@@ -174,6 +205,7 @@ class ScrapValidationWindow(tk.Toplevel):
             text=self.lang.get('close', 'Chiudi'),
             command=self.destroy
         ).pack(side=tk.RIGHT, padx=5)
+
 
     def _setup_footer(self):
         """Configura logo e orologio nel footer."""
@@ -244,6 +276,53 @@ class ScrapValidationWindow(tk.Toplevel):
                 parent=self
             )
 
+    def _on_labelcode_entered(self, event=None):
+        """Gestisce l'inserimento del labelcode e cerca la dichiarazione corrispondente"""
+        entered_code = self.labelcode_var.get().strip()
+
+        if not entered_code:
+            self.validation_status_label.config(text='Inserire un label code', foreground='red')
+            return
+
+        try:
+            # Cerca il labelcode nella lista delle dichiarazioni
+            found_declaration = None
+            for item in self.tree.get_children():
+                values = self.tree.item(item)['values']
+                if values and len(values) > 3 and values[3] == entered_code:  # values[3] è product_code (labelcod)
+                    found_declaration = values
+                    # Seleziona la riga nella treeview
+                    self.tree.selection_set(item)
+                    self.tree.focus(item)
+                    break
+
+            if found_declaration:
+                self.selected_declaration = found_declaration[0]  # ID della dichiarazione
+
+                # Aggiorna i dettagli con i campi disponibili
+                self.detail_labels['order'].config(text=found_declaration[2] if found_declaration[2] else '-')
+                self.detail_labels['product'].config(text=f"{found_declaration[3]} - {found_declaration[4]}")
+                self.detail_labels['quantity'].config(text=found_declaration[5] if found_declaration[5] else '-')
+                self.detail_labels['reason'].config(text=found_declaration[6])
+                self.detail_labels['declared_by'].config(text=found_declaration[7])
+                self.detail_labels['date'].config(text=found_declaration[1] if found_declaration[1] else '-')
+
+                # Abilita i pulsanti di azione
+                self.approve_button.config(state='normal')
+                self.reject_button.config(state='normal')
+
+                self.validation_status_label.config(text='Label code trovato - Validazione abilitata',
+                                                    foreground='green')
+
+            else:
+                self._clear_selection()
+                self.validation_status_label.config(text='Label code non trovato nelle dichiarazioni pendenti',
+                                                    foreground='red')
+
+        except Exception as e:
+            logger.error(f"Errore durante la validazione del label code: {e}")
+            self.validation_status_label.config(text=f'Errore: {str(e)}', foreground='red')
+
     def _on_select_declaration(self, event):
         """Gestisce la selezione di una dichiarazione"""
         selection = self.tree.selection()
@@ -273,7 +352,14 @@ class ScrapValidationWindow(tk.Toplevel):
         self.selected_declaration = None
         for label in self.detail_labels.values():
             label.config(text='-')
-        #self.notes_text.delete('1.0', tk.END)
+
+        # Disabilita i pulsanti di azione
+        self.approve_button.config(state='disabled')
+        self.reject_button.config(state='disabled')
+
+        # Pulisce la selezione nella treeview
+        self.tree.selection_remove(self.tree.selection())
+        self.validation_status_label.config(text='')
 
     def _validate_declaration(self, status):
         """Valida o rifiuta la dichiarazione selezionata"""
@@ -284,9 +370,6 @@ class ScrapValidationWindow(tk.Toplevel):
                 parent=self
             )
             return
-
-        # Ottieni le note del validatore (se necessario)
-        #notes = self.notes_text.get('1.0', 'end-1c').strip()
 
         # Conferma azione
         action_text = 'approvare' if status == 'Approved' else 'rifiutare'
@@ -301,7 +384,7 @@ class ScrapValidationWindow(tk.Toplevel):
         success, error = self.db.validate_scrap_declaration(
             self.selected_declaration,
             status,
-            None,#notes,
+            None,
             self.user_name
         )
 
@@ -313,6 +396,7 @@ class ScrapValidationWindow(tk.Toplevel):
             )
             self._load_scrap_declarations()  # Ricarica la lista
             self._clear_selection()
+            self.labelcode_var.set('')  # Pulisce il campo labelcode
         else:
             messagebox.showerror(
                 self.lang.get('error_title', 'Errore'),

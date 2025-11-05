@@ -198,20 +198,20 @@ class ScrapReportsWindow(tk.Toplevel):
             date_to = self.date_to.get_date()
 
             query = """SELECT 
-                    [ScrapDeclarationId],
+                    s.[ScrapDeclarationId],
                     [User],
                     l.LabelCod   as LabelCode,
                     p.ProductCode as Productcode,
                     pp.AreaName as ParentPhaseName,
                     sr.Reason,
                     [Riferiments],
-                    [Note],
+                    [Note] + iif(Accepted =1, ' (Scrapt accepted by quality)','') as [Note],
                     [DateIn],
                     [Picture]
                 FROM [Traceability_RS].[dbo].[ScarpDeclarations] as S 
                 INNER JOIN [Traceability_RS].[dbo].[ScrapResons] as sr 
                     ON s.ScrapReasonId = sr.ScrapReasonId
-                inner join[Traceability_RS].[dbo].[Area] pp on pp.idArea=s.[IDParentPhase]                 
+                inner join[Traceability_RS].[dbo].[Areas] pp on pp.idArea=s.[IDParentPhase]                 
                 inner join traceability_rs.dbo.LabelCodes as L on s.IdLabelCode=l.IDLabelCode
                 inner join traceability_rs.dbo.boards B on b.IDBoard=l.IDBoard
                 inner join traceability_rs.dbo.orders o on b.IDOrder=o.idorder

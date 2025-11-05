@@ -230,7 +230,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.8.3"  # Versione aggiornata
+APP_VERSION = "1.8.4"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -1199,36 +1199,61 @@ class Database:
             return None
 
 
+    # def fetch_kanban_current_stock_by_component(self) -> dict[int, int]:
+    #     """
+    #     Ritorna {IdComponent: StockTotale} (DateOut IS NULL).
+    #     """
+    #     sql = """
+    #     SELECT IdComponent, COALESCE(SUM(Quantity),0) AS Stock
+    #     FROM knb.KanBanRecords
+    #     WHERE DateOut IS NULL
+    #     GROUP BY IdComponent;
+    #     """
+    #     cur = None
+    #     try:
+    #         cur = self.conn.cursor()
+    #         cur.execute(sql)
+    #         rows = cur.fetchall()
+    #         out = {int(r.IdComponent): int(r.Stock or 0) for r in rows}
+    #         return out
+    #         #cur.close()
+    #     except pyodbc.Error as e:
+    #         self.last_error_details = str(e)
+    #         logger.error(f"Error in fetch_kanban_current_stock_by_component: {e}")
+    #         return {}
+    #     finally:
+    #         # IMPORTANTE: Chiudi sempre il cursore
+    #         if cur:
+    #             try:
+    #                 cur.close()
+    #             except:
+    #                 pass
+
     def fetch_kanban_current_stock_by_component(self) -> dict[int, int]:
         """
-        Ritorna {IdComponent: StockTotale} (DateOut IS NULL).
+        Ritorna {IdComponent: StockTotale} per tutti i record dove DateOut IS NULL.
         """
         sql = """
-        SELECT IdComponent, COALESCE(SUM(Quantity),0) AS Stock
-        FROM knb.KanBanRecords
-        WHERE DateOut IS NULL
-        GROUP BY IdComponent;
-        """
-        cur = None
+              SELECT IdComponent, COALESCE(SUM(Quantity), 0) AS Stock
+              FROM knb.KanBanRecords
+              WHERE DateOut IS NULL
+              GROUP BY IdComponent;
+              """
         try:
-            cur = self.conn.cursor()
-            cur.execute(sql)
-            rows = cur.fetchall()
-            out = {int(r.IdComponent): int(r.Stock or 0) for r in rows}
+            with self.conn.cursor() as cur:
+                cur.execute(sql)
+                # Usa indici numerici [0], [1] invece di .IdComponent, .Stock
+                out = {int(row[0]): int(row[1]) for row in cur.fetchall()}
+
             return out
-            #cur.close()
+
         except pyodbc.Error as e:
             self.last_error_details = str(e)
             logger.error(f"Error in fetch_kanban_current_stock_by_component: {e}")
             return {}
-        finally:
-            # IMPORTANTE: Chiudi sempre il cursore
-            if cur:
-                try:
-                    cur.close()
-                except:
-                    pass
 
+
+        
     def fetch_active_rules_by_component(self) -> dict[int, dict]:
         """
         Ritorna {IdComponent: {'rule_id':..., 'min_qty':..., 'min_pct':...}}
@@ -7493,38 +7518,6 @@ class App(tk.Tk):
         )
 
     def _start_product_check_routine(self):
-        """
-        Avvia la routine periodica di controllo prodotti.
-        Esegue la SP InsertProductToCheck ogni X minuti (da settings).
-        """
-
-        def check_products():
-            try:
-                # Esegui la stored procedure
-                success = self.db.execute_product_check_sp()
-                if success:
-                    # Verifica se ci sono prodotti da controllare
-                    products = self.db.fetch_products_must_check()
-                    if products:
-                        # Mostra notifica
-                        count = len(products)
-                        messagebox.showinfo(
-                            self.lang.get('product_check_alert', 'Verifiche Prodotti'),
-                            self.lang.get('products_need_check',
-                                          f'Ci sono {count} prodotti che necessitano verifica.')
-                        )
-            except Exception as e:
-                logger.error(f"Error in product check routine: {e}")
-            finally:
-                # Richiama la funzione dopo l'intervallo specificato
-                interval_minutes = self.db.get_product_check_interval()
-                interval_ms = interval_minutes * 60 * 1000
-                self.after(interval_ms, check_products)
-
-        # Avvia il primo controllo dopo 1 minuto dall'avvio
-        self.after(60000, check_products)
-
-    def _start_product_check_routine(self):
         """Avvia la routine periodica di controllo prodotti"""
 
     def open_coating_reports_direct(self):
@@ -8125,6 +8118,7 @@ class App(tk.Tk):
             menu_translation_key='submenu_scrap_declaration',
             action_callback=lambda:scarti_gui.open_scrap_declaration_window(self, self.db, self.lang)
         )
+
     def open_calibrations_manager_with_login(self):
         logger = logging.getLogger("TraceabilityRS")
         required = 'calibration_management'
@@ -8832,52 +8826,24 @@ class App(tk.Tk):
             except Exception as e:
                 messagebox.showerror("Errore", f"Impossibile aprire il modulo di calibrazione: {e}")
 
-    def _open_coating_settings(self):
-        """Apre la finestra di gestione tipi vernice"""
-        try:
-            window = coating_gui.CoatingSettingsWindow(
-                self.root,
-                DB_CONN_STR,
-                self.user_name,
-                self.lang.current_language
-            )
-            window.show()
-        except Exception as e:
-            logger.error(f"Errore apertura Coating Settings: {e}")
-            messagebox.showerror("Errore", f"Impossibile aprire la finestra: {str(e)}")
-
-    def _open_coating_viscosity(self):
-        """Apre la finestra di registrazione viscosità"""
-        try:
-            window = coating_gui.CoatingViscosityWindow(
-                self.root,
-                DB_CONN_STR,
-                self.user_name,
-                self.lang.current_language
-            )
-            window.show()
-        except Exception as e:
-            logger.error(f"Errore apertura Coating Viscosity: {e}")
-            messagebox.showerror("Errore", f"Impossibile aprire la finestra: {str(e)}")
-
-    def _open_coating_reports(self):
-        """Apre la finestra dei report coating"""
-        try:
-            window = coating_gui.CoatingReportsWindow(
-                self.root,
-                DB_CONN_STR,
-                self.lang.current_language
-            )
-            window.show()
-        except Exception as e:
-            logger.error(f"Errore apertura Coating Reports: {e}")
-            messagebox.showerror("Errore", f"Impossibile aprire la finestra: {str(e)}")
-
     def _create_menu(self):
+        """Crea la struttura completa dei menu con gerarchia organizzata"""
         self.menubar = tk.Menu(self)
         self.config(menu=self.menubar)
 
-        # Crea i contenitori vuoti per ogni menu principale
+        # Inizializza tutti i menu principali
+        self._init_main_menus()
+
+        # Inizializza i sottomenu complessi
+        self._init_production_submenus()
+        self._init_tools_submenus()
+        self._init_help_submenus()
+
+        # Aggiungi i menu principali alla barra
+        self._add_main_menus_to_bar()
+
+    def _init_main_menus(self):
+        """Inizializza i menu principali"""
         self.document_menu = tk.Menu(self.menubar, tearoff=0)
         self.general_docs_menu = tk.Menu(self.menubar, tearoff=0)
         self.operations_menu = tk.Menu(self.menubar, tearoff=0)
@@ -8886,57 +8852,45 @@ class App(tk.Tk):
         self.tools_menu = tk.Menu(self.menubar, tearoff=0)
         self.help_menu = tk.Menu(self.menubar, tearoff=0)
 
-        # --- SOTTOMENU DI OPERATIONS (Ordine Corretto) ---
-        # 1. Crea il sottomenu genitore "Produzione"
+    def _init_production_submenus(self):
+        """Inizializza la gerarchia completa del menu Produzione"""
+        # Menu principale Produzione
         self.production_submenu = tk.Menu(self.operations_menu, tearoff=0)
 
-        # 2. Sottomenu figli, usando production_submenu come genitore
+        # Sottomenu di Produzione
         self.declarations_submenu = tk.Menu(self.production_submenu, tearoff=0)
-        # Sottomenu KanBan (diretto figlio di Produzione)
+
+        # Gerarchia KanBan
         self.kanban_root_submenu = tk.Menu(self.production_submenu, tearoff=0)
+        self.kanban_locations_submenu = tk.Menu(self.kanban_root_submenu, tearoff=0)
+        self.kanban_materials_submenu = tk.Menu(self.kanban_root_submenu, tearoff=0)
+        self.kanban_core_submenu = tk.Menu(self.kanban_root_submenu, tearoff=0)
 
-        # Figli di KanBan
-        self.kanban_locations_submenu = tk.Menu(self.kanban_root_submenu, tearoff=0)  # Locazioni
-        self.kanban_materials_submenu = tk.Menu(self.kanban_root_submenu, tearoff=0)  # Materiali
-        self.kanban_core_submenu = tk.Menu(self.kanban_root_submenu, tearoff=0)  # KanBan
-
+        # Tracciabilità
         self.traceability_submenu = tk.Menu(self.production_submenu, tearoff=0)
-        #FCT TRansfer
         self.fct_transfer_submenu = tk.Menu(self.traceability_submenu, tearoff=0)
 
+        # Calibrazioni
+        self.calibrations_submenu = tk.Menu(self.production_submenu, tearoff=0)
+
+        # Coating - Struttura organizzata
+        self.coating_submenu = tk.Menu(self.production_submenu, tearoff=0)
+        self.coating_materials_submenu = tk.Menu(self.coating_submenu, tearoff=0)
+
+        # Verifiche Prodotti
+        self.product_checks_submenu = tk.Menu(self.production_submenu, tearoff=0)
+
+        # Rapporti
         self.reports_submenu = tk.Menu(self.production_submenu, tearoff=0)
         self.operativity_submenu = tk.Menu(self.reports_submenu, tearoff=0)
 
-        # Crea il contenitore per il nuovo sottomenu "Calibrazioni"
-        self.calibrations_submenu = tk.Menu(self.production_submenu, tearoff=0)
-
-        # ✅ NUOVO: Sottomenu Coating
-        self.coating_submenu = tk.Menu(self.production_submenu, tearoff=0)
-
-        # ✅ NUOVO: Sottomenu Verifiche Periodiche Prodotti
-        self.product_checks_submenu = tk.Menu(self.production_submenu, tearoff=0)
-
-        # Sottomenu di Strumenti
+    def _init_tools_submenus(self):
+        """Inizializza i sottomenu di Strumenti"""
         self.permissions_submenu = tk.Menu(self.tools_menu, tearoff=0)
         self.materials_submenu = tk.Menu(self.tools_menu, tearoff=0)
 
-        # Aggiunge ogni menu principale alla barra (con etichette iniziali)
-        self.menubar.add_cascade(label=self.lang.get('menu_documents', "Documenti di Produzione"),
-                                 menu=self.document_menu)
-        self.menubar.add_cascade(label=self.lang.get('menu_general_docs', "Documenti Generali"),
-                                 menu=self.general_docs_menu)
-        self.menubar.add_cascade(label=self.lang.get('menu_operations', "Operazioni"),
-                                 menu=self.operations_menu)
-        self.menubar.add_cascade(label=self.lang.get('menu_maintenance', "Manutenzione"),
-                                 menu=self.maintenance_menu)
-        self.menubar.add_cascade(label=self.lang.get('menu_submissions', "Segnalazioni"),
-                                 menu=self.submissions_menu)
-        self.menubar.add_cascade(label=self.lang.get('menu_tools', "Strumenti"),
-                                 menu=self.tools_menu)
-        self.menubar.add_cascade(label=self.lang.get('menu_help', "Aiuto"),
-                                 menu=self.help_menu)
-
-        # Il sottomenu della lingua
+    def _init_help_submenus(self):
+        """Inizializza i sottomenu di Aiuto"""
         self.language_menu = tk.Menu(self.help_menu, tearoff=0)
         self.language_menu.add_command(label="Italiano", command=lambda: self._change_language('it'))
         self.language_menu.add_command(label="English", command=lambda: self._change_language('en'))
@@ -8944,18 +8898,44 @@ class App(tk.Tk):
         self.language_menu.add_command(label="Deutsch", command=lambda: self._change_language('de'))
         self.language_menu.add_command(label="Svenska", command=lambda: self._change_language('sv'))
 
+    def _add_main_menus_to_bar(self):
+        """Aggiunge i menu principali alla barra dei menu"""
+        self.menubar.add_cascade(label=self.lang.get('menu_documents', "Documenti di Produzione"),
+                                 menu=self.document_menu)
+        self.menubar.add_cascade(label=self.lang.get('menu_general_docs', "Documenti Generali"),
+                                 menu=self.general_docs_menu)
+        self.menubar.add_cascade(label=self.lang.get('menu_operations', "Operazioni"), menu=self.operations_menu)
+        self.menubar.add_cascade(label=self.lang.get('menu_maintenance', "Manutenzione"), menu=self.maintenance_menu)
+        self.menubar.add_cascade(label=self.lang.get('menu_submissions', "Segnalazioni"), menu=self.submissions_menu)
+        self.menubar.add_cascade(label=self.lang.get('menu_tools', "Strumenti"), menu=self.tools_menu)
+        self.menubar.add_cascade(label=self.lang.get('menu_help', "Aiuto"), menu=self.help_menu)
+
     def update_texts(self):
-        """Aggiorna tutti i testi della UI principale, ricostruendo tutti i menu."""
+        """Aggiorna tutti i testi della UI principale con struttura organizzata"""
         self.title(self.lang.get('app_title'))
 
-        # --- 1. Menu Documenti (Produzione) ---
+        # Aggiorna tutti i menu in sequenza
+        self._update_document_menu()
+        self._update_general_docs_menu()
+        self._update_operations_menu()
+        self._update_maintenance_menu()
+        self._update_submissions_menu()
+        self._update_tools_menu()
+        self._update_help_menu()
+
+        # Aggiorna le etichette della barra principale
+        self._update_main_menubar()
+
+    def _update_document_menu(self):
+        """Aggiorna il menu Documenti di Produzione"""
         self.document_menu.delete(0, 'end')
         self.document_menu.add_command(label=self.lang.get('menu_insert_doc'), command=self.open_insert_form)
         self.document_menu.add_command(label=self.lang.get('menu_view_doc'), command=self.open_view_form)
         self.document_menu.add_separator()
         self.document_menu.add_command(label=self.lang.get('menu_quit'), command=self._on_closing)
 
-        # --- 2. Menu Documenti Generali ---
+    def _update_general_docs_menu(self):
+        """Aggiorna il menu Documenti Generali"""
         self.general_docs_menu.delete(0, 'end')
         if self.doc_categories:
             for category in self.doc_categories:
@@ -8979,43 +8959,83 @@ class App(tk.Tk):
                     command=cmd_view
                 )
 
-        # --- 3. Menu Operations ---
+    def _update_operations_menu(self):
+        """Aggiorna il menu Operazioni con tutta la gerarchia Produzione"""
         self.operations_menu.delete(0, 'end')
         self.operations_menu.add_cascade(label=self.lang.get('submenu_production_ops', "Produzione"),
                                          menu=self.production_submenu)
 
+        # Aggiorna tutti i sottomenu di Produzione
+        self._update_production_submenu()
+
+        self.operations_menu.add_separator()
+        self.operations_menu.add_command(label=self.lang.get('submenu_materials_ops', "Materiali"), state="disabled")
+        self.operations_menu.add_command(label=self.lang.get('submenu_hr', "Risorse Umane"), state="disabled")
+
+    def _update_production_submenu(self):
+        """Aggiorna il sottomenu Produzione con tutte le sezioni"""
         self.production_submenu.delete(0, 'end')
+
+        # 1. Dichiarazioni
         self.production_submenu.add_cascade(label=self.lang.get('submenu_declarations', "Dichiarazioni"),
                                             menu=self.declarations_submenu)
+        self._update_declarations_submenu()
 
+        # 2. KanBan
+        self.production_submenu.add_cascade(label=self.lang.get('submenu_kanban', 'KanBan'),
+                                            menu=self.kanban_root_submenu)
+        self._update_kanban_submenus()
+
+        # 3. Tracciabilità
+        self.production_submenu.add_cascade(label=self.lang.get('submenu_traceability', "Tracciabilità"),
+                                            menu=self.traceability_submenu)
+        self._update_traceability_submenu()
+
+        # 4. Calibrazioni
+        self.production_submenu.add_cascade(label=self.lang.get('submenu_calibrations', "Calibrazioni"),
+                                            menu=self.calibrations_submenu)
+        self._update_calibrations_submenu()
+
+        # 5. Coating - Struttura organizzata
+        self.production_submenu.add_cascade(label=self.lang.get('menu_coating', "Coating"),
+                                            menu=self.coating_submenu)
+        self._update_coating_submenu()
+
+        # 6. Verifiche Prodotti
+        self.production_submenu.add_cascade(label=self.lang.get('menu_product_checks', "Verifiche"),
+                                            menu=self.product_checks_submenu)
+        self._update_product_checks_submenu()
+
+        # 7. Rapporti
+        self.production_submenu.add_cascade(label=self.lang.get('submenu_reports_prod', "Rapporti"),
+                                            menu=self.reports_submenu)
+        self._update_reports_submenu()
+
+    def _update_declarations_submenu(self):
+        """Aggiorna il sottomenu Dichiarazioni"""
         self.declarations_submenu.delete(0, 'end')
         self.declarations_submenu.add_command(
             label=self.lang.get('submenu_interruptions', "Interruzioni di produzione"),
-            command=self.open_add_interruption_window_with_login)
-
-        # ✅ SEPARATORE
+            command=self.open_add_interruption_window_with_login
+        )
         self.declarations_submenu.add_separator()
-
-        # #Aggiungi la nuova voce di menu per la dichiarazione degli scarti
-        # self.declarations_submenu.add_command(
-        #     label=self.lang.get('submenu_scrap_declaration', "Dichiarazione scarti"),
-        #     command=self.open_scrap_declaration_with_login
-        # )
-
-        #✅ NUOVO: Validazione scarti
         self.declarations_submenu.add_command(
             label=self.lang.get('submenu_scrap_validation', "Validazione scarti"),
             command=self.open_scrap_validation_with_login
         )
+        self.declarations_submenu.add_command(
+            label=self.lang.get('submenu_scrap_declaration', "Dichiarazione scarti"),
+            command=self.open_scrap_declaration_with_login
+        )
 
-        # --- KanBan come SECONDA VOCE sotto Produzione ---
-        # Pulisci eventuali voci precedenti
+    def _update_kanban_submenus(self):
+        """Aggiorna tutta la gerarchia KanBan"""
         self.kanban_root_submenu.delete(0, 'end')
         self.kanban_locations_submenu.delete(0, 'end')
         self.kanban_materials_submenu.delete(0, 'end')
         self.kanban_core_submenu.delete(0, 'end')
 
-        # 1) Locazioni -> Crea, Modifica, Etichette
+        # Locazioni KanBan
         self.kanban_locations_submenu.add_command(
             label=self.lang.get('action_create', 'Crea'),
             command=self.open_kanban_locations_create
@@ -9028,14 +9048,13 @@ class App(tk.Tk):
             label=self.lang.get('action_labels', 'Etichette'),
             command=self.open_kanban_locations_labels
         )
-        # Dopo le altre voci di Locazioni
         self.kanban_locations_submenu.add_separator()
         self.kanban_locations_submenu.add_command(
             label=self.lang.get('printer_setup_menu', 'Impostazioni stampante...'),
             command=self.open_printer_setup
         )
 
-        # 2) Materiali -> Gestione, Regole, Report
+        # Materiali KanBan
         self.kanban_materials_submenu.add_command(
             label=self.lang.get('menu_materials_mgmt', 'Materiali - Gestione'),
             command=self.open_kanban_materials_management
@@ -9049,7 +9068,7 @@ class App(tk.Tk):
             command=self.open_kanban_materials_report
         )
 
-        # 3) KanBan -> Movimenta, Verifica, Gestione
+        # Core KanBan
         self.kanban_core_submenu.add_command(
             label=self.lang.get('kanban_move', 'Movimenta'),
             command=self.open_kanban_move
@@ -9063,7 +9082,7 @@ class App(tk.Tk):
             command=self.open_kanban_manage
         )
 
-        # Monta le 3 diramazioni dentro il KanBan radice
+        # Assembla gerarchia KanBan
         self.kanban_root_submenu.add_cascade(
             label=self.lang.get('submenu_kanban_locations', 'Locazioni'),
             menu=self.kanban_locations_submenu
@@ -9077,67 +9096,42 @@ class App(tk.Tk):
             menu=self.kanban_core_submenu
         )
 
-        # Aggiungi KanBan come seconda voce sotto Produzione
-        self.production_submenu.add_cascade(
-            label=self.lang.get('submenu_kanban', 'KanBan'),
-            menu=self.kanban_root_submenu
-        )
-
-        # Aggiungi la nuova voce di menu per la dichiarazione degli scarti
-        self.declarations_submenu.add_command(
-            label=self.lang.get('submenu_scrap_declaration', "Dichiarazione scarti"),
-            command=self.open_scrap_declaration_with_login
-        )
-
-        # Aggiungi il nuovo sottomenu per la tracciabilità
-        self.production_submenu.add_cascade(label=self.lang.get('submenu_traceability', "Tracciabilità"),
-                                            menu=self.traceability_submenu)
-
+    def _update_traceability_submenu(self):
+        """Aggiorna il sottomenu Tracciabilità"""
         self.traceability_submenu.delete(0, 'end')
-        # 1. Final Customers
+
+        # Clienti Finali
         customers_submenu = tk.Menu(self.traceability_submenu, tearoff=0)
         self.traceability_submenu.add_cascade(label=self.lang.get('submenu_final_customers', "Clienti Finali"),
                                               menu=customers_submenu)
-        customers_submenu.delete(0, 'end')
-
-        # Aggiungi il nuovo sottomenu per le Calibrazioni
-        self.production_submenu.add_cascade(label=self.lang.get('submenu_calibrations', "Calibrazioni"),
-                                            menu=self.calibrations_submenu)
-        self.calibrations_submenu.delete(0, 'end')
-        self.calibrations_submenu.add_command(
-            label=self.lang.get('submenu_manage_calibrations', "Gestisci Calibrazioni"),
-            command=self.open_calibrations_manager_with_login
-        )
-
         customers_submenu.add_command(label=self.lang.get('submenu_manage_customers', "Gestisci Clienti"),
                                       command=self.open_manage_customers_with_login)
 
-        # 2. Final Products
+        # Prodotti Finali
         products_submenu = tk.Menu(self.traceability_submenu, tearoff=0)
         self.traceability_submenu.add_cascade(label=self.lang.get('submenu_final_products', "Prodotti Finali"),
                                               menu=products_submenu)
-        products_submenu.delete(0, 'end')
         products_submenu.add_command(label=self.lang.get('submenu_define_products', "Definisci Prodotti"),
                                      command=self.open_define_products_with_login)
 
-        # 3. Link Products
+        # Collegamenti Prodotti
         links_submenu = tk.Menu(self.traceability_submenu, tearoff=0)
         self.traceability_submenu.add_cascade(label=self.lang.get('submenu_link_products', "Collega Prodotti"),
                                               menu=links_submenu)
-        links_submenu.delete(0, 'end')
         links_submenu.add_command(label=self.lang.get('submenu_manage_links', "Gestisci Collegamenti"),
                                   command=self.open_manage_links_with_login)
 
+        # Verifica Associazione
         self.traceability_submenu.add_command(
             label=self.lang.get('verification_association', "Verifica Associazione"),
-            command=self.open_verification_association_with_login)
+            command=self.open_verification_association_with_login
+        )
 
-        # Aggiungi il sottomenu FCT Transfer
+        # FCT Transfer
         self.traceability_submenu.add_cascade(
             label=self.lang.get('menu_fct_transfer', "FCT Transfer"),
             menu=self.fct_transfer_submenu
         )
-
         self.fct_transfer_submenu.delete(0, 'end')
         self.fct_transfer_submenu.add_command(
             label=self.lang.get('menu_fct_settings', "Settings"),
@@ -9147,40 +9141,58 @@ class App(tk.Tk):
             label=self.lang.get('menu_fct_run', "Run"),
             command=self._toggle_fct_execution
         )
-        # ✅ ===== FINE AGGIUNTA FCT TRANSFER =====
 
-        # ✅ ===== NUOVO: MENU COATING =====
-        self.production_submenu.add_cascade(
-            label=self.lang.get('menu_coating', "Coating"),
-            menu=self.coating_submenu
+    def _update_calibrations_submenu(self):
+        """Aggiorna il sottomenu Calibrazioni"""
+        self.calibrations_submenu.delete(0, 'end')
+        self.calibrations_submenu.add_command(
+            label=self.lang.get('submenu_manage_calibrations', "Gestisci Calibrazioni"),
+            command=self.open_calibrations_manager_with_login
         )
 
+    def _update_coating_submenu(self):
+        """Aggiorna il sottomenu Coating con struttura organizzata"""
         self.coating_submenu.delete(0, 'end')
-        self.coating_submenu.add_command(
-            label=self.lang.get('submenu_coating_settings', "📊 Settings"),
-            command=self.open_coating_settings_with_login
 
+        # Gestione Materiali Coating
+        self.coating_submenu.add_cascade(
+            label=self.lang.get('submenu_coating_materials', "🧰 Gestione Materiali"),
+            menu=self.coating_materials_submenu
         )
+        self.coating_materials_submenu.delete(0, 'end')
+
+        # ✅ SEPARARE I DUE MENU
+        self.coating_materials_submenu.add_command(
+            label=self.lang.get('submenu_coating_types', "🎨 Gestione Tipi Vernice"),
+            command=self.open_coating_types_with_login
+        )
+        self.coating_materials_submenu.add_command(
+            label=self.lang.get('submenu_coating_thickness_specs', "📐 Gestione Specifiche Spessore"),
+            command=self.open_coating_thickness_specs_with_login
+        )
+
+        # Controlli Qualità
+        self.coating_submenu.add_separator()
         self.coating_submenu.add_command(
             label=self.lang.get('submenu_coating_viscosity', "🧪 Controllo Viscosità"),
             command=self.open_coating_viscosity_with_login
         )
+        self.coating_submenu.add_command(
+            label=self.lang.get('submenu_coating_thickness', "📏 Controllo Spessore"),
+            command=self.open_coating_thickness_with_login
+        )
+
+        # Rapporti
         self.coating_submenu.add_separator()
         self.coating_submenu.add_command(
             label=self.lang.get('submenu_coating_reports', "📊 Rapporti"),
             command=self.open_coating_reports_with_login
         )
-        # ✅ ===== FINE MENU COATING =====
-        # ✅ ===== NUOVO: MENU VERIFICHE PERIODICHE PRODOTTI =====
-        # Aggiungi il menu Verifiche dopo Coating
-        self.production_submenu.add_cascade(
-            label=self.lang.get('menu_product_checks', "Verifiche"),
-            menu=self.product_checks_submenu
-        )
 
+    def _update_product_checks_submenu(self):
+        """Aggiorna il sottomenu Verifiche Prodotti"""
         self.product_checks_submenu.delete(0, 'end')
 
-        # Sottomenu: Gestione Prodotti
         self.product_checks_submenu.add_command(
             label=self.lang.get('submenu_manage_product_checks', "Gestione Prodotti"),
             command=lambda: self._execute_authorized_action(
@@ -9189,7 +9201,6 @@ class App(tk.Tk):
             )
         )
 
-        # Sottomenu: Gestione Regole (Task)
         self.product_checks_submenu.add_command(
             label=self.lang.get('submenu_manage_check_rules', "Gestione Regole"),
             command=lambda: self._execute_authorized_action(
@@ -9199,8 +9210,6 @@ class App(tk.Tk):
         )
 
         self.product_checks_submenu.add_separator()
-
-        # Sottomenu: Esecuzione Verifiche
         self.product_checks_submenu.add_command(
             label=self.lang.get('submenu_verify_products', "Verifiche"),
             command=lambda: self._execute_authorized_action(
@@ -9209,7 +9218,6 @@ class App(tk.Tk):
             )
         )
 
-        # Sottomenu: Rapporti (disabilitato per ora)
         self.product_checks_submenu.add_separator()
         self.product_checks_submenu.add_command(
             label=self.lang.get('submenu_verification_reports', "Rapporti"),
@@ -9217,14 +9225,14 @@ class App(tk.Tk):
                 self.lang.get('info', 'Informazione'),
                 self.lang.get('feature_coming_soon', 'Funzionalità in arrivo')
             ),
-            state='disabled'  # Disabilitato fino all'implementazione
+            state='disabled'
         )
-        # ✅ ===== FINE MENU VERIFICHE =====
-        # Aggiungi il sottomenu Rapporti
-        self.production_submenu.add_cascade(label=self.lang.get('submenu_reports_prod', "Rapporti"),
-                                            menu=self.reports_submenu)
 
+    def _update_reports_submenu(self):
+        """Aggiorna il sottomenu Rapporti"""
         self.reports_submenu.delete(0, 'end')
+
+        # Operatività
         self.reports_submenu.add_cascade(label=self.lang.get('submenu_operativity', "Operativita'"),
                                          menu=self.operativity_submenu)
         self.operativity_submenu.delete(0, 'end')
@@ -9240,23 +9248,22 @@ class App(tk.Tk):
         shipping_submenu.add_command(label=self.lang.get('submenu_xls_settings', "Impostazioni XLS"),
                                      command=self.open_xls_settings_with_login)
 
+        # Altri rapporti
         self.reports_submenu.add_command(
             label=self.lang.get('submenu_line_stoppage_reports', "Rapporti di fermo linea"),
-            command=self.open_line_stoppage_report)
+            command=self.open_line_stoppage_report
+        )
 
         self.reports_submenu.add_command(
             label=self.lang.get("scrap_reports", "Rapporto Scarti"),
             command=self.open_scrap_reports
         )
 
-        self.operations_menu.add_separator()
-        self.operations_menu.add_command(label=self.lang.get('submenu_materials_ops', "Materiali"), state="disabled")
-        self.operations_menu.add_command(label=self.lang.get('submenu_hr', "Risorse Umane"), state="disabled")
-
-        # --- 4. Menu Manutenzione ---
+    def _update_maintenance_menu(self):
+        """Aggiorna il menu Manutenzione"""
         self.maintenance_menu.delete(0, 'end')
 
-        # Sottomenu Gestione Macchine
+        # Gestione Macchine
         machine_submenu = tk.Menu(self.maintenance_menu, tearoff=0)
         self.maintenance_menu.add_cascade(label=self.lang.get('submenu_machines'), menu=machine_submenu)
         machine_submenu.add_command(label=self.lang.get('submenu_add_machine'),
@@ -9271,14 +9278,14 @@ class App(tk.Tk):
         machine_submenu.add_command(label=self.lang.get('submenu_company_management', "Gestione Compagnie"),
                                     command=self.open_company_manager_with_login)
 
-        # Sottomenu Task di Manutenzione
+        # Task di Manutenzione
         tasks_submenu = tk.Menu(self.maintenance_menu, tearoff=0)
         self.maintenance_menu.add_cascade(
             label=self.lang.get('submenu_maintenance_tasks_header', 'Task di Manutenzione'), menu=tasks_submenu)
         tasks_submenu.add_command(label=self.lang.get('submenu_manage_maint_task', "Gestione Task di Manutenzione"),
                                   command=self.open_add_maintenance_tasks_with_login)
 
-        # Voci principali del menu Manutenzione
+        # Voci principali
         self.maintenance_menu.add_command(label=self.lang.get('submenu_fill_templates'),
                                           command=self.open_fill_templates_with_login)
         self.maintenance_menu.add_separator()
@@ -9287,7 +9294,8 @@ class App(tk.Tk):
         self.maintenance_menu.add_command(label=self.lang.get('submenu_missing_action', "Missing Action Report"),
                                           command=self.open_missing_action_report)
 
-        # --- 5. Menu Segnalazioni ---
+    def _update_submissions_menu(self):
+        """Aggiorna il menu Segnalazioni"""
         self.submissions_menu.delete(0, 'end')
         self.submissions_menu.add_command(label=self.lang.get('submenu_new_submission', "Nuova Segnalazione"),
                                           command=self.open_new_submission_form)
@@ -9295,8 +9303,6 @@ class App(tk.Tk):
             label=self.lang.get('submenu_assign', 'Assegna'),
             command=self.open_assign_submissions_with_login
         )
-        #self.submissions_menu.add_command(label=self.lang.get('submenu_view_submissions', "Visualizza Segnalazioni"),
-        #                                  state="disabled")
         self.submissions_menu.add_command(
             label=self.lang.get('menu_submissions_management', "Gestione"),
             command=lambda: self._execute_authorized_action(
@@ -9305,8 +9311,11 @@ class App(tk.Tk):
             )
         )
 
-        # --- 6. Menu Strumenti ---
+    def _update_tools_menu(self):
+        """Aggiorna il menu Strumenti"""
         self.tools_menu.delete(0, 'end')
+
+        # Autorizzazioni
         self.tools_menu.add_cascade(label=self.lang.get('submenu_permissions', "Autorizzazioni"),
                                     menu=self.permissions_submenu)
         self.permissions_submenu.delete(0, 'end')
@@ -9318,6 +9327,8 @@ class App(tk.Tk):
             command=self.open_view_permissions_with_login)
 
         self.tools_menu.add_separator()
+
+        # Materiali
         self.tools_menu.add_cascade(label=self.lang.get('menu_materials', "Materiali"), menu=self.materials_submenu)
         self.materials_submenu.delete(0, 'end')
         self.materials_submenu.add_command(label=self.lang.get('submenu_manage', "Gestione"),
@@ -9325,6 +9336,7 @@ class App(tk.Tk):
         self.materials_submenu.add_command(label=self.lang.get('submenu_view', "Visualizza"),
                                            command=self.open_view_materials)
 
+        # Altri strumenti
         self.tools_menu.add_command(
             label=self.lang.get('submenu_scrap_types', 'Tipi scrap'),
             command=self.open_scrap_types_with_login
@@ -9340,43 +9352,46 @@ class App(tk.Tk):
         self.tools_menu.add_command(label=self.lang.get('submenu_maint_times', "Tempi Manutenzione"),
                                     command=self.open_maintenance_times_with_login)
 
-        # --- 7. Menu Help ---
+    def _update_help_menu(self):
+        """Aggiorna il menu Aiuto"""
         self.help_menu.delete(0, 'end')
         self.help_menu.add_cascade(label=self.lang.get('menu_language'), menu=self.language_menu)
         about_menu_label = f"{self.lang.get('menu_about')} {APP_VERSION}"
         self.help_menu.add_command(label=about_menu_label, command=self._show_about)
 
-        # Aggiorna le etichette dei menu principali (indici 0..6)
+    def _update_main_menubar(self):
+        """Aggiorna le etichette della barra dei menu principale"""
         try:
-            # self.menubar.entryconfig(0, label=self.lang.get('menu_documents', "Documenti di Produzione"))
-            # self.menubar.entryconfig(1, label=self.lang.get('menu_general_docs', "Documenti Generali"))
-            # self.menubar.entryconfig(2, label=self.lang.get('menu_operations', "Operazioni"))
-            # self.menubar.entryconfig(3, label=self.lang.get('menu_maintenance', "Manutenzione"))
-            # self.menubar.entryconfig(4, label=self.lang.get('menu_submissions', "Segnalazioni"))
-            # self.menubar.entryconfig(5, label=self.lang.get('menu_tools', "Strumenti"))
-            # self.menubar.entryconfig(6, label=self.lang.get('menu_help', "Aiuto"))
             self.menubar.delete(0, 'end')
-
-            self.menubar.add_cascade(label=self.lang.get('menu_documents', "Documenti di Produzione"),
-                                     menu=self.document_menu)
-            self.menubar.add_cascade(label=self.lang.get('menu_general_docs', "Documenti Generali"),
-                                     menu=self.general_docs_menu)
-            self.menubar.add_cascade(label=self.lang.get('menu_operations', "Operazioni"),
-                                     menu=self.operations_menu)
-            self.menubar.add_cascade(label=self.lang.get('menu_maintenance', "Manutenzione"),
-                                     menu=self.maintenance_menu)
-            self.menubar.add_cascade(label=self.lang.get('menu_submissions', "Segnalazioni"),
-                                     menu=self.submissions_menu)
-            self.menubar.add_cascade(label=self.lang.get('menu_tools', "Strumenti"),
-                                     menu=self.tools_menu)
-            self.menubar.add_cascade(label=self.lang.get('menu_help', "Aiuto"),
-                                     menu=self.help_menu)
-
-            # opzionale, per sicurezza su alcune piattaforme:
+            self._add_main_menus_to_bar()
             self.config(menu=self.menubar)
             self.update_idletasks()
         except tk.TclError:
             pass
+
+    def open_coating_thickness_with_login(self):
+        """Apre la finestra di controllo spessore coating dopo login"""
+
+        def action(user_name):
+            try:
+                from coating_gui import CoatingThicknessMeasurementWindow
+                logger.debug(f"[main.py] Apertura CoatingThicknessMeasurementWindow con user_name: '{user_name}'")
+                window = CoatingThicknessMeasurementWindow(
+                    parent=self,
+                    conn_str=self.db.conn_str,
+                    username=user_name,  # ✅ Parametro corretto: username
+                    language_code=self.lang.current_language
+                )
+                window.show()
+                logger.info(f"Aperta finestra Coating Thickness da utente: {user_name}")
+            except Exception as e:
+                logger.error(f"Errore apertura controllo spessore coating: {e}")
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Errore apertura controllo spessore: {e}"
+                )
+
+        self._execute_simple_login(action_callback=action)
 
     def open_scrap_reports(self):
         try:
@@ -9407,38 +9422,83 @@ class App(tk.Tk):
         )
 
     # ✅ ===== METODI COATING =====
-    def open_coating_settings_with_login(self,user_id=None):
+    # def open_coating_settings_with_login(self):
+    #     """Apre la finestra di gestione tipi vernice con autenticazione autorizzata"""
+    #
+    #     def action():
+    #         try:
+    #             from coating_gui import CoatingSettingsWindow
+    #             window = CoatingSettingsWindow(
+    #                 parent=self,
+    #                 conn_str=self.db.conn_str,
+    #                 language_code=self.lang.current_language
+    #             )
+    #             window.show()
+    #             logger.info("Aperta finestra Coating Settings")
+    #         except Exception as e:
+    #             logger.error(f"Errore apertura Coating Settings: {e}")
+    #             messagebox.showerror(
+    #                 self.lang.get('error', "Errore"),
+    #                 f"{self.lang.get('window_open_error', 'Impossibile aprire la finestra')}: {str(e)}"
+    #             )
+    #
+    #     self._execute_authorized_action('submenu_coating_materials_manage', action)
+    def open_coating_types_with_login(self):
         """Apre la finestra di gestione tipi vernice con autenticazione autorizzata"""
 
         def action():
             try:
-                window = coating_gui.CoatingSettingsWindow(
-                    self,
-                    DB_CONN_STR,
-                    self.lang.current_language
+                from coating_gui import CoatingSettingsWindow
+                window = CoatingSettingsWindow(
+                    parent=self,
+                    conn_str=self.db.conn_str,
+                    language_code=self.lang.current_language
                 )
                 window.show()
-                logger.info("Aperta finestra Coating Settings")
+                logger.info("Aperta finestra Gestione Tipi Vernice")
             except Exception as e:
-                logger.error(f"Errore apertura Coating Settings: {e}")
+                logger.error(f"Errore apertura Gestione Tipi Vernice: {e}")
                 messagebox.showerror(
                     self.lang.get('error', "Errore"),
                     f"{self.lang.get('window_open_error', 'Impossibile aprire la finestra')}: {str(e)}"
                 )
 
-        self._execute_authorized_action('submenu_coating_viscosity', action)
+        self._execute_authorized_action('submenu_coating_types', action)
+
+    def open_coating_thickness_specs_with_login(self):
+        """Apre la finestra di gestione specifiche spessore con autenticazione autorizzata"""
+
+        def action():
+            try:
+                from coating_gui import CoatingThicknessSettingsWindow
+                window = CoatingThicknessSettingsWindow(
+                    parent=self,
+                    conn_str=self.db.conn_str,
+                    language_code=self.lang.current_language
+                )
+                window.show()
+                logger.info("Aperta finestra Gestione Specifiche Spessore")
+            except Exception as e:
+                logger.error(f"Errore apertura Gestione Specifiche Spessore: {e}")
+                messagebox.showerror(
+                    self.lang.get('error', "Errore"),
+                    f"{self.lang.get('window_open_error', 'Impossibile aprire la finestra')}: {str(e)}"
+                )
+
+        self._execute_authorized_action('submenu_coating_thickness_specs', action)
 
     def open_coating_viscosity_with_login(self):
         """Apre la finestra di registrazione viscosità con login semplice"""
 
-        def action(user_name):  # ← Riceve il nome utente
+        def action(user_name):
             try:
+                from coating_gui import CoatingViscosityWindow
                 logger.debug(f"[main.py] Apertura CoatingViscosityWindow con user_name: '{user_name}'")
-                window = coating_gui.CoatingViscosityWindow(
-                    self,
-                    DB_CONN_STR,
-                    user_name,
-                    self.lang.current_language
+                window = CoatingViscosityWindow(
+                    parent=self,
+                    conn_str=self.db.conn_str,
+                    username=user_name,  # ✅ Parametro corretto: username (non user_name)
+                    language_code=self.lang.current_language
                 )
                 window.show()
                 logger.info(f"Aperta finestra Coating Viscosity da utente: {user_name}")
@@ -9449,15 +9509,16 @@ class App(tk.Tk):
                     f"{self.lang.get('window_open_error', 'Impossibile aprire la finestra')}: {str(e)}"
                 )
 
-        self._execute_simple_login(action)
+        self._execute_simple_login(action_callback=action)
 
     def open_coating_reports_with_login(self):
-        """Apre la finestra dei report coating senza login"""
+        """Apre la finestra dei report coating (senza login richiesto)"""
         try:
-            window = coating_gui.CoatingReportsWindow(
-                self,
-                DB_CONN_STR,
-                self.lang.current_language
+            from coating_gui import CoatingReportsWindow
+            window = CoatingReportsWindow(
+                parent=self,
+                conn_str=self.db.conn_str,
+                language_code=self.lang.current_language
             )
             window.show()
             logger.info("Aperta finestra Coating Reports")
@@ -9469,9 +9530,6 @@ class App(tk.Tk):
             )
 
     # ✅ ===== FINE METODI COATING =====
-
-
-
     def stop_fct_loop(self):
         """Ferma il loop FCT e invia notifica email"""
         if self.fct_loop_running:
@@ -9530,6 +9588,7 @@ class App(tk.Tk):
             menu_translation_key='submenu_scrap_types',
             action_callback=lambda: scarti_gui.open_scrap_reasons_manager(self, self.db, self.lang)
         )
+
     def _change_language(self, lang_code):
         """Cambia la lingua, aggiorna la UI, salva l'impostazione e mostra una notifica."""
         self.lang.set_language(lang_code)
@@ -9669,7 +9728,6 @@ class App(tk.Tk):
         # Passiamo 'None' come user_name perché non c'è autenticazione
         materials_gui.open_view_materials(self, self.db, self.lang, user_name=None)
 
-
     def open_edit_machine_with_login(self):
         def action(user_name):
             self.authenticated_user_for_maintenance = user_name
@@ -9738,7 +9796,6 @@ class UpdateNotificationDialog(tk.Toplevel):
     def _on_ignore(self):
         self.result = 'ignore'
         self.destroy()
-
 
 if __name__ == "__main__":
     app = App()
