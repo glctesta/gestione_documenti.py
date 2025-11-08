@@ -5,6 +5,39 @@ import sys, os, atexit
 from pathlib import Path
 import sys
 import os
+import tkinter as tk
+
+#Verifica che non sia eseguito sul server
+# --- Configurazione IP BLOCCATI ---
+# Solo 1-2 IP da bloccare, niente configurazioni complesse
+NOT_ALLOWED_IPS = [
+    '192.168.10.110',  # IP specifico da bloccare
+    '203.0.113.25'  # Altro IP da bloccare
+]
+
+# --- Verifica esecuzione locale ---
+try:
+    # Importa il modulo di verifica
+    from local_execution_check import is_local_execution_simple
+
+    # Esegui la verifica con IP bloccati
+    is_local_execution_simple(not_allowed_ips=NOT_ALLOWED_IPS)
+
+except ImportError:
+    # Fallback alla versione semplice
+    try:
+        from simple_local_check import verify_simple
+
+        verify_simple(not_allowed_ips=NOT_ALLOWED_IPS)
+    except ImportError:
+        print("AVVISO: Moduli di sicurezza non trovati")
+        print("Continuo senza verifiche...")
+
+except Exception as e:
+    print(f"ERRORE nella verifica sicurezza: {e}")
+    sys.exit(1)
+
+#Fine controllo esecuzione verifica IP non permessi
 
 if sys.stderr is None:
     sys.stderr = open(os.devnull, 'w')
@@ -100,11 +133,12 @@ logger.info("Logging avviato. File: %s", LOG_FILE_PATH)
 
 import re
 import subprocess
+from sqlalchemy import create_engine
 import atexit
 import tkinter as tk
 from collections import defaultdict
 from datetime import datetime, timedelta
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, simpledialog
 import random
 import pyodbc
 from PIL import ImageOps, ImageDraw, ImageFont
@@ -139,6 +173,15 @@ import json, socket
 import threading
 import time
 import scrap_validation_gui
+import collections.abc
+
+from business_days import should_send_notification
+from npi.npi_manager import GestoreNPI
+from npi.windows.dashboard_window import NpiDashboardWindow
+from npi.windows.gantt_window import NpiGanttWindow
+from npi.windows.config_window import NpiConfigWindow
+from npi.windows.project_window import ProjectWindow
+
 
 def _detect_log_file_path(logger_name: str) -> str:
     """
@@ -224,13 +267,13 @@ logger.info("Logging avviato. File: %s", LOG_FILE_PATH)
 
 try:
     from PIL import Image, ImageTk
-    PIL_AVAILABLE = True
+    PIL_AVAILABLE: bool = True
 except ImportError:
     PIL_AVAILABLE = False
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.8.4"  # Versione aggiornata
+APP_VERSION = "1.8.8"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -544,6 +587,156 @@ class LanguageManager:
 class Database:
     """Gestisce la connessione e le operazioni sul database."""
 
+    def __init__(self, conn_str):
+        self.conn_str = conn_str
+        self.conn = None
+        self.cursor = None
+        self.engine = None
+        self.last_error_details = ""
+
+    def connect(self):
+        try:
+            # Usiamo autocommit=False per gestire le transazioni manualmente (commit/rollback)
+            self.conn = pyodbc.connect(self.conn_str, autocommit=False)
+            self.cursor = self.conn.cursor()
+
+            def get_existing_connection():
+                return self.conn
+
+            # Creiamo l'Engine SQLAlchemy dicendogli di usare la nostra funzione
+            # personalizzata per ottenere connessioni.
+            self.engine = create_engine(
+                "mssql+pyodbc://",  # Il dialetto corretto per MS SQL Server con pyodbc
+                creator=get_existing_connection
+            )
+
+            self.engine.connect().close()
+
+            return True
+        except pyodbc.Error as ex:
+            # L'errore specifico verrà gestito dalla classe App che chiama questo metodo
+            self.last_error_details = str(ex)
+            logger.error(f"Database Connection Error: {ex}")
+            return False
+
+    def disconnect(self):
+        """Closes the cursor and connection safely, preventing errors if called multiple times."""
+        if self.cursor:
+            self.cursor.close()
+            self.cursor = None  # Set to None after closing
+        if self.conn:
+            self.conn.close()
+            self.conn = None  # Set to None after closing
+
+        # NUOVO METODO: Cerca documenti esistenti attivi che corrispondono ai parametri
+
+    def get_calibration_expired(self):
+        """Recupera equipaggiamenti con calibrazione scaduta o senza calibrazione"""
+        query = """
+                SELECT ROW_NUMBER()                            OVER (ORDER BY c.ExpireOn DESC) as Nr, e.InternalName + \
+                                                                                                      ' [#SN: ' + \
+                                                                                                      ISNULL(e.SerialNumber, '') + \
+                                                                                                      '] ' + \
+                                                                                                      p.ParentPhaseName as Equipment, \
+                       c.CalibratedOn, \
+                       c.ExpireOn, \
+                       DATEDIFF(DAY, GETDATE(), c.ExpireOn) AS DaysToExpire, \
+                       e.MustCalibrated
+                FROM eqp.Equipments e
+                         LEFT JOIN eqp.Calibrations c ON c.EquipmentID = e.EquipmentID
+                         INNER JOIN parentphases p ON p.IDParentPhase = e.ParentPhaseId
+                WHERE e.MustCalibrated = 1
+                  AND (
+                    DATEDIFF(DAY, GETDATE(), c.ExpireOn) <= 0 -- Calibrazioni scadute
+                        OR c.EquipmentID IS NULL -- Equipaggiamenti senza calibrazione
+                    )
+                ORDER BY c.ExpireOn DESC, e.InternalName \
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            logger.error(f"Errore fetch calibrazioni scadute: {e}")
+            return []
+
+    def get_calibration_expiring_30days(self):
+        """Recupera equipaggiamenti con calibrazione in scadenza entro 30 giorni"""
+        query = """
+                SELECT ROW_NUMBER()                            OVER (ORDER BY c.ExpireOn) as Nr, e.InternalName + \
+                                                                                                 ' [#SN: ' + \
+                                                                                                 ISNULL(e.SerialNumber, '') + \
+                                                                                                 '] ' + \
+                                                                                                 p.ParentPhaseName as Equipment, \
+                       c.CalibratedOn, \
+                       c.ExpireOn, \
+                       DATEDIFF(DAY, GETDATE(), c.ExpireOn) AS DaysToExpire
+                FROM eqp.Equipments e
+                         INNER JOIN eqp.Calibrations c ON c.EquipmentID = e.EquipmentID
+                         INNER JOIN parentphases p ON p.IDParentPhase = e.ParentPhaseId
+                WHERE e.MustCalibrated = 1
+                  AND DATEDIFF(DAY, GETDATE(), c.ExpireOn) BETWEEN 1 AND 30
+                ORDER BY c.ExpireOn, e.InternalName \
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            logger.error(f"Errore fetch calibrazioni in scadenza 30 giorni: {e}")
+            return []
+
+    def get_calibration_expiring_over_30days(self):
+        """Recupera equipaggiamenti con calibrazione in scadenza oltre 30 giorni"""
+        query = """
+                SELECT ROW_NUMBER()                            OVER (ORDER BY c.ExpireOn) as Nr, e.InternalName + \
+                                                                                                 ' [#SN: ' + \
+                                                                                                 ISNULL(e.SerialNumber, '') + \
+                                                                                                 '] ' + \
+                                                                                                 p.ParentPhaseName as Equipment, \
+                       c.CalibratedOn, \
+                       c.ExpireOn, \
+                       DATEDIFF(DAY, GETDATE(), c.ExpireOn) AS DaysToExpire
+                FROM eqp.Equipments e
+                         INNER JOIN eqp.Calibrations c ON c.EquipmentID = e.EquipmentID
+                         INNER JOIN parentphases p ON p.IDParentPhase = e.ParentPhaseId
+                WHERE e.MustCalibrated = 1
+                  AND DATEDIFF(DAY, GETDATE(), c.ExpireOn) > 30
+                ORDER BY c.ExpireOn, e.InternalName \
+                """
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            logger.error(f"Errore fetch calibrazioni oltre 30 giorni: {e}")
+            return []
+
+    def get_calibration_check_interval(self):
+        """Recupera l'intervallo di controllo calibrazioni dalle impostazioni"""
+        query = "SELECT Value FROM settings WHERE atribute = 'Sys_Check_Calibration_time'"
+        try:
+            self.cursor.execute(query)
+            result = self.cursor.fetchone()
+            return int(result[0]) if result and result[0] else 7  # Default 7 giorni
+        except pyodbc.Error as e:
+            logger.error(f"Errore fetch intervallo calibrazioni: {e}")
+            return 7
+
+    def get_calibration_emails(self):
+        """Recupera gli indirizzi email per le notifiche calibrazioni"""
+        query = "SELECT Value FROM settings WHERE atribute = 'Sys_Check_Calibration_Emails'"
+        try:
+            self.cursor.execute(query)
+            result = self.cursor.fetchone()
+            if result and result[0]:
+                emails = [email.strip() for email in result[0].split(';') if email.strip()]
+                return emails
+            return []
+        except pyodbc.Error as e:
+            logger.error(f"Errore fetch email calibrazioni: {e}")
+            return []
+
     def fetch_products_for_checks(self):
         """Recupera prodotti per combo gestione verifiche"""
         query = """
@@ -564,30 +757,32 @@ class Database:
     #moduli di ricerca sql di scrap_validation_gui
     def fetch_scrap_declarations_pending(self):
         """Recupera le dichiarazioni di scrap in attesa di validazione"""
-        query = """
-                SELECT s.ScrapDeclarationId
-                     , S.[User] as DECLAREDBY
-                     , l.labelcod
-                     , A.AreaName
-                     , a.IDArea
-                     , [Riferiments]
-                     , d.IDDefect
-                     , d.DefectNameRO as Defect
-                     , [Picture]
+        query = """                
+                    SELECT s.ScrapDeclarationId, 
+                       s.[User] as DECLAREDBY, 
+                       FORMAT(s.DateIn, 'dd/MM/yyyy') as [Date],
+                    o.OrderNumber,
+                    l.labelcod,
+                    p.productCode as Produc,
+                    A.AreaName,
+                    d.DefectNameRO as Defect,
+                    1 as Qty,
+                    s.Picture  -- Aggiunto il campo Picture
                 FROM [Traceability_RS].[dbo].ScarpDeclarations S
-                    INNER JOIN Traceability_RS.dbo.LabelCodes L
-                ON l.IDLabelCode=s.IdLabelCode
-                    INNER JOIN [Traceability_RS].dbo.Areas A ON a.IDArea=s.IDParentPhase
-                    INNER JOIN [Traceability_RS].dbo.defects D ON d.IDDefect=s.ScrapReasonId
-                WHERE NOT s.ScrapDeclarationId IN (
-                    SELECT sd.ScrapDeclarationId
-                    FROM Scannings s
-                    INNER JOIN Boards B ON b.idboard=s.IDBoard
-                    INNER JOIN LabelCodes L ON l.IDBoard=b.IDBoard
-                    INNER JOIN ScarpDeclarations sd ON sd.IdLabelCode=l.IDLabelCode
-                    WHERE b.BoardState=4
-                    )
-                ORDER BY S.DateIn
+                    INNER JOIN Traceability_RS.dbo.LabelCodes L 
+                ON l.IDLabelCode = s.IdLabelCode
+                    INNER JOIN [Traceability_RS].dbo.Areas A ON a.IDArea = s.IDParentPhase
+                    INNER JOIN [Traceability_RS].dbo.defects D ON d.IDDefect = s.ScrapReasonId
+                    INNER JOIN [Traceability_RS].dbo.boards B ON l.IDBoard = b.IDBoard
+                    INNER JOIN [Traceability_RS].dbo.orders o ON o.idorder = b.IDOrder
+                    inner join traceability_rs.dbo.products P on p.idproduct=o.idproduct
+                WHERE (s.Accepted IS NULL 
+                   OR s.Accepted = 0)
+                  AND (s.Refuzed IS NULL 
+                   OR s.Refuzed = 0)
+                  AND s.ScrapDeclarationId 
+                    > 28
+                ORDER BY S.DateIn;
                 """
         try:
             self.cursor.execute(query)
@@ -596,6 +791,7 @@ class Database:
             self.last_error_details = str(e)
             logger.error(f"Errore fetch dichiarazioni scrap: {e}")
             return []
+
 
     def fetch_scrap_declaration_by_id(self, declaration_id):
         """Recupera una singola dichiarazione di scrap per ID"""
@@ -924,7 +1120,7 @@ class Database:
                     LEFT JOIN [Traceability_RS].[dbo].PeriodicalProductCheckLogs L
                     ON l.PeriodicalProductCheckMustListId = m.PeriodicalProductCheckMustListId
                 WHERE L.PeriodicalProductCheckMustListId IS NULL
-                ORDER BY p.productcode, pa.PhaseName; \
+                ORDER BY [date], [ora]; \
                 """
         try:
             self.cursor.execute(query)
@@ -935,13 +1131,14 @@ class Database:
 
     def fetch_generic_check_tasks(self):
         """Recupera task generici"""
-        query = """
+        try:
+            query = """
                 SELECT ppl.PriodicalProductCheckListId, ppl.ItemToCheck, ppl.Doc
                 FROM [Traceability_RS].[dbo].[PeriodicalProductCheckLists] AS ppl
                 WHERE isgeneric = 1 AND ppl.dateout IS NULL
                 ORDER BY ppl.DateIn; \
                 """
-        try:
+
             self.cursor.execute(query)
             return self.cursor.fetchall()
         except pyodbc.Error as e:
@@ -951,14 +1148,15 @@ class Database:
     def fetch_specific_check_tasks(self, must_check_id):
         """Recupera task specifici per un prodotto"""
         # Prima recupera il PeriodicalProductCheckId dal must_check_id
-        query1 = """
+        try:
+            query1 = """
                  SELECT pp.PeriodicalProductCheckId
                  FROM [Traceability_RS].[dbo].[PeriodicalProductCheckMustLists] M
                      INNER JOIN [Traceability_RS].[dbo].PeriodicalProductChecks PP \
                  ON PP.IdProduct = M.idproduct
                  WHERE M.PeriodicalProductCheckMustListId = ?; \
                  """
-        try:
+
             self.cursor.execute(query1, must_check_id)
             row = self.cursor.fetchone()
             if not row:
@@ -1014,7 +1212,6 @@ class Database:
             return False
         finally:
             self.conn.autocommit = True
-
 
     def execute_product_check_sp(self):
         """Esegue la stored procedure InsertProductToCheck"""
@@ -1198,202 +1395,193 @@ class Database:
             self.last_error_details = str(e)
             return None
 
-
-    # def fetch_kanban_current_stock_by_component(self) -> dict[int, int]:
+    # def fetch_kanban_current_stock_by_component(self):
     #     """
-    #     Ritorna {IdComponent: StockTotale} (DateOut IS NULL).
+    #     Recupera lo stock corrente di tutti i componenti dal Kanban.
+    #     Returns: dict {IdComponent: Stock}
     #     """
     #     sql = """
-    #     SELECT IdComponent, COALESCE(SUM(Quantity),0) AS Stock
-    #     FROM knb.KanBanRecords
-    #     WHERE DateOut IS NULL
-    #     GROUP BY IdComponent;
-    #     """
-    #     cur = None
+    #           SELECT IdComponent, COALESCE(SUM(Quantity), 0) AS Stock
+    #           FROM Traceability_rs.knb.KanBanRecords
+    #           WHERE DateOut IS NULL
+    #           GROUP BY IdComponent \
+    #           """
     #     try:
-    #         cur = self.conn.cursor()
-    #         cur.execute(sql)
-    #         rows = cur.fetchall()
-    #         out = {int(r.IdComponent): int(r.Stock or 0) for r in rows}
-    #         return out
-    #         #cur.close()
-    #     except pyodbc.Error as e:
+    #         logger.info(f"Connessione attiva: {self.conn is not None}")
+    #         logger.info(f"Cursore attivo: {self.cursor is not None}")
+    #         self.conn.commit()
+    #         self.cursor.execute(sql)
+    #         rows = self.cursor.fetchall()
+    #         stock_map = {row.IdComponent: row.Stock for row in rows}
+    #         logger.info(f"✓ Stock recuperato per {len(stock_map)} componenti")
+    #         return stock_map
+    #     except Exception as e:
     #         self.last_error_details = str(e)
-    #         logger.error(f"Error in fetch_kanban_current_stock_by_component: {e}")
+    #         logger.error(f"✗ Errore fetch_kanban_current_stock_by_component: {e}")
     #         return {}
-    #     finally:
-    #         # IMPORTANTE: Chiudi sempre il cursore
-    #         if cur:
-    #             try:
-    #                 cur.close()
-    #             except:
-    #                 pass
 
-    def fetch_kanban_current_stock_by_component(self) -> dict[int, int]:
+    def _ensure_connection(self):
+        """Verifica e ripristina la connessione solo se necessaria"""
+        try:
+            # Testa la connessione con una query semplice
+            self.cursor.execute("SELECT 1")
+            self.cursor.fetchone()
+            return True
+        except:
+            try:
+                logger.warning("Connessione DB corrotta, tentativo di ripristino...")
+                if self.conn:
+                    self.disconnect()
+                self.connect()
+                return True
+            except Exception as e:
+                logger.error(f"Ripristino connessione fallito: {e}")
+                return False
+
+    def fetch_kanban_current_stock_by_component(self):
         """
-        Ritorna {IdComponent: StockTotale} per tutti i record dove DateOut IS NULL.
+        Recupera lo stock corrente di tutti i componenti dal Kanban.
         """
         sql = """
               SELECT IdComponent, COALESCE(SUM(Quantity), 0) AS Stock
-              FROM knb.KanBanRecords
+              FROM Traceability_rs.knb.KanBanRecords
               WHERE DateOut IS NULL
-              GROUP BY IdComponent;
+              GROUP BY IdComponent
+              """
+        try:
+            # VERIFICA la connessione prima di procedere
+            if not self._ensure_connection():
+                return {}
+
+            self.cursor.execute(sql)
+            rows = self.cursor.fetchall()
+            stock_map = {row.IdComponent: row.Stock for row in rows}
+            logger.info(f"✓ Stock recuperato per {len(stock_map)} componenti")
+            return stock_map
+
+        except Exception as e:
+            self.last_error_details = str(e)
+            logger.error(f"✗ Errore fetch_kanban_current_stock_by_component: {e}")
+            return {}
+
+    def fetch_active_rules_by_component(self):
+        """
+        Ritorna {KanBanRuleID: {'min_qty':..., 'min_pct':...}} per le regole attive
+        BASATO SULLA STRUTTURA REALE: KanBanRules con MinimumProcent, MinimumQty, DateOut
+        """
+        sql = """
+              SELECT KanBanRuleID, MinimumProcent, MinimumQty
+              FROM [Traceability_RS].[knb].[KanBanRules]
+              WHERE DateOut IS NULL -- Regole attive hanno DateOut = NULL
               """
         try:
             with self.conn.cursor() as cur:
                 cur.execute(sql)
-                # Usa indici numerici [0], [1] invece di .IdComponent, .Stock
-                out = {int(row[0]): int(row[1]) for row in cur.fetchall()}
+                rows = cur.fetchall()
+                result = {}
+                for row in rows:
+                    rule_id = int(row[0])
+                    result[rule_id] = {
+                        'min_pct': row[1] if row[1] is not None else None,
+                        'min_qty': row[2] if row[2] is not None else None
+                    }
+                return result
 
-            return out
-
-        except pyodbc.Error as e:
-            self.last_error_details = str(e)
-            logger.error(f"Error in fetch_kanban_current_stock_by_component: {e}")
-            return {}
-
-
-        
-    def fetch_active_rules_by_component(self) -> dict[int, dict]:
-        """
-        Ritorna {IdComponent: {'rule_id':..., 'min_qty':..., 'min_pct':...}}
-        per i link attivi (DateOut IS NULL) in knb.KanBanRecodRules.
-        """
-        sql = """
-        SELECT rr.IdComponent, r.KanBanRuleID, r.MinimumQty, r.MinimumProcent
-        FROM knb.KanBanRecodRules rr
-        INNER JOIN knb.KanBanRules r ON r.KanBanRuleID = rr.KanBanRuleId
-        WHERE rr.DateOut IS NULL;
-        """
-        cur = None
-        try:
-            cur = self.conn.cursor()
-            cur.execute(sql)
-            rows = cur.fetchall()
-            out = {}
-            for r in rows:
-                out[int(r.IdComponent)] = {
-                    'rule_id': int(r.KanBanRuleID),
-                    'min_qty': (int(r.MinimumQty) if getattr(r, 'MinimumQty', None) is not None else None),
-                    'min_pct': (int(r.MinimumProcent) if getattr(r, 'MinimumProcent', None) is not None else None)
-                }
-            #cur.close()
-            return out
         except pyodbc.Error as e:
             self.last_error_details = str(e)
             logger.error(f"Error in fetch_active_rules_by_component: {e}")
             return {}
-        finally:
-            if cur:
-                try:
-                    cur.close()
-                except:
-                    pass
 
-    def fetch_first_load_qty_by_component(self, comp_ids: list[int]) -> dict[int, int]:
+    def fetch_first_load_qty_by_component(self, component_ids):
         """
-        Per i componenti richiesti, ritorna la 'prima quantità' caricata (earliest DateIn con Quantity>0).
-        {IdComponent: first_qty}
+        Ritorna {IdComponent: FirstLoadQty} per i componenti specificati.
+        Calcola la prima quantità come la Quantity del record più vecchio per ogni componente.
         """
-        if not comp_ids:
+        if not component_ids:
             return {}
-        # Costruisco una tabella temporanea con i comp_ids per efficienza (in pyodbc uso IN con params)
-        placeholders = ",".join("?" for _ in comp_ids)
+
+        placeholders = ','.join(['?'] * len(component_ids))
         sql = f"""
-        WITH ranked AS (
-          SELECT IdComponent, Quantity,
-                 ROW_NUMBER() OVER (PARTITION BY IdComponent ORDER BY DateIn ASC, KanBanRecordId ASC) AS rn
-          FROM knb.KanBanRecords
-          WHERE Quantity > 0 AND IdComponent IN ({placeholders})
-        )
-        SELECT IdComponent, Quantity FROM ranked WHERE rn = 1;
-        """
-        cur = None
+              SELECT k1.IdComponent, k1.Quantity as FirstLoadQty
+              FROM knb.KanBanRecords k1
+              INNER JOIN (
+                  SELECT IdComponent, MIN(DateIn) as FirstDate
+                  FROM knb.KanBanRecords 
+                  WHERE IdComponent IN ({placeholders})
+                  GROUP BY IdComponent
+              ) k2 ON k1.IdComponent = k2.IdComponent AND k1.DateIn = k2.FirstDate
+              """
         try:
-            cur = self.conn.cursor()
-            cur.execute(sql, comp_ids)
-            rows = cur.fetchall()
-            out = {int(r.IdComponent): int(r.Quantity) for r in rows}
-            #cur.close()
-            return out
+            with self.conn.cursor() as cur:
+                cur.execute(sql, component_ids)
+                rows = cur.fetchall()
+                return {int(row[0]): int(row[1]) for row in rows}
+
         except pyodbc.Error as e:
             self.last_error_details = str(e)
             logger.error(f"Error in fetch_first_load_qty_by_component: {e}")
             return {}
-        finally:
-            if cur:
-                try:
-                    cur.close()
-                except:
-                    pass
 
-    def fetch_max_single_load_by_component(self, comp_ids: list[int]) -> dict[int, dict]:
+    def fetch_max_single_load_by_component(self, component_ids):
         """
-        Per i componenti richiesti, ritorna la massima quantità di un singolo carico e la sua KanBanRecordId.
-        {IdComponent: {'max_qty': int, 'record_id': int}}
+        Ritorna {IdComponent: {'max_qty': X, 'record_id': Y}}
         """
-        if not comp_ids:
+        if not component_ids:
             return {}
-        placeholders = ",".join("?" for _ in comp_ids)
+
+        placeholders = ','.join(['?'] * len(component_ids))
         sql = f"""
-        WITH ranked AS (
-          SELECT IdComponent, Quantity, KanBanRecordId,
-                 ROW_NUMBER() OVER (PARTITION BY IdComponent ORDER BY Quantity DESC, DateIn DESC, KanBanRecordId DESC) AS rn
-          FROM knb.KanBanRecords
-          WHERE Quantity > 0 AND IdComponent IN ({placeholders})
-        )
-        SELECT IdComponent, Quantity AS MaxQty, KanBanRecordId
-        FROM ranked WHERE rn = 1;
-        """
-        cur = None
+              SELECT IdComponent, MAX(Quantity) as MaxQty, MIN(KanBanRecordId) as RecordId
+              FROM knb.KanBanRecords 
+              WHERE IdComponent IN ({placeholders})
+              GROUP BY IdComponent
+              """
         try:
-            cur = self.conn.cursor()
-            cur.execute(sql, comp_ids)
-            rows = cur.fetchall()
-            out = {int(r.IdComponent): {'max_qty': int(r.MaxQty), 'record_id': int(r.KanBanRecordId)} for r in
-               rows}
-            #cur.close()
-            return out
+            with self.conn.cursor() as cur:
+                cur.execute(sql, component_ids)
+                rows = cur.fetchall()
+                return {
+                    int(row[0]): {
+                        'max_qty': int(row[1]),
+                        'record_id': int(row[2])
+                    } for row in rows
+                }
+
         except pyodbc.Error as e:
             self.last_error_details = str(e)
             logger.error(f"Error in fetch_max_single_load_by_component: {e}")
             return {}
-        finally:
-            if cur:
-                try:
-                    cur.close()
-                except:
-                    pass
 
-
-    def fetch_components_master(self, comp_ids: list[int]) -> dict[int, dict]:
+    def fetch_components_master(self, component_ids):
         """
-        Ritorna {IdComponent: {'code':..., 'desc':...}}
+        Ritorna {IdComponent: {'code': ..., 'desc': ...}}
+        La tabella è traceability_rs.dbo.Components
         """
-        if not comp_ids:
+        if not component_ids:
             return {}
-        placeholders = ",".join("?" for _ in comp_ids)
-        sql = f"SELECT IdComponent, ComponentCode, ComponentDescription FROM dbo.Components WHERE IdComponent IN ({placeholders});"
-        cur = None
+
+        placeholders = ','.join(['?'] * len(component_ids))
+
+        sql = f"""
+              SELECT IdComponent, ComponentCode, ComponentDescription 
+              FROM [Traceability_RS].[dbo].[Components] 
+              WHERE IdComponent IN ({placeholders})
+              """
         try:
-            cur = self.conn.cursor()
-            cur.execute(sql, comp_ids)
-            rows = cur.fetchall()
-            out = {
-                int(r.IdComponent): {'code': r.ComponentCode, 'desc': getattr(r, 'ComponentDescription', '') or ''}
-                for r in rows
-            }
-            return out
+            with self.conn.cursor() as cur:
+                cur.execute(sql, component_ids)
+                rows = cur.fetchall()
+                return {
+                    int(row[0]): {
+                        'code': row[1],
+                        'desc': row[2] or ''
+                    } for row in rows
+                }
+
         except pyodbc.Error as e:
             self.last_error_details = str(e)
             logger.error(f"Error in fetch_components_master: {e}")
             return {}
-        finally:
-            if cur:
-                try:
-                    cur.close()
-                except:
-                    pass
 
     def has_refill_request_today(self, kanban_record_id: int) -> bool:
         """
@@ -2055,7 +2243,7 @@ class Database:
             e.InternalName + ' [Inventory: ' + ISNULL(e.InventoryNumber, '#N/DD') + ']' AS Equipment,
             CAST(c1.CalibratedOn AS date) AS LastCalibrationDate,
             s1.SiteName AS CalibratedBy,
-            c1.NrCertificate,
+            '' as NrCertificate,
             CAST(c1.ExpireOn AS date) AS ExpireOn,
             IIF(c1.CalibratedOn IS NULL, 'No calibration record!', '') AS [Note]
         FROM eqp.Equipments e
@@ -2065,7 +2253,7 @@ class Database:
             WHERE c.EquipmentID = e.EquipmentId
             ORDER BY c.CalibratedOn DESC
         ) c1
-        LEFT JOIN dbo.Sites s1 ON s1.IDSite = c1.CalibrationSupplierId
+        LEFT JOIN dbo.Sites s1 ON s1.IDSite = c1.[SupplierId]
         LEFT JOIN eqp.EquipmentBrands eb ON eb.EquipmentBrandId = e.BrandId
         INNER JOIN dbo.Sites s ON s.IDSite = eb.CompanyId
         OUTER APPLY (
@@ -4490,34 +4678,7 @@ class Database:
             self.last_error_details = str(e)
             return []
 
-    def __init__(self, conn_str):
-        self.conn_str = conn_str
-        self.conn = None
-        self.cursor = None
-        self.last_error_details = ""
 
-    def connect(self):
-        try:
-            # Usiamo autocommit=False per gestire le transazioni manualmente (commit/rollback)
-            self.conn = pyodbc.connect(self.conn_str, autocommit=False)
-            self.cursor = self.conn.cursor()
-            return True
-        except pyodbc.Error as ex:
-            # L'errore specifico verrà gestito dalla classe App che chiama questo metodo
-            self.last_error_details = str(ex)
-            print(f"Database Connection Error: {ex}")
-            return False
-
-    def disconnect(self):
-        """Closes the cursor and connection safely, preventing errors if called multiple times."""
-        if self.cursor:
-            self.cursor.close()
-            self.cursor = None  # Set to None after closing
-        if self.conn:
-            self.conn.close()
-            self.conn = None  # Set to None after closing
-
-        # NUOVO METODO: Cerca documenti esistenti attivi che corrispondono ai parametri
 
     def fetch_and_open_maintenance_document(self, document_id):
         """Recupera i dati binari di un documento di manutenzione dal DB, lo salva temporaneamente e lo apre."""
@@ -7310,37 +7471,40 @@ class App(tk.Tk):
         logger.debug("INIT: start __init__")
         self.should_exit = False  # Flag to control shutdown
         self.geometry("1024x768")
-
+        #self.project_tree = None  # Placeholder per la lista progetti NPI
         # Variabili per lo slideshow
         self.slideshow_label = None
-        self.slideshow_photo = None  # Riferimento per evitare garbage collection
+        self.slideshow_photo = None
         self.image_files = []
         self.current_image_index = 0
-        self.slideshow_interval_ms = 60000  # Default a 1 minuto
+        self.slideshow_interval_ms = 60000
         self.slideshow_job_id = None
 
         # --- NUOVE VARIABILI PER IL FLASHING ---
         self.birthday_flash_job_id = None
         self.birthday_stop_job_id = None
         self.periodic_check_job_id = None
+
         # --- NUOVE VARIABILI PER LA SCRITTA SCORREVOLE ---
         self.scrolling_job_id = None
         self.scrolling_text = ""
         self.scrolling_position = 0
-        # Lista di colori vivaci per l'effetto
         self.flash_colors = ["#FFD700", "#FF4500", "#1E90FF", "#32CD32", "#FF69B4", "#9400D3"]
         # --- FINE ---
 
+        # === 1. INIZIALIZZAZIONE DELLE DIPENDENZE FONDAMENTALI ===
+
         # Inizializza il database
         self.db = Database(DB_CONN_STR)
-        logger.info("Connessione al database stabilita con successo")
+        logger.info("Tentativo di connessione al database...")
         if not self.db.connect():
-            logger.debug("INIT: DB connect OK")
+            logger.error("INIT: Connessione al DB fallita. Dettagli: %s", self.db.last_error_details)
             messagebox.showerror("Database Error",
                                  f"Impossibile connettersi al database.\n\nDetails: {self.db.last_error_details}")
             self.destroy()
             self.should_exit = True
             return
+        logger.info("Connessione al database stabilita con successo")
 
         # Carica la lingua salvata
         initial_lang = self._load_language_setting()
@@ -7348,54 +7512,76 @@ class App(tk.Tk):
         self.lang = LanguageManager(self.db)
         logger.debug("INIT: LanguageManager loaded")
         self.lang.set_language(initial_lang)
-        self.doc_categories = self.db.fetch_doc_categories()
 
-        # Controlla la versione (e se l'app deve chiudersi)
-        if self.check_version() is False:
-            # check_version already handles shutdown, we just need to stop __init__
-            return
-        logger.debug("INIT: after check_version")
+        # === 2. INIZIALIZZAZIONE DEI MODULI PRINCIPALI (INCLUSO NPI) ===
+        # Questo è il posto ideale per inizializzare i moduli che dipendono da DB e Lingua
+
+        # --- INIZIALIZZAZIONE GESTORE NPI (POSIZIONE CORRETTA) ---
+        try:
+            self.npi_manager = GestoreNPI(engine=self.db.engine)
+            logger.info("Gestore NPI inizializzato con successo.")
+        except Exception as e:
+            logger.error("ERRORE CRITICO: Impossibile inizializzare il Gestore NPI: %s", e, exc_info=True)
+            messagebox.showerror("Errore Modulo NPI",
+                                 f"Impossibile avviare il modulo NPI.\nContattare l'assistenza.\n\nDettagli: {e}")
+            self.npi_manager = None
+            self.npi_menu = None
 
         self.traceability_manager = TraceabilityManager(self, self.db, self.lang)
         logger.debug("INIT: traceability manager OK")
 
+        # Aggiungi qui altri moduli principali se necessario...
+        self.fct_config = fct_transfer.FCTTransferConfig()
+        self.fct_manager = fct_transfer.FCTTransferManager(DB_CONN_STR, self.fct_config)
+        self.fct_run_menu_index = None
+
+        # === 3. CONTROLLI DI AVVIO E CREAZIONE UI ===
+
+        # Controlla la versione (e se l'app deve chiudersi)
+        if self.check_version() is False:
+            # check_version già gestisce la chiusura, quindi fermiamo l'init
+            return
+        logger.debug("INIT: after check_version")
+
+        self.doc_categories = self.db.fetch_doc_categories()
         self.logo_label = None
         self.authenticated_user_for_maintenance = None
+
+        # Creazione dei widget e dei menu
+        # Ora queste chiamate sono sicure perché self.npi_manager esiste
         self._create_widgets()
         logger.debug("INIT: widgets created")
         self._create_menu()
+        logger.debug("INIT: menu created")
+
+        # Aggiornamento testi e UI
+        self.update_texts()
+        logger.debug("INIT: texts updated")
+
+        # === 4. COMPITI DI POST-AVVIO E BACKGROUND ===
+
+        # Operazioni per rendere la finestra visibile e reattiva
         self.update_idletasks()
         self.deiconify()
         self.lift()
         self.focus_force()
-
         self.attributes('-topmost', True)
         self.after(500, lambda: self.attributes('-topmost', False))
 
-        #self.after(1000, lambda: messagebox.showinfo("Test", "UI pronta e reattiva.", parent=self))
-
-        logger.debug("INIT: menu created")
-        self.protocol("WM_DELETE_WINDOW", self._on_closing)
-        self.update_texts()
-        logger.debug("INIT: texts updated")
-        self._update_clock()  # Avvia l'orologio
-
+        # Avvio dell'orologio e altre task post-avvio
+        self._update_clock()
         self.after(100, self._post_startup_tasks)
         logger.debug("INIT: scheduled post_startup_tasks")
 
-        # Aggiungi questi attributi per FCT Transfer
-        self.fct_config = fct_transfer.FCTTransferConfig()
-        self.fct_manager = fct_transfer.FCTTransferManager(DB_CONN_STR, self.fct_config)
-        self.fct_run_menu_index = None  # Per tenere traccia del menu item
-
         # Inizializza il thread per il controllo periodico prodotti
+        # NOTA: Spostato protocol handler qui per evitare duplicati
         self._product_check_thread = None
         self._product_check_stop_event = threading.Event()
-
-        # Avvia la routine di controllo prodotti
         self._start_product_check_routine()
-        self.protocol("WM_DELETE_WINDOW", self._on_closing)
         self._start_product_check_background_task()
+
+        # Imposta la gestione della chiusura della finestra una sola volta
+        self.protocol("WM_DELETE_WINDOW", self._on_closing)
 
     def open_scrap_validation_with_login(self):
         """Apre la finestra di validazione scarti dopo login."""
@@ -7408,6 +7594,11 @@ class App(tk.Tk):
 
     def _start_product_check_background_task(self):
         """Avvia il thread per il controllo periodico dei prodotti"""
+        from business_days import should_send_notification
+        if not should_send_notification(country_code='IT'):
+            logger.info("Report non inviato: oggi non è un giorno lavorativo")
+            return
+
         if self._product_check_thread is None or not self._product_check_thread.is_alive():
             self._product_check_stop_event.clear()
             self._product_check_thread = threading.Thread(
@@ -7535,6 +7726,10 @@ class App(tk.Tk):
         """
         Pianifica il controllo refill Kanban su base configurabile (JSON stampante).
         """
+        # Verifica se è giorno lavorativo
+        if not should_send_notification(country_code='IT'):
+            logger.info("Report non inviato: oggi non è un giorno lavorativo")
+            return
         try:
             cfg = load_printer_config() or {}
             enabled = bool(cfg.get("kanban_refill_enabled", True))
@@ -7582,6 +7777,7 @@ class App(tk.Tk):
             stock_map = self.db.fetch_kanban_current_stock_by_component()  # {comp: stock}
 
             if not stock_map:
+                log.warning("Nessun dato stock recuperato")
                 if manual:
                     self.after(0, lambda: messagebox.showinfo(
                         self.lang.get('info_title', 'Informazione'),
@@ -7590,19 +7786,26 @@ class App(tk.Tk):
                 return
 
             comp_ids = list(stock_map.keys())
+            log.info(f"Componenti da processare: {len(comp_ids)}")
 
             # 2. Regole attive per componente
             rules_map = self.db.fetch_active_rules_by_component()  # {comp: {'min_qty':..., 'min_pct':...}}
+            log.info(f"Regole attive trovate: {len(rules_map)}")
 
             # 3. Prima quantità (per chi ha regola percentuale)
             pct_comp_ids = [cid for cid, r in rules_map.items() if r.get('min_pct') is not None]
-            first_qty_map = self.db.fetch_first_load_qty_by_component(pct_comp_ids) if pct_comp_ids else {}
+            first_qty_map = {}
+            if pct_comp_ids:
+                first_qty_map = self.db.fetch_first_load_qty_by_component(pct_comp_ids)
+                log.info(f"Regole attive trovate: {len(rules_map)}")
 
             # 4. Max singolo carico + record id
             max_load_map = self.db.fetch_max_single_load_by_component(comp_ids)  # {comp: {'max_qty','record_id'}}
+            log.info(f"Max carichi recuperati: {len(max_load_map)}")
 
             # 5. Master component
             master_map = self.db.fetch_components_master(comp_ids)  # {comp: {'code','desc'}}
+            log.info(f"Master component recuperati: {len(master_map)}")
 
             # 6. Valuta richieste
             requests = []  # elementi: dict con info per Excel e per insert
@@ -7703,6 +7906,7 @@ class App(tk.Tk):
 
         except Exception as e:
             logging.getLogger("TraceabilityRS").exception("KanbanRefill job failed: %s", e)
+            log.exception("KanbanRefill job failed completamente: %s", e)
 
     def _build_kanban_refill_excel(self, rows: list[dict]) -> bytes:
         """
@@ -7908,8 +8112,11 @@ class App(tk.Tk):
             pass
 
     def _check_calibration_warnings_startup_async(self):
-        #return
         import threading, logging
+        # Verifica se è giorno lavorativo
+        if not should_send_notification(country_code='IT'):
+            logger.info("calibration warning check in non inviato: oggi non è un giorno lavorativo")
+            return
 
         logging.getLogger("TraceabilityRS").debug("Startup: launch calibration warning check in background thread")
 
@@ -7929,12 +8136,18 @@ class App(tk.Tk):
         Non blocca l’avvio: eventuali errori vengono loggati.
         """
         #return
-        log = logging.getLogger("TraceabilityRS")
-        log.info("Startup: avvio controllo calibrazioni...")
+        logger = logging.getLogger("TraceabilityRS")
+        logger.info("Startup: avvio controllo calibrazioni...")
+
+        from business_days import should_send_notification, get_next_business_day
+        if not should_send_notification(country_code='IT'):
+            next_day = get_next_business_day()
+            logger.info("Oggi non è un giorno lavorativo. Prossimo invio: %s", next_day)
+            return
 
         try:
             rows = self.db.fetch_calibration_warnings() or []
-            log.info("Startup: controllo calibrazioni -> %d righe da notificare", len(rows))
+            logger.info("Startup: controllo calibrazioni -> %d righe da notificare", len(rows))
             if not rows:
                 return
 
@@ -7942,11 +8155,11 @@ class App(tk.Tk):
             try:
                 recipients = utils.get_email_recipients(self.db.conn, attribute='Sys_Email_Calibration')
             except Exception as e:
-                log.error("Errore lettura destinatari calibrazioni: %s", e)
+                logger.error("Errore lettura destinatari calibrazioni: %s", e)
                 recipients = []
 
             if not recipients:
-                log.warning("Nessun destinatario per Sys_Email_Calibration: avviso non inviato.")
+                logger.warning("Nessun destinatario per Sys_Email_Calibration: avviso non inviato.")
                 return
 
             # Prepara email HTML
@@ -8060,21 +8273,21 @@ class App(tk.Tk):
             # Invia come HTML
             try:
                 utils.send_email(recipients=recipients, subject=subject, body=body, is_html=True)
-                log.info("Email calibrazioni inviata con successo a %d destinatari", len(recipients))
+                logger.info("Email calibrazioni inviata con successo a %d destinatari", len(recipients))
             except Exception as e:
-                log.error("Errore invio email calibrazioni: %s", e)
+                logger.error("Errore invio email calibrazioni: %s", e)
                 return
 
             # Dopo invio email riuscito:
             if equip_ids_to_mark:
                 ok = self.db.mark_calibration_warning_sent(equip_ids_to_mark)
                 if not ok:
-                    log.warning("Impossibile registrare CalibrationWarnings: %s", self.db.last_error_details)
+                    logger.warning("Impossibile registrare CalibrationWarnings: %s", self.db.last_error_details)
                 else:
-                    log.info("Registrati %d avvisi in eqp.CalibrationWarnings", len(equip_ids_to_mark))
+                    logger.info("Registrati %d avvisi in eqp.CalibrationWarnings", len(equip_ids_to_mark))
 
         except Exception as e:
-            log.exception("Errore controllo calibrazioni in avvio: %s", e)
+            logger.exception("Errore controllo calibrazioni in avvio: %s", e)
 
     def _not_implemented(self, title, action):
         messagebox.showinfo(
@@ -8100,10 +8313,8 @@ class App(tk.Tk):
     def open_kanban_materials_management(self):
         KanbanMaterialsManagementForm(self, self.db, self.lang)
 
-
     def open_kanban_manage(self):
         self._not_implemented('KanBan', 'Gestione')
-
 
     def open_assign_submissions_with_login(self):
         self._execute_authorized_action(
@@ -8188,7 +8399,7 @@ class App(tk.Tk):
 
     def _periodic_version_check(self):
         """Controlla periodicamente la presenza di nuove versioni."""
-        print("Controllo periodico versione in corso...")
+        logger.info("Controllo periodico versione in corso...")
 
         app_name = os.path.basename(sys.executable)
         version_info = self.db.fetch_latest_version_info(app_name)
@@ -8422,9 +8633,11 @@ class App(tk.Tk):
 
     def _post_startup_tasks(self):
         #logger.debug("POST: skipped by debug")
-        print("DEBUG: Eseguo le operazioni post-avvio...")
+        logger.info("Eseguo le operazioni post-avvio...")
         self._update_clock()
         logger.info('Avviato check versione programma')
+
+
         self.periodic_check_job_id = self.after(120000, self._periodic_version_check)
         logger.info('Avviato controllo compleanni')
         is_birthday = self._check_for_birthdays()
@@ -8433,6 +8646,7 @@ class App(tk.Tk):
 
         # DOPO:
         logger.info('Avviato controllo calibrazioni effettuate')
+
         self.after(500, self._check_calibration_warnings_startup_async)
         logger.info('Avviato controllo quantita kanban')
         self._schedule_kanban_refill_check()
@@ -8609,7 +8823,6 @@ class App(tk.Tk):
 
     def _execute_authorized_action(self, menu_translation_key, action_callback):
         logger.debug("_execute_authorized_action called; menu_translation_key=%r", menu_translation_key)
-
         login_form = LoginWindow(self, self.db, self.lang)
         self.wait_window(login_form)
 
@@ -8714,7 +8927,7 @@ class App(tk.Tk):
             version_info = self.db.fetch_latest_version_info(app_name)
 
             if not version_info or not version_info.Version or not version_info.MainPath:
-                print("Informazioni di versione non trovate o incomplete nel DB. Controllo saltato.")
+                logger.info("Informazioni di versione non trovate o incomplete nel DB. Controllo saltato.")
                 return True
 
             source_path = os.path.normpath(version_info.MainPath)
@@ -8797,6 +9010,32 @@ class App(tk.Tk):
         # Questo pack fa sì che l'etichetta si espanda per riempire lo spazio centrale
         self.birthday_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
+        # # Frame per contenere la Dashboard NPI
+        # npi_dashboard_frame = ttk.Labelframe(self, text="Progetti NPI Attivi", padding=10)
+        # npi_dashboard_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
+        #
+        # # Creiamo la Treeview per i progetti
+        # cols = ('ID', 'Codice Prodotto', 'Nome Prodotto', 'Stato Progetto')
+        # self.project_tree = ttk.Treeview(npi_dashboard_frame, columns=cols, show='headings', height=5)
+        #
+        # self.project_tree.heading('ID', text='ID')
+        # self.project_tree.column('ID', width=50, anchor=tk.CENTER)
+        # self.project_tree.heading('Codice Prodotto', text='Codice Prodotto')
+        # self.project_tree.column('Codice Prodotto', width=150)
+        # self.project_tree.heading('Nome Prodotto', text='Nome Prodotto')
+        # self.project_tree.column('Nome Prodotto', width=300)
+        # self.project_tree.heading('Stato Progetto', text='Stato')
+        # self.project_tree.column('Stato Progetto', width=100)
+        #
+        # self.project_tree.pack(fill=tk.X, expand=True)
+        # # --- CORREZIONE CHIAVE: AGGIUNTA DEI METODI PER IL MENU CONTESTUALE ---
+        # # Colleghiamo l'evento del tasto destro del mouse alla funzione che mostrerà il menu
+        #
+        # self.project_tree.bind("<Button-3>", self._show_project_context_menu)
+        #
+        # # Aggiungiamo un doppio click per aprire direttamente la gestione progetto
+        # self.project_tree.bind("<Double-1>", lambda event: self._launch_project_window())
+
         # --- DOPO: Crea l'Area Centrale per lo Slideshow ---
         # Ora questo label si espanderà per riempire tutto lo spazio RIMANENTE
         self.slideshow_label = ttk.Label(self, background="black")
@@ -8804,6 +9043,19 @@ class App(tk.Tk):
 
         # Associa il ridimensionamento al disegno dell'immagine
         self.slideshow_label.bind('<Configure>', lambda e: self._draw_current_image())
+
+
+    def _launch_specific_gantt_window(self, project_id):
+        """Lancia la finestra Gantt per un ID progetto specifico."""
+        if not project_id:
+            return
+        logger.info(f"Lancio della finestra Gantt per il progetto ID: {project_id}")
+        NpiGanttWindow(
+            master=self,
+            npi_manager=self.npi_manager,
+            lang=self.lang,
+            progetto_id=int(project_id)
+        )
 
     def open_calibrations_manager_with_login(self):
         """
@@ -8836,6 +9088,9 @@ class App(tk.Tk):
 
         # Inizializza i sottomenu complessi
         self._init_production_submenus()
+        #self._init_npi_submenus()
+
+        #self._init_other_submenus()  # Metodo fittizio per gli altri sottomenu
         self._init_tools_submenus()
         self._init_help_submenus()
 
@@ -8851,6 +9106,7 @@ class App(tk.Tk):
         self.submissions_menu = tk.Menu(self.menubar, tearoff=0)
         self.tools_menu = tk.Menu(self.menubar, tearoff=0)
         self.help_menu = tk.Menu(self.menubar, tearoff=0)
+        self.npi_menu = tk.Menu(self.operations_menu, tearoff=0)
 
     def _init_production_submenus(self):
         """Inizializza la gerarchia completa del menu Produzione"""
@@ -8872,6 +9128,20 @@ class App(tk.Tk):
 
         # Calibrazioni
         self.calibrations_submenu = tk.Menu(self.production_submenu, tearoff=0)
+        # Aggiungi le voci al menu Calibrazioni
+        self.calibrations_submenu.add_command(
+            label=self.lang.get('calibration_management', "Gestione Calibrazioni"),
+            command=self._open_calibration_management
+        )
+        self.calibrations_submenu.add_command(
+            label=self.lang.get('view_calibration_status', "Visualizza Situazione Calibrazioni"),
+            command=self._open_calibration_status
+        )
+        self.calibrations_submenu.add_separator()
+        self.calibrations_submenu.add_command(
+            label=self.lang.get('generate_calibration_report', "Genera Report Calibrazioni"),
+            command=self._generate_calibration_report
+        )
 
         # Coating - Struttura organizzata
         self.coating_submenu = tk.Menu(self.production_submenu, tearoff=0)
@@ -8960,17 +9230,53 @@ class App(tk.Tk):
                 )
 
     def _update_operations_menu(self):
-        """Aggiorna il menu Operazioni con tutta la gerarchia Produzione"""
+        """Aggiorna il menu Operazioni con tutta la gerarchia Produzione e NPI."""
         self.operations_menu.delete(0, 'end')
-        self.operations_menu.add_cascade(label=self.lang.get('submenu_production_ops', "Produzione"),
-                                         menu=self.production_submenu)
 
-        # Aggiorna tutti i sottomenu di Produzione
-        self._update_production_submenu()
+        # 1. Popola il sottomenu 'Produzione'
+        self.operations_menu.add_cascade(
+            label=self.lang.get('submenu_production_ops', "Produzione"),
+            menu=self.production_submenu
+        )
+        self._update_production_submenu()  # Questo popola il menu produzione
 
         self.operations_menu.add_separator()
-        self.operations_menu.add_command(label=self.lang.get('submenu_materials_ops', "Materiali"), state="disabled")
-        self.operations_menu.add_command(label=self.lang.get('submenu_hr', "Risorse Umane"), state="disabled")
+
+        # 2. Popola il sottomenu 'NPI Management'
+        self.operations_menu.add_cascade(
+            label=self.lang.get('menu_npi_management', 'NPI Management'),
+            menu=self.npi_menu
+        )
+        self.npi_menu.delete(0, 'end')  # Pulisce prima di riempire
+
+        # Comandi del menu NPI
+
+        self.npi_menu.add_command(
+            label=self.lang.get('npi_project_management', 'Gestione Progetti NPI'),
+            command=self.open_npi_project_management
+        )
+        self.npi_menu.add_command(
+            label=self.lang.get('npi_dashboard_title', 'Dashboard Progetti...'),
+            command=self._apri_dashboard_npi
+        )
+        self.npi_menu.add_command(
+            label=self.lang.get('npi_view_gantt', 'Visualizza Gantt Progetto...'),
+            command=self._seleziona_e_visualizza_gantt
+        )
+        self.npi_menu.add_separator()
+        self.npi_menu.add_command(
+            label=self.lang.get('npi_setup_tasks', 'Configura Catalogo Task...'),
+            command=self._configura_catalogo_task_npi
+        )
+
+        # Disabilita tutto se il gestore NPI non è partito
+        if self.npi_manager is None:
+            # Itera sugli indici del menu per disabilitarli
+            for i in range(self.npi_menu.index("end") + 1):
+                try:
+                    self.npi_menu.entryconfig(i, state="disabled")
+                except tk.TclError:
+                    pass  # Ignora errori su separatori
 
     def _update_production_submenu(self):
         """Aggiorna il sottomenu Produzione con tutte le sezioni"""
@@ -9143,12 +9449,24 @@ class App(tk.Tk):
         )
 
     def _update_calibrations_submenu(self):
-        """Aggiorna il sottomenu Calibrazioni"""
+        """Aggiorna il sottomenu Calibrazioni con tutte le voci"""
         self.calibrations_submenu.delete(0, 'end')
+
+        # Aggiungi tutte le voci del menu Calibrazioni
         self.calibrations_submenu.add_command(
-            label=self.lang.get('submenu_manage_calibrations', "Gestisci Calibrazioni"),
-            command=self.open_calibrations_manager_with_login
+            label=self.lang.get('calibration_management', "Gestione Calibrazioni"),
+            command=self._open_calibration_management
         )
+        self.calibrations_submenu.add_command(
+            label=self.lang.get('view_calibration_status', "Visualizza Situazione Calibrazioni"),
+            command=self._open_calibration_status
+        )
+        self.calibrations_submenu.add_separator()
+        self.calibrations_submenu.add_command(
+            label=self.lang.get('generate_calibration_report', "Genera Report Calibrazioni"),
+            command=self._generate_calibration_report
+        )
+
 
     def _update_coating_submenu(self):
         """Aggiorna il sottomenu Coating con struttura organizzata"""
@@ -9368,6 +9686,222 @@ class App(tk.Tk):
             self.update_idletasks()
         except tk.TclError:
             pass
+
+    def _open_calibration_status(self):
+        """Apre la finestra di situazione calibrazioni"""
+        try:
+            from calibration_status_window import CalibrationStatusWindow
+            CalibrationStatusWindow(self, self.db, self.lang)
+        except Exception as e:
+            messagebox.showerror("Errore", f"Impossibile aprire la finestra situazione calibrazioni: {e}")
+
+    def _open_calibration_management(self):
+        """Apre la finestra di gestione calibrazioni esistente"""
+        try:
+            from calibration_gui import CalibrationsWindow
+            CalibrationsWindow(self, self.db, self.lang)
+        except Exception as e:
+            messagebox.showerror("Errore", f"Impossibile aprire la gestione calibrazioni: {e}")
+
+    def _generate_calibration_report(self):
+        """Genera direttamente il report Excel delle calibrazioni"""
+        try:
+            from calibration_status_window import CalibrationStatusWindow
+            # Crea una finestra temporanea solo per generare il report
+            temp_window = CalibrationStatusWindow(self, self.db, self.lang)
+            temp_window._generate_excel_report()
+            temp_window.destroy()  # Chiude la finestra dopo aver generato il report
+        except Exception as e:
+            messagebox.showerror("Errore", f"Impossibile generare il report: {e}")
+
+    def open_npi_project_management(self):
+        """Apre la finestra di gestione progetti NPI (protetta da autorizzazione)"""
+
+        def authorized_action():
+            """Azione da eseguire solo se l'utente è autorizzato"""
+            try:
+                progetti = self.npi_manager.get_progetti_attivi()
+
+                if not progetti:
+                    messagebox.showinfo(
+                        "Nessun progetto",
+                        "Non ci sono progetti NPI attivi. Crea prima un progetto dalla Configurazione NPI.",
+                        parent=self
+                    )
+                    return
+
+                # Crea una finestra di selezione
+                selection_window = tk.Toplevel(self)
+                selection_window.title("Seleziona Progetto NPI")
+                selection_window.geometry("400x200")
+                selection_window.transient(self)
+                selection_window.grab_set()
+
+                ttk.Label(selection_window, text="Seleziona il progetto da gestire:").pack(pady=10)
+
+                # Combobox con i progetti
+                combo_var = tk.StringVar()
+                combo = ttk.Combobox(selection_window, textvariable=combo_var, width=50)
+                combo['values'] = [f"{p.ProgettoID} - {p.prodotto.NomeProdotto} ({p.prodotto.CodiceProdotto})" for p in
+                                   progetti]
+                combo.pack(pady=10)
+
+                def open_selected():
+                    if combo_var.get():
+                        project_id = int(combo_var.get().split(" - ")[0])
+                        selection_window.destroy()
+                        ProjectWindow(self, self.npi_manager, self.lang, project_id)
+
+                ttk.Button(selection_window, text="Apri", command=open_selected).pack(pady=10)
+
+            except Exception as e:
+                messagebox.showerror(
+                    self.lang.get('error_title', 'Errore'),
+                    f"Errore apertura gestione progetti: {str(e)}"
+                )
+                logger.error(f"Errore apertura ProjectWindow: {e}")
+
+        # Usa il sistema di autorizzazione con la chiave corretta
+        self._execute_authorized_action(
+            menu_translation_key='project_window',  # o la chiave che usi nel DB
+            action_callback=authorized_action
+        )
+
+    def _apri_dashboard_npi(self):
+        """Callback per aprire la dashboard NPI (protetta da login semplice)."""
+        logger.info("Tentativo di aprire la Dashboard NPI.")
+
+        def action(user_name):
+            try:
+                # 'user_name' arriva dal login e non lo usiamo qui, ma è richiesto dal callback
+                logger.debug(f"Utente '{user_name}' autorizzato. Apertura Dashboard NPI.")
+                dashboard = NpiDashboardWindow(master=self, npi_manager=self.npi_manager, lang=self.lang)
+                self.wait_window(dashboard)  # Rende la finestra modale
+            except Exception as e:
+                logger.error("Errore nell'apertura della NpiDashboardWindow: %s", e, exc_info=True)
+                messagebox.showerror("Errore", f"Impossibile aprire la dashboard NPI: {e}")
+
+        # Esegui l'azione solo dopo un login semplice (senza permessi specifici per ora)
+        self._execute_simple_login(action_callback=action)
+
+    def _seleziona_e_visualizza_gantt(self):
+        """Callback per visualizzare il Gantt (protetta da login semplice)."""
+        logger.info("Tentativo di visualizzare un Gantt NPI.")
+        self._execute_simple_login(action_callback=lambda authorized_user:
+            self._launch_gantt_window())
+
+    def _configura_catalogo_task_npi(self):
+        """Callback per configurare i task NPI (protetta da autorizzazione specifica)."""
+        logger.info("Tentativo di accedere alla configurazione Task NPI.")
+        self._execute_authorized_action(
+            menu_translation_key='npi_setup_tasks',  # La chiave corrisponde al MenuValue nel DB
+            action_callback=self._launch_config_window
+        )
+
+    # --- METODI "LAUNCHER" PER LE FINESTRE NPI ---
+
+    def _launch_dashboard_window(self, username):
+        """
+        Crea e lancia la finestra della dashboard.
+        'username' è passato da _execute_simple_login.
+        """
+        logger.info(f"Utente '{username}' autorizzato. Apertura Dashboard NPI.")
+        try:
+            dashboard = NpiDashboardWindow(master=self, npi_manager=self.npi_manager, lang=self.lang)
+            # Puoi rendere la finestra modale se necessario
+            self.wait_window(dashboard)
+            self._load_npi_projects()  # Ricarica dopo la chiusura
+        except Exception as e:
+            logger.error("Errore nell'apertura della NpiDashboardWindow: %s", e, exc_info=True)
+            messagebox.showerror("Errore", f"Impossibile aprire la dashboard NPI: {e}")
+
+    def _launch_gantt_window(self):
+        """
+        Chiede all'utente di selezionare un progetto NPI attivo e poi lancia la
+        finestra del Gantt per quel progetto.
+        """
+        if self.npi_manager is None:
+            messagebox.showerror("Errore", "Il modulo NPI non è inizializzato.")
+            return
+
+        try:
+            # 1. Recupera la lista dei progetti attivi dal gestore NPI.
+            progetti_attivi = self.npi_manager.get_progetti_attivi()
+            if not progetti_attivi:
+                messagebox.showinfo("Nessun Progetto", "Non ci sono progetti NPI attivi da visualizzare.", parent=self)
+                return
+
+            # 2. Prepara i dati per il dialogo: un dizionario che mappa il nome del prodotto all'ID del progetto.
+            #    Questo ci serve perché l'utente sceglierà il nome, ma noi abbiamo bisogno dell'ID.
+            progetti_map = {proj.prodotto.NomeProdotto: proj.ProgettoID for proj in progetti_attivi}
+            lista_nomi_progetti = list(progetti_map.keys())
+
+            # 3. Chiedi all'utente di scegliere un progetto da una semplice finestra di dialogo.
+            #    Usiamo un trucco con simpledialog e una Listbox per creare una selezione.
+            #    Questo è un modo standard per fare una scelta da una lista.
+            scelta_dialog = tk.Toplevel(self)
+            scelta_dialog.title("Seleziona Progetto")
+            scelta_dialog.transient(self)
+            tk.Label(scelta_dialog, text="Scegli un progetto per visualizzare il Gantt:").pack(padx=20, pady=10)
+
+            listbox = tk.Listbox(scelta_dialog, exportselection=False)
+            for nome in lista_nomi_progetti:
+                listbox.insert(tk.END, nome)
+            listbox.pack(padx=20, pady=5, fill=tk.BOTH, expand=True)
+
+            scelta_utente = None
+
+            def on_ok():
+                nonlocal scelta_utente
+                selezionato = listbox.curselection()
+                if selezionato:
+                    scelta_utente = listbox.get(selezionato[0])
+                scelta_dialog.destroy()
+
+            btn_frame = tk.Frame(scelta_dialog)
+            btn_frame.pack(pady=10)
+            tk.Button(btn_frame, text="OK", command=on_ok).pack(side=tk.LEFT, padx=10)
+            tk.Button(btn_frame, text="Annulla", command=scelta_dialog.destroy).pack(side=tk.LEFT, padx=10)
+
+            # Centra la finestra di dialogo e attendi che venga chiusa
+            self.wait_window(scelta_dialog)
+
+            # 4. Se l'utente ha fatto una scelta (e non ha annullato), procedi.
+            if scelta_utente:
+                progetto_selezionato_id = progetti_map[scelta_utente]
+                logger.info(f"Lancio della finestra Gantt per il progetto ID: {progetto_selezionato_id}")
+
+                # 5. Apri la finestra Gantt, passando l'ID del progetto richiesto.
+                NpiGanttWindow(
+                    master=self,
+                    npi_manager=self.npi_manager,
+                    lang=self.lang,
+                    progetto_id=progetto_selezionato_id  # Ecco l'argomento mancante!
+                )
+            else:
+                logger.info("Apertura finestra Gantt annullata dall'utente.")
+
+        except Exception as e:
+            logger.error(f"Errore durante il lancio della finestra Gantt: {e}", exc_info=True)
+            messagebox.showerror("Errore Imprevisto", f"Impossibile aprire la vista Gantt: {e}", parent=self)
+
+    def _launch_config_window(self):
+        """
+        Crea e lancia la finestra di configurazione Task.
+        `self._temp_authorized_user_id` è disponibile qui.
+        """
+        authorized_user = self.last_authenticated_user_name
+        logger.info(f"Utente '{authorized_user}' autorizzato per la Configurazione NPI.")
+        try:
+            config_win = NpiConfigWindow(master=self, npi_manager=self.npi_manager, lang=self.lang,
+                                         authorized_user=authorized_user)
+            self.wait_window(config_win)
+            # ---> CANCELLA LA RIGA SEGUENTE <---
+            # self._load_npi_projects() # <-- QUESTA RIGA NON DEVE ESISTERE
+
+        except Exception as e:
+            logger.error("Errore nell'apertura della NpiConfigWindow: %s", e, exc_info=True)
+            messagebox.showerror("Errore", f"Impossibile aprire la configurazione NPI: {e}")
 
     def open_coating_thickness_with_login(self):
         """Apre la finestra di controllo spessore coating dopo login"""

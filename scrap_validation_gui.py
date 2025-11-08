@@ -27,7 +27,8 @@ class ScrapValidationWindow(tk.Toplevel):
 
         # Variabili di stato
         self.selected_declaration = None
-        self.scrap_declarations = []
+        self.scrap_declarations = []  # Memorizza i dati completi delle dichiarazioni
+        self.labelcod_map = {}  # Mappa labelcod -> dichiarazione completa
 
         # ⚠️ IMPORTANTE: Prima crea i widget, POI carica i dati
         self._create_widgets()
@@ -56,8 +57,8 @@ class ScrapValidationWindow(tk.Toplevel):
         tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
         columns = (
-            'id', 'date', 'order', 'product_code', 'product_name',
-            'quantity', 'reason', 'declared_by', 'status'
+            'id', 'date', 'order', 'product_code', #'product_name',
+            'area', 'quantity', 'reason', 'declared_by', 'status'
         )
 
         self.tree = ttk.Treeview(
@@ -73,8 +74,8 @@ class ScrapValidationWindow(tk.Toplevel):
         self.tree.heading('id', text='ID')
         self.tree.heading('date', text=self.lang.get('date', 'Data'))
         self.tree.heading('order', text=self.lang.get('order', 'Ordine'))
-        self.tree.heading('product_code', text=self.lang.get('product_code', 'Codice'))
-        self.tree.heading('product_name', text=self.lang.get('product_name', 'Prodotto'))
+        self.tree.heading('product_code', text=self.lang.get('product_code', 'Codice Prodotto'))
+        self.tree.heading('area', text=self.lang.get('area', 'Area'))
         self.tree.heading('quantity', text=self.lang.get('quantity', 'Quantità'))
         self.tree.heading('reason', text=self.lang.get('reason', 'Causale'))
         self.tree.heading('declared_by', text=self.lang.get('declared_by', 'Dichiarato da'))
@@ -84,14 +85,15 @@ class ScrapValidationWindow(tk.Toplevel):
         self.tree.column('id', width=50, anchor='center')
         self.tree.column('date', width=120, anchor='center')
         self.tree.column('order', width=100)
-        self.tree.column('product_code', width=100)
-        self.tree.column('product_name', width=200)
+        self.tree.column('product_code', width=120)
+        self.tree.column('area', width=150)
         self.tree.column('quantity', width=80, anchor='center')
         self.tree.column('reason', width=150)
         self.tree.column('declared_by', width=150)
         self.tree.column('status', width=100, anchor='center')
 
         self.tree.pack(fill=tk.BOTH, expand=True)
+        self.tree.bind('<Double-1>', self._on_tree_double_click)
 
         # ========== SEZIONE CENTRALE: INSERIMENTO LABELCODE ==========
         input_frame = ttk.LabelFrame(
@@ -151,7 +153,8 @@ class ScrapValidationWindow(tk.Toplevel):
         self.detail_labels = {}
         details = [
             ('order', 'Ordine'),
-            ('product', 'Prodotto'),
+            ('product_code', 'Codice Prodotto'),
+            ('area', 'Area'),
             ('quantity', 'Quantità Scartata'),
             ('reason', 'Causale'),
             ('declared_by', 'Dichiarato da'),
@@ -206,44 +209,15 @@ class ScrapValidationWindow(tk.Toplevel):
             command=self.destroy
         ).pack(side=tk.RIGHT, padx=5)
 
-
-    def _setup_footer(self):
-        """Configura logo e orologio nel footer."""
-        footer_frame = ttk.Frame(self)
-        footer_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), padx=10, pady=5)
-        footer_frame.columnconfigure(1, weight=1)
-
-        # Logo (se disponibile)
-        try:
-            from PIL import Image, ImageTk
-            import os
-            logo_path = os.path.join(os.path.dirname(__file__), 'logo.png')
-            if os.path.exists(logo_path):
-                logo_img = Image.open(logo_path)
-                logo_img = logo_img.resize((80, 40), Image.Resampling.LANCZOS)
-                self.logo_photo = ImageTk.PhotoImage(logo_img)
-                logo_label = ttk.Label(footer_frame, image=self.logo_photo)
-                logo_label.grid(row=0, column=0, sticky=tk.W)
-        except Exception as e:
-            logger.warning(f"Impossibile caricare logo: {e}")
-
-        # Orologio
-        self.clock_label = ttk.Label(footer_frame, text='', font=('Arial', 10))
-        self.clock_label.grid(row=0, column=2, sticky=tk.E)
-        self._update_clock()
-
-    def _update_clock(self):
-        """Aggiorna l'orologio."""
-        now = datetime.now().strftime('%H:%M:%S')
-        self.clock_label.config(text=now)
-        self.after(1000, self._update_clock)
-
     def _load_scrap_declarations(self):
         """Carica le dichiarazioni di scrap in attesa di validazione"""
         try:
-            # Pulisci la treeview
+            # Pulisci la treeview e le mappe
             for item in self.tree.get_children():
                 self.tree.delete(item)
+
+            self.scrap_declarations = []
+            self.labelcod_map = {}
 
             # Usa il metodo della classe Database
             declarations = self.db.fetch_scrap_declarations_pending()
@@ -252,17 +226,27 @@ class ScrapValidationWindow(tk.Toplevel):
                 logger.info("Nessuna dichiarazione di scrap in attesa di validazione")
                 return
 
-            # Popola la treeview
+            # Popola la treeview e crea la mappa labelcod
             for decl in declarations:
+                # Memorizza la dichiarazione completa
+                self.scrap_declarations.append(decl)
+
+                # Crea mappa labelcod -> dichiarazione
+                if hasattr(decl, 'labelcod') and decl.labelcod:
+                    self.labelcod_map[decl.labelcod] = decl
+
+                # Inserisci nella treeview (NASCONDI il labelcod reale)
+                masked_code = '*' * len(decl.labelcod) if decl.labelcod else '***'
+
                 self.tree.insert('', 'end', values=(
                     decl.ScrapDeclarationId,  # ID
-                    '',  # Data (non presente nella query)
-                    '',  # Order (non presente)
-                    decl.labelcod,  # Product Code (uso labelcod)
-                    decl.AreaName,  # Product Name (uso AreaName)
-                    '',  # Quantity (non presente)
-                    decl.Defect,  # Reason
-                    decl.DECLAREDBY,  # Declared By
+                    getattr(decl, 'Date', '-'),  # Data
+                    getattr(decl, 'OrderNumber', '-'),  # Order
+                    getattr(decl, 'Produc', '-'),  # Product Code (nuovo campo)
+                    getattr(decl, 'AreaName', '-'),  # Area
+                    getattr(decl, 'Qty', 1),  # Quantity
+                    getattr(decl, 'Defect', '-'),  # Reason
+                    getattr(decl, 'DECLAREDBY', '-'),  # Declared By
                     'Pending'  # Status
                 ))
 
@@ -285,67 +269,48 @@ class ScrapValidationWindow(tk.Toplevel):
             return
 
         try:
-            # Cerca il labelcode nella lista delle dichiarazioni
-            found_declaration = None
-            for item in self.tree.get_children():
-                values = self.tree.item(item)['values']
-                if values and len(values) > 3 and values[3] == entered_code:  # values[3] è product_code (labelcod)
-                    found_declaration = values
-                    # Seleziona la riga nella treeview
-                    self.tree.selection_set(item)
-                    self.tree.focus(item)
-                    break
+            # Cerca il labelcode nella mappa
+            if entered_code in self.labelcod_map:
+                declaration = self.labelcod_map[entered_code]
+                self.selected_declaration = declaration.ScrapDeclarationId
 
-            if found_declaration:
-                self.selected_declaration = found_declaration[0]  # ID della dichiarazione
+                # Trova e seleziona la riga corrispondente nella treeview
+                for item in self.tree.get_children():
+                    values = self.tree.item(item)['values']
+                    if values and values[0] == declaration.ScrapDeclarationId:
+                        self.tree.selection_set(item)
+                        self.tree.focus(item)
+                        break
 
-                # Aggiorna i dettagli con i campi disponibili
-                self.detail_labels['order'].config(text=found_declaration[2] if found_declaration[2] else '-')
-                self.detail_labels['product'].config(text=f"{found_declaration[3]} - {found_declaration[4]}")
-                self.detail_labels['quantity'].config(text=found_declaration[5] if found_declaration[5] else '-')
-                self.detail_labels['reason'].config(text=found_declaration[6])
-                self.detail_labels['declared_by'].config(text=found_declaration[7])
-                self.detail_labels['date'].config(text=found_declaration[1] if found_declaration[1] else '-')
+                # Aggiorna i dettagli con tutti i campi disponibili
+                self.detail_labels['order'].config(text=getattr(declaration, 'OrderNumber', '-'))
+                self.detail_labels['product_code'].config(text=getattr(declaration, 'Produc', '-'))
+                #self.detail_labels['product_name'].config(text=getattr(declaration, 'AreaName', '-'))
+                self.detail_labels['area'].config(text=getattr(declaration, 'AreaName', '-'))
+                self.detail_labels['quantity'].config(text=str(getattr(declaration, 'Qty', 1)))
+                self.detail_labels['reason'].config(text=getattr(declaration, 'Defect', '-'))
+                self.detail_labels['declared_by'].config(text=getattr(declaration, 'DECLAREDBY', '-'))
+                self.detail_labels['date'].config(text=getattr(declaration, 'Date', '-'))
 
                 # Abilita i pulsanti di azione
                 self.approve_button.config(state='normal')
                 self.reject_button.config(state='normal')
 
-                self.validation_status_label.config(text='Label code trovato - Validazione abilitata',
-                                                    foreground='green')
+                self.validation_status_label.config(
+                    text='Label code trovato - Validazione abilitata',
+                    foreground='green'
+                )
 
             else:
                 self._clear_selection()
-                self.validation_status_label.config(text='Label code non trovato nelle dichiarazioni pendenti',
-                                                    foreground='red')
+                self.validation_status_label.config(
+                    text='Label code non trovato nelle dichiarazioni pendenti',
+                    foreground='red'
+                )
 
         except Exception as e:
             logger.error(f"Errore durante la validazione del label code: {e}")
             self.validation_status_label.config(text=f'Errore: {str(e)}', foreground='red')
-
-    def _on_select_declaration(self, event):
-        """Gestisce la selezione di una dichiarazione"""
-        selection = self.tree.selection()
-        if not selection:
-            self._clear_selection()
-            return
-
-        item = self.tree.item(selection[0])
-        values = item['values']
-
-        if not values:
-            return
-
-        # Salva l'ID della dichiarazione selezionata
-        self.selected_declaration = values[0]
-
-        # Aggiorna i dettagli con i campi disponibili dalla query
-        self.detail_labels['order'].config(text=values[2] if values[2] else '-')
-        self.detail_labels['product'].config(text=f"{values[3]} - {values[4]}")  # labelcod - AreaName
-        self.detail_labels['quantity'].config(text=values[5] if values[5] else '-')
-        self.detail_labels['reason'].config(text=values[6])  # Defect
-        self.detail_labels['declared_by'].config(text=values[7])  # DECLAREDBY
-        self.detail_labels['date'].config(text=values[1] if values[1] else '-')
 
     def _clear_selection(self):
         """Pulisce la selezione e i dettagli"""
@@ -360,6 +325,7 @@ class ScrapValidationWindow(tk.Toplevel):
         # Pulisce la selezione nella treeview
         self.tree.selection_remove(self.tree.selection())
         self.validation_status_label.config(text='')
+        self.labelcode_var.set('')  # Pulisce anche il campo di input
 
     def _validate_declaration(self, status):
         """Valida o rifiuta la dichiarazione selezionata"""
@@ -396,7 +362,6 @@ class ScrapValidationWindow(tk.Toplevel):
             )
             self._load_scrap_declarations()  # Ricarica la lista
             self._clear_selection()
-            self.labelcode_var.set('')  # Pulisce il campo labelcode
         else:
             messagebox.showerror(
                 self.lang.get('error_title', 'Errore'),
@@ -404,136 +369,89 @@ class ScrapValidationWindow(tk.Toplevel):
                 parent=self
             )
 
-    def _populate_listbox(self):
-        """Popola la listbox con le dichiarazioni."""
-        self.declarations_listbox.delete(0, tk.END)
-
-        for decl in self.scrap_declarations:
-            # Maschera il labelcode con asterischi
-            masked_label = '*' * len(decl.labelcod) if decl.labelcod else '***'
-
-            display_text = f"{decl.DECLAREDBY:15} | {masked_label:12} | {decl.AreaName:20} | {decl.DefectNameRO}"
-            self.declarations_listbox.insert(tk.END, display_text)
-
-    def _on_declaration_selected(self, event):
-        """Gestisce la selezione di una dichiarazione dalla lista."""
-        selection = self.declarations_listbox.curselection()
+    def _on_tree_double_click(self, event):
+        """Gestisce il doppio click su una riga per visualizzare l'immagine"""
+        selection = self.tree.selection()
         if not selection:
             return
 
-        index = selection[0]
-        self.selected_declaration = self.scrap_declarations[index]
+        item = self.tree.item(selection[0])
+        item_values = item['values']
 
-        # Pulisce il form
-        self.labelcode_var.set('')
-        self.validation_var.set('')
-        self.save_button.config(state='disabled')
-
-        # Aggiorna le info (senza mostrare il labelcode reale)
-        self.declared_by_label.config(text=self.selected_declaration.DECLAREDBY)
-        self.area_label.config(text=self.selected_declaration.AreaName)
-        self.defect_label.config(text=self.selected_declaration.DefectNameRO)
-        self.references_label.config(text=self.selected_declaration.Riferiments or '')
-
-        # Focus sull'entry del labelcode
-        self.labelcode_entry.focus()
-
-    def _on_labelcode_entered(self, event=None):
-        """Gestisce l'inserimento del labelcode."""
-        entered_code = self.labelcode_var.get().strip()
-
-        if not self.selected_declaration:
-            messagebox.showwarning(
-                self.lang.get('warning', 'Attenzione'),
-                self.lang.get('select_declaration_first', 'Selezionare prima una dichiarazione dalla lista'),
-                parent=self
-            )
+        if not item_values:
             return
 
-        if entered_code != self.selected_declaration.labelcod:
-            messagebox.showerror(
-                self.lang.get('error', 'Errore'),
-                self.lang.get('labelcode_mismatch',
-                              'Il Label Code inserito non corrisponde alla dichiarazione selezionata'),
-                parent=self
-            )
-            self.labelcode_var.set('')
-            return
-
-        # Label code corretto, abilita il salvataggio
-        self.save_button.config(state='normal')
-
-    def _save_validation(self):
-        """Salva la validazione."""
-        if not self.selected_declaration:
-            messagebox.showwarning(
-                self.lang.get('warning', 'Attenzione'),
-                self.lang.get('no_declaration_selected', 'Nessuna dichiarazione selezionata'),
-                parent=self
-            )
-            return
-
-        validation_choice = self.validation_var.get()
-        if not validation_choice:
-            messagebox.showwarning(
-                self.lang.get('warning', 'Attenzione'),
-                self.lang.get('select_validation_choice', 'Selezionare una decisione di validazione'),
-                parent=self
-            )
-            return
+        # Recupera l'ID della dichiarazione
+        declaration_id = item_values[0]  # Prima colonna è l'ID
 
         try:
-            if validation_choice == 'confirm':
-                # Conferma scrap - esegui SP
-                self.db.execute_stored_procedure(
-                    '[Traceability_RS].dbo.[DeclareSCRAP]',
-                    LabelCode=self.selected_declaration.labelcod,
-                    IdDefect=self.selected_declaration.IDDefect,
-                    riferiments=self.selected_declaration.Riferiments,
-                    idAreaDefect=self.selected_declaration.IDArea
-                )
-                message = self.lang.get('scrap_confirmed', 'Scrap confermato con successo')
+            # Cerca la dichiarazione completa
+            selected_declaration = None
+            for decl in self.scrap_declarations:
+                if decl.ScrapDeclarationId == declaration_id:
+                    selected_declaration = decl
+                    break
 
-            else:  # reject
-                # Non conferma scrap - aggiorna record
-                update_query = """
-                               UPDATE [Traceability_RS].[dbo].[ScarpDeclarations]
-                               SET Refuzed = 1, RefuzedBy = ?
-                               WHERE ScrapDeclarationId = ? \
-                               """
-                self.db.execute_update(
-                    update_query,
-                    self.user_name,
-                    self.selected_declaration.ScrapDeclarationId
-                )
-                message = self.lang.get('scrap_rejected', 'Scrap rifiutato con successo')
+            if not selected_declaration:
+                messagebox.showinfo("Info", "Dichiarazione non trovata.", parent=self)
+                return
 
-            messagebox.showinfo(
-                self.lang.get('success', 'Successo'),
-                message,
-                parent=self
-            )
+            # Controlla se c'è un'immagine
+            if not hasattr(selected_declaration, 'Picture') or not selected_declaration.Picture:
+                messagebox.showinfo("Info", "Nessuna immagine disponibile per questa dichiarazione.", parent=self)
+                return
 
-            # Refresh della lista
-            self._load_scrap_declarations()
-
-            # Reset form
-            self.selected_declaration = None
-            self.labelcode_var.set('')
-            self.validation_var.set('')
-            self.save_button.config(state='disabled')
-            self.declared_by_label.config(text='')
-            self.area_label.config(text='')
-            self.defect_label.config(text='')
-            self.references_label.config(text='')
+            # Visualizza l'immagine
+            self._show_image(selected_declaration.Picture, declaration_id)
 
         except Exception as e:
-            logger.error(f"Errore nel salvataggio della validazione: {e}")
-            messagebox.showerror(
-                self.lang.get('error', 'Errore'),
-                f"{self.lang.get('error_saving_validation', 'Errore nel salvataggio')}: {str(e)}",
-                parent=self
-            )
+            logger.error(f"Errore visualizzazione immagine: {e}")
+            messagebox.showerror("Errore", f"Impossibile visualizzare l'immagine: {e}", parent=self)
+
+    def _show_image(self, image_data, declaration_id):
+        """Visualizza l'immagine in una nuova finestra"""
+        try:
+            # Crea una nuova finestra
+            image_window = tk.Toplevel(self)
+            image_window.title(f"Immagine Dichiarazione #{declaration_id}")
+            image_window.geometry("800x600")
+            image_window.transient(self)
+            image_window.grab_set()
+
+            # Frame principale
+            main_frame = ttk.Frame(image_window, padding=10)
+            main_frame.pack(fill=tk.BOTH, expand=True)
+
+            # Converti i dati binari in immagine
+            from PIL import Image, ImageTk
+            import io
+
+            # Leggi i dati binari
+            image_stream = io.BytesIO(image_data)
+            image = Image.open(image_stream)
+
+            # Ridimensiona se troppo grande
+            max_size = (700, 500)
+            image.thumbnail(max_size, Image.Resampling.LANCZOS)
+
+            # Converti per Tkinter
+            photo = ImageTk.PhotoImage(image)
+
+            # Label per l'immagine
+            image_label = ttk.Label(main_frame, image=photo)
+            image_label.image = photo  # Mantieni riferimento per evitare garbage collection
+            image_label.pack(expand=True)
+
+            # Pulsante chiudi
+            ttk.Button(
+                main_frame,
+                text="Chiudi",
+                command=image_window.destroy
+            ).pack(pady=10)
+
+        except Exception as e:
+            logger.error(f"Errore elaborazione immagine: {e}")
+            messagebox.showerror("Errore", f"Impossibile elaborare l'immagine: {e}", parent=self)
 
 
 def open_scrap_validation(parent, db, lang, user_name):

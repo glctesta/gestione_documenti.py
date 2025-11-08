@@ -507,6 +507,12 @@ class ProductVerificationWindow(tk.Toplevel):
         self._check_items = []
         self._build_ui()
         self._load_products_to_check()
+        # FORZA IL CARICAMENTO DEI TASK GENERICI ALL'APERTURA
+        self.after(100, self._load_generic_tasks_only)
+
+    def _load_generic_tasks_only(self):
+        """Carica solo i task generici all'apertura della finestra"""
+        self._load_checklist()
 
     def _on_label_code_changed(self, *args):
         """Verifica il label code quando viene modificato"""
@@ -721,9 +727,16 @@ class ProductVerificationWindow(tk.Toplevel):
 
         self._check_items = []
 
-        # Carica task generici
+        print(f"=== DEBUG CHECKLIST LOADING ===")
+        print(f"Current must check ID: {self._current_must_check_id}")
+
+        # CARICA SEMPRE I TASK GENERICI (anche senza prodotto selezionato)
         generic_tasks = self.db.fetch_generic_check_tasks()
+        print(f"Generic tasks type: {type(generic_tasks)}")
+        print(f"Generic tasks length: {len(generic_tasks)}")
+
         for task in generic_tasks:
+            print(f"Generic task: {task.ItemToCheck}")
             item_id = self.checklist_tree.insert('', 'end', text='☐', values=(
                 False,
                 task.PriodicalProductCheckListId,
@@ -737,10 +750,14 @@ class ProductVerificationWindow(tk.Toplevel):
                 'doc': task.Doc
             })
 
-        # Carica task specifici se esistono
+        # CARICA TASK SPECIFICI solo se c'è un prodotto selezionato
         if self._current_must_check_id:
             specific_tasks = self.db.fetch_specific_check_tasks(self._current_must_check_id)
+            print(f"Found {len(specific_tasks)} specific tasks")
+            print(f"Specific tasks length: {len(specific_tasks)}")
+
             for task in specific_tasks:
+                print(f"Specific task: {task.ItemToCheck}")
                 item_id = self.checklist_tree.insert('', 'end', text='☐', values=(
                     False,
                     task.PriodicalProductCheckListId,
@@ -753,6 +770,9 @@ class ProductVerificationWindow(tk.Toplevel):
                     'checked': False,
                     'doc': task.Doc
                 })
+
+        print(f"Total checklist items: {len(self._check_items)}")
+        print(f"Tree children count: {len(self.checklist_tree.get_children())}")
 
     def _on_checklist_click(self, event):
         """Gestisce il click sulla checklist (toggle checkbox)"""

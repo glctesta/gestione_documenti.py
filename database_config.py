@@ -85,6 +85,7 @@ class DatabaseConfig:
             database = os.getenv('DB_DATABASE')
             uid = os.getenv('DB_UID')
             pwd = self._get_password()
+            autocommit = True
 
             # Validazione dei parametri obbligatori
             required_params = {
@@ -92,7 +93,8 @@ class DatabaseConfig:
                 'DB_SERVER': server,
                 'DB_DATABASE': database,
                 'DB_UID': uid,
-                'DB_PWD': pwd
+                'DB_PWD': pwd,
+                'autocommit' : autocommit
             }
 
             missing_params = []
