@@ -273,7 +273,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.9.0"  # Versione aggiornata
+APP_VERSION = "1.9.1"  # Versione aggiornata
 APP_DEVELOPER = "@Gianluca Testa"
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -754,36 +754,37 @@ class Database:
             self.last_error_details = str(e)
             return []
 
-    #moduli di ricerca sql di scrap_validation_gui
     def fetch_scrap_declarations_pending(self):
         """Recupera le dichiarazioni di scrap in attesa di validazione"""
         query = """
-                SELECT s.ScrapDeclarationId,
-                       s.[User] as DECLAREDBY,
-                       FORMAT(s.DateIn, 'dd/MM/yyyy') as [Date],
-                    o.OrderNumber,
-                    l.labelcod,
-                    p.productCode as Produc,
-                    A.AreaName,
-                    d.DefectNameRO as Defect,
-                    s.Riferiments,  -- Campo aggiunto per la stored procedure
-                    1 as Qty,
-                    s.Picture  -- Aggiunto il campo Picture
-                FROM [Traceability_RS].[dbo].ScarpDeclarations S
-                    INNER JOIN Traceability_RS.dbo.LabelCodes L
-                ON l.IDLabelCode = s.IdLabelCode
-                    INNER JOIN [Traceability_RS].dbo.Areas A ON a.IDArea = s.IDParentPhase
-                    INNER JOIN [Traceability_RS].dbo.defects D ON d.IDDefect = s.ScrapReasonId
-                    INNER JOIN [Traceability_RS].dbo.boards B ON l.IDBoard = b.IDBoard
-                    INNER JOIN [Traceability_RS].dbo.orders o ON o.idorder = b.IDOrder
-                    inner join traceability_rs.dbo.products P on p.idproduct=o.idproduct
-                WHERE (s.Accepted IS NULL
-                   OR s.Accepted = 0)
-                  AND (s.Refuzed IS NULL
-                   OR s.Refuzed = 0)
-                  AND s.ScrapDeclarationId
-                    > 28
-                ORDER BY S.DateIn;
+                 SELECT s.ScrapDeclarationId,
+                   s.[User] as DECLAREDBY,
+                   FORMAT(s.DateIn, 'dd/MM/yyyy') as [Date],
+                o.OrderNumber,
+                l.labelcod,
+                p.productCode as Produc,
+                A.AreaName,
+                d.Reason as Defect,
+                s.Riferiments,  -- Campo aggiunto per la stored procedure
+                1 as Qty,
+                s.Picture,  -- Aggiunto il campo Picture
+                de.IDDefect  -- Campo IDDefect per la stored procedure (NON VISUALIZZATO NELLA GUI)
+            FROM [Traceability_RS].[dbo].ScarpDeclarations S
+                INNER JOIN Traceability_RS.dbo.LabelCodes L
+            ON l.IDLabelCode = s.IdLabelCode
+                INNER JOIN [Traceability_RS].dbo.Areas A ON a.IDArea = s.IDParentPhase
+                INNER JOIN [Traceability_RS].dbo.ScrapResons D ON d.ScrapReasonId = s.ScrapReasonId
+                INNER JOIN [Traceability_RS].dbo.defects de ON de.IDDefect = d.ScrapDeclarationId  -- CORREZIONE: de.IDDefect = d.IDDefect
+                INNER JOIN [Traceability_RS].dbo.boards B ON l.IDBoard = b.IDBoard
+                INNER JOIN [Traceability_RS].dbo.orders o ON o.idorder = b.IDOrder
+                inner join traceability_rs.dbo.products P on p.idproduct=o.idproduct
+            WHERE (s.Accepted IS NULL
+               OR s.Accepted = 0)
+              AND (s.Refuzed IS NULL
+               OR s.Refuzed = 0)
+              AND s.ScrapDeclarationId
+                > 28
+            ORDER BY S.DateIn;
                 """
         try:
             self.cursor.execute(query)
@@ -853,16 +854,17 @@ class Database:
 
             # Se è approvato, recupera i dati ed esegui la stored procedure
             if validation_status == 'Approved':
-                # Recupera i dati per la stored procedure
+                # Recupera i dati per la stored procedure - MODIFICA: ora recupera IDDefect invece di ScrapReasonId
                 data_query = """
-                             SELECT l.labelcod      as LabelCode, \
-                                    s.ScrapReasonId as IdDefect, \
-                                    s.Riferiments    as Riferiments, \
-                                    s.IDParentPhase as IdAreaDefect
-                             FROM [Traceability_RS].[dbo].ScarpDeclarations S
-                                 INNER JOIN Traceability_RS.dbo.LabelCodes L \
-                             ON l.IDLabelCode = s.IdLabelCode
-                             WHERE s.ScrapDeclarationId = ? \
+                                 SELECT l.labelcod as LabelCode, 
+                    de.IDDefect     as IdDefect,   
+                    s.Riferiments   as Riferiments, 
+                    s.IDParentPhase as IdAreaDefect
+             FROM [Traceability_RS].[dbo].ScarpDeclarations S
+                 INNER JOIN [Traceability_RS].dbo.LabelCodes L on L.IDLabelCode=S.IdLabelCode
+                 INNER JOIN [Traceability_RS].dbo.ScrapResons D ON d.ScrapReasonId = S.ScrapReasonId
+                 INNER JOIN [Traceability_RS].dbo.defects de ON de.IDDefect = d.ScrapDeclarationId                         
+            WHERE s.ScrapDeclarationId = ? \
                              """
 
                 self.cursor.execute(data_query, (declaration_id,))
