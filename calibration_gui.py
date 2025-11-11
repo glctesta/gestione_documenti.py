@@ -1,9 +1,14 @@
+
 import tkinter as tk
 from tkinter import ttk, messagebox
 from tkcalendar import DateEntry
 import collections.abc
 from tkinter import filedialog
 import os, sys, tempfile, subprocess
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 class CalibrationsWindow(tk.Toplevel):
     def __init__(self, parent, db_object, language_manager):
@@ -15,29 +20,44 @@ class CalibrationsWindow(tk.Toplevel):
         self.equipment_map = {}
         self.supplier_map = {}
         self.all_supplier_names = []
+        self.current_equipment_id = None
+        self.current_calibration_id = None  # ID della calibrazione selezionata per modifica
 
         self.title(self.lang.get('calibrations_title', "Gestione Calibrazioni"))
-        self.geometry("650x550")
+        self.geometry("650x600")  # Aumentata altezza per il nuovo bottone
         self.transient(parent)
         self.grab_set()
 
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._create_widgets()
         self._load_initial_data()
 
         self.selected_pdf_path = None  # PDF scelto per nuovo inserimento
         self.selected_pdf_bytes = None  # bytes del PDF scelto per nuovo inserimento
-        self.current_cert_bytes = None  # bytes del certificato dell’ultima calibrazione caricata
+        self.current_cert_bytes = None  # bytes del certificato dell'ultima calibrazione caricata
 
     def _create_widgets(self):
         main_frame = ttk.Frame(self, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
+        # COMBOBOX MACCHINARI IN TESTA ALLA FORM
         select_frame = ttk.LabelFrame(main_frame, text=self.lang.get('select_equipment', "Seleziona Attrezzatura"),
                                       padding="10")
         select_frame.pack(fill=tk.X, expand=True, pady=(0, 10))
         self.combo_equipment = ttk.Combobox(select_frame, state="readonly", font=('Segoe UI', 10))
         self.combo_equipment.pack(fill=tk.X, expand=True)
         self.combo_equipment.bind("<<ComboboxSelected>>", self._on_equipment_select)
+
+        # BOTTONE MODIFICA (visibile solo quando esiste una calibrazione)
+        self.btn_edit_frame = ttk.Frame(main_frame)
+        self.btn_edit_frame.pack(fill=tk.X, pady=(0, 10))
+        self.btn_edit_calibration = ttk.Button(
+            self.btn_edit_frame,
+            text=self.lang.get('edit_calibration', "Modifica Calibrazione"),
+            command=self._edit_calibration,
+            state="disabled"
+        )
+        self.btn_edit_calibration.pack(side=tk.LEFT)
 
         self.details_frame = ttk.LabelFrame(main_frame,
                                             text=self.lang.get('calibration_details', "Dettagli Ultima Calibrazione"),
@@ -142,12 +162,15 @@ class CalibrationsWindow(tk.Toplevel):
         if not selected_display_name: return
         equipment_id = self.equipment_map.get(selected_display_name)
         if equipment_id:
+            self.current_equipment_id = equipment_id
             self._load_calibration_data(equipment_id)
 
     def _load_calibration_data(self, equipment_id):
         try:
             self.insert_frame.pack_forget()
             self.details_frame.pack_forget()
+            self.btn_edit_frame.pack_forget()
+
             # reset stato certificati
             self.current_cert_bytes = None
             self.selected_pdf_path = None
@@ -155,6 +178,7 @@ class CalibrationsWindow(tk.Toplevel):
             self.lbl_cert_file.config(text=self.lang.get('no_file_selected', "Nessun file selezionato"),
                                       foreground="gray")
             self.btn_save.state(["disabled"])
+            self.current_calibration_id = None
 
             row = self.db.get_last_calibration(equipment_id)
 
@@ -174,21 +198,75 @@ class CalibrationsWindow(tk.Toplevel):
                     else self.lang.get('certificate_absent', "Assente")
                 )
                 self.btn_open_cert.configure(state="normal" if has_cert else "disabled")
+
+                # Memorizza l'ID della calibrazione corrente
+                self.current_calibration_id = getattr(row, 'CalibrationID', None)
+
+                # Mostra il bottone modifica
+                self.btn_edit_calibration.state(["!disabled"])
+                self.btn_edit_frame.pack(fill=tk.X, pady=(0, 10))
             else:
                 self.lbl_last_date.config(text="Nessuna calibrazione registrata")
                 self.lbl_expiry_date.config(text="N/D")
                 self.lbl_cert_status.config(text=self.lang.get('certificate_absent', "Assente"))
                 self.btn_open_cert.configure(state="disabled")
+                self.btn_edit_calibration.state(["disabled"])
 
             self.details_frame.pack(fill=tk.X, expand=True, pady=10)
 
-            show_insert_frame = (not row) or (row and row.ExpireOn is None)
-            if show_insert_frame:
-                self.insert_frame.pack(fill=tk.X, expand=True, pady=10)
+            # Mostra sempre il frame di inserimento per nuove calibrazioni
+            self.insert_frame.pack(fill=tk.X, expand=True, pady=10)
 
         except Exception as e:
             messagebox.showerror(self.lang.get('error', "Errore"), f"Impossibile caricare i dati di calibrazione:\n{e}",
                                  parent=self)
+
+    def _edit_calibration(self):
+        """Carica i dati della calibrazione corrente nei campi per la modifica"""
+        if not self.current_calibration_id:
+            return
+
+        try:
+            # Recupera i dettagli completi della calibrazione
+            calibration_details = self.db.get_calibration_details(self.current_calibration_id)
+            if not calibration_details:
+                messagebox.showwarning("Attenzione", "Dati della calibrazione non trovati.", parent=self)
+                return
+
+            # Popola i campi con i dati esistenti
+            if calibration_details.ExpireOn:
+                self.entry_new_expiry_date.set_date(calibration_details.ExpireOn)
+
+            if calibration_details.SupplierId:
+                supplier_name = self._get_supplier_name_by_id(calibration_details.SupplierId)
+                if supplier_name:
+                    self.combo_cert_body.set(supplier_name)
+
+            # Gestione PDF esistente
+            cert = getattr(calibration_details, 'NrCertificate', None)
+            if cert:
+                try:
+                    self.selected_pdf_bytes = bytes(cert)
+                except Exception:
+                    self.selected_pdf_bytes = cert
+
+                if self.selected_pdf_bytes:
+                    self.lbl_cert_file.config(text="Certificato esistente caricato", foreground="green")
+                    self.btn_save.state(["!disabled"])
+
+            messagebox.showinfo("Modifica",
+                                "Dati calibrazione caricati per la modifica. Modifica i campi necessari e salva.",
+                                parent=self)
+
+        except Exception as e:
+            messagebox.showerror("Errore", f"Impossibile caricare i dati per la modifica:\n{e}", parent=self)
+
+    def _get_supplier_name_by_id(self, supplier_id):
+        """Restituisce il nome del fornitore dato il suo ID"""
+        for name, id_val in self.supplier_map.items():
+            if id_val == supplier_id:
+                return name
+        return None
 
     def _choose_pdf_file(self):
         path = filedialog.askopenfilename(
@@ -245,6 +323,13 @@ class CalibrationsWindow(tk.Toplevel):
         supplier_id = self.supplier_map.get(selected_supplier_name)
         new_expiry_date = self.entry_new_expiry_date.get_date().strftime('%Y-%m-%d')
 
+        # Recupera il nome utente loggato dal parent
+        username = self._get_logged_in_username()
+
+        if not equipment_id:
+            messagebox.showwarning(self.lang.get('missing_data', "Dati Mancanti"),
+                                   "Selezionare un'attrezzatura valida.", parent=self)
+            return
         if not supplier_id:
             messagebox.showwarning(self.lang.get('missing_data', "Dati Mancanti"),
                                    self.lang.get('supplier_not_valid',
@@ -260,11 +345,34 @@ class CalibrationsWindow(tk.Toplevel):
             return
 
         try:
-            # PDF opzionale: self.selected_pdf_bytes può essere None
-            self.db.add_new_calibration(equipment_id, new_expiry_date, supplier_id, self.selected_pdf_bytes)
-            messagebox.showinfo(self.lang.get('success', "Successo"),
-                                self.lang.get('save_success_message', "Dati di calibrazione salvati correttamente."),
-                                parent=self)
+            # Verifica se esiste già una calibrazione valida per questa attrezzatura
+            existing_calibration = self.db.get_last_calibration(equipment_id)
+
+            if existing_calibration and self.current_calibration_id:
+                # MODIFICA: aggiorna la calibrazione esistente
+                self.db.update_calibration(
+                    self.current_calibration_id,
+                    new_expiry_date,
+                    supplier_id,
+                    self.selected_pdf_bytes,
+                    username  # Aggiunto username
+                )
+                messagebox.showinfo(self.lang.get('success', "Successo"),
+                                    "Dati di calibrazione aggiornati correttamente.",
+                                    parent=self)
+            else:
+                # NUOVA INSERZIONE: controlla se ci sono calibrazioni scadute da invalidare
+                if existing_calibration:
+                    # Imposta IsValid = 0 per le calibrazioni precedenti
+                    self.db.invalidate_previous_calibrations(equipment_id)
+
+                # Inserisce la nuova calibrazione
+                self.db.add_new_calibration(equipment_id, new_expiry_date, supplier_id, self.selected_pdf_bytes,
+                                            username)
+                messagebox.showinfo(self.lang.get('success', "Successo"),
+                                    "Nuova calibrazione inserita correttamente.",
+                                    parent=self)
+
             # reset campo PDF selezionato
             self.selected_pdf_path = None
             self.selected_pdf_bytes = None
@@ -274,7 +382,43 @@ class CalibrationsWindow(tk.Toplevel):
             self.combo_cert_body.set('')
             # ricarica dati
             self._load_calibration_data(equipment_id)
+
         except Exception as e:
             messagebox.showerror(self.lang.get('error', "Errore di Salvataggio"),
                                  f"Impossibile salvare i dati:\n{e}", parent=self)
 
+    def _get_logged_in_username(self):
+        """Recupera il nome dell'utente loggato dalla finestra parent"""
+        try:
+            # Prova a recuperare l'utente dal parent (dove è stato salvato dal login)
+            if hasattr(self.parent, 'current_user') and self.parent.current_user:
+                return self.parent.current_user.name
+            else:
+                # Fallback: cerca di recuperare l'utente da qualsiasi metodo disponibile
+                if hasattr(self.parent, 'get_current_username'):
+                    return self.parent.get_current_username()
+                else:
+                    return 'Unknown'
+        except Exception as e:
+            logger.error(f"Errore nel recupero username: {e}")
+            return 'Unknown'
+
+    def destroy(self):
+        """Override del metodo destroy per cleanup"""
+        try:
+            # Rilascia eventuali risorse
+            self.grab_release()
+            # Chiama il destroy della classe padre
+            super().destroy()
+        except Exception as e:
+            logger.error(f"Errore durante il destroy: {e}")
+            super().destroy()
+
+    def _on_close(self):
+        """Gestisce la chiusura della finestra"""
+        try:
+            self.grab_release()  # Rilascia il grab
+            self.destroy()  # Distrugge la finestra
+        except Exception as e:
+            logger.error(f"Errore durante la chiusura della finestra: {e}")
+            self.destroy()

@@ -273,8 +273,8 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.8.8"  # Versione aggiornata
-APP_DEVELOPER = "Gianluca Testa"
+APP_VERSION = "1.9.0"  # Versione aggiornata
+APP_DEVELOPER = "@Gianluca Testa"
 
 # # --- CONFIGURAZIONE DATABASE ---
 DB_DRIVER = '{SQL Server Native Client 11.0}'
@@ -757,30 +757,31 @@ class Database:
     #moduli di ricerca sql di scrap_validation_gui
     def fetch_scrap_declarations_pending(self):
         """Recupera le dichiarazioni di scrap in attesa di validazione"""
-        query = """                
-                    SELECT s.ScrapDeclarationId, 
-                       s.[User] as DECLAREDBY, 
+        query = """
+                SELECT s.ScrapDeclarationId,
+                       s.[User] as DECLAREDBY,
                        FORMAT(s.DateIn, 'dd/MM/yyyy') as [Date],
                     o.OrderNumber,
                     l.labelcod,
                     p.productCode as Produc,
                     A.AreaName,
                     d.DefectNameRO as Defect,
+                    s.Riferiments,  -- Campo aggiunto per la stored procedure
                     1 as Qty,
                     s.Picture  -- Aggiunto il campo Picture
                 FROM [Traceability_RS].[dbo].ScarpDeclarations S
-                    INNER JOIN Traceability_RS.dbo.LabelCodes L 
+                    INNER JOIN Traceability_RS.dbo.LabelCodes L
                 ON l.IDLabelCode = s.IdLabelCode
                     INNER JOIN [Traceability_RS].dbo.Areas A ON a.IDArea = s.IDParentPhase
                     INNER JOIN [Traceability_RS].dbo.defects D ON d.IDDefect = s.ScrapReasonId
                     INNER JOIN [Traceability_RS].dbo.boards B ON l.IDBoard = b.IDBoard
                     INNER JOIN [Traceability_RS].dbo.orders o ON o.idorder = b.IDOrder
                     inner join traceability_rs.dbo.products P on p.idproduct=o.idproduct
-                WHERE (s.Accepted IS NULL 
+                WHERE (s.Accepted IS NULL
                    OR s.Accepted = 0)
-                  AND (s.Refuzed IS NULL 
+                  AND (s.Refuzed IS NULL
                    OR s.Refuzed = 0)
-                  AND s.ScrapDeclarationId 
+                  AND s.ScrapDeclarationId
                     > 28
                 ORDER BY S.DateIn;
                 """
@@ -792,36 +793,34 @@ class Database:
             logger.error(f"Errore fetch dichiarazioni scrap: {e}")
             return []
 
-
     def fetch_scrap_declaration_by_id(self, declaration_id):
         """Recupera una singola dichiarazione di scrap per ID"""
         query = """
-                SELECT sd.ScrapDeclarationId, \
-                       sd.DeclarationDate, \
-                       sd.ProductionOrderId, \
-                       po.OrderNumber, \
-                       p.ProductCode, \
-                       p.ProductName, \
-                       sd.ScrapQuantity, \
-                       sd.ScrapReasonId, \
-                       sr.ReasonDescription, \
-                       sd.Notes, \
-                       sd.ValidationStatus, \
-                       sd.ValidationDate, \
-                       sd.ValidatorNotes, \
-                       e.EmployeeName + ' ' + e.EmployeeSurname AS DeclaredBy
-                FROM [Traceability_RS].[dbo].[ScarpDeclarations] sd
-                    INNER JOIN [Traceability_RS].[dbo].[Orders] po
-                ON sd.ProductionOrderId = po.ProductionOrderId
-                    INNER JOIN [Traceability_RS].[dbo].[Products] p
-                    ON po.ProductId = p.IDProduct
-                    INNER JOIN [Traceability_RS].[dbo].[ScrapReasons] sr
-                    ON sd.ScrapReasonId = sr.ScrapReasonId
-                    INNER JOIN [Employee].[dbo].[EmployeeHireHistory] h
-                    ON sd.EmployeeHireHistoryId = h.EmployeeHireHistoryId
-                    INNER JOIN [Employee].[dbo].[Employees] e
-                    ON h.EmployeeId = e.EmployeeId
-                WHERE sd.ScrapDeclarationId = ?; \
+                SELECT s.ScrapDeclarationId, 
+                       s.Datein as DeclarationDate, 
+                       o.idorder as ProductionOrderId, 
+                       o.OrderNumber, 
+                       p.ProductCode, 
+                       p.ProductName, 
+                       1 as ScrapQuantity, 
+                       sr.ScrapReasonId, 
+                       sr.Reason as RasonDescription, 
+                       s.[Note] as Notes, 
+                       iif(s.refuzed = 0 and s.accepted = 0 , 'Waiting acceptance',iif(s.refuzed=1 and s.accepted =0,'Refuzed',
+                       iif(s.refuzed=0 and s.accepted=1,'Accepted',''))) as  ValidationStatus, 
+                       getdate() as ValidationDate, 
+                       '' as ValidatorNotes, 
+                       s.[user]  AS DeclaredBy
+                FROM [Traceability_RS].[dbo].ScarpDeclarations S
+                    INNER JOIN Traceability_RS.dbo.LabelCodes L 
+                ON l.IDLabelCode = s.IdLabelCode
+                    INNER JOIN [Traceability_RS].dbo.Areas A ON a.IDArea = s.IDParentPhase
+                    INNER JOIN [Traceability_RS].dbo.defects D ON d.IDDefect = s.ScrapReasonId
+                    INNER JOIN [Traceability_RS].dbo.boards B ON l.IDBoard = b.IDBoard
+                    INNER JOIN [Traceability_RS].dbo.orders o ON o.idorder = b.IDOrder
+                    inner join traceability_rs.dbo.products P on p.idproduct=o.idproduct
+                    inner join [traceability_rs].dbo.ScrapResons sr on s.ScrapReasonId=sr.ScrapReasonId
+                WHERE s.ScrapDeclarationId = ?; \
                 """
         try:
             self.cursor.execute(query, (declaration_id,))
@@ -832,17 +831,60 @@ class Database:
             return None
 
     def validate_scrap_declaration(self, declaration_id, validation_status, validator_notes, validator_name):
-        """Valida o rifiuta una dichiarazione di scrap"""
-        query = """
-                UPDATE [Traceability_RS].[dbo].[ScarpDeclarations]
-                SET ValidationStatus = ?, ValidationDate = GETDATE(), ValidatorNotes = ?, ValidatedBy = ?
-                WHERE ScrapDeclarationId = ?; \
-                """
+        """Valida o rifiuta una dichiarazione di scrap ed esegue la stored procedure se approvata"""
         try:
-            self.cursor.execute(query, (validation_status, validator_notes, validator_name, declaration_id))
+            if validation_status == 'Approved':
+                # Imposta Accepted = 1, Refuzed = 0
+                query = """
+                        UPDATE [Traceability_RS].[dbo].[ScarpDeclarations]
+                        SET Accepted = 1, Refuzed = 0, ValidationDate = GETDATE(), ValidatorNotes = ?, ValidatedBy = ?
+                        WHERE ScrapDeclarationId = ?;
+                        """
+            else:  # Rejected
+                # Imposta Accepted = 0, Refuzed = 1
+                query = """
+                        UPDATE [Traceability_RS].[dbo].[ScarpDeclarations]
+                        SET Accepted = 0, Refuzed = 1, ValidationDate = GETDATE(), ValidatorNotes = ?, ValidatedBy = ?
+                        WHERE ScrapDeclarationId = ?;
+                        """
+
+            # Esegui l'update
+            self.cursor.execute(query, (validator_notes, validator_name, declaration_id))
+
+            # Se è approvato, recupera i dati ed esegui la stored procedure
+            if validation_status == 'Approved':
+                # Recupera i dati per la stored procedure
+                data_query = """
+                             SELECT l.labelcod      as LabelCode, \
+                                    s.ScrapReasonId as IdDefect, \
+                                    s.Riferiments    as Riferiments, \
+                                    s.IDParentPhase as IdAreaDefect
+                             FROM [Traceability_RS].[dbo].ScarpDeclarations S
+                                 INNER JOIN Traceability_RS.dbo.LabelCodes L \
+                             ON l.IDLabelCode = s.IdLabelCode
+                             WHERE s.ScrapDeclarationId = ? \
+                             """
+
+                self.cursor.execute(data_query, (declaration_id,))
+                row = self.cursor.fetchone()
+
+                if row:
+                    # Esegui la stored procedure
+                    procedure_query = """
+                    EXEC [Traceability_RS].dbo.[DeclareSCRAP] 
+                        @LabelCode = ?,
+                        @IdDefect = ?,
+                        @riferiments = ?,
+                        @idAreaDefect = ?
+                    """
+                    self.cursor.execute(procedure_query,
+                                        (row.LabelCode, row.IdDefect, row.Riferiments or '', row.IdAreaDefect))
+                    logger.info(f"Stored procedure DeclareSCRAP eseguita per LabelCode: {row.LabelCode}")
+
             self.conn.commit()
             logger.info(f"Dichiarazione scrap {declaration_id} validata: {validation_status}")
             return True, None
+
         except pyodbc.Error as e:
             self.conn.rollback()
             self.last_error_details = str(e)
@@ -864,7 +906,6 @@ class Database:
             self.last_error_details = str(e)
             logger.error(f"Errore fetch causali scrap: {e}")
             return []
-
 
     def fetch_all_product_checks(self):
         """Recupera tutte le verifiche configurate"""
@@ -1395,48 +1436,63 @@ class Database:
             self.last_error_details = str(e)
             return None
 
+    def _ensure_connection(self):
+        """Verifica e ripristina la connessione se necessario"""
+        try:
+            # Prova una query semplice per testare la connessione
+            self.cursor.execute("SELECT 1")
+            self.cursor.fetchone()
+            return True
+        except Exception as e:
+            logger.warning(f"Connessione persa, tentativo di riconnessione: {e}")
+            try:
+                if self.conn:
+                    self.conn.close()
+            except:
+                pass
+
+            try:
+                # Riconnessione completa
+                self.conn = pyodbc.connect(self.conn_str)
+                self.cursor = self.conn.cursor()  # Nuovo cursore
+                logger.info("✓ Connessione ripristinata")
+                return True
+            except Exception as reconnect_error:
+                logger.error(f"✗ Impossibile ripristinare la connessione: {reconnect_error}")
+                return False
+
     # def fetch_kanban_current_stock_by_component(self):
     #     """
     #     Recupera lo stock corrente di tutti i componenti dal Kanban.
-    #     Returns: dict {IdComponent: Stock}
     #     """
     #     sql = """
     #           SELECT IdComponent, COALESCE(SUM(Quantity), 0) AS Stock
     #           FROM Traceability_rs.knb.KanBanRecords
     #           WHERE DateOut IS NULL
-    #           GROUP BY IdComponent \
+    #           GROUP BY IdComponent
     #           """
     #     try:
-    #         logger.info(f"Connessione attiva: {self.conn is not None}")
-    #         logger.info(f"Cursore attivo: {self.cursor is not None}")
-    #         self.conn.commit()
+    #         # VERIFICA la connessione prima di procedere
+    #         if not self._ensure_connection():
+    #             logger.error("✗ Connessione non disponibile in fetch_kanban_current_stock_by_component")
+    #             return {}
+    #
+    #         logger.error("✗ Connessione non disponibile in fetch_kanban_current_stock_by_component")
+    #
     #         self.cursor.execute(sql)
     #         rows = self.cursor.fetchall()
     #         stock_map = {row.IdComponent: row.Stock for row in rows}
     #         logger.info(f"✓ Stock recuperato per {len(stock_map)} componenti")
     #         return stock_map
+    #
     #     except Exception as e:
     #         self.last_error_details = str(e)
     #         logger.error(f"✗ Errore fetch_kanban_current_stock_by_component: {e}")
+    #         # Debug aggiuntivo
+    #         logger.error(f"Tipo di errore: {type(e)}")
+    #         logger.error(f"Args errore: {e.args if hasattr(e, 'args') else 'N/A'}")
+    #
     #         return {}
-
-    def _ensure_connection(self):
-        """Verifica e ripristina la connessione solo se necessaria"""
-        try:
-            # Testa la connessione con una query semplice
-            self.cursor.execute("SELECT 1")
-            self.cursor.fetchone()
-            return True
-        except:
-            try:
-                logger.warning("Connessione DB corrotta, tentativo di ripristino...")
-                if self.conn:
-                    self.disconnect()
-                self.connect()
-                return True
-            except Exception as e:
-                logger.error(f"Ripristino connessione fallito: {e}")
-                return False
 
     def fetch_kanban_current_stock_by_component(self):
         """
@@ -1451,7 +1507,13 @@ class Database:
         try:
             # VERIFICA la connessione prima di procedere
             if not self._ensure_connection():
-                return {}
+                logger.error("✗ Connessione non disponibile in fetch_kanban_current_stock_by_component")
+                return None  # Restituisci None per indicare errore di connessione
+
+            # Pulizia preventiva del cursore
+            self._clean_cursor()
+
+            logger.info("Eseguendo query fetch_kanban_current_stock_by_component...")
 
             self.cursor.execute(sql)
             rows = self.cursor.fetchall()
@@ -1462,7 +1524,57 @@ class Database:
         except Exception as e:
             self.last_error_details = str(e)
             logger.error(f"✗ Errore fetch_kanban_current_stock_by_component: {e}")
-            return {}
+            return None  # Restituisci None per indicare errore
+
+    def _clean_cursor(self):
+        """Pulisce lo stato del cursore"""
+        try:
+            # Prova a chiudere il cursore corrente
+            if self.cursor:
+                try:
+                    # Tenta di consumare eventuali risultati pendenti
+                    while self.cursor.nextset():
+                        pass
+                except:
+                    pass
+
+                # Chiudi il cursore e creane uno nuovo
+                self.cursor.close()
+                self.cursor = self.conn.cursor()
+                logger.debug("✓ Cursore pulito")
+        except Exception as e:
+            logger.warning(f"Errore durante la pulizia del cursore: {e}")
+            # Se fallisce, crea un nuovo cursore
+            try:
+                self.cursor = self.conn.cursor()
+            except:
+                pass
+
+
+    # def _ensure_connection(self):
+    #     """Verifica e ripristina la connessione se necessario"""
+    #     try:
+    #         # Prova una query semplice per testare la connessione
+    #         self.cursor.execute("SELECT 1")
+    #         self.cursor.fetchone()
+    #         return True
+    #     except Exception as e:
+    #         logger.warning(f"Connessione persa, tentativo di riconnessione: {e}")
+    #         try:
+    #             if self.conn:
+    #                 self.conn.close()
+    #         except:
+    #             pass
+    #
+    #         try:
+    #             # Usa la stringa di connessione salvata in __init__
+    #             self.conn = pyodbc.connect(self.conn_str)
+    #             self.cursor = self.conn.cursor()
+    #             logger.info("✓ Connessione ripristinata")
+    #             return True
+    #         except Exception as reconnect_error:
+    #             logger.error(f"✗ Impossibile ripristinare la connessione: {reconnect_error}")
+    #             return False
 
     def fetch_active_rules_by_component(self):
         """
@@ -1554,34 +1666,58 @@ class Database:
 
     def fetch_components_master(self, component_ids):
         """
-        Ritorna {IdComponent: {'code': ..., 'desc': ...}}
-        La tabella è traceability_rs.dbo.Components
+        Recupera i dati master dei componenti.
         """
         if not component_ids:
             return {}
 
-        placeholders = ','.join(['?'] * len(component_ids))
-
-        sql = f"""
-              SELECT IdComponent, ComponentCode, ComponentDescription 
-              FROM [Traceability_RS].[dbo].[Components] 
-              WHERE IdComponent IN ({placeholders})
-              """
         try:
-            with self.conn.cursor() as cur:
-                cur.execute(sql, component_ids)
-                rows = cur.fetchall()
-                return {
-                    int(row[0]): {
-                        'code': row[1],
-                        'desc': row[2] or ''
-                    } for row in rows
+            if not self._ensure_connection():
+                logger.error("Connessione non disponibile in fetch_components_master")
+                return None
+
+            # Crea una stringa con i placeholder per i parametri
+            placeholders = ','.join(['?' for _ in component_ids])
+            sql = f"""
+                SELECT IdComponent, ComponentCode, ComponentDescription 
+                FROM Traceability_rs.dbo.Components 
+                WHERE IdComponent IN ({placeholders})
+            """
+
+            logger.info(f"Eseguendo fetch_components_master per {len(component_ids)} componenti...")
+
+            # Assicurati che non ci siano risultati pendenti
+            try:
+                while self.cursor.nextset():
+                    pass
+            except:
+                pass
+
+            # Esegui la query
+            self.cursor.execute(sql, component_ids)
+            rows = self.cursor.fetchall()
+
+            master_map = {}
+            for row in rows:
+                master_map[row.IdComponent] = {
+                    'code': row.ComponentCode,
+                    'desc': row.ComponentDescription
                 }
 
-        except pyodbc.Error as e:
+            logger.info(f"✓ Master component recuperati: {len(master_map)}")
+            return master_map
+
+        except Exception as e:
             self.last_error_details = str(e)
-            logger.error(f"Error in fetch_components_master: {e}")
-            return {}
+            logger.error(f"✗ Errore in fetch_components_master: {e}")
+
+            # Reset del cursore in caso di errore
+            try:
+                self.cursor = self.conn.cursor()
+            except:
+                pass
+
+            return None
 
     def has_refill_request_today(self, kanban_record_id: int) -> bool:
         """
@@ -2231,6 +2367,85 @@ class Database:
             except Exception:
                 pass
 
+    def get_calibration_details(self, calibration_id):
+        """Recupera i dettagli completi di una calibrazione specifica"""
+        try:
+            query = """
+                    SELECT [CalibrationID]
+                            , e.[EquipmentID]
+                            , e.InternalName
+                            , s.SiteName
+                            , [CalibratedOn]
+                            , [ExpireOn]
+                            , [NrCertificate]
+                            , [User]
+                            , cast (c.[DateSys] as date) as DateIn
+                            , [WarningSentOn]
+                            , [IsValid]
+                    FROM [Traceability_RS].[eqp].[Calibrations] AS C
+                        inner join traceability_rs.eqp.equipments as E \
+                    on e.EquipmentId= c.EquipmentID
+                        inner join traceability_rs.eqp.EquipmentBrands eb on eb.EquipmentBrandId=e.BrandId
+                        inner join traceability_rs.dbo.sites as s on s.IDSite = eb.CompanyId
+                    WHERE [CalibrationID] = ? \
+                    """
+
+            self.cursor.execute(query, (calibration_id,))
+            row = self.cursor.fetchone()
+
+            if row:
+                # Crea un namedtuple o oggetto con attributi per accesso facilitato
+                CalibrationDetails = collections.namedtuple(
+                    'CalibrationDetails',
+                    ['CalibrationID', 'EquipmentID', 'InternalName', 'SiteName',
+                     'CalibratedOn', 'ExpireOn', 'NrCertificate', 'User',
+                     'DateIn', 'WarningSentOn', 'IsValid']
+                )
+                return CalibrationDetails(*row)
+            else:
+                return None
+
+        except Exception as e:
+            logger.error(f"Errore nel recupero dettagli calibrazione {calibration_id}: {e}")
+            raise
+
+    def update_calibration(self, calibration_id, expiry_date, supplier_id, pdf_bytes, username):
+        """Aggiorna una calibrazione esistente"""
+        try:
+            query = """
+                    UPDATE [Traceability_RS].[eqp].[Calibrations]
+                    SET [ExpireOn] = ?, [SupplierId] = ?, [NrCertificate] = ?, [User] = ?, [DateSys] = GETDATE()
+                    WHERE [CalibrationID] = ? \
+                    """
+
+            self.cursor.execute(query, (expiry_date, supplier_id, pdf_bytes, username, calibration_id))
+            self.conn.commit()
+
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Errore nell'aggiornamento calibrazione {calibration_id}: {e}")
+            raise
+
+    def invalidate_previous_calibrations(self, equipment_id):
+        """Imposta IsValid = 0 per tutte le calibrazioni precedenti di un'attrezzatura"""
+        try:
+            query = """
+                    UPDATE [Traceability_RS].[eqp].[Calibrations]
+                    SET [IsValid] = 0, [DateSys] = GETDATE()
+                    WHERE [EquipmentID] = ?
+                      AND [IsValid] = 1
+                      AND [ExpireOn] \
+                        < GETDATE() \
+                    """
+
+            self.cursor.execute(query, (equipment_id,))
+            self.conn.commit()
+
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Errore nell'invalidazione calibrazioni per equipment {equipment_id}: {e}")
+            raise
+
     def fetch_calibration_warnings(self):
         """
         Elenco attrezzature con calibrazione mancante o in scadenza (<=7 giorni)
@@ -2758,32 +2973,40 @@ class Database:
             if cursor:
                 cursor.close()
 
-    def add_new_calibration(self, equipment_id: int, expire_on: str, supplier_id: int, certificate_bytes):
-        """
-        Inserisce una calibrazione.
-        NrCertificate: varbinary(MAX) -> passare bytes/bytearray o None.
-        Se per retrocompatibilità arriva una str, viene codificata UTF-8.
-        """
-        sql = """
-        INSERT INTO eqp.Calibrations (EquipmentId, CalibratedOn, ExpireOn, SupplierId, NrCertificate)
-        VALUES (?, GETDATE(), ?, ?, ?);
-        """
+    def add_new_calibration(self, equipment_id, expiry_date, supplier_id, pdf_bytes, username):
+        """Inserisce una nuova calibrazione"""
+        try:
+            query = """
+                    INSERT INTO [Traceability_RS].[eqp].[Calibrations]
+                    ([EquipmentID], [SupplierId], [CalibratedOn], [ExpireOn], [NrCertificate], [User], [DateSys], [ \
+                      IsValid])
+                    VALUES (?, ?, GETDATE(), ?, ?, ?, GETDATE(), 1) \
+                    """
 
-        # Normalizza il parametro binario
-        if certificate_bytes is None:
-            param_cert = None
-        elif isinstance(certificate_bytes, (bytes, bytearray, memoryview)):
-            # memoryview va bene, ma convertiamolo a bytes per sicurezza
-            param_cert = bytes(certificate_bytes)
-        elif isinstance(certificate_bytes, str):
-            # solo se vuoi supportare ancora stringhe (verranno salvate come UTF-8)
-            param_cert = certificate_bytes.encode('utf-8')
-        else:
-            # qualsiasi altro tipo (es. Path) -> prova a convertirlo in bytes
-            param_cert = bytes(certificate_bytes)
+            self.cursor.execute(query, (equipment_id, supplier_id, expiry_date, pdf_bytes, username))
+            self.conn.commit()
 
-        self.cursor.execute(sql, equipment_id, expire_on, supplier_id, param_cert)
-        self.conn.commit()
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Errore nell'inserimento calibrazione per equipment {equipment_id}: {e}")
+            raise
+
+    def update_calibration(self, calibration_id, expiry_date, supplier_id, pdf_bytes, username):
+        """Aggiorna una calibrazione esistente"""
+        try:
+            query = """
+                    UPDATE [Traceability_RS].[eqp].[Calibrations]
+                    SET [ExpireOn] = ?, [SupplierId] = ?, [NrCertificate] = ?, [User] = ?, [DateSys] = GETDATE()
+                    WHERE [CalibrationID] = ? \
+                    """
+
+            self.cursor.execute(query, (expiry_date, supplier_id, pdf_bytes, username, calibration_id))
+            self.conn.commit()
+
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Errore nell'aggiornamento calibrazione {calibration_id}: {e}")
+            raise
 
     def get_equipment_info(self, equipment_id):
         """Recupera le informazioni del macchinario dal database."""
@@ -7764,24 +7987,40 @@ class App(tk.Tk):
 
     def _kanban_refill_check_worker(self, manual=False):
         """
-        Logica di controllo:
-        - calcola stock correnti per componente
-        - calcola soglia (assoluta o % su prima quantità) per i componenti con regola
-        - per i componenti senza regola, soglia=0
-        - se stock <= soglia -> prepara richiesta: Qty = max singolo carico; dedup su KanBanRecordId/day
-        - genera Excel, invia mail, salva righe in knb.KanBanMaterialRequestes
+        Logica di controllo Kanban refill
         """
         log = logging.getLogger("TraceabilityRS")
         try:
-            # 1. Stock corrente per componente
-            stock_map = self.db.fetch_kanban_current_stock_by_component()  # {comp: stock}
+            # Verifica preliminare della connessione
+            if not self.db._ensure_connection():
+                log.error("Connessione al database non disponibile per Kanban refill check")
+                if manual:
+                    self.after(0, lambda: messagebox.showerror(
+                        self.lang.get('error_title', 'Errore'),
+                        "Connessione al database non disponibile. Riprovare più tardi."
+                    ))
+                return
 
-            if not stock_map:
-                log.warning("Nessun dato stock recuperato")
+            # 1. Stock corrente per componente
+            log.info("Recupero stock corrente...")
+            stock_map = self.db.fetch_kanban_current_stock_by_component()
+
+            # Gestione degli errori
+            if stock_map is None:  # Errore di connessione o query fallita
+                log.error("Errore nel recupero stock - connessione persa o query fallita")
+                if manual:
+                    self.after(0, lambda: messagebox.showerror(
+                        self.lang.get('error_title', 'Errore'),
+                        "Errore di connessione durante il recupero dei dati stock."
+                    ))
+                return
+
+            if not stock_map:  # Nessun dato ma senza errori (tabella vuota)
+                log.warning("Nessun dato stock recuperato (tabella vuota o tutti i componenti hanno DateOut)")
                 if manual:
                     self.after(0, lambda: messagebox.showinfo(
                         self.lang.get('info_title', 'Informazione'),
-                        self.lang.get('kanban_refill_none', 'Nessun componente da richiedere.')
+                        "Nessun componente trovato con stock attivo (tutti i componenti hanno DateOut compilato)."
                     ))
                 return
 
@@ -7789,22 +8028,38 @@ class App(tk.Tk):
             log.info(f"Componenti da processare: {len(comp_ids)}")
 
             # 2. Regole attive per componente
-            rules_map = self.db.fetch_active_rules_by_component()  # {comp: {'min_qty':..., 'min_pct':...}}
+            log.info("Recupero regole attive...")
+            rules_map = self.db.fetch_active_rules_by_component()
+            if rules_map is None:  # Errore di connessione
+                log.error("Errore nel recupero regole attive")
+                return
             log.info(f"Regole attive trovate: {len(rules_map)}")
 
             # 3. Prima quantità (per chi ha regola percentuale)
             pct_comp_ids = [cid for cid, r in rules_map.items() if r.get('min_pct') is not None]
             first_qty_map = {}
             if pct_comp_ids:
+                log.info(f"Recupero prime quantità per {len(pct_comp_ids)} componenti...")
                 first_qty_map = self.db.fetch_first_load_qty_by_component(pct_comp_ids)
-                log.info(f"Regole attive trovate: {len(rules_map)}")
+                if first_qty_map is None:  # Errore di connessione
+                    log.error("Errore nel recupero prime quantità")
+                    return
+                log.info(f"Prime quantità recuperate: {len(first_qty_map)}")
 
             # 4. Max singolo carico + record id
-            max_load_map = self.db.fetch_max_single_load_by_component(comp_ids)  # {comp: {'max_qty','record_id'}}
+            log.info("Recupero max carichi...")
+            max_load_map = self.db.fetch_max_single_load_by_component(comp_ids)
+            if max_load_map is None:  # Errore di connessione
+                log.error("Errore nel recupero max carichi")
+                return
             log.info(f"Max carichi recuperati: {len(max_load_map)}")
 
             # 5. Master component
-            master_map = self.db.fetch_components_master(comp_ids)  # {comp: {'code','desc'}}
+            log.info("Recupero master component...")
+            master_map = self.db.fetch_components_master(comp_ids)
+            if master_map is None:  # Errore di connessione
+                log.error("Errore nel recupero master component")
+                return
             log.info(f"Master component recuperati: {len(master_map)}")
 
             # 6. Valuta richieste
@@ -7884,7 +8139,6 @@ class App(tk.Tk):
                 "Regards,\nTraceability System"
             )
 
-            # Nota: adegua utils.send_email se non gestisce attach; qui assumiamo supports attachments=[(filename, bytes)]
             try:
                 utils.send_email(
                     recipients=recipients,
@@ -8330,29 +8584,54 @@ class App(tk.Tk):
             action_callback=lambda:scarti_gui.open_scrap_declaration_window(self, self.db, self.lang)
         )
 
+    # def open_calibrations_manager_with_login(self):
+    #     """
+    #     Questa funzione agisce da "ponte". Prima esegue il login
+    #     e SOLO SE ha successo, apre la finestra.
+    #     """
+    #     # Chiama il login in modalità "gatekeeper", richiedendo un permesso specifico.
+    #     # La funzione _execute_simple_login restituirà l'utente se il login
+    #     # e la verifica dei permessi vanno a buon fine, altrimenti None.
+    #     user_che_ha_fatto_login = self._execute_simple_login(
+    #         required_permission='calibration_management'
+    #     )
+    #
+    #     # L'if controlla che il login sia andato a buon fine.
+    #     if user_che_ha_fatto_login:
+    #         # Solo ora, con la certezza che l'utente è autorizzato,
+    #         # creiamo e apriamo la finestra delle calibrazioni.
+    #         try:
+    #             CalibrationsWindow(self, self.db, self.lang)
+    #         except Exception as e:
+    #             messagebox.showerror("Errore", f"Impossibile aprire il modulo di calibrazione: {e}")
+
     def open_calibrations_manager_with_login(self):
         logger = logging.getLogger("TraceabilityRS")
         required = 'calibration_management'
         logger.info("Request to open CalibrationsWindow; required_permission=%r", required)
+
         # Chiama il login in modalità "gatekeeper"
         user = self._execute_simple_login(required_permission=required)
         logger.info("Login result for calibrations: %s", "OK" if user else "FAILED")
 
-        # Questo `if` è il controllo di sicurezza.
-        # Il codice al suo interno viene eseguito solo se _execute_simple_login
-        # restituisce un oggetto utente valido (login riuscito).
         if user:
             print(f"Login riuscito per l'utente {user.name}. Apertura finestra...")
             try:
-                # Ora che l'utente è autenticato, possiamo creare la finestra.
-                CalibrationsWindow(self, self.db, self.lang)
+                # Salva l'utente corrente nell'istanza principale
+                self.current_user = user
+
+                # Crea la finestra senza memorizzarla
+                logging.info('Tentativo apertura finestra di calibrazione')
+                calibration_window = CalibrationsWindow(self, self.db, self.lang)
+
+                # Focus sulla nuova finestra
+                calibration_window.focus_force()
+
             except Exception as e:
                 logging.getLogger("TraceabilityRS").exception("Error opening CalibrationsWindow: %s", e)
                 messagebox.showerror("Errore", f"Impossibile aprire il modulo di calibrazione: {e}")
 
         else:
-            # Questo blocco viene eseguito se l'utente chiude la finestra di login
-            # o non ha i permessi.
             print("Login fallito o annullato. Accesso al modulo negato.")
 
     def open_line_stoppage_report(self):
@@ -9057,27 +9336,6 @@ class App(tk.Tk):
             progetto_id=int(project_id)
         )
 
-    def open_calibrations_manager_with_login(self):
-        """
-        Questa funzione agisce da "ponte". Prima esegue il login
-        e SOLO SE ha successo, apre la finestra.
-        """
-        # Chiama il login in modalità "gatekeeper", richiedendo un permesso specifico.
-        # La funzione _execute_simple_login restituirà l'utente se il login
-        # e la verifica dei permessi vanno a buon fine, altrimenti None.
-        user_che_ha_fatto_login = self._execute_simple_login(
-            required_permission='calibration_management'
-        )
-
-        # L'if controlla che il login sia andato a buon fine.
-        if user_che_ha_fatto_login:
-            # Solo ora, con la certezza che l'utente è autorizzato,
-            # creiamo e apriamo la finestra delle calibrazioni.
-            try:
-                CalibrationsWindow(self, self.db, self.lang)
-            except Exception as e:
-                messagebox.showerror("Errore", f"Impossibile aprire il modulo di calibrazione: {e}")
-
     def _create_menu(self):
         """Crea la struttura completa dei menu con gerarchia organizzata"""
         self.menubar = tk.Menu(self)
@@ -9455,7 +9713,8 @@ class App(tk.Tk):
         # Aggiungi tutte le voci del menu Calibrazioni
         self.calibrations_submenu.add_command(
             label=self.lang.get('calibration_management', "Gestione Calibrazioni"),
-            command=self._open_calibration_management
+           # command=self._open_calibration_management
+            command=self.open_calibrations_manager_with_login
         )
         self.calibrations_submenu.add_command(
             label=self.lang.get('view_calibration_status', "Visualizza Situazione Calibrazioni"),

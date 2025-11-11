@@ -337,6 +337,25 @@ class ScrapValidationWindow(tk.Toplevel):
             )
             return
 
+        # Aggiungi campo per note di validazione
+        validator_notes = ""
+        if status == 'Rejected':
+            # Chiedi le note per il rifiuto
+            validator_notes = tk.simpledialog.askstring(
+                "Note di Rifiuto",
+                "Inserisci le motivazioni del rifiuto:",
+                parent=self
+            )
+            if validator_notes is None:  # L'utente ha premuto Cancel
+                return
+            if not validator_notes.strip():
+                messagebox.showwarning(
+                    "Attenzione",
+                    "È obbligatorio inserire le motivazioni del rifiuto",
+                    parent=self
+                )
+                return
+
         # Conferma azione
         action_text = 'approvare' if status == 'Approved' else 'rifiutare'
         if not messagebox.askyesno(
@@ -350,7 +369,7 @@ class ScrapValidationWindow(tk.Toplevel):
         success, error = self.db.validate_scrap_declaration(
             self.selected_declaration,
             status,
-            None,
+            validator_notes,
             self.user_name
         )
 
