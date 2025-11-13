@@ -273,7 +273,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.9.1"  # Versione aggiornata
+APP_VERSION = "1.9.2"  # Versione aggiornata
 APP_DEVELOPER = "@Gianluca Testa"
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -2980,8 +2980,7 @@ class Database:
         try:
             query = """
                     INSERT INTO [Traceability_RS].[eqp].[Calibrations]
-                    ([EquipmentID], [SupplierId], [CalibratedOn], [ExpireOn], [NrCertificate], [User], [DateSys], [ \
-                      IsValid])
+                    ([EquipmentID], [SupplierId], [CalibratedOn], [ExpireOn], [NrCertificate], [User], [DateSys], [IsValid])
                     VALUES (?, ?, GETDATE(), ?, ?, ?, GETDATE(), 1) \
                     """
 
