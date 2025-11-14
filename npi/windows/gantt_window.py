@@ -1,12 +1,23 @@
 # npi/windows/gantt_window.py
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import pandas as pd
 import plotly.express as px
+from datetime import timedelta, datetime
 import webbrowser
 import os
 import logging
+import tempfile
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.chart import BarChart, Reference
+from openpyxl.formatting.rule import CellIsRule, ColorScaleRule
+from openpyxl.worksheet.table import Table, TableStyleInfo
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+import matplotlib.dates as mdates
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +25,7 @@ logger = logging.getLogger(__name__)
 class NpiGanttWindow(tk.Toplevel):
     """
     Finestra che genera e visualizza un diagramma di Gantt per un progetto NPI.
+    Con funzionalità avanzate di export Excel e PDF.
     """
 
     def __init__(self, master, npi_manager, lang, progetto_id: int, **kwargs):
@@ -21,85 +33,921 @@ class NpiGanttWindow(tk.Toplevel):
         self.npi_manager = npi_manager
         self.lang = lang
         self.progetto_id = progetto_id
+        self.df = None
+        self.product_name = ""
+        self.gantt_data_raw = None  # Dati originali per statistiche
 
-        self.progetto_dettagli = self.npi_manager.get_dettagli_progetto(self.progetto_id)
-        if not self.progetto_dettagli:
-            messagebox.showerror("Errore", f"Progetto con ID {self.progetto_id} non trovato.", parent=self)
-            self.destroy()
-            return
-
-        titolo = self.lang.get('npi_gantt_title', 'Gantt Progetto NPI')
-        self.title(f"{titolo} - {self.progetto_dettagli.prodotto.NomeProdotto}")
-        self.geometry("800x200")  # Finestra minima, l'azione principale è aprire il browser
+        self.title(f"Gantt Progetto NPI - ID: {progetto_id}")
+        self.geometry("900x650")
 
         self.create_widgets()
-        self.generate_and_open_gantt()
+        self.generate_gantt()
 
     def create_widgets(self):
-        """Crea i widget di base."""
+        """Crea i widget della finestra."""
         main_frame = ttk.Frame(self, padding="20")
         main_frame.pack(expand=True, fill=tk.BOTH)
 
-        label = ttk.Label(main_frame,
-                          text=self.lang.get('gantt_opening_message', 'Generazione del diagramma di Gantt in corso...'),
-                          font=("Calibri", 12))
-        label.pack(pady=10)
+        # Titolo
+        title_label = ttk.Label(
+            main_frame,
+            text="Generazione Diagramma di Gantt",
+            font=("Calibri", 14, "bold")
+        )
+        title_label.pack(pady=10)
 
-        open_button = ttk.Button(main_frame, text=self.lang.get('gantt_reopen', 'Apri di nuovo nel Browser'),
-                                 command=self.generate_and_open_gantt)
-        open_button.pack(pady=10)
+        # Frame pulsanti principali
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(pady=10)
 
-    def generate_and_open_gantt(self):
-        """
-        Recupera i dati, genera il file HTML con Plotly e lo apre.
-        """
+        ttk.Button(
+            button_frame,
+            text="🔄 Rigenera Gantt",
+            command=self.generate_gantt
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            button_frame,
+            text="📊 Esporta Excel Completo",
+            command=self.export_to_excel_advanced
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            button_frame,
+            text="📄 Esporta PDF",
+            command=self.export_to_pdf
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            button_frame,
+            text="❌ Chiudi",
+            command=self.destroy
+        ).pack(side=tk.LEFT, padx=5)
+
+        # Separator
+        ttk.Separator(main_frame, orient='horizontal').pack(fill='x', pady=10)
+
+        # Frame statistiche
+        stats_frame = ttk.LabelFrame(main_frame, text="📈 Statistiche Progetto", padding="10")
+        stats_frame.pack(fill='x', pady=10)
+
+        self.stats_label = ttk.Label(
+            stats_frame,
+            text="Genera il Gantt per visualizzare le statistiche",
+            font=("Calibri", 10)
+        )
+        self.stats_label.pack()
+
+        # Area di stato
+        status_frame = ttk.LabelFrame(main_frame, text="📋 Log Operazioni", padding="10")
+        status_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.status_text = tk.Text(status_frame, height=15, width=80, wrap=tk.WORD)
+        status_scrollbar = ttk.Scrollbar(status_frame, orient="vertical", command=self.status_text.yview)
+        self.status_text.configure(yscrollcommand=status_scrollbar.set)
+
+        self.status_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        status_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def log_status(self, message):
+        """Aggiunge un messaggio allo status text."""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.status_text.insert(tk.END, f"[{timestamp}] {message}\n")
+        self.status_text.see(tk.END)
+        self.update_idletasks()
+
+    def generate_gantt(self):
+        """Genera il diagramma di Gantt."""
         try:
+            self.log_status("=== INIZIO GENERAZIONE GANTT ===")
+
+            # Recupera i dati
+            self.log_status("Recupero dati dal database...")
             gantt_data, product_name = self.npi_manager.get_gantt_data(self.progetto_id)
+
             if not gantt_data:
-                messagebox.showinfo(
-                    "Info",
-                    "Nessun task assegnato con date pianificate da visualizzare per questo progetto.",
-                    parent=self
-                )
+                self.log_status("❌ Nessun task disponibile per il Gantt")
+                messagebox.showinfo("Info", "Nessun task assegnato con date valide.", parent=self)
                 return
 
-            # Crea esplicitamente il DataFrame con i dati
+            self.log_status(f"✅ Ricevuti {len(gantt_data)} task")
+
+            # Salva dati raw
+            self.gantt_data_raw = gantt_data
+
+            # Crea DataFrame
             df = pd.DataFrame(gantt_data)
 
-            # DEBUG: Stampa le colonne disponibili per verificare
-            print(f"DEBUG: Colonne disponibili nel DataFrame: {df.columns.tolist()}")
-            print(f"DEBUG: Numero di task nel Gantt: {len(df)}")
+            # Converti date
+            df['Start'] = pd.to_datetime(df['Start'])
+            df['Finish'] = pd.to_datetime(df['Finish'])
 
-            # Verifica che le colonne necessarie esistano
-            required_columns = ['Task', 'Start', 'Finish', 'Owner']
-            missing_columns = [col for col in required_columns if col not in df.columns]
-            if missing_columns:
-                raise ValueError(f"Colonne mancanti nel DataFrame: {missing_columns}")
+            # Aggiusta durate
+            df = self.adjust_durations(df)
 
-            # Crea il Gantt con i nomi di colonna corretti
+            # Calcola statistiche
+            self.calculate_statistics(df)
+
+            # Salva per export
+            self.df = df.copy()
+            self.product_name = product_name
+
+            # Crea grafico
+            self.create_chart(df, product_name)
+
+        except Exception as e:
+            error_msg = f"❌ Errore: {str(e)}"
+            self.log_status(error_msg)
+            logger.error(f"Errore Gantt: {e}", exc_info=True)
+            messagebox.showerror("Errore", f"Impossibile generare il Gantt:\n{str(e)}", parent=self)
+
+    def adjust_durations(self, df):
+        """Aggiusta le durate dei task."""
+        self.log_status("Aggiustamento durate task...")
+
+        for idx, row in df.iterrows():
+            duration = (row['Finish'] - row['Start']).days
+            if duration <= 0:
+                df.at[idx, 'Finish'] = row['Start'] + timedelta(days=1)
+                self.log_status(f"  Task '{row['Task']}': durata impostata a 1 giorno")
+
+        return df
+
+    def calculate_statistics(self, df):
+        """Calcola e visualizza statistiche del progetto."""
+        try:
+            total_tasks = len(df)
+
+            # Calcola durata totale progetto
+            project_start = df['Start'].min()
+            project_end = df['Finish'].max()
+            project_duration = (project_end - project_start).days
+
+            # Task per owner
+            tasks_per_owner = df['Owner'].value_counts().to_dict()
+
+            # Durata media task
+            df['Duration'] = (df['Finish'] - df['Start']).dt.days
+            avg_duration = df['Duration'].mean()
+
+            # Task critici (durata > media)
+            critical_tasks = len(df[df['Duration'] > avg_duration])
+
+            # Verifica ritardi (se oggi è oltre la data di fine)
+            today = pd.Timestamp.now()
+            late_tasks = len(df[df['Finish'] < today])
+
+            # Percentuale completamento (stima basata su date)
+            if today < project_start:
+                completion = 0
+            elif today > project_end:
+                completion = 100
+            else:
+                elapsed = (today - project_start).days
+                completion = min(100, (elapsed / project_duration) * 100)
+
+            # Aggiorna label statistiche
+            stats_text = f"""
+📊 Task Totali: {total_tasks} | ⏱️ Durata Progetto: {project_duration} giorni
+📅 Inizio: {project_start.strftime('%d/%m/%Y')} | 🏁 Fine: {project_end.strftime('%d/%m/%Y')}
+📈 Completamento Stimato: {completion:.1f}% | ⚠️ Task in Ritardo: {late_tasks}
+🎯 Task Critici (>media): {critical_tasks} | ⏳ Durata Media: {avg_duration:.1f} giorni
+👥 Assegnazioni: {', '.join([f'{k}({v})' for k, v in tasks_per_owner.items()])}
+            """.strip()
+
+            self.stats_label.config(text=stats_text)
+            self.log_status("✅ Statistiche calcolate")
+
+            # Salva per export
+            self.statistics = {
+                'total_tasks': total_tasks,
+                'project_start': project_start,
+                'project_end': project_end,
+                'project_duration': project_duration,
+                'avg_duration': avg_duration,
+                'critical_tasks': critical_tasks,
+                'late_tasks': late_tasks,
+                'completion': completion,
+                'tasks_per_owner': tasks_per_owner
+            }
+
+        except Exception as e:
+            logger.error(f"Errore calcolo statistiche: {e}")
+            self.stats_label.config(text="⚠️ Errore nel calcolo delle statistiche")
+
+    def create_chart(self, df, product_name):
+        """Crea il diagramma di Gantt."""
+        try:
+            self.log_status("Creazione grafico...")
+
             fig = px.timeline(
                 df,
                 x_start="Start",
                 x_end="Finish",
                 y="Task",
                 color="Owner",
-                title=f"Gantt per {product_name} - Task Assegnati",
+                title=f"Gantt - {product_name}",
+                labels={"Task": "Attività", "Owner": "Assegnato a"}
             )
+
+            # Layout
+            fig.update_layout(
+                xaxis_title="Timeline",
+                yaxis_title="Attività",
+                height=max(500, len(df) * 25),
+                showlegend=True
+            )
+
+            fig.update_xaxes(tickformat="%d/%m/%Y")
             fig.update_yaxes(autorange="reversed")
 
-            # Aggiunge informazioni hover
-            fig.update_traces(
-                hovertemplate='<b>%{y}</b><br>Assegnato a: %{color}<br>Inizio: %{base|%d/%m/%Y}<br>Fine: %{x|%d/%m/%Y}<extra></extra>'
-            )
+            # Salva file
+            temp_dir = tempfile.gettempdir()
+            file_path = os.path.join(temp_dir, f"gantt_{self.progetto_id}.html")
 
-            # Salva in un file HTML temporaneo
-            file_path = os.path.join(os.path.expanduser("~"), "temp_npi_gantt.html")
-            fig.write_html(file_path)
+            fig.write_html(file_path, auto_open=False)
+            webbrowser.open(f'file://{file_path}')
 
-            # Apre il file nel browser
-            webbrowser.open(f'file://{os.path.realpath(file_path)}')
-            logger.info(f"Gantt per progetto {self.progetto_id} generato e aperto in {file_path}")
+            self.log_status(f"✅ Gantt generato: {file_path}")
+            self.log_status(f"📊 Task visualizzati: {len(df)}")
 
         except Exception as e:
-            logger.error(f"Errore nella generazione del Gantt per progetto {self.progetto_id}: {e}", exc_info=True)
-            messagebox.showerror("Errore Gantt", f"Impossibile generare il diagramma:\n{e}", parent=self)
+            self.log_status(f"❌ Errore creazione grafico: {str(e)}")
+            raise
+
+    # ========== EXPORT EXCEL AVANZATO ==========
+
+    def export_to_excel_advanced(self):
+        """Esporta il Gantt in formato Excel con tutte le funzionalità avanzate."""
+        if self.df is None or self.df.empty:
+            messagebox.showwarning(
+                "Attenzione",
+                "Genera prima il Gantt prima di esportare!",
+                parent=self
+            )
+            return
+
+        try:
+            # Chiedi dove salvare
+            default_filename = f"Gantt_NPI_{self.progetto_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            file_path = filedialog.asksaveasfilename(
+                parent=self,
+                title="Salva Gantt Excel",
+                defaultextension=".xlsx",
+                initialfile=default_filename,
+                filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
+            )
+
+            if not file_path:
+                return
+
+            self.log_status("=== EXPORT EXCEL AVANZATO ===")
+            self.log_status(f"Salvataggio in: {file_path}")
+
+            # Crea workbook
+            wb = Workbook()
+            wb.remove(wb.active)  # Rimuovi foglio default
+
+            # 1️⃣ Foglio Riepilogo
+            self.log_status("Creazione foglio Riepilogo...")
+            self._create_summary_sheet(wb)
+
+            # 2️⃣ Foglio Gantt Chart con tabella e filtri
+            self.log_status("Creazione foglio Gantt Chart...")
+            self._create_gantt_sheet(wb)
+
+            # 3️⃣ Foglio Timeline Visuale
+            self.log_status("Creazione foglio Timeline Visuale...")
+            self._create_timeline_sheet(wb)
+
+            # 4️⃣ Foglio Statistiche con grafici
+            self.log_status("Creazione foglio Statistiche...")
+            self._create_statistics_sheet(wb)
+
+            # 5️⃣ Foglio Task Critici
+            self.log_status("Creazione foglio Task Critici...")
+            self._create_critical_tasks_sheet(wb)
+
+            # Salva
+            wb.save(file_path)
+
+            self.log_status(f"✅ Excel salvato con successo!")
+            self.log_status(f"📁 {file_path}")
+            self.log_status(f"📊 Fogli creati: {len(wb.sheetnames)}")
+
+            # Chiedi se aprire
+            if messagebox.askyesno(
+                    "Successo",
+                    f"File Excel creato con successo!\n\nFogli inclusi:\n{chr(10).join(['• ' + s for s in wb.sheetnames])}\n\nVuoi aprirlo ora?",
+                    parent=self
+            ):
+                os.startfile(file_path)
+
+        except Exception as e:
+            error_msg = f"Errore export Excel: {str(e)}"
+            self.log_status(f"❌ {error_msg}")
+            logger.error(error_msg, exc_info=True)
+            messagebox.showerror("Errore", f"Impossibile esportare:\n{str(e)}", parent=self)
+
+    def _create_summary_sheet(self, wb):
+        """Crea foglio riepilogo progetto."""
+        ws = wb.create_sheet("📋 Riepilogo", 0)
+
+        # Titolo
+        ws['B2'] = f"Gantt Chart - {self.product_name}"
+        ws['B2'].font = Font(size=20, bold=True, color="1F4E78")
+        ws.merge_cells('B2:F2')
+
+        ws['B3'] = f"Progetto NPI ID: {self.progetto_id}"
+        ws['B3'].font = Font(size=14, italic=True, color="666666")
+
+        ws['B4'] = f"Generato il: {datetime.now().strftime('%d/%m/%Y alle %H:%M')}"
+        ws['B4'].font = Font(size=10, color="999999")
+
+        # Box statistiche
+        row = 7
+        stats = self.statistics
+
+        # Stile box
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_font = Font(bold=True, color="FFFFFF", size=12)
+        value_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+        value_font = Font(size=11)
+
+        stats_data = [
+            ("📊 Informazioni Generali", ""),
+            ("Task Totali", stats['total_tasks']),
+            ("Data Inizio Progetto", stats['project_start'].strftime('%d/%m/%Y')),
+            ("Data Fine Progetto", stats['project_end'].strftime('%d/%m/%Y')),
+            ("Durata Totale (giorni)", stats['project_duration']),
+            ("", ""),
+            ("📈 Metriche Performance", ""),
+            ("Completamento Stimato", f"{stats['completion']:.1f}%"),
+            ("Durata Media Task (giorni)", f"{stats['avg_duration']:.1f}"),
+            ("Task Critici (>media)", stats['critical_tasks']),
+            ("Task in Ritardo", stats['late_tasks']),
+            ("", ""),
+            ("👥 Distribuzione Carico", ""),
+        ]
+
+        # Aggiungi task per owner
+        for owner, count in stats['tasks_per_owner'].items():
+            stats_data.append((f"  • {owner}", count))
+
+        for idx, (label, value) in enumerate(stats_data, start=row):
+            if label.startswith(("📊", "📈", "👥")):  # Headers
+                cell = ws.cell(row=idx, column=2, value=label)
+                cell.font = header_font
+                cell.fill = header_fill
+                ws.merge_cells(f'B{idx}:C{idx}')
+            elif label == "":  # Spacer
+                continue
+            else:
+                ws.cell(row=idx, column=2, value=label).font = Font(size=10)
+                cell = ws.cell(row=idx, column=3, value=value)
+                cell.font = value_font
+                cell.fill = value_fill
+
+        # Larghezza colonne
+        ws.column_dimensions['B'].width = 30
+        ws.column_dimensions['C'].width = 20
+
+        # Nota finale
+        note_row = row + len(stats_data) + 3
+        ws[f'B{note_row}'] = "💡 Nota: Consulta i fogli successivi per dettagli e visualizzazioni"
+        ws[f'B{note_row}'].font = Font(italic=True, color="666666", size=9)
+
+    def _create_gantt_sheet(self, wb):
+        """Crea foglio Gantt con tabella, filtri e formattazione condizionale."""
+        ws = wb.create_sheet("📊 Gantt Chart")
+
+        # Prepara dati
+        export_df = self.df.copy()
+        export_df['Start'] = export_df['Start'].dt.strftime('%d/%m/%Y')
+        export_df['Finish'] = export_df['Finish'].dt.strftime('%d/%m/%Y')
+        export_df['Durata (gg)'] = (
+                pd.to_datetime(self.df['Finish']) - pd.to_datetime(self.df['Start'])
+        ).dt.days
+
+        # Calcola giorni rimanenti
+        today = datetime.now()
+        export_df['Giorni Rimanenti'] = (
+                pd.to_datetime(self.df['Finish']) - today
+        ).dt.days
+
+        # Status
+        export_df['Status'] = export_df['Giorni Rimanenti'].apply(
+            lambda x: '✅ Completato' if x < 0 else ('⚠️ In Ritardo' if x < 7 else '🟢 In Corso')
+        )
+
+        # Riordina colonne
+        column_order = ['Task', 'Owner', 'Start', 'Finish', 'Durata (gg)', 'Giorni Rimanenti', 'Status']
+        export_df = export_df[column_order]
+
+        # Scrivi header
+        ws['A1'] = f"Gantt Chart - {self.product_name}"
+        ws['A1'].font = Font(size=14, bold=True, color="FFFFFF")
+        ws['A1'].fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+        ws.merge_cells('A1:G1')
+
+        # Scrivi dati (inizia dalla riga 3)
+        start_row = 3
+
+        for r_idx, row in enumerate(dataframe_to_rows(export_df, index=False, header=True), start=start_row):
+            for c_idx, value in enumerate(row, start=1):
+                ws.cell(row=r_idx, column=c_idx, value=value)
+
+        # ⭐ APPLICA TABELLA CON FILTRI
+        tab = Table(displayName="GanttTable", ref=f"A{start_row}:G{start_row + len(export_df)}")
+        style = TableStyleInfo(
+            name="TableStyleMedium9",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False
+        )
+        tab.tableStyleInfo = style
+        ws.add_table(tab)
+
+        # ⭐ FORMATTAZIONE CONDIZIONALE
+        # Giorni Rimanenti (colonna F)
+        col_letter = 'F'
+        first_row = start_row + 1
+        last_row = start_row + len(export_df)
+
+        # Rosso per negativi (ritardo)
+        ws.conditional_formatting.add(
+            f'{col_letter}{first_row}:{col_letter}{last_row}',
+            CellIsRule(
+                operator='lessThan',
+                formula=['0'],
+                fill=PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"),
+                font=Font(color="9C0006", bold=True)
+            )
+        )
+
+        # Giallo per urgenti (< 7 giorni)
+        ws.conditional_formatting.add(
+            f'{col_letter}{first_row}:{col_letter}{last_row}',
+            CellIsRule(
+                operator='between',
+                formula=['0', '7'],
+                fill=PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid"),
+                font=Font(color="9C6500")
+            )
+        )
+
+        # Verde per OK (> 7 giorni)
+        ws.conditional_formatting.add(
+            f'{col_letter}{first_row}:{col_letter}{last_row}',
+            CellIsRule(
+                operator='greaterThan',
+                formula=['7'],
+                fill=PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid"),
+                font=Font(color="006100")
+            )
+        )
+
+        # ⭐ COLOR SCALE per Durata
+        ws.conditional_formatting.add(
+            f'E{first_row}:E{last_row}',
+            ColorScaleRule(
+                start_type='min',
+                start_color='63BE7B',
+                mid_type='percentile',
+                mid_value=50,
+                mid_color='FFEB84',
+                end_type='max',
+                end_color='F8696B'
+            )
+        )
+
+        # Larghezza colonne
+        ws.column_dimensions['A'].width = 40
+        ws.column_dimensions['B'].width = 20
+        ws.column_dimensions['C'].width = 12
+        ws.column_dimensions['D'].width = 12
+        ws.column_dimensions['E'].width = 12
+        ws.column_dimensions['F'].width = 18
+        ws.column_dimensions['G'].width = 18
+
+        # Freeze panes
+        ws.freeze_panes = 'A4'
+
+    def _create_timeline_sheet(self, wb):
+        """Crea foglio con timeline visuale del Gantt."""
+        ws = wb.create_sheet("📅 Timeline Visuale")
+
+        # Calcola range date
+        min_date = pd.to_datetime(self.df['Start']).min()
+        max_date = pd.to_datetime(self.df['Finish']).max()
+
+        # Crea lista di settimane
+        date_range = pd.date_range(start=min_date, end=max_date, freq='W-MON')
+
+        # Header
+        ws['A1'] = "Attività / Settimana"
+        ws['A1'].font = Font(bold=True, color="FFFFFF", size=11)
+        ws['A1'].fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        ws['A1'].alignment = Alignment(horizontal="center", vertical="center")
+
+        # Date header
+        for col_idx, date in enumerate(date_range, start=2):
+            cell = ws.cell(row=1, column=col_idx, value=date.strftime('%d/%m'))
+            cell.font = Font(bold=True, size=8, color="FFFFFF")
+            cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+            cell.alignment = Alignment(horizontal="center", vertical="center", text_rotation=90)
+            ws.column_dimensions[cell.column_letter].width = 3.5
+
+        ws.column_dimensions['A'].width = 40
+        ws.row_dimensions[1].height = 60
+
+        # Righe task
+        task_fill = PatternFill(start_color="70AD47", end_color="70AD47", fill_type="solid")
+        border = Border(
+            left=Side(style='thin', color='FFFFFF'),
+            right=Side(style='thin', color='FFFFFF'),
+            top=Side(style='thin', color='FFFFFF'),
+            bottom=Side(style='thin', color='FFFFFF')
+        )
+
+        for row_idx, (_, row) in enumerate(self.df.iterrows(), start=2):
+            # Nome task
+            cell = ws.cell(row=row_idx, column=1, value=row['Task'])
+            cell.font = Font(size=9)
+            cell.alignment = Alignment(vertical="center")
+
+            task_start = pd.to_datetime(row['Start'])
+            task_end = pd.to_datetime(row['Finish'])
+
+            # Colora celle nel range
+            for col_idx, date in enumerate(date_range, start=2):
+                cell = ws.cell(row=row_idx, column=col_idx)
+                if task_start <= date <= task_end:
+                    cell.fill = task_fill
+                    cell.border = border
+
+        # Legenda
+        legend_row = len(self.df) + 4
+        ws.cell(row=legend_row, column=1, value="Legenda:")
+        ws.cell(row=legend_row, column=1).font = Font(bold=True, size=10)
+
+        ws.cell(row=legend_row + 1, column=1, value="■ Task attivo")
+        ws.cell(row=legend_row + 1, column=2).fill = task_fill
+
+    def _create_statistics_sheet(self, wb):
+        """Crea foglio statistiche con grafici Excel."""
+        ws = wb.create_sheet("📈 Statistiche")
+
+        # Titolo
+        ws['B2'] = "Statistiche e Analisi Progetto"
+        ws['B2'].font = Font(size=16, bold=True, color="1F4E78")
+        ws.merge_cells('B2:F2')
+
+        # ⭐ GRAFICO 1: Task per Owner (Bar Chart)
+        row = 5
+        ws.cell(row=row, column=2, value="Owner").font = Font(bold=True)
+        ws.cell(row=row, column=3, value="N. Task").font = Font(bold=True)
+
+        tasks_per_owner = self.statistics['tasks_per_owner']
+        for idx, (owner, count) in enumerate(tasks_per_owner.items(), start=row + 1):
+            ws.cell(row=idx, column=2, value=owner)
+            ws.cell(row=idx, column=3, value=count)
+
+        # Crea grafico a barre
+        chart1 = BarChart()
+        chart1.title = "Distribuzione Task per Owner"
+        chart1.x_axis.title = "Owner"
+        chart1.y_axis.title = "Numero Task"
+
+        data = Reference(ws, min_col=3, min_row=row, max_row=row + len(tasks_per_owner))
+        cats = Reference(ws, min_col=2, min_row=row + 1, max_row=row + len(tasks_per_owner))
+
+        chart1.add_data(data, titles_from_data=True)
+        chart1.set_categories(cats)
+        chart1.height = 10
+        chart1.width = 20
+
+        ws.add_chart(chart1, f"E{row}")
+
+        # ⭐ GRAFICO 2: Durata Task (Bar Chart)
+        row = row + len(tasks_per_owner) + 5
+
+        ws.cell(row=row, column=2, value="Task").font = Font(bold=True)
+        ws.cell(row=row, column=3, value="Durata (gg)").font = Font(bold=True)
+
+        df_sorted = self.df.sort_values('Start')
+        for idx, (_, task_row) in enumerate(df_sorted.iterrows(), start=row + 1):
+            duration = (task_row['Finish'] - task_row['Start']).days
+            ws.cell(row=idx, column=2, value=task_row['Task'][:30])  # Tronca nome
+            ws.cell(row=idx, column=3, value=duration)
+
+        # Crea grafico durate
+        chart2 = BarChart()
+        chart2.type = "bar"  # Orizzontale
+        chart2.title = "Durata Task (giorni)"
+        chart2.x_axis.title = "Giorni"
+        chart2.y_axis.title = "Task"
+
+        data = Reference(ws, min_col=3, min_row=row, max_row=row + len(df_sorted))
+        cats = Reference(ws, min_col=2, min_row=row + 1, max_row=row + len(df_sorted))
+
+        chart2.add_data(data, titles_from_data=True)
+        chart2.set_categories(cats)
+        chart2.height = max(10, len(df_sorted) * 0.5)
+        chart2.width = 20
+
+        ws.add_chart(chart2, f"E{row}")
+
+        # Larghezza colonne
+        ws.column_dimensions['B'].width = 35
+        ws.column_dimensions['C'].width = 15
+
+    def _create_critical_tasks_sheet(self, wb):
+        """Crea foglio con task critici e in ritardo."""
+        ws = wb.create_sheet("⚠️ Task Critici")
+
+        # Titolo
+        ws['B2'] = "Task Critici e in Ritardo"
+        ws['B2'].font = Font(size=14, bold=True, color="C00000")
+        ws.merge_cells('B2:F2')
+
+        ws['B3'] = "Task con durata superiore alla media o scaduti"
+        ws['B3'].font = Font(size=10, italic=True, color="666666")
+
+        # Calcola task critici
+        df = self.df.copy()
+        df['Duration'] = (df['Finish'] - df['Start']).dt.days
+        avg_duration = df['Duration'].mean()
+
+        today = pd.Timestamp.now()
+        df['Days_Remaining'] = (df['Finish'] - today).dt.days
+        df['Is_Late'] = df['Days_Remaining'] < 0
+        df['Is_Critical'] = df['Duration'] > avg_duration
+
+        critical_df = df[df['Is_Critical'] | df['Is_Late']].copy()
+
+        if critical_df.empty:
+            ws['B6'] = "✅ Nessun task critico rilevato!"
+            ws['B6'].font = Font(size=12, color="00B050", bold=True)
+            return
+
+        # Header
+        row = 6
+        headers = ['Task', 'Owner', 'Inizio', 'Fine', 'Durata (gg)', 'Giorni Rimanenti', 'Criticità']
+        for col_idx, header in enumerate(headers, start=2):
+            cell = ws.cell(row=row, column=col_idx, value=header)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill(start_color="C00000", end_color="C00000", fill_type="solid")
+            cell.alignment = Alignment(horizontal="center")
+
+        # Dati
+        for idx, (_, task) in enumerate(critical_df.iterrows(), start=row + 1):
+            ws.cell(row=idx, column=2, value=task['Task'])
+            ws.cell(row=idx, column=3, value=task['Owner'])
+            ws.cell(row=idx, column=4, value=task['Start'].strftime('%d/%m/%Y'))
+            ws.cell(row=idx, column=5, value=task['Finish'].strftime('%d/%m/%Y'))
+            ws.cell(row=idx, column=6, value=task['Duration'])
+            ws.cell(row=idx, column=7, value=task['Days_Remaining'])
+
+            # Criticità
+            criticality = []
+            if task['Is_Late']:
+                criticality.append("🔴 IN RITARDO")
+            if task['Is_Critical']:
+                criticality.append("⚠️ DURATA ELEVATA")
+
+            cell = ws.cell(row=idx, column=8, value=" | ".join(criticality))
+            cell.font = Font(bold=True, color="C00000")
+
+            # Colora riga se in ritardo
+            if task['Is_Late']:
+                for col in range(2, 9):
+                    ws.cell(row=idx, column=col).fill = PatternFill(
+                        start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"
+                    )
+
+        # Larghezza colonne
+        ws.column_dimensions['B'].width = 40
+        ws.column_dimensions['C'].width = 20
+        ws.column_dimensions['D'].width = 12
+        ws.column_dimensions['E'].width = 12
+        ws.column_dimensions['F'].width = 12
+        ws.column_dimensions['G'].width = 18
+        ws.column_dimensions['H'].width = 30
+
+        # Nota
+        note_row = row + len(critical_df) + 3
+        ws[f'B{note_row}'] = f"📊 Durata media task: {avg_duration:.1f} giorni"
+        ws[f'B{note_row}'].font = Font(italic=True, size=9, color="666666")
+
+    # ========== EXPORT PDF ==========
+
+    def export_to_pdf(self):
+        """Esporta il Gantt in formato PDF."""
+        if self.df is None or self.df.empty:
+            messagebox.showwarning(
+                "Attenzione",
+                "Genera prima il Gantt prima di esportare!",
+                parent=self
+            )
+            return
+
+        try:
+            # Chiedi dove salvare
+            default_filename = f"Gantt_NPI_{self.progetto_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+            file_path = filedialog.asksaveasfilename(
+                parent=self,
+                title="Salva Gantt PDF",
+                defaultextension=".pdf",
+                initialfile=default_filename,
+                filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")]
+            )
+
+            if not file_path:
+                return
+
+            self.log_status("=== EXPORT PDF ===")
+            self.log_status(f"Salvataggio in: {file_path}")
+
+            with PdfPages(file_path) as pdf:
+                # Pagina 1: Riepilogo
+                self.log_status("Creazione pagina riepilogo...")
+                self._create_pdf_summary_page(pdf)
+
+                # Pagina 2: Gantt Chart
+                self.log_status("Creazione pagina Gantt...")
+                self._create_pdf_gantt_page(pdf)
+
+                # Pagina 3: Statistiche
+                self.log_status("Creazione pagina statistiche...")
+                self._create_pdf_statistics_page(pdf)
+
+                # Metadata
+                d = pdf.infodict()
+                d['Title'] = f'Gantt Chart - {self.product_name}'
+                d['Author'] = 'NPI Manager'
+                d['Subject'] = f'Progetto NPI ID: {self.progetto_id}'
+                d['Keywords'] = 'Gantt, NPI, Project Management'
+                d['CreationDate'] = datetime.now()
+
+            self.log_status(f"✅ PDF salvato con successo!")
+            self.log_status(f"📁 {file_path}")
+
+            if messagebox.askyesno(
+                    "Successo",
+                    "File PDF creato con successo!\n\nVuoi aprirlo ora?",
+                    parent=self
+            ):
+                os.startfile(file_path)
+
+        except Exception as e:
+            error_msg = f"Errore export PDF: {str(e)}"
+            self.log_status(f"❌ {error_msg}")
+            logger.error(error_msg, exc_info=True)
+            messagebox.showerror("Errore", f"Impossibile esportare PDF:\n{str(e)}", parent=self)
+
+    def _create_pdf_summary_page(self, pdf):
+        """Crea pagina riepilogo nel PDF."""
+        fig, ax = plt.subplots(figsize=(11, 8.5))
+        ax.axis('off')
+
+        # Titolo
+        ax.text(0.5, 0.95, f"Gantt Chart - {self.product_name}",
+                ha='center', va='top', fontsize=20, fontweight='bold')
+
+        ax.text(0.5, 0.90, f"Progetto NPI ID: {self.progetto_id}",
+                ha='center', va='top', fontsize=14, style='italic', color='gray')
+
+        ax.text(0.5, 0.87, f"Generato il: {datetime.now().strftime('%d/%m/%Y alle %H:%M')}",
+                ha='center', va='top', fontsize=10, color='gray')
+
+        # Box statistiche
+        stats = self.statistics
+        y_pos = 0.75
+
+        stats_text = f"""
+📊 INFORMAZIONI GENERALI
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Task Totali: {stats['total_tasks']}
+Data Inizio: {stats['project_start'].strftime('%d/%m/%Y')}
+Data Fine: {stats['project_end'].strftime('%d/%m/%Y')}
+Durata Totale: {stats['project_duration']} giorni
+
+📈 METRICHE PERFORMANCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Completamento Stimato: {stats['completion']:.1f}%
+Durata Media Task: {stats['avg_duration']:.1f} giorni
+Task Critici (>media): {stats['critical_tasks']}
+Task in Ritardo: {stats['late_tasks']}
+
+👥 DISTRIBUZIONE CARICO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+        for owner, count in stats['tasks_per_owner'].items():
+            stats_text += f"  • {owner}: {count} task\n"
+
+        ax.text(0.1, y_pos, stats_text,
+                ha='left', va='top', fontsize=11, family='monospace',
+                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.3))
+
+        pdf.savefig(fig, bbox_inches='tight')
+        plt.close()
+
+    def _create_pdf_gantt_page(self, pdf):
+        """Crea pagina Gantt nel PDF."""
+        fig, ax = plt.subplots(figsize=(11, 8.5))
+
+        # Prepara dati
+        df = self.df.copy()
+        df = df.sort_values('Start')
+
+        # Colori per owner
+        owners = df['Owner'].unique()
+        colors = plt.cm.Set3(range(len(owners)))
+        owner_colors = dict(zip(owners, colors))
+
+        # Disegna barre
+        for idx, (_, row) in enumerate(df.iterrows()):
+            start = mdates.date2num(row['Start'])
+            end = mdates.date2num(row['Finish'])
+            duration = end - start
+
+            ax.barh(idx, duration, left=start, height=0.6,
+                    color=owner_colors[row['Owner']],
+                    edgecolor='black', linewidth=0.5,
+                    label=row['Owner'] if row['Owner'] not in ax.get_legend_handles_labels()[1] else "")
+
+        # Etichette
+        ax.set_yticks(range(len(df)))
+        ax.set_yticklabels(df['Task'], fontsize=8)
+        ax.set_xlabel('Timeline', fontsize=12)
+        ax.set_title(f'Gantt Chart - {self.product_name}', fontsize=14, fontweight='bold')
+
+        # Formatta asse X
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m/%Y'))
+        ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
+        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+
+        # Griglia
+        ax.grid(True, axis='x', alpha=0.3)
+        ax.invert_yaxis()
+
+        # Legenda
+        handles, labels = ax.get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        ax.legend(by_label.values(), by_label.keys(), loc='upper right', fontsize=8)
+
+        plt.tight_layout()
+        pdf.savefig(fig, bbox_inches='tight')
+        plt.close()
+
+    def _create_pdf_statistics_page(self, pdf):
+        """Crea pagina statistiche nel PDF."""
+        fig = plt.figure(figsize=(11, 8.5))
+
+        # Subplot 1: Task per Owner
+        ax1 = plt.subplot(2, 2, 1)
+        tasks_per_owner = self.statistics['tasks_per_owner']
+        ax1.bar(tasks_per_owner.keys(), tasks_per_owner.values(), color='skyblue', edgecolor='black')
+        ax1.set_title('Task per Owner', fontweight='bold')
+        ax1.set_ylabel('Numero Task')
+        plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right')
+
+        # Subplot 2: Durata Task
+        ax2 = plt.subplot(2, 2, 2)
+        durations = (self.df['Finish'] - self.df['Start']).dt.days
+        ax2.hist(durations, bins=10, color='lightgreen', edgecolor='black')
+        ax2.set_title('Distribuzione Durata Task', fontweight='bold')
+        ax2.set_xlabel('Durata (giorni)')
+        ax2.set_ylabel('Frequenza')
+        ax2.axvline(durations.mean(), color='red', linestyle='--', label=f'Media: {durations.mean():.1f}')
+        ax2.legend()
+
+        # Subplot 3: Completamento
+        ax3 = plt.subplot(2, 2, 3)
+        completion = self.statistics['completion']
+        colors_pie = ['#70AD47', '#D9D9D9']
+        ax3.pie([completion, 100 - completion], labels=['Completato', 'Rimanente'],
+                autopct='%1.1f%%', colors=colors_pie, startangle=90)
+        ax3.set_title('Completamento Progetto', fontweight='bold')
+
+        # Subplot 4: Task Critici
+        ax4 = plt.subplot(2, 2, 4)
+        critical = self.statistics['critical_tasks']
+        late = self.statistics['late_tasks']
+        normal = self.statistics['total_tasks'] - critical - late
+
+        categories = ['Normali', 'Critici', 'In Ritardo']
+        values = [normal, critical, late]
+        colors_bar = ['green', 'orange', 'red']
+
+        ax4.bar(categories, values, color=colors_bar, edgecolor='black')
+        ax4.set_title('Stato Task', fontweight='bold')
+        ax4.set_ylabel('Numero Task')
+
+        plt.suptitle('Statistiche Progetto', fontsize=16, fontweight='bold', y=0.98)
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+
+        pdf.savefig(fig, bbox_inches='tight')
+        plt.close()

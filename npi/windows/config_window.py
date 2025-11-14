@@ -68,19 +68,23 @@ class SubjectManagementFrame(ttk.Frame):
                     tipo_display = self.lang.get('subject_type_customer')
                 elif tipo_display == 'Fornitore':
                     tipo_display = self.lang.get('subject_type_supplier')
-                self.tree.insert('', tk.END, values=(s.SoggettoID, s.NomeSoggetto, tipo_display))
+                self.tree.insert('', tk.END, values=(s.SoggettoId, s.Nome, tipo_display))
 
     def _on_subject_select(self, event=None):
         if not self.tree.selection(): return
         item = self.tree.item(self.tree.selection()[0])
         self.selected_subject_id = item['values'][0]
         soggetto = self.npi_manager.get_soggetto_by_id(self.selected_subject_id)
-        if soggetto: self._populate_form(soggetto)
+        if isinstance(soggetto, list) and len(soggetto) > 0:
+            soggetto = soggetto[0]  # Get first item from list
+
+        if soggetto:
+            self._populate_form(soggetto)
 
     def _populate_form(self, soggetto):
         self._clear_form(clear_selection=False)
-        self.selected_subject_id = soggetto.SoggettoID
-        self.fields['NomeSoggetto'].insert(0, soggetto.NomeSoggetto or "")
+        self.selected_subject_id = soggetto.SoggettoId
+        self.fields['NomeSoggetto'].insert(0, soggetto.Nome or "")
         self.fields['Email'].insert(0, soggetto.Email or "")
         self.fields['MSTeamsUserID'].insert(0, soggetto.MSTeamsUserID or "")
 
@@ -437,7 +441,7 @@ class TaskManagementFrame(ttk.Frame):
         tasks = self.npi_manager.get_catalogo_task()
         if tasks:
             for t in tasks:
-                category_name = t.category.Category if t.category else ""
+                category_name = t.categoria.Category if t.categoria else ""
                 tags_to_apply = ()
                 if t.IsTitle:
                     tags_to_apply = ('title_row',)
@@ -473,14 +477,6 @@ class TaskManagementFrame(ttk.Frame):
         task = self.npi_manager.get_catalogo_task_by_id(self.selected_task_id)
         if task: self._populate_form(task)
 
-    # def _populate_form(self, task):
-    #     self._clear_form(clear_selection=False)
-    #     self.selected_task_id = task.TaskID
-    #     self.fields['ItemID'].insert(0, task.ItemID or "")
-    #     self.fields['NomeTask'].insert(0, task.NomeTask or "")
-    #     self.fields['Descrizione'].insert('1.0', task.Descrizione or "")
-    #     self.fields['CategoryId'].set(task.category.Category if task.category else '')
-
     def _populate_form(self, task):
         self._clear_form(clear_selection=False)
         self.selected_task_id = task.TaskID
@@ -488,7 +484,7 @@ class TaskManagementFrame(ttk.Frame):
         self.fields['NomeTask'].insert(0, task.NomeTask or "")
         self.fields['Descrizione'].delete('1.0', tk.END)
         self.fields['Descrizione'].insert('1.0', task.Descrizione or "")
-        self.fields['CategoryId'].set(task.category.Category if task.category else '')
+        self.fields['CategoryId'].set(task.categoria.CategoryId if task.categoria else '')
         self.is_title_var.set(bool(task.IsTitle))
 
     def _clear_form(self, clear_selection=True):
@@ -634,167 +630,254 @@ class TaskManagementFrame(ttk.Frame):
 
 
 # --- Frame per la gestione delle Categorie ---
+# --- Frame per la gestione delle Categorie ---
 class CategoryManagementFrame(ttk.Frame):
+    """Frame per la gestione delle categorie dei task NPI."""
+
     def __init__(self, master, npi_manager, lang, **kwargs):
         super().__init__(master, **kwargs)
         self.npi_manager = npi_manager
         self.lang = lang
         self.selected_category_id = None
+
+        # ⭐ IMPORTANTE: Inizializza fields subito
+        self.fields = {}
+
         self.pack(fill=tk.BOTH, expand=True)
 
+        # Layout principale con PanedWindow
         paned_window = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         paned_window.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
+        # --- PANNELLO SINISTRO: Lista Categorie ---
         list_frame = ttk.Frame(paned_window, padding=10)
         paned_window.add(list_frame, weight=1)
 
-        cols = ('Nr', 'CategoryName')
+        cols = (
+            self.lang.get('col_id'),
+            self.lang.get('col_category'),
+            self.lang.get('col_order')
+        )
         self.tree = ttk.Treeview(list_frame, columns=cols, show='headings', selectmode='browse')
 
-        self.tree.heading('Nr', text='Nr.')
-        self.tree.column('Nr', width=60, anchor='center')
-
-        self.tree.heading('CategoryName', text=self.lang.get('col_category_name', 'Nome Categoria'))
-        self.tree.column('CategoryName', width=200)
+        # Configura colonne
+        self.tree.heading(cols[0], text=cols[0])
+        self.tree.column(cols[0], width=50)
+        self.tree.heading(cols[1], text=cols[1])
+        self.tree.column(cols[1], width=200)
+        self.tree.heading(cols[2], text=cols[2])
+        self.tree.column(cols[2], width=80)
 
         self.tree.pack(fill=tk.BOTH, expand=True)
         self.tree.bind('<<TreeviewSelect>>', self._on_category_select)
 
-        form_frame = ttk.LabelFrame(paned_window, text=self.lang.get('category_details_title'), padding=10)
+        # --- PANNELLO DESTRO: Form Dettagli ---
+        form_frame = ttk.LabelFrame(
+            paned_window,
+            text=self.lang.get('category_details_title'),
+            padding=10
+        )
         paned_window.add(form_frame, weight=2)
 
-        # --- CORREZIONE: Assegnazione coerente degli attributi 'self' ---
+        # Campi del form
+        labels = {
+            'Category': 'label_category_name',
+            'NrOrdin': 'label_order_number'
+        }
 
-        # Campo Nome Categoria
-        ttk.Label(form_frame, text=self.lang.get('label_category_name')).grid(row=0, column=0, sticky=tk.W, pady=5)
-        self.field_category = ttk.Entry(form_frame, width=40)
-        self.field_category.grid(row=0, column=1, sticky=tk.EW, padx=5, pady=5)
-
-        # Campo Numero Ordine
-        ttk.Label(form_frame, text=self.lang.get('label_order_num', 'Numero Ordine:')).grid(row=1, column=0,
-                                                                                            sticky=tk.W, pady=5)
-        self.field_nr_ordin = ttk.Entry(form_frame, width=40)
-        self.field_nr_ordin.grid(row=1, column=1, sticky=tk.EW, padx=5, pady=5)
-
-        # --- FINE CORREZIONE ---
+        for i, (field, key) in enumerate(labels.items()):
+            ttk.Label(form_frame, text=self.lang.get(key)).grid(
+                row=i, column=0, sticky=tk.W, pady=2
+            )
+            self.fields[field] = ttk.Entry(form_frame, width=40)
+            self.fields[field].grid(row=i, column=1, sticky=tk.EW, padx=5)
 
         form_frame.columnconfigure(1, weight=1)
 
+        # Bottoni
         button_frame = ttk.Frame(form_frame)
-        button_frame.grid(row=2, column=0, columnspan=2, pady=20, sticky=tk.E)
-        ttk.Button(button_frame, text=self.lang.get('btn_new'), command=self._clear_form).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text=self.lang.get('btn_save'), command=self._save_category).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text=self.lang.get('btn_delete'), command=self._delete_category).pack(side=tk.LEFT,
-                                                                                                       padx=5)
+        button_frame.grid(row=len(labels), column=0, columnspan=2, pady=20, sticky=tk.E)
 
+        ttk.Button(
+            button_frame,
+            text=self.lang.get('btn_new'),
+            command=self._clear_form
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            button_frame,
+            text=self.lang.get('btn_save'),
+            command=self._save_category
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            button_frame,
+            text=self.lang.get('btn_delete'),
+            command=self._delete_category
+        ).pack(side=tk.LEFT, padx=5)
+
+        # Carica i dati iniziali
         self._load_categories()
 
     def _load_categories(self):
-        selected_iid_before = self.tree.selection()
-        for i in self.tree.get_children(): self.tree.delete(i)
+        """Carica le categorie nel treeview."""
+        # Pulisci il treeview
+        for item in self.tree.get_children():
+            self.tree.delete(item)
 
-        categories = self.npi_manager.get_categories()
-        if categories:
-            for cat in categories:
-                self.tree.insert('', tk.END, text=str(cat.CategoryId), values=(cat.NrOrdin or '', cat.Category))
-
-        if selected_iid_before and self.tree.exists(selected_iid_before[0]):
-            self.tree.selection_set(selected_iid_before[0])
+        # Carica le categorie dal database
+        try:
+            categories = self.npi_manager.get_categories()
+            if categories:
+                for cat in categories:
+                    self.tree.insert('', tk.END, values=(
+                        cat.CategoryId,
+                        cat.Category,
+                        cat.NrOrdin or ""
+                    ))
+        except Exception as e:
+            messagebox.showerror(
+                self.lang.get('db_error_title'),
+                self.lang.get('db_error_load_categories').format(error=e),
+                parent=self
+            )
 
     def _on_category_select(self, event=None):
-        if not self.tree.selection(): return
+        """Gestisce la selezione di una categoria dalla lista."""
+        if not self.tree.selection():
+            return
 
-        iid = self.tree.selection()[0]
-        self.selected_category_id = int(self.tree.item(iid, 'text'))
+        try:
+            item = self.tree.item(self.tree.selection()[0])
+            self.selected_category_id = item['values'][0]
 
-        values = self.tree.item(iid, 'values')
+            # Ottieni la categoria dal manager
+            category = self.npi_manager.get_category_by_id(self.selected_category_id)
 
+            if category:
+                self._populate_form(category)
+        except Exception as e:
+            messagebox.showerror(
+                self.lang.get('db_error_title'),
+                f"Errore nel caricamento della categoria: {str(e)}",
+                parent=self
+            )
+
+    def _populate_form(self, category):
+        """Popola il form con i dati della categoria selezionata."""
         self._clear_form(clear_selection=False)
-        # Qui ora i nomi corrispondono a quelli in __init__
-        self.field_nr_ordin.insert(0, values[0])
-        self.field_category.insert(0, values[1])
+        self.selected_category_id = category.CategoryId
+        self.fields['Category'].insert(0, category.Category or "")
+        self.fields['NrOrdin'].insert(0, str(category.NrOrdin or ""))
 
     def _clear_form(self, clear_selection=True):
+        """Pulisce il form."""
         self.selected_category_id = None
+
         if clear_selection and self.tree.selection():
             self.tree.selection_remove(self.tree.selection())
 
-        # Qui ora i nomi corrispondono a quelli in __init__
-        self.field_category.delete(0, tk.END)
-        self.field_nr_ordin.delete(0, tk.END)
+        # ⭐ Verifica sicurezza
+        if not hasattr(self, 'fields'):
+            return
+
+        for widget in self.fields.values():
+            if isinstance(widget, ttk.Entry):
+                widget.delete(0, tk.END)
 
     def _save_category(self):
-        # Qui ora i nomi corrispondono a quelli in __init__
-        category_name = self.field_category.get().strip()
-        nr_ordin_str = self.field_nr_ordin.get().strip()
+        """Salva la categoria (nuova o aggiornamento)."""
+        category_name = self.fields['Category'].get().strip()
+        order_str = self.fields['NrOrdin'].get().strip()
 
-        if not category_name or not nr_ordin_str:
-            messagebox.showerror(self.lang.get('error_title'),
-                                 self.lang.get('validation_error_category_fields_required'), parent=self)
+        # Validazione
+        if not category_name:
+            messagebox.showerror(
+                self.lang.get('error_title'),
+                self.lang.get('validation_error_category_name_required'),
+                parent=self
+            )
             return
 
+        # Converti l'ordine in intero
         try:
-            nr_ordin_value = int(nr_ordin_str)
+            order_number = int(order_str) if order_str else 0
         except ValueError:
-            messagebox.showerror(self.lang.get('error_title'),
-                                 self.lang.get('validation_error_order_num_must_be_integer'), parent=self)
+            messagebox.showerror(
+                self.lang.get('error_title'),
+                self.lang.get('validation_error_order_must_be_number'),
+                parent=self
+            )
             return
 
-        data = {'Category': category_name, 'NrOrdin': nr_ordin_value}
+        data = {
+            'Category': category_name,
+            'NrOrdin': order_number
+        }
 
         try:
             if self.selected_category_id is None:
+                # Crea nuova categoria
                 self.npi_manager.create_category(data)
+                messagebox.showinfo(
+                    self.lang.get('success_title'),
+                    self.lang.get('success_category_saved'),
+                    parent=self
+                )
             else:
+                # Aggiorna categoria esistente
                 self.npi_manager.update_category(self.selected_category_id, data)
+                messagebox.showinfo(
+                    self.lang.get('success_title'),
+                    self.lang.get('success_category_updated'),
+                    parent=self
+                )
 
-            messagebox.showinfo(self.lang.get('success_title'), self.lang.get('success_category_saved'), parent=self)
             self._load_categories()
             self._clear_form()
 
-            try:
-                notebook = self.master
-                for tab_id in notebook.tabs():
-                    widget = notebook.nametowidget(tab_id)
-                    # NOTA: Questo modo di trovare il widget è fragile.
-                    # Se il nome della classe TaskManagementFrame è in un altro modulo,
-                    # è meglio usare isinstance(widget, TaskManagementFrame)
-                    if 'TaskManagementFrame' in str(type(widget).__name__):
-                        widget.refresh_data()
-                        break
-            except Exception as e:
-                print(f"Avviso: impossibile aggiornare il frame dei task. Errore: {e}")
-
-        except ValueError as ve:
-            messagebox.showerror(self.lang.get('error_duplicate_title'), str(ve), parent=self)
         except Exception as e:
-            messagebox.showerror(self.lang.get('db_error_title'),
-                                 self.lang.get('db_error_generic_save').format(error=e), parent=self)
+            messagebox.showerror(
+                self.lang.get('db_error_title'),
+                self.lang.get('db_error_generic_save').format(error=e),
+                parent=self
+            )
 
     def _delete_category(self):
+        """Elimina la categoria selezionata."""
         if self.selected_category_id is None:
-            messagebox.showwarning(self.lang.get('warning_no_selection_title'),
-                                   self.lang.get('warning_select_category_to_delete'), parent=self)
+            messagebox.showwarning(
+                self.lang.get('warning_no_selection_title'),
+                self.lang.get('warning_select_category_to_delete'),
+                parent=self
+            )
             return
-        if messagebox.askyesno(self.lang.get('confirm_delete_title'), self.lang.get('confirm_delete_category_text'),
-                               parent=self):
-            try:
-                self.npi_manager.delete_category(self.selected_category_id)
-                self._load_categories()
-                self._clear_form()
 
-                try:
-                    notebook = self.master
-                    for tab_id in notebook.tabs():
-                        widget = notebook.nametowidget(tab_id)
-                        if 'TaskManagementFrame' in str(type(widget).__name__):
-                            widget.refresh_data()
-                            break
-                except Exception as e:
-                    print(f"Avviso: impossibile aggiornare il frame dei task. Errore: {e}")
-            except Exception as e:
-                messagebox.showerror(self.lang.get('db_error_title'),
-                                     self.lang.get('db_error_delete_category').format(error=e), parent=self)
+        # Conferma eliminazione
+        if not messagebox.askyesno(
+                self.lang.get('confirm_delete_title'),
+                self.lang.get('confirm_delete_category_text'),
+                parent=self
+        ):
+            return
+
+        try:
+            self.npi_manager.delete_category(self.selected_category_id)
+            messagebox.showinfo(
+                self.lang.get('success_title'),
+                self.lang.get('success_category_deleted'),
+                parent=self
+            )
+            self._load_categories()
+            self._clear_form()
+
+        except Exception as e:
+            messagebox.showerror(
+                self.lang.get('db_error_title'),
+                self.lang.get('db_error_delete_category').format(error=e),
+                parent=self
+            )
+
 
 # --- Finestra Principale di Configurazione ---
 class NpiConfigWindow(tk.Toplevel):
@@ -831,3 +914,314 @@ class NpiConfigWindow(tk.Toplevel):
                 pass
 
         notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
+
+
+# File: npi/windows/config_window.py
+# AGGIUNGERE/MODIFICARE la classe TaskCatalogManagementFrame
+
+class TaskCatalogManagementFrame(ttk.Frame):
+    def __init__(self, master, npi_manager, lang, **kwargs):
+        super().__init__(master, **kwargs)
+        self.npi_manager = npi_manager
+        self.lang = lang
+        self.selected_task_id = None  # ← AGGIUNGERE questo attributo
+        self.pack(fill=tk.BOTH, expand=True)
+
+        paned_window = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
+        paned_window.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Lista task
+        list_frame = ttk.Frame(paned_window, padding=10)
+        paned_window.add(list_frame, weight=1)
+
+        cols = (
+            self.lang.get('col_item_id'),
+            self.lang.get('col_task_name'),
+            self.lang.get('col_category')
+        )
+        self.tree = ttk.Treeview(list_frame, columns=cols, show='headings', selectmode='browse')
+        for col in cols:
+            self.tree.heading(col, text=col)
+        self.tree.column(cols[0], width=100)
+        self.tree.column(cols[1], width=250)
+        self.tree.column(cols[2], width=150)
+        self.tree.pack(fill=tk.BOTH, expand=True)
+        self.tree.bind('<<TreeviewSelect>>', self._on_task_select)  # ← AGGIUNGERE binding
+
+        # Form dettagli
+        form_frame = ttk.LabelFrame(paned_window, text=self.lang.get('task_details_title'), padding=10)
+        paned_window.add(form_frame, weight=2)
+
+        self.fields = {}
+
+        # ItemID
+        ttk.Label(form_frame, text=self.lang.get('label_item_id')).grid(row=0, column=0, sticky=tk.W, pady=2)
+        self.fields['ItemID'] = ttk.Entry(form_frame, width=40)
+        self.fields['ItemID'].grid(row=0, column=1, sticky=tk.EW, padx=5)
+
+        # NomeTask
+        ttk.Label(form_frame, text=self.lang.get('label_task_name')).grid(row=1, column=0, sticky=tk.W, pady=2)
+        self.fields['NomeTask'] = ttk.Entry(form_frame, width=40)
+        self.fields['NomeTask'].grid(row=1, column=1, sticky=tk.EW, padx=5)
+
+        # Categoria
+        ttk.Label(form_frame, text=self.lang.get('label_category')).grid(row=2, column=0, sticky=tk.W, pady=2)
+        self.fields['CategoryId'] = ttk.Combobox(form_frame, state='readonly', width=38)
+        self.fields['CategoryId'].grid(row=2, column=1, sticky=tk.EW, padx=5)
+
+        # Descrizione
+        ttk.Label(form_frame, text=self.lang.get('label_description')).grid(row=3, column=0, sticky=tk.NW, pady=2)
+        desc_frame = ttk.Frame(form_frame)
+        desc_frame.grid(row=3, column=1, sticky=tk.EW, padx=5)
+        self.fields['Descrizione'] = tk.Text(desc_frame, height=4, width=40, wrap=tk.WORD)
+        desc_scrollbar = ttk.Scrollbar(desc_frame, command=self.fields['Descrizione'].yview)
+        self.fields['Descrizione'].config(yscrollcommand=desc_scrollbar.set)
+        self.fields['Descrizione'].pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        desc_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Durata Stimata
+        ttk.Label(form_frame, text=self.lang.get('label_estimated_duration')).grid(row=4, column=0, sticky=tk.W, pady=2)
+        self.fields['DurataStimata'] = ttk.Spinbox(form_frame, from_=0, to=999, width=38)
+        self.fields['DurataStimata'].grid(row=4, column=1, sticky=tk.EW, padx=5)
+
+        # Tipo Soggetto
+        ttk.Label(form_frame, text=self.lang.get('label_subject_type')).grid(row=5, column=0, sticky=tk.W, pady=2)
+        self.fields['TipoSoggetto'] = ttk.Combobox(form_frame, state='readonly', width=38)
+        self.fields['TipoSoggetto']['values'] = (
+            self.lang.get('subject_type_internal'),
+            self.lang.get('subject_type_customer'),
+            self.lang.get('subject_type_supplier')
+        )
+        self.fields['TipoSoggetto'].grid(row=5, column=1, sticky=tk.EW, padx=5)
+
+        form_frame.columnconfigure(1, weight=1)
+
+        # Pulsanti
+        button_frame = ttk.Frame(form_frame)
+        button_frame.grid(row=6, column=0, columnspan=2, pady=20, sticky=tk.E)
+        ttk.Button(button_frame, text=self.lang.get('btn_new'), command=self._clear_form).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text=self.lang.get('btn_save'), command=self._save_task).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text=self.lang.get('btn_delete'), command=self._delete_task).pack(side=tk.LEFT, padx=5)
+
+        self._load_categories_combo()
+        self._load_tasks()
+
+    def _load_categories_combo(self):
+        """Carica le categorie nella combobox"""
+        categories = self.npi_manager.get_categories()
+        if categories:
+            self.category_map = {cat.Category: cat.CategoryId for cat in categories}
+            self.category_map_rev = {cat.CategoryId: cat.Category for cat in categories}
+            self.fields['CategoryId']['values'] = tuple(self.category_map.keys())
+
+    def _load_tasks(self):
+        """Carica i task nella lista"""
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+
+        session = self.npi_manager.Session()
+        try:
+            from ..data_models import TaskCatalogo
+            from sqlalchemy.orm import joinedload
+
+            tasks = session.query(TaskCatalogo).options(
+                joinedload(TaskCatalogo.categoria)
+            ).all()
+
+            for task in tasks:
+                category_name = task.categoria.Category if task.categoria else ""
+                self.tree.insert('', tk.END, values=(
+                    task.ItemID,
+                    task.NomeTask,
+                    category_name
+                ))
+        finally:
+            session.close()
+
+    def _on_task_select(self, event=None):
+        """Gestisce la selezione di un task dalla lista"""
+        if not self.tree.selection():
+            return
+        item = self.tree.item(self.tree.selection()[0])
+        item_id = item['values'][0]
+
+        # Recupera i dettagli dal database
+        session = self.npi_manager.Session()
+        try:
+            from ..data_models import TaskCatalogo
+            from sqlalchemy.orm import joinedload
+
+            task = session.query(TaskCatalogo).options(
+                joinedload(TaskCatalogo.category)
+            ).filter(TaskCatalogo.ItemID == item_id).first()
+
+            if task:
+                self._populate_form(task)
+        finally:
+            session.close()
+
+    def _populate_form(self, task):
+        """Popola il form con i dati del task selezionato"""
+        self._clear_form(clear_selection=False)
+        self.selected_task_id = task.TaskID
+
+        self.fields['ItemID'].insert(0, task.ItemID or "")
+        self.fields['NomeTask'].insert(0, task.NomeTask or "")
+
+        if task.CategoryId and task.CategoryId in self.category_map_rev:
+            self.fields['CategoryId'].set(self.category_map_rev[task.CategoryId])
+
+        if task.Descrizione:
+            self.fields['Descrizione'].insert('1.0', task.Descrizione)
+
+        if task.DurataStimata:
+            self.fields['DurataStimata'].delete(0, tk.END)
+            self.fields['DurataStimata'].insert(0, str(task.DurataStimata))
+
+        # Mappa TipoSoggetto
+        tipo_display = task.TipoSoggetto or ""
+        if tipo_display == 'Interno':
+            tipo_display = self.lang.get('subject_type_internal')
+        elif tipo_display == 'Cliente':
+            tipo_display = self.lang.get('subject_type_customer')
+        elif tipo_display == 'Fornitore':
+            tipo_display = self.lang.get('subject_type_supplier')
+        self.fields['TipoSoggetto'].set(tipo_display)
+
+    def _clear_form(self, clear_selection=True):
+        """Pulisce il form"""
+        self.selected_task_id = None
+        if clear_selection and self.tree.selection():
+            self.tree.selection_remove(self.tree.selection())
+
+        self.fields['ItemID'].delete(0, tk.END)
+        self.fields['NomeTask'].delete(0, tk.END)
+        self.fields['CategoryId'].set('')
+        self.fields['Descrizione'].delete('1.0', tk.END)
+        self.fields['DurataStimata'].delete(0, tk.END)
+        self.fields['TipoSoggetto'].set('')
+
+    def _save_task(self):
+        """Salva o aggiorna un task"""
+        item_id = self.fields['ItemID'].get()
+        nome_task = self.fields['NomeTask'].get()
+        category_name = self.fields['CategoryId'].get()
+
+        if not item_id or not nome_task or not category_name:
+            messagebox.showerror(
+                self.lang.get('error_title'),
+                self.lang.get('validation_error_task_required'),
+                parent=self
+            )
+            return
+
+        # Mappa categoria
+        category_id = self.category_map.get(category_name)
+
+        # Mappa TipoSoggetto
+        tipo_display = self.fields['TipoSoggetto'].get()
+        tipo_db = 'Interno'
+        if tipo_display == self.lang.get('subject_type_customer'):
+            tipo_db = 'Cliente'
+        elif tipo_display == self.lang.get('subject_type_supplier'):
+            tipo_db = 'Fornitore'
+
+        data = {
+            'ItemID': item_id,
+            'NomeTask': nome_task,
+            'CategoryId': category_id,
+            'Descrizione': self.fields['Descrizione'].get('1.0', tk.END).strip(),
+            'DurataStimata': int(self.fields['DurataStimata'].get() or 0),
+            'TipoSoggetto': tipo_db
+        }
+
+        try:
+            if self.selected_task_id is None:
+                # Creazione nuovo task
+                session = self.npi_manager.Session()
+                try:
+                    from ..data_models import TaskCatalogo
+                    new_task = TaskCatalogo(**data)
+                    session.add(new_task)
+                    session.commit()
+                    messagebox.showinfo(
+                        self.lang.get('success_title'),
+                        self.lang.get('success_task_created'),
+                        parent=self
+                    )
+                except Exception:
+                    session.rollback()
+                    raise
+                finally:
+                    session.close()
+            else:
+                # Aggiornamento task esistente
+                session = self.npi_manager.Session()
+                try:
+                    from ..data_models import TaskCatalogo
+                    task = session.query(TaskCatalogo).get(self.selected_task_id)
+                    if task:
+                        for key, value in data.items():
+                            setattr(task, key, value)
+                        session.commit()
+                    messagebox.showinfo(
+                        self.lang.get('success_title'),
+                        self.lang.get('success_task_updated'),
+                        parent=self
+                    )
+                except Exception:
+                    session.rollback()
+                    raise
+                finally:
+                    session.close()
+
+            self._load_tasks()
+            self._clear_form()
+        except Exception as e:
+            messagebox.showerror(
+                self.lang.get('db_error_title'),
+                self.lang.get('db_error_generic_save').format(error=e),
+                parent=self
+            )
+
+    def _delete_task(self):
+        """Elimina un task"""
+        if self.selected_task_id is None:
+            messagebox.showwarning(
+                self.lang.get('warning_no_selection_title'),
+                self.lang.get('warning_select_task_to_delete'),
+                parent=self
+            )
+            return
+
+        if messagebox.askyesno(
+                self.lang.get('confirm_delete_title'),
+                self.lang.get('confirm_delete_task_text'),
+                parent=self
+        ):
+            try:
+                session = self.npi_manager.Session()
+                try:
+                    from ..data_models import TaskCatalogo
+                    task = session.query(TaskCatalogo).get(self.selected_task_id)
+                    if task:
+                        session.delete(task)
+                        session.commit()
+                    messagebox.showinfo(
+                        self.lang.get('success_title'),
+                        self.lang.get('success_task_deleted'),
+                        parent=self
+                    )
+                    self._load_tasks()
+                    self._clear_form()
+                except Exception:
+                    session.rollback()
+                    raise
+                finally:
+                    session.close()
+            except Exception as e:
+                messagebox.showerror(
+                    self.lang.get('db_error_title'),
+                    self.lang.get('db_error_delete_task').format(error=e),
+                    parent=self
+                )

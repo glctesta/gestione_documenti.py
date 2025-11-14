@@ -2,6 +2,7 @@
 # --- StdIO safeguard + Faulthandler sicuro per exe windowed ---
 import shutil
 import sys, os, atexit
+import urllib
 from pathlib import Path
 import sys
 import os
@@ -133,7 +134,8 @@ logger.info("Logging avviato. File: %s", LOG_FILE_PATH)
 
 import re
 import subprocess
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
+from sqlalchemy.pool import QueuePool
 import atexit
 import tkinter as tk
 from collections import defaultdict
@@ -174,6 +176,7 @@ import threading
 import time
 import scrap_validation_gui
 import collections.abc
+import urllib.parse
 
 from business_days import should_send_notification
 from npi.npi_manager import GestoreNPI
@@ -273,8 +276,18 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.9.2"  # Versione aggiornata
+APP_VERSION = "1.9.4"  # Versione aggiornata
 APP_DEVELOPER = "@Gianluca Testa"
+
+# # --- CONFIGURAZIONE DATABASE ---
+DB_DRIVER = '{SQL Server Native Client 11.0}'
+DB_SERVER = 'roghipsql01.vandewiele.local\\emsreset'
+DB_DATABASE = 'Traceability_rs'
+DB_UID = 'emsreset'
+DB_PWD = 'E6QhqKUxHFXTbkB7eA8c9ya'
+DB_CONN_STR = (f'DRIVER={DB_DRIVER};SERVER={DB_SERVER};DATABASE={DB_DATABASE};'
+               f'UID={DB_UID};PWD={DB_PWD};MARS_Connection=Yes;TrustServerCertificate=Yes')
+
 
 # # --- CONFIGURAZIONE DATABASE ---
 DB_DRIVER = '{SQL Server Native Client 11.0}'
@@ -592,6 +605,7 @@ class Database:
         self.conn = None
         self.cursor = None
         self.engine = None
+        self.npi_engine = None
         self.last_error_details = ""
 
     def connect(self):
@@ -612,12 +626,48 @@ class Database:
 
             self.engine.connect().close()
 
+            self.npi_engine = self._create_npi_engine()
+
             return True
         except pyodbc.Error as ex:
             # L'errore specifico verrà gestito dalla classe App che chiama questo metodo
             self.last_error_details = str(ex)
             logger.error(f"Database Connection Error: {ex}")
             return False
+
+    def _create_npi_engine(self):
+        """
+        Crea un engine SQLAlchemy separato con connection pooling
+        per il NPI Manager.
+        """
+        try:
+            # Costruisci la connection string per SQLAlchemy
+            params = urllib.parse.quote_plus(self.conn_str)
+            connection_url = f"mssql+pyodbc:///?odbc_connect={params}"
+
+            # Crea engine con pooling e pre_ping
+            npi_engine = create_engine(
+                connection_url,
+                poolclass=QueuePool,
+                pool_size=5,  # Numero di connessioni nel pool
+                max_overflow=10,  # Connessioni extra se necessario
+                pool_recycle=3600,  # Ricicla connessioni dopo 1 ora
+                pool_pre_ping=True,  # ⭐ Testa connessioni prima dell'uso
+                pool_timeout=30,  # Timeout per ottenere connessione
+                echo=False  # Non loggare SQL (cambia in True per debug)
+            )
+
+            # Test della connessione
+            with npi_engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+
+            logger.info("NPI Engine con pooling creato con successo")
+            return npi_engine
+
+        except Exception as e:
+            logger.error(f"Errore nella creazione del NPI Engine: {e}")
+            raise
+
 
     def disconnect(self):
         """Closes the cursor and connection safely, preventing errors if called multiple times."""
@@ -627,6 +677,9 @@ class Database:
         if self.conn:
             self.conn.close()
             self.conn = None  # Set to None after closing
+        if self.npi_engine:
+            self.npi_engine.dispose()
+            self.npi_engine = None
 
         # NUOVO METODO: Cerca documenti esistenti attivi che corrispondono ai parametri
 
@@ -7742,8 +7795,9 @@ class App(tk.Tk):
 
         # --- INIZIALIZZAZIONE GESTORE NPI (POSIZIONE CORRETTA) ---
         try:
-            self.npi_manager = GestoreNPI(engine=self.db.engine)
-            logger.info("Gestore NPI inizializzato con successo.")
+            self.npi_manager = GestoreNPI(engine=self.db.npi_engine)
+            logger.info(f"NPI Manager inizializzato con engine: {self.db.npi_engine}")
+            logger.info(f"Pool size: {self.db.npi_engine.pool.size()}")
         except Exception as e:
             logger.error("ERRORE CRITICO: Impossibile inizializzare il Gestore NPI: %s", e, exc_info=True)
             messagebox.showerror("Errore Modulo NPI",
@@ -7987,181 +8041,182 @@ class App(tk.Tk):
             daemon=True).start()
 
     def _kanban_refill_check_worker(self, manual=False):
-        """
-        Logica di controllo Kanban refill
-        """
-        log = logging.getLogger("TraceabilityRS")
-        try:
-            # Verifica preliminare della connessione
-            if not self.db._ensure_connection():
-                log.error("Connessione al database non disponibile per Kanban refill check")
-                if manual:
-                    self.after(0, lambda: messagebox.showerror(
-                        self.lang.get('error_title', 'Errore'),
-                        "Connessione al database non disponibile. Riprovare più tardi."
-                    ))
-                return
-
-            # 1. Stock corrente per componente
-            log.info("Recupero stock corrente...")
-            stock_map = self.db.fetch_kanban_current_stock_by_component()
-
-            # Gestione degli errori
-            if stock_map is None:  # Errore di connessione o query fallita
-                log.error("Errore nel recupero stock - connessione persa o query fallita")
-                if manual:
-                    self.after(0, lambda: messagebox.showerror(
-                        self.lang.get('error_title', 'Errore'),
-                        "Errore di connessione durante il recupero dei dati stock."
-                    ))
-                return
-
-            if not stock_map:  # Nessun dato ma senza errori (tabella vuota)
-                log.warning("Nessun dato stock recuperato (tabella vuota o tutti i componenti hanno DateOut)")
-                if manual:
-                    self.after(0, lambda: messagebox.showinfo(
-                        self.lang.get('info_title', 'Informazione'),
-                        "Nessun componente trovato con stock attivo (tutti i componenti hanno DateOut compilato)."
-                    ))
-                return
-
-            comp_ids = list(stock_map.keys())
-            log.info(f"Componenti da processare: {len(comp_ids)}")
-
-            # 2. Regole attive per componente
-            log.info("Recupero regole attive...")
-            rules_map = self.db.fetch_active_rules_by_component()
-            if rules_map is None:  # Errore di connessione
-                log.error("Errore nel recupero regole attive")
-                return
-            log.info(f"Regole attive trovate: {len(rules_map)}")
-
-            # 3. Prima quantità (per chi ha regola percentuale)
-            pct_comp_ids = [cid for cid, r in rules_map.items() if r.get('min_pct') is not None]
-            first_qty_map = {}
-            if pct_comp_ids:
-                log.info(f"Recupero prime quantità per {len(pct_comp_ids)} componenti...")
-                first_qty_map = self.db.fetch_first_load_qty_by_component(pct_comp_ids)
-                if first_qty_map is None:  # Errore di connessione
-                    log.error("Errore nel recupero prime quantità")
-                    return
-                log.info(f"Prime quantità recuperate: {len(first_qty_map)}")
-
-            # 4. Max singolo carico + record id
-            log.info("Recupero max carichi...")
-            max_load_map = self.db.fetch_max_single_load_by_component(comp_ids)
-            if max_load_map is None:  # Errore di connessione
-                log.error("Errore nel recupero max carichi")
-                return
-            log.info(f"Max carichi recuperati: {len(max_load_map)}")
-
-            # 5. Master component
-            log.info("Recupero master component...")
-            master_map = self.db.fetch_components_master(comp_ids)
-            if master_map is None:  # Errore di connessione
-                log.error("Errore nel recupero master component")
-                return
-            log.info(f"Master component recuperati: {len(master_map)}")
-
-            # 6. Valuta richieste
-            requests = []  # elementi: dict con info per Excel e per insert
-            for cid, cur_stock in stock_map.items():
-                rule = rules_map.get(cid)
-                if rule:
-                    if rule.get('min_qty') is not None:
-                        threshold = int(rule['min_qty'])
-                        rule_type = "ABS"
-                        rule_value = threshold
-                    else:
-                        # percentuale: calcolo su prima quantità
-                        base = int(first_qty_map.get(cid, 0))
-                        pct = int(rule.get('min_pct') or 0)
-                        # floor per non anticipare troppo
-                        threshold = int((base * pct) / 100) if base > 0 and pct > 0 else 0
-                        rule_type = "PCT"
-                        rule_value = pct
-                else:
-                    threshold = 0
-                    rule_type = "NA"
-                    rule_value = None
-
-                if cur_stock <= threshold:
-                    ml = max_load_map.get(cid)
-                    if not ml:
-                        continue
-                    qty_to_refill = int(ml['max_qty'])
-                    krec_id = int(ml['record_id'])
-                    # dedup: se già presente oggi per questa KanBanRecordId, salta
-                    if self.db.has_refill_request_today(krec_id):
-                        continue
-                    # prepara riga
-                    meta = master_map.get(cid, {'code': f"#{cid}", 'desc': ''})
-                    requests.append({
-                        'component_id': cid,
-                        'component_code': meta['code'],
-                        'component_desc': meta['desc'],
-                        'current_stock': int(cur_stock),
-                        'threshold': int(threshold),
-                        'rule_type': rule_type,
-                        'rule_value': rule_value,
-                        'max_single_load': qty_to_refill,
-                        'qty_to_refill': qty_to_refill,
-                        'kanban_record_id': krec_id
-                    })
-
-            if not requests:
-                if manual:
-                    self.after(0, lambda: messagebox.showinfo(
-                        self.lang.get('info_title', 'Informazione'),
-                        self.lang.get('kanban_refill_none', 'Nessun componente da richiedere.')
-                    ))
-                return
-
-            # 7. Genera Excel in memoria
-            excel_bytes = self._build_kanban_refill_excel(requests)
-
-            # 8. Destinatari mail
-            try:
-                recipients = utils.get_email_recipients(self.db.conn, attribute='Sys_email_KanBanRefill')
-            except Exception as e:
-                log.error("KanbanRefill: error reading recipients: %s", e)
-                recipients = []
-
-            if not recipients:
-                log.warning("KanbanRefill: no recipients for Sys_email_KanBanRefill; skipping email.")
-                return
-
-            # 9. Invia email (con allegato Excel)
-            subject = "[Kanban] Refill request - Repair Kanban"
-            body = (
-                "Dear Colleagues,\n\n"
-                "Please find attached the refill request for dedicated materials of the repairers' KANBAN.\n"
-                "The list includes all components whose current stock is at or below the configured reorder point.\n\n"
-                "Regards,\nTraceability System"
-            )
-
-            try:
-                utils.send_email(
-                    recipients=recipients,
-                    subject=subject,
-                    body=body,
-                    attachments=[("KanbanRefill.xlsx", excel_bytes)]
-                )
-                log.info("KanbanRefill: email sent to %d recipients.", len(recipients))
-            except Exception as e:
-                log.error("KanbanRefill: email send failed: %s", e)
-                return
-
-            # 10. Registra richieste su DB
-            for req in requests:
-                ok = self.db.insert_refill_request(req['kanban_record_id'], req['qty_to_refill'])
-                if not ok:
-                    log.warning("KanbanRefill: insert failed for KanBanRecordId=%s: %s",
-                                req['kanban_record_id'], self.db.last_error_details)
-
-        except Exception as e:
-            logging.getLogger("TraceabilityRS").exception("KanbanRefill job failed: %s", e)
-            log.exception("KanbanRefill job failed completamente: %s", e)
+        pass
+        # """
+        # Logica di controllo Kanban refill
+        # """
+        # log = logging.getLogger("TraceabilityRS")
+        # try:
+        #     # Verifica preliminare della connessione
+        #     if not self.db._ensure_connection():
+        #         log.error("Connessione al database non disponibile per Kanban refill check")
+        #         if manual:
+        #             self.after(0, lambda: messagebox.showerror(
+        #                 self.lang.get('error_title', 'Errore'),
+        #                 "Connessione al database non disponibile. Riprovare più tardi."
+        #             ))
+        #         return
+        #
+        #     # 1. Stock corrente per componente
+        #     log.info("Recupero stock corrente...")
+        #     stock_map = self.db.fetch_kanban_current_stock_by_component()
+        #
+        #     # Gestione degli errori
+        #     if stock_map is None:  # Errore di connessione o query fallita
+        #         log.error("Errore nel recupero stock - connessione persa o query fallita")
+        #         if manual:
+        #             self.after(0, lambda: messagebox.showerror(
+        #                 self.lang.get('error_title', 'Errore'),
+        #                 "Errore di connessione durante il recupero dei dati stock."
+        #             ))
+        #         return
+        #
+        #     if not stock_map:  # Nessun dato ma senza errori (tabella vuota)
+        #         log.warning("Nessun dato stock recuperato (tabella vuota o tutti i componenti hanno DateOut)")
+        #         if manual:
+        #             self.after(0, lambda: messagebox.showinfo(
+        #                 self.lang.get('info_title', 'Informazione'),
+        #                 "Nessun componente trovato con stock attivo (tutti i componenti hanno DateOut compilato)."
+        #             ))
+        #         return
+        #
+        #     comp_ids = list(stock_map.keys())
+        #     log.info(f"Componenti da processare: {len(comp_ids)}")
+        #
+        #     # 2. Regole attive per componente
+        #     log.info("Recupero regole attive...")
+        #     # rules_map = self.db.fetch_active_rules_by_component()
+        #     # if rules_map is None:  # Errore di connessione
+        #     #     log.error("Errore nel recupero regole attive")
+        #     #     return
+        #     # log.info(f"Regole attive trovate: {len(rules_map)}")
+        #
+        #     # 3. Prima quantità (per chi ha regola percentuale)
+        #     # pct_comp_ids = [cid for cid, r in rules_map.items() if r.get('min_pct') is not None]
+        #     # first_qty_map = {}
+        #     # if pct_comp_ids:
+        #     #     log.info(f"Recupero prime quantità per {len(pct_comp_ids)} componenti...")
+        #     #     first_qty_map = self.db.fetch_first_load_qty_by_component(pct_comp_ids)
+        #     #     if first_qty_map is None:  # Errore di connessione
+        #     #         log.error("Errore nel recupero prime quantità")
+        #     #         return
+        #     #     log.info(f"Prime quantità recuperate: {len(first_qty_map)}")
+        #
+        #     # 4. Max singolo carico + record id
+        #     log.info("Recupero max carichi...")
+        #     max_load_map = self.db.fetch_max_single_load_by_component(comp_ids)
+        #     if max_load_map is None:  # Errore di connessione
+        #         log.error("Errore nel recupero max carichi")
+        #         return
+        #     log.info(f"Max carichi recuperati: {len(max_load_map)}")
+        #
+        #     # 5. Master component
+        #     log.info("Recupero master component...")
+        #     master_map = self.db.fetch_components_master(comp_ids)
+        #     if master_map is None:  # Errore di connessione
+        #         log.error("Errore nel recupero master component")
+        #         return
+        #     log.info(f"Master component recuperati: {len(master_map)}")
+        #
+        #     # 6. Valuta richieste
+        #     requests = []  # elementi: dict con info per Excel e per insert
+        #     for cid, cur_stock in stock_map.items():
+        #         rule = rules_map.get(cid)
+        #         if rule:
+        #             if rule.get('min_qty') is not None:
+        #                 threshold = int(rule['min_qty'])
+        #                 rule_type = "ABS"
+        #                 rule_value = threshold
+        #             else:
+        #                 # percentuale: calcolo su prima quantità
+        #                 base = int(first_qty_map.get(cid, 0))
+        #                 pct = int(rule.get('min_pct') or 0)
+        #                 # floor per non anticipare troppo
+        #                 threshold = int((base * pct) / 100) if base > 0 and pct > 0 else 0
+        #                 rule_type = "PCT"
+        #                 rule_value = pct
+        #         else:
+        #             threshold = 0
+        #             rule_type = "NA"
+        #             rule_value = None
+        #
+        #         if cur_stock <= threshold:
+        #             ml = max_load_map.get(cid)
+        #             if not ml:
+        #                 continue
+        #             qty_to_refill = int(ml['max_qty'])
+        #             krec_id = int(ml['record_id'])
+        #             # dedup: se già presente oggi per questa KanBanRecordId, salta
+        #             if self.db.has_refill_request_today(krec_id):
+        #                 continue
+        #             # prepara riga
+        #             meta = master_map.get(cid, {'code': f"#{cid}", 'desc': ''})
+        #             requests.append({
+        #                 'component_id': cid,
+        #                 'component_code': meta['code'],
+        #                 'component_desc': meta['desc'],
+        #                 'current_stock': int(cur_stock),
+        #                 'threshold': int(threshold),
+        #                 'rule_type': rule_type,
+        #                 'rule_value': rule_value,
+        #                 'max_single_load': qty_to_refill,
+        #                 'qty_to_refill': qty_to_refill,
+        #                 'kanban_record_id': krec_id
+        #             })
+        #
+        #     if not requests:
+        #         if manual:
+        #             self.after(0, lambda: messagebox.showinfo(
+        #                 self.lang.get('info_title', 'Informazione'),
+        #                 self.lang.get('kanban_refill_none', 'Nessun componente da richiedere.')
+        #             ))
+        #         return
+        #
+        #     # 7. Genera Excel in memoria
+        #     excel_bytes = self._build_kanban_refill_excel(requests)
+        #
+        #     # 8. Destinatari mail
+        #     try:
+        #         recipients = utils.get_email_recipients(self.db.conn, attribute='Sys_email_KanBanRefill')
+        #     except Exception as e:
+        #         log.error("KanbanRefill: error reading recipients: %s", e)
+        #         recipients = []
+        #
+        #     if not recipients:
+        #         log.warning("KanbanRefill: no recipients for Sys_email_KanBanRefill; skipping email.")
+        #         return
+        #
+        #     # 9. Invia email (con allegato Excel)
+        #     subject = "[Kanban] Refill request - Repair Kanban"
+        #     body = (
+        #         "Dear Colleagues,\n\n"
+        #         "Please find attached the refill request for dedicated materials of the repairers' KANBAN.\n"
+        #         "The list includes all components whose current stock is at or below the configured reorder point.\n\n"
+        #         "Regards,\nTraceability System"
+        #     )
+        #
+        #     try:
+        #         utils.send_email(
+        #             recipients=recipients,
+        #             subject=subject,
+        #             body=body,
+        #             attachments=[("KanbanRefill.xlsx", excel_bytes)]
+        #         )
+        #         log.info("KanbanRefill: email sent to %d recipients.", len(recipients))
+        #     except Exception as e:
+        #         log.error("KanbanRefill: email send failed: %s", e)
+        #         return
+        #
+        #     # 10. Registra richieste su DB
+        #     for req in requests:
+        #         ok = self.db.insert_refill_request(req['kanban_record_id'], req['qty_to_refill'])
+        #         if not ok:
+        #             log.warning("KanbanRefill: insert failed for KanBanRecordId=%s: %s",
+        #                         req['kanban_record_id'], self.db.last_error_details)
+        #
+        # except Exception as e:
+        #     logging.getLogger("TraceabilityRS").exception("KanbanRefill job failed: %s", e)
+        #     log.exception("KanbanRefill job failed completamente: %s", e)
 
     def _build_kanban_refill_excel(self, rows: list[dict]) -> bytes:
         """
@@ -10002,7 +10057,7 @@ class App(tk.Tk):
                 # Combobox con i progetti
                 combo_var = tk.StringVar()
                 combo = ttk.Combobox(selection_window, textvariable=combo_var, width=50)
-                combo['values'] = [f"{p.ProgettoID} - {p.prodotto.NomeProdotto} ({p.prodotto.CodiceProdotto})" for p in
+                combo['values'] = [f"{p.ProgettoId} - {p.prodotto.NomeProdotto} ({p.prodotto.CodiceProdotto})" for p in
                                    progetti]
                 combo.pack(pady=10)
 
@@ -10093,7 +10148,7 @@ class App(tk.Tk):
 
             # 2. Prepara i dati per il dialogo: un dizionario che mappa il nome del prodotto all'ID del progetto.
             #    Questo ci serve perché l'utente sceglierà il nome, ma noi abbiamo bisogno dell'ID.
-            progetti_map = {proj.prodotto.NomeProdotto: proj.ProgettoID for proj in progetti_attivi}
+            progetti_map = {proj.prodotto.NomeProdotto: proj.ProgettoId for proj in progetti_attivi}
             lista_nomi_progetti = list(progetti_map.keys())
 
             # 3. Chiedi all'utente di scegliere un progetto da una semplice finestra di dialogo.
@@ -10156,8 +10211,6 @@ class App(tk.Tk):
             config_win = NpiConfigWindow(master=self, npi_manager=self.npi_manager, lang=self.lang,
                                          authorized_user=authorized_user)
             self.wait_window(config_win)
-            # ---> CANCELLA LA RIGA SEGUENTE <---
-            # self._load_npi_projects() # <-- QUESTA RIGA NON DEVE ESISTERE
 
         except Exception as e:
             logger.error("Errore nell'apertura della NpiConfigWindow: %s", e, exc_info=True)
@@ -10173,7 +10226,7 @@ class App(tk.Tk):
                 window = CoatingThicknessMeasurementWindow(
                     parent=self,
                     conn_str=self.db.conn_str,
-                    username=user_name,  # ✅ Parametro corretto: username
+                    username=user_name,
                     language_code=self.lang.current_language
                 )
                 window.show()
