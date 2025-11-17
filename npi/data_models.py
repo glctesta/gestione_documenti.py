@@ -1,4 +1,5 @@
 # File: npi/data_models.py (VERSIONE CORRETTA)
+from sqlalchemy import LargeBinary
 from datetime import datetime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Column, Integer, String, DateTime, DECIMAL, NVARCHAR, Date, Text, Boolean, ForeignKey, Float
@@ -154,6 +155,7 @@ class TaskProdotto(Base):
     prodotto = relationship("Prodotto", back_populates="task_prodotto")
     wave = relationship("WaveNPI", back_populates="tasks")
     notification_logs = relationship("NotificationLog", back_populates="task_prodotto", cascade="all, delete-orphan")
+    documents = relationship("NpiDocument", back_populates="task_prodotto", cascade="all, delete-orphan")
 
     # Relationship con Soggetto (VIEW)
     owner = relationship(
@@ -194,3 +196,46 @@ class NotificationLog(Base):
 
     def __repr__(self):
         return f"<NotificationLog(Id={self.NotificationLogId}, TaskId={self.TaskProdottoId})>"
+
+
+# ========================================
+# 9. NpiDocumentType
+# ========================================
+class NpiDocumentType(Base):
+    __tablename__ = 'NpiDocumentTypes'
+    __table_args__ = {'schema': 'dbo'}
+
+    NpiDocumentTypeId = Column(Integer, primary_key=True, autoincrement=True)
+    NpiDocumentDescription = Column(String(255), nullable=False)
+    HasValue = Column(Boolean, default=False)
+    CheckDate = Column(Boolean, default=False)
+    documents = relationship("NpiDocument", back_populates="document_type")
+
+
+
+# ========================================
+# 10. NpiDocument
+# ========================================
+class NpiDocument(Base):
+    __tablename__ = 'NpiDocuments'
+    __table_args__ = {'schema': 'dbo'}
+
+    NpiDocumentId = Column(Integer, primary_key=True, autoincrement=True)
+    TaskProdottoId = Column(Integer, ForeignKey('dbo.TaskProdotto.TaskProdottoID'))
+    NpiDocumentTypeId = Column(Integer, ForeignKey('dbo.NpiDocumentTypes.NpiDocumentTypeId'))
+    DocumentTitle = Column(String(255), nullable=False)
+    DocumentBody = Column(LargeBinary)  # Per VARBINARY(MAX)
+    DateIn = Column(DateTime, default=datetime.utcnow)
+    User = Column(String(255))
+    NewVersionOf = Column(Integer, nullable=True)
+    ValueInEur = Column(Float, nullable=True)
+    DateOut = Column(DateTime, nullable=True)
+    VersionNumber = Column(Integer, default=0)
+    Note = Column(Text, nullable=True)
+    AutorizedBy = Column(String(255), nullable=True)
+    AuthorizedOn = Column(DateTime, nullable=True)
+    IDSite = Column('IDSite',Integer, nullable=True)
+
+    # Relazioni
+    task_prodotto = relationship("TaskProdotto", back_populates="documents")
+    document_type = relationship("NpiDocumentType", back_populates="documents")

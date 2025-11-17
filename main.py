@@ -276,7 +276,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.9.4"  # Versione aggiornata
+APP_VERSION = "1.9.6"  # Versione aggiornata
 APP_DEVELOPER = "@Gianluca Testa"
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -1516,39 +1516,6 @@ class Database:
                 logger.error(f"✗ Impossibile ripristinare la connessione: {reconnect_error}")
                 return False
 
-    # def fetch_kanban_current_stock_by_component(self):
-    #     """
-    #     Recupera lo stock corrente di tutti i componenti dal Kanban.
-    #     """
-    #     sql = """
-    #           SELECT IdComponent, COALESCE(SUM(Quantity), 0) AS Stock
-    #           FROM Traceability_rs.knb.KanBanRecords
-    #           WHERE DateOut IS NULL
-    #           GROUP BY IdComponent
-    #           """
-    #     try:
-    #         # VERIFICA la connessione prima di procedere
-    #         if not self._ensure_connection():
-    #             logger.error("✗ Connessione non disponibile in fetch_kanban_current_stock_by_component")
-    #             return {}
-    #
-    #         logger.error("✗ Connessione non disponibile in fetch_kanban_current_stock_by_component")
-    #
-    #         self.cursor.execute(sql)
-    #         rows = self.cursor.fetchall()
-    #         stock_map = {row.IdComponent: row.Stock for row in rows}
-    #         logger.info(f"✓ Stock recuperato per {len(stock_map)} componenti")
-    #         return stock_map
-    #
-    #     except Exception as e:
-    #         self.last_error_details = str(e)
-    #         logger.error(f"✗ Errore fetch_kanban_current_stock_by_component: {e}")
-    #         # Debug aggiuntivo
-    #         logger.error(f"Tipo di errore: {type(e)}")
-    #         logger.error(f"Args errore: {e.args if hasattr(e, 'args') else 'N/A'}")
-    #
-    #         return {}
-
     def fetch_kanban_current_stock_by_component(self):
         """
         Recupera lo stock corrente di tutti i componenti dal Kanban.
@@ -1605,31 +1572,6 @@ class Database:
             except:
                 pass
 
-
-    # def _ensure_connection(self):
-    #     """Verifica e ripristina la connessione se necessario"""
-    #     try:
-    #         # Prova una query semplice per testare la connessione
-    #         self.cursor.execute("SELECT 1")
-    #         self.cursor.fetchone()
-    #         return True
-    #     except Exception as e:
-    #         logger.warning(f"Connessione persa, tentativo di riconnessione: {e}")
-    #         try:
-    #             if self.conn:
-    #                 self.conn.close()
-    #         except:
-    #             pass
-    #
-    #         try:
-    #             # Usa la stringa di connessione salvata in __init__
-    #             self.conn = pyodbc.connect(self.conn_str)
-    #             self.cursor = self.conn.cursor()
-    #             logger.info("✓ Connessione ripristinata")
-    #             return True
-    #         except Exception as reconnect_error:
-    #             logger.error(f"✗ Impossibile ripristinare la connessione: {reconnect_error}")
-    #             return False
 
     def fetch_active_rules_by_component(self):
         """
@@ -9345,32 +9287,6 @@ class App(tk.Tk):
         # Questo pack fa sì che l'etichetta si espanda per riempire lo spazio centrale
         self.birthday_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        # # Frame per contenere la Dashboard NPI
-        # npi_dashboard_frame = ttk.Labelframe(self, text="Progetti NPI Attivi", padding=10)
-        # npi_dashboard_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
-        #
-        # # Creiamo la Treeview per i progetti
-        # cols = ('ID', 'Codice Prodotto', 'Nome Prodotto', 'Stato Progetto')
-        # self.project_tree = ttk.Treeview(npi_dashboard_frame, columns=cols, show='headings', height=5)
-        #
-        # self.project_tree.heading('ID', text='ID')
-        # self.project_tree.column('ID', width=50, anchor=tk.CENTER)
-        # self.project_tree.heading('Codice Prodotto', text='Codice Prodotto')
-        # self.project_tree.column('Codice Prodotto', width=150)
-        # self.project_tree.heading('Nome Prodotto', text='Nome Prodotto')
-        # self.project_tree.column('Nome Prodotto', width=300)
-        # self.project_tree.heading('Stato Progetto', text='Stato')
-        # self.project_tree.column('Stato Progetto', width=100)
-        #
-        # self.project_tree.pack(fill=tk.X, expand=True)
-        # # --- CORREZIONE CHIAVE: AGGIUNTA DEI METODI PER IL MENU CONTESTUALE ---
-        # # Colleghiamo l'evento del tasto destro del mouse alla funzione che mostrerà il menu
-        #
-        # self.project_tree.bind("<Button-3>", self._show_project_context_menu)
-        #
-        # # Aggiungiamo un doppio click per aprire direttamente la gestione progetto
-        # self.project_tree.bind("<Double-1>", lambda event: self._launch_project_window())
-
         # --- DOPO: Crea l'Area Centrale per lo Slideshow ---
         # Ora questo label si espanderà per riempire tutto lo spazio RIMANENTE
         self.slideshow_label = ttk.Label(self, background="black")
@@ -10035,6 +9951,7 @@ class App(tk.Tk):
         def authorized_action():
             """Azione da eseguire solo se l'utente è autorizzato"""
             try:
+                final_customers = self.db.get_suppliers()#fetch_final_customers()
                 progetti = self.npi_manager.get_progetti_attivi()
 
                 if not progetti:
@@ -10065,7 +9982,14 @@ class App(tk.Tk):
                     if combo_var.get():
                         project_id = int(combo_var.get().split(" - ")[0])
                         selection_window.destroy()
-                        ProjectWindow(self, self.npi_manager, self.lang, project_id)
+
+                        # Recupera il nome dell'utente che ha appena effettuato l'autenticazione
+                        # 'self' qui si riferisce all'istanza dell'applicazione principale
+                        logged_user = self.last_authenticated_user_name
+
+                        # Passa il nome utente come argomento esplicito a ProjectWindow
+                        ProjectWindow(self, self.npi_manager, self.lang, project_id, self,
+                                      logged_user, final_customers)
 
                 ttk.Button(selection_window, text="Apri", command=open_selected).pack(pady=10)
 
@@ -10121,11 +10045,13 @@ class App(tk.Tk):
         'username' è passato da _execute_simple_login.
         """
         logger.info(f"Utente '{username}' autorizzato. Apertura Dashboard NPI.")
+
         try:
             dashboard = NpiDashboardWindow(master=self, npi_manager=self.npi_manager, lang=self.lang)
             # Puoi rendere la finestra modale se necessario
             self.wait_window(dashboard)
-            self._load_npi_projects()  # Ricarica dopo la chiusura
+            #self._load_npi_projects()  # Ricarica dopo la chiusura
+            self.get_progetti_attivi()
         except Exception as e:
             logger.error("Errore nell'apertura della NpiDashboardWindow: %s", e, exc_info=True)
             messagebox.showerror("Errore", f"Impossibile aprire la dashboard NPI: {e}")

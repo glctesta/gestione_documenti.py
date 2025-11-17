@@ -22,11 +22,12 @@ logger = logging.getLogger(__name__)
 
 
 class NpiDashboardWindow(tk.Toplevel):
-    def __init__(self, master, npi_manager, lang):
+    def __init__(self, master, npi_manager, lang, logged_in_user):
         super().__init__(master)
         self.npi_manager = npi_manager
         self.lang = lang
         self.master_app = master
+        self.logged_in_user = logged_in_user
 
         self.title(self.lang.get('npi_dashboard_title', "Dashboard Progetti NPI"))
         self.geometry("1200x600")  # Finestra più larga per nuove colonne
@@ -44,10 +45,15 @@ class NpiDashboardWindow(tk.Toplevel):
                                     padding=10)
         list_frame.pack(fill=tk.BOTH, expand=True)
 
-        # --- COLONNE AGGIORNATE ---
-        cols = ('project_name', 'product_code', 'customer', 'milestone_due_date')
+        # --- **MODIFICA QUI: NUOVE COLONNE E TAG** ---
+        cols = ('status_icon', 'project_name', 'product_code', 'customer', 'milestone_due_date')
         self.project_tree = ttk.Treeview(list_frame, columns=cols, show='headings', selectmode='browse')
 
+        # Colonna per l'icona di stato 'X' (senza header)
+        self.project_tree.heading('status_icon', text='')
+        self.project_tree.column('status_icon', width=30, anchor=tk.CENTER, stretch=tk.NO)
+
+        # Configurazioni colonne esistenti
         self.project_tree.heading('project_name', text=self.lang.get('col_project_name', 'Nome Progetto'))
         self.project_tree.column('project_name', width=300)
         self.project_tree.heading('product_code', text=self.lang.get('col_product_code', 'Codice Prodotto'))
@@ -58,29 +64,27 @@ class NpiDashboardWindow(tk.Toplevel):
                                   text=self.lang.get('col_milestone_due_date', 'Scadenza Milestone Finale'))
         self.project_tree.column('milestone_due_date', width=200, anchor=tk.CENTER)
 
+        # Definizione del tag per i progetti in ritardo
+        self.project_tree.tag_configure('overdue', foreground='red', font=('Helvetica', 9, 'bold'))
+        # --- **FINE MODIFICA** ---
+
         self.project_tree.pack(fill=tk.BOTH, expand=True)
 
-        # Bind per doppio click -> ora apre la finestra di analisi
         self.project_tree.bind('<Double-1>', self._on_double_click)
-        # Il menu contestuale rimane per le altre azioni
         self.project_tree.bind("<Button-3>", self._show_project_context_menu)
 
+        # ... (il resto del metodo con i pulsanti rimane invariato)
         button_frame = ttk.Frame(main_frame, padding=(0, 10, 0, 0))
         button_frame.pack(fill=tk.X)
-
         ttk.Button(button_frame, text=self.lang.get('btn_refresh', 'Aggiorna'), command=self.load_npi_projects).pack(
             side=tk.LEFT, padx=5)
-        # --- NUOVO BOTTONE "ANALISI" ---
         ttk.Button(button_frame, text=self.lang.get('btn_analyze', 'Analisi'),
                    command=self._launch_analysis_window).pack(side=tk.LEFT, padx=5)
-
-        # --- NUOVO BOTTONE EXPORT PDF ---
         self.export_pdf_button = ttk.Button(button_frame, text=self.lang.get('btn_export_pdf', 'Export PDF a C:\\Temp'),
                                             command=self._export_summary_pdf)
         self.export_pdf_button.pack(side=tk.LEFT, padx=5)
         if not REPORTLAB_AVAILABLE:
             self.export_pdf_button.config(state=tk.DISABLED)
-
         ttk.Button(button_frame, text=self.lang.get('btn_close', 'Chiudi'), command=self.destroy).pack(side=tk.RIGHT)
 
     def load_npi_projects(self):
@@ -88,38 +92,81 @@ class NpiDashboardWindow(tk.Toplevel):
             self.project_tree.delete(i)
 
         try:
-            # --- USA IL NUOVO METODO DEL MANAGER ---
             progetti = self.npi_manager.get_dashboard_projects()
-
             if not progetti:
-                self.project_tree.insert('', tk.END, text="-1",
-                                         values=(self.lang.get('no_active_projects', "Nessun progetto attivo trovato."),
-                                                 "", "", ""))
+                self.project_tree.insert('', tk.END, text="-1", values=('', self.lang.get('no_active_projects',
+                                                                                          "Nessun progetto attivo trovato."),
+                                                                        "", "", ""))
                 return
 
             for proj in progetti:
+                # --- **MODIFICA QUI: LOGICA DEI TAG** ---
                 due_date = proj.ScadenzaMilestoneFinale
                 display_date = due_date.strftime('%d/%m/%Y') if due_date else "N/D"
+                status_icon = ''
+                row_tags = ()  # Inizializza tupla dei tag vuota
 
-                # Aggiungi simbolo di warning se scaduto
-                if due_date and due_date.date() < datetime.now().date():
-                    display_date += ' ❗'  # Simbolo di warning
+                # Controlla se il progetto è scaduto
+                is_overdue = due_date and due_date.date() < datetime.now().date()
+                if is_overdue:
+                    status_icon = 'X'
+                    row_tags = ('overdue',)
 
-                # L'ID progetto è salvato nel campo 'text' nascosto
                 self.project_tree.insert(
                     '', tk.END,
                     text=str(proj.ProgettoId),
                     values=(
+                        status_icon,
                         proj.NomeProgetto,
                         proj.CodiceProdotto or "",
                         proj.Cliente or "",
                         display_date
-                    )
+                    ),
+                    tags=row_tags  # Applica il tag alla riga
                 )
+                # --- **FINE MODIFICA** ---
         except Exception as e:
             logger.error(f"Errore nel caricamento progetti dashboard: {e}", exc_info=True)
             self.project_tree.insert('', tk.END, text="-1",
-                                     values=("Errore", "Impossibile caricare i dati.", str(e), ""))
+                                     values=('', "Errore", "Impossibile caricare i dati.", str(e), ""))
+
+    # def load_npi_projects(self):
+    #     for i in self.project_tree.get_children():
+    #         self.project_tree.delete(i)
+    #
+    #     try:
+    #         # --- USA IL NUOVO METODO DEL MANAGER ---
+    #         progetti = self.npi_manager.get_dashboard_projects()
+    #
+    #         if not progetti:
+    #             self.project_tree.insert('', tk.END, text="-1",
+    #                                      values=(self.lang.get('no_active_projects', "Nessun progetto attivo trovato."),
+    #                                              "", "", ""))
+    #             return
+    #
+    #         for proj in progetti:
+    #             due_date = proj.ScadenzaMilestoneFinale
+    #             display_date = due_date.strftime('%d/%m/%Y') if due_date else "N/D"
+    #
+    #             # Aggiungi simbolo di warning se scaduto
+    #             if due_date and due_date.date() < datetime.now().date():
+    #                 display_date += ' ❗'  # Simbolo di warning
+    #
+    #             # L'ID progetto è salvato nel campo 'text' nascosto
+    #             self.project_tree.insert(
+    #                 '', tk.END,
+    #                 text=str(proj.ProgettoId),
+    #                 values=(
+    #                     proj.NomeProgetto,
+    #                     proj.CodiceProdotto or "",
+    #                     proj.Cliente or "",
+    #                     display_date
+    #                 )
+    #             )
+    #     except Exception as e:
+    #         logger.error(f"Errore nel caricamento progetti dashboard: {e}", exc_info=True)
+    #         self.project_tree.insert('', tk.END, text="-1",
+    #                                  values=("Errore", "Impossibile caricare i dati.", str(e), ""))
 
     def _on_double_click(self, event):
         """Il doppio click ora lancia la finestra di analisi."""
@@ -152,7 +199,6 @@ class NpiDashboardWindow(tk.Toplevel):
 
         ProjectAnalysisWindow(self, self.npi_manager, self.lang, project_id, project_name)
 
-    # Il menu contestuale rimane per le azioni "vecchie"
     def _show_project_context_menu(self, event):
         iid = self.project_tree.identify_row(event.y)
         if not iid: return
@@ -175,14 +221,18 @@ class NpiDashboardWindow(tk.Toplevel):
         project_id, _ = self._get_selected_project_info()
         if project_id is None: return
 
+        logged_user = self.logged_in_user
+
         # Usa l'helper di autorizzazione del master se esiste
         if hasattr(self.master_app, '_execute_authorized_action'):
             self.master_app._execute_authorized_action(
                 menu_translation_key='project_window',
-                action_callback=lambda: ProjectWindow(self, self.npi_manager, self.lang, project_id)
+                # La callback ora usa la variabile 'logged_user' locale, che è corretta e sicura
+                action_callback=lambda: ProjectWindow(self, self.npi_manager, self.lang, project_id, self.master_app,
+                                                      logged_user)
             )
-        else:  # Fallback per test
-            ProjectWindow(self, self.npi_manager, self.lang, project_id)
+        else:  # Fallback
+            ProjectWindow(self, self.npi_manager, self.lang, project_id, self.master_app, logged_user)
 
     def _launch_gantt_window(self):
         """Apre la finestra Gantt per il progetto selezionato."""
@@ -192,54 +242,45 @@ class NpiDashboardWindow(tk.Toplevel):
         NpiGanttWindow(self, self.npi_manager, self.lang, project_id)
 
     def _export_summary_pdf(self):
-        """Genera un report PDF professionale con tutti i progetti e le loro analisi."""
         if not REPORTLAB_AVAILABLE:
             messagebox.showerror("Libreria Mancante",
                                  "La libreria 'reportlab' è necessaria per l'export PDF.\nInstallala con: pip install reportlab",
                                  parent=self)
             return
-
         self.export_pdf_button.config(state=tk.DISABLED)
         self.update_idletasks()
-
         try:
             full_report_data = self.npi_manager.get_full_projects_report_data()
             if not full_report_data:
                 messagebox.showinfo("Info", "Nessun progetto da includere nel report.", parent=self)
                 return
-
-            # Prepara percorso e file
             temp_dir = "C:\\Temp"
             os.makedirs(temp_dir, exist_ok=True)
             file_path = os.path.join(temp_dir, f"NPI_Projects_Summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
-
-            # Crea il documento
             c = canvas.Canvas(file_path, pagesize=A4)
             width, height = A4
 
-            # Funzione helper per disegnare sezioni
             def draw_project_section(y_start, project_data):
                 y = y_start
-                # Titolo progetto
                 c.setFont("Helvetica-Bold", 12)
+                is_overdue = project_data['info'].ScadenzaMilestoneFinale and project_data[
+                    'info'].ScadenzaMilestoneFinale.date() < datetime.now().date()
+                if is_overdue:
+                    c.setFillColor(colors.red)
                 c.drawString(inch, y, f"Project: {project_data['info'].NomeProgetto}")
+                c.setFillColor(colors.black)
                 y -= 20
-
-                # Dettagli progetto
                 c.setFont("Helvetica", 9)
-                c.drawString(inch, y, f"Product Code: {project_data['info'].CodiceProdotto or 'N/A'}  |  "
-                                      f"Customer: {project_data['info'].Cliente or 'N/A'}")
+                c.drawString(inch, y,
+                             f"Product Code: {project_data['info'].CodiceProdotto or 'N/A'}  |  Customer: {project_data['info'].Cliente or 'N/A'}")
                 y -= 15
                 due_date_str = project_data['info'].ScadenzaMilestoneFinale.strftime('%Y-%m-%d') if project_data[
                     'info'].ScadenzaMilestoneFinale else "Not Set"
                 c.drawString(inch, y, f"Final Milestone Due Date: {due_date_str}")
                 y -= 25
-
-                # Analisi ritardi
                 c.setFont("Helvetica-Bold", 10)
                 c.drawString(inch, y, "Overdue Task Analysis:")
                 y -= 20
-
                 analysis = project_data['analysis']
                 if not analysis:
                     c.setFont("Helvetica-Oblique", 9)
@@ -251,8 +292,6 @@ class NpiDashboardWindow(tk.Toplevel):
                     table_data = [['Owner', '# Late Tasks']]
                     for item in analysis:
                         table_data.append([item['owner_name'], item['late_count']])
-
-                    # Crea la tabella
                     table = Table(table_data, colWidths=[3 * inch, 1.5 * inch])
                     table.setStyle(TableStyle([
                         ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
@@ -264,16 +303,19 @@ class NpiDashboardWindow(tk.Toplevel):
                         ('GRID', (0, 0), (-1, -1), 1, colors.black)
                     ]))
 
-                    table.wrapOn(c, width, height)
-                    table.drawOn(c, inch, y - table._height)
-                    y -= (table._height + 20)
+                    # --- ** CORREZIONE QUI ** ---
+                    # Cattura l'altezza reale calcolata dal metodo wrapOn
+                    _w, _h = table.wrapOn(c, width, height)
 
-                # Linea separatrice
+                    # Usa l'altezza catturata _h per il posizionamento e l'aggiornamento della coordinata y
+                    table.drawOn(c, inch, y - _h)
+                    y -= (_h + 20)
+                    # --- ** FINE CORREZIONE ** ---
+
                 c.line(inch, y, width - inch, y)
                 y -= 15
                 return y
 
-            # === Costruzione del PDF ===
             y_pos = height - inch
             c.setFont("Helvetica-Bold", 18)
             c.drawCentredString(width / 2.0, y_pos, "NPI Projects Summary Report")
@@ -281,23 +323,16 @@ class NpiDashboardWindow(tk.Toplevel):
             c.setFont("Helvetica", 10)
             c.drawCentredString(width / 2.0, y_pos, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             y_pos -= 40
-
             for project in full_report_data:
-                # Controlla se c'è abbastanza spazio per la prossima sezione
-                # (Stima approssimativa dell'altezza, meglio essere conservativi)
                 estimated_height = 120 + (len(project['analysis']) * 20 if project['analysis'] else 0)
                 if y_pos < estimated_height:
-                    c.showPage()  # Nuova pagina
-                    y_pos = height - inch  # Reset Y
-
+                    c.showPage()
+                    y_pos = height - inch
                 y_pos = draw_project_section(y_pos, project)
-
             c.save()
-
             if messagebox.askyesno("Successo", f"Report PDF salvato con successo in:\n{file_path}\n\nVuoi aprirlo ora?",
                                    parent=self):
                 os.startfile(file_path)
-
         except Exception as e:
             logger.error(f"Errore durante l'export PDF: {e}", exc_info=True)
             messagebox.showerror("Errore Export", f"Impossibile generare il PDF:\n{e}", parent=self)

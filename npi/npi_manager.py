@@ -5,7 +5,8 @@ from sqlalchemy.orm import sessionmaker, joinedload, subqueryload, selectinload,
 from sqlalchemy.engine import Engine
 from sqlalchemy import select, update, delete, func, and_, event, text
 from sqlalchemy.pool import QueuePool
-from npi.data_models import ProgettoNPI, Base, Prodotto, Soggetto, TaskCatalogo, Categoria, WaveNPI, TaskProdotto
+from npi.data_models import (ProgettoNPI, Base, Prodotto, Soggetto, TaskCatalogo,
+                             Categoria, WaveNPI, TaskProdotto, NpiDocument, NpiDocumentType)
 import urllib
 
 logger = logging.getLogger(__name__)
@@ -641,26 +642,36 @@ class GestoreNPI:
         try:
             logger.debug(f"Cerco progetto con ID {project_id}")
 
-            progetto = session.scalars(
+            stmt = (
                 select(ProgettoNPI)
                 .options(
+                    # Caricamento delle relazioni esistenti...
                     joinedload(ProgettoNPI.prodotto),
                     subqueryload(ProgettoNPI.waves).subqueryload(WaveNPI.tasks).options(
                         joinedload(TaskProdotto.owner),
-                        joinedload(TaskProdotto.task_catalogo).joinedload(TaskCatalogo.categoria)
+                        joinedload(TaskProdotto.task_catalogo).joinedload(TaskCatalogo.categoria),
+
+                        # --- CORREZIONE QUI ---
+                        # Aggiungiamo questa riga per dire a SQLAlchemy:
+                        # "Quando carichi i task, carica subito anche la lista dei loro documenti".
+                        selectinload(TaskProdotto.documents).joinedload(NpiDocument.document_type)
                     )
                 )
                 .where(ProgettoNPI.ProgettoId == project_id)
-            ).first()
+            )
+
+            progetto = session.scalars(stmt).first()
 
             if progetto:
                 logger.info(f"Progetto trovato - {progetto.prodotto.NomeProdotto}")
-                logger.info(f"Numero di waves: {len(progetto.waves)}")
                 if progetto.waves:
-                    logger.debug(f"Numero di task nella prima wave: {len(progetto.waves[0].tasks)}")
+                    # Questo log ora funzionerà senza errori
+                    for task in progetto.waves[0].tasks:
+                        logger.debug(f"Task '{task.task_catalogo.NomeTask}' ha {len(task.documents)} documenti.")
             else:
                 logger.info(f"Nessun progetto trovato con ID {project_id}")
 
+            # Quando l'oggetto viene scollegato, ora avrà già la lista .documents popolata!
             return self._detach_object(session, progetto)
         except Exception as e:
             logger.error(f"Errore durante il recupero del progetto: {e}")
@@ -668,6 +679,7 @@ class GestoreNPI:
             return None
         finally:
             session.close()
+
 
     def update_project_dates(self, project_id: int, start_date: datetime, due_date: datetime, lang):
         """
@@ -1092,6 +1104,160 @@ class GestoreNPI:
 
         except Exception as e:
             logger.error(f"Errore durante la copia dei task: {e}", exc_info=True)
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+
+    def get_npi_document_types(self):
+        """Recupera tutti i tipi di documenti NPI."""
+        session = self._get_session()
+        try:
+            doc_types = session.scalars(
+                select(NpiDocumentType).order_by(NpiDocumentType.NpiDocumentDescription)
+            ).all()
+            return self._detach_list(session, doc_types)
+        finally:
+            session.close()
+
+
+    def get_documents_for_task(self, task_prodotto_id: int):
+        """Recupera tutti i documenti per un dato task, ordinati per data decrescente."""
+        session = self._get_session()
+        try:
+            documents = session.scalars(
+                select(NpiDocument)
+                .options(joinedload(NpiDocument.document_type))
+                .where(NpiDocument.TaskProdottoId == task_prodotto_id)
+                .order_by(NpiDocument.DateIn.desc())
+            ).all()
+            return self._detach_list(session, documents)
+        finally:
+            session.close()
+
+
+    def get_document_body(self, document_id: int):
+        """Recupera solo il corpo binario di un documento per l'apertura."""
+        session = self._get_session()
+        try:
+            # Seleziona solo la colonna DocumentBody per efficienza
+            body = session.scalar(
+                select(NpiDocument.DocumentBody).where(NpiDocument.NpiDocumentId == document_id)
+            )
+            return body
+        finally:
+            session.close()
+
+    def add_npi_document(self, task_prodotto_id, doc_type_id, title, body, user,
+                         note=None, replaces_doc_id=None, doc_value=None,
+                         due_date=None, IDSite=None):  # ← Aggiungi questo parametro
+        """
+        Aggiunge un nuovo documento NPI al database.
+        """
+        try:
+            with self._get_session() as session:
+                # Gestisci la sostituzione del documento precedente
+                if replaces_doc_id:
+                    old_doc = session.query(NpiDocument).filter_by(
+                        NpiDocumentId=replaces_doc_id
+                    ).first()
+                    if old_doc:
+                        old_doc.DateOut = datetime.now()
+                        version_number = old_doc.VersionNumber + 1
+                    else:
+                        version_number = 0
+                else:
+                    version_number = 0
+
+                # Crea il nuovo documento
+                new_doc = NpiDocument(
+                    TaskProdottoId=task_prodotto_id,
+                    NpiDocumentTypeId=doc_type_id,
+                    DocumentTitle=title,
+                    DocumentBody=body,
+                    DateIn=datetime.now(),
+                    User=user,
+                    NewVersionOf=replaces_doc_id,
+                    ValueInEur=doc_value,
+                    DateOut=due_date,
+                    VersionNumber=version_number,
+                    Note=note,
+                    IDSite=IDSite
+                )
+
+                session.add(new_doc)
+                session.commit()
+
+                logger.info(f"Documento '{title}' aggiunto con successo per task {task_prodotto_id}")
+                return new_doc
+
+        except Exception as e:
+            logger.error(f"Errore durante l'aggiunta del documento: {e}", exc_info=True)
+            raise
+
+    def check_and_notify_document_deadlines(self):
+        """
+        Controlla tutti i documenti con una DueDate e invia notifiche se sono scaduti.
+        """
+        session = self._get_session()
+        try:
+            today = datetime.utcnow().date()
+
+            # Seleziona documenti non obsoleti, con una DueDate passata e associati a un task con un owner
+            overdue_docs = session.scalars(
+                select(NpiDocument)
+                .join(NpiDocument.task_prodotto)
+                .options(
+                    joinedload(NpiDocument.task_prodotto).joinedload(TaskProdotto.owner),
+                    joinedload(NpiDocument.task_prodotto).joinedload(TaskProdotto.task_catalogo)
+                )
+                .where(
+                    NpiDocument.DateOut == None,  # Documento attivo
+                    NpiDocument.DueDate != None,  # Ha una data di scadenza
+                    NpiDocument.DueDate < today,  # La data è passata
+                    TaskProdotto.OwnerID != None  # Il task ha un owner
+                )
+            ).all()
+
+            if not overdue_docs:
+                logger.info("Nessuna scadenza documento da notificare.")
+                return 0
+
+            # Qui dovresti implementare la logica di invio email/notifica Teams.
+            # Per semplicità, logghiamo solo i documenti trovati.
+            # Puoi raggrupparli per owner e inviare una singola notifica riepilogativa.
+
+            logger.warning(f"Trovati {len(overdue_docs)} documenti con scadenza superata.")
+            for doc in overdue_docs:
+                owner = doc.task_prodotto.owner
+                task = doc.task_prodotto
+                logger.info(f"  -> Documento '{doc.DocumentTitle}' (ID: {doc.NpiDocumentId}) "
+                            f"del task '{task.task_catalogo.NomeTask}' "
+                            f"assegnato a '{owner.Nome}' è SCADUTO il {doc.DueDate.strftime('%Y-%m-%d')}.")
+
+            # TODO: Implementare qui la logica di invio notifiche raggruppate per owner
+            # Esempio: email_sender.send_overdue_document_summary(owner, lista_documenti_scaduti)
+
+            return len(overdue_docs)
+
+        finally:
+            session.close()
+
+
+    def authorize_document(self, document_id: int, authorizer_name: str):
+        """Autorizza un documento, impostando nome e data."""
+        session = self._get_session()
+        try:
+            doc = session.get(NpiDocument, document_id)
+            if not doc:
+                raise ValueError(f"Documento con ID {document_id} non trovato.")
+
+            doc.AutorizedBy = authorizer_name
+            doc.AuthorizedOn = datetime.utcnow()
+
+            session.commit()
+        except Exception:
             session.rollback()
             raise
         finally:
