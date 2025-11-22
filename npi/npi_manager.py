@@ -610,6 +610,103 @@ class GestoreNPI:
         finally:
             session.close()
 
+    def validate_final_milestone_completion(self, task_prodotto_id: int) -> tuple:
+        """
+        Valida che il task finale (IsFinalMilestone=True) possa essere marcato come 'Completato'.
+
+        REGOLA: Un task finale può essere completato SOLO se TUTTI i task con NrOrdin inferiore
+        sono già stati marcati come 'Completato'.
+
+        Args:
+            task_prodotto_id: ID del task da validare
+
+        Returns:
+            tuple: (is_valid: bool, message: str)
+                - (True, "") se la validazione passa
+                - (False, messaggio_errore) se la validazione fallisce
+        """
+        session = self._get_session()
+        try:
+            # Recupera il task
+            task = session.get(TaskProdotto, task_prodotto_id)
+            if not task:
+                return False, "Task non trovato."
+
+            # Verifica se è il task finale
+            if not task.task_catalogo or not task.task_catalogo.IsFinalMilestone:
+                # Non è un task finale, niente da validare
+                return True, ""
+
+            logger.info(
+                f"Validazione task finale {task_prodotto_id} "
+                f"({task.task_catalogo.NomeTask})"
+            )
+
+            # Recupera TUTTI i task della stessa wave, ordinati per NrOrdin
+            wave_tasks = session.scalars(
+                select(TaskProdotto)
+                .join(TaskCatalogo, TaskProdotto.TaskID == TaskCatalogo.TaskID)
+                .where(TaskProdotto.WaveID == task.WaveID)
+                .order_by(TaskCatalogo.NrOrdin.asc())
+            ).all()
+
+            # Trova il task finale nella lista
+            final_task_index = None
+            for idx, t in enumerate(wave_tasks):
+                if t.TaskProdottoID == task_prodotto_id:
+                    final_task_index = idx
+                    break
+
+            if final_task_index is None:
+                return False, "Task finale non trovato nella wave."
+
+            # Recupera TUTTI i task PRECEDENTI (NrOrdin inferiore)
+            preceding_tasks = wave_tasks[:final_task_index]
+
+            if not preceding_tasks:
+                # Non ci sono task precedenti, il finale può essere completato
+                logger.info("Nessun task precedente trovato. Task finale può essere completato.")
+                return True, ""
+
+            # Controlla che TUTTI i task precedenti siano 'Completato'
+            incomplete_tasks = [
+                t for t in preceding_tasks
+                if t.Stato != 'Completato'
+            ]
+
+            if incomplete_tasks:
+                # Costruisci il messaggio con i task incompleti
+                incomplete_names = []
+                for t in incomplete_tasks:
+                    name = (t.task_catalogo.NomeTask
+                            if t.task_catalogo
+                            else f"Task {t.TaskProdottoID}")
+                    stato = t.Stato or "Non assegnato"
+                    incomplete_names.append(f"  • {name} (Stato: {stato})")
+
+                error_message = (
+                        "Non è possibile completare il task finale.\n\n"
+                        "I seguenti task precedenti devono essere completati prima:\n\n" +
+                        "\n".join(incomplete_names)
+                )
+
+                logger.warning(
+                    f"Validazione fallita: {len(incomplete_tasks)} task precedenti non completati"
+                )
+                return False, error_message
+
+            logger.info("Validazione superata: tutti i task precedenti sono completati.")
+            return True, ""
+
+        except Exception as e:
+            logger.error(
+                f"Errore durante la validazione del task finale {task_prodotto_id}: {e}",
+                exc_info=True
+            )
+            return False, f"Errore durante la validazione: {str(e)}"
+        finally:
+            session.close()
+
     def debug_get_progetto(self, project_id):
         """Metodo di debug per verificare se il progetto esiste."""
         session = self._get_session()
@@ -679,7 +776,6 @@ class GestoreNPI:
             return None
         finally:
             session.close()
-
 
     def update_project_dates(self, project_id: int, start_date: datetime, due_date: datetime, lang):
         """
@@ -755,14 +851,21 @@ class GestoreNPI:
             # Gestione campi data
             date_fields = ['DataScadenza', 'DataInizio', 'DataCompletamento']
             for field in date_fields:
-                if data.get(field) in ('', None):
-                    data[field] = None
-                elif isinstance(data.get(field), str):
-                    try:
-                        data[field] = datetime.strptime(data[field], '%d/%m/%Y').date()
-                    except (ValueError, TypeError):
-                        data[field] = None
+                # Controlla se la chiave esiste nel dizionario 'data' prima di accedervi
+                if field in data:
+                    field_value = data.get(field)
 
+                    if field_value in ('', None):
+                        data[field] = None  # Imposta esplicitamente a None
+                    elif isinstance(field_value, str):
+                        try:
+                            # Converte la stringa in un oggetto datetime completo
+                            data[field] = datetime.strptime(field_value, '%d/%m/%Y')
+                        except (ValueError, TypeError):
+                            # Se la conversione fallisce, imposta a None
+                            data[field] = None
+
+            # Applica tutti gli aggiornamenti
             for key, value in data.items():
                 setattr(task, key, value)
 
@@ -771,7 +874,7 @@ class GestoreNPI:
 
             return self._detach_object(session, task)
         except Exception as e:
-            logger.error(f"Errore in update_task_prodotto: {e}")
+            logger.error(f"Errore in update_task_prodotto: {e.__class__.__name__} - {e}", exc_info=True)
             session.rollback()
             raise
         finally:

@@ -629,19 +629,68 @@ class ProjectWindow(tk.Toplevel):
             messagebox.showerror("Errore", f"Impossibile salvare le date:\n{e}", parent=self)
 
     def _save_task_details(self):
-        if not self.current_task_id: return
+        """Salva i dettagli del task con validazione per milestone finale."""
+        if not self.current_task_id:
+            return
+
+        # Recupera il nuovo stato
+        nuovo_stato_display = self.fields['Stato'].get()
+        nuovo_stato_db = self.status_map_db.get(nuovo_stato_display, 'Da Fare')
+
+        # ===== VALIDAZIONE MILESTONE FINALE =====
+        # Se il nuovo stato è 'Completato', verifica le dipendenze
+        if nuovo_stato_db == 'Completato':
+            is_valid, error_msg = self.npi_manager.validate_final_milestone_completion(
+                self.current_task_id
+            )
+
+            if not is_valid:
+                messagebox.showwarning(
+                    self.lang.get('validation_error_title', 'Errore Validazione'),
+                    error_msg,
+                    parent=self
+                )
+                # Non procede con il salvataggio
+                return
+
+        # ===== SALVATAGGIO =====
         data = {
             'OwnerID': self.soggetti_map.get(self.fields['OwnerID'].get()),
-            'Stato': self.status_map_db.get(self.fields['Stato'].get(), 'Da Fare'),
+            'Stato': nuovo_stato_db,
             'Note': self.fields['Note'].get('1.0', tk.END).strip(),
-            'DataScadenza': self.fields['DataScadenza'].get(), 'DataInizio': self.fields['DataInizio'].get(),
+            'DataScadenza': self.fields['DataScadenza'].get(),
+            'DataInizio': self.fields['DataInizio'].get(),
             'DataCompletamento': self.fields['DataCompletamento'].get()
         }
+
         try:
             task = self.npi_manager.update_task_prodotto(self.current_task_id, data)
-            if messagebox.askyesno('Conferma', 'Inviare notifiche per questo task?', parent=self):
-                self.npi_manager.invia_notifiche_task(task, conferma_utente=False, lang=self.lang)
-            messagebox.showinfo("Successo", "Task aggiornato.", parent=self)
+
+            # Chiedi se inviare notifiche
+            if messagebox.askyesno(
+                    self.lang.get('notification_send_title', 'Conferma Notifiche'),
+                    self.lang.get('notification_send_prompt', 'Inviare notifiche per questo task?'),
+                    parent=self
+            ):
+                self.npi_manager.invia_notifiche_task(
+                    task,
+                    conferma_utente=False,
+                    lang=self.lang
+                )
+
+            messagebox.showinfo(
+                self.lang.get('success_title', 'Successo'),
+                self.lang.get('success_task_updated', 'Task aggiornato con successo.'),
+                parent=self
+            )
+
+            # Ricarica la UI
             self._load_data_and_populate_ui()
+
         except Exception as e:
-            messagebox.showerror("Errore", f"Impossibile aggiornare il task:\n{e}", parent=self)
+            logger.error(f"Errore salvataggio task: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error_title', 'Errore'),
+                f"Impossibile aggiornare il task:\n{e}",
+                parent=self
+            )

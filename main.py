@@ -167,6 +167,8 @@ import tempfile
 import assign_submissions_gui
 import utils
 import submissions_management_gui
+import room_booking_gui
+import guests_gui
 import logging
 import logging.config
 from pathlib import Path
@@ -177,14 +179,14 @@ import time
 import scrap_validation_gui
 import collections.abc
 import urllib.parse
-
+from add_complaint import AddComplaintWindow
 from business_days import should_send_notification
 from npi.npi_manager import GestoreNPI
 from npi.windows.dashboard_window import NpiDashboardWindow
 from npi.windows.gantt_window import NpiGanttWindow
 from npi.windows.config_window import NpiConfigWindow
 from npi.windows.project_window import ProjectWindow
-
+from typing import Optional, List, Dict, Tuple
 
 def _detect_log_file_path(logger_name: str) -> str:
     """
@@ -276,18 +278,8 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "1.9.6"  # Versione aggiornata
+APP_VERSION = "2.0.0"  # Versione aggiornata
 APP_DEVELOPER = "@Gianluca Testa"
-
-# # --- CONFIGURAZIONE DATABASE ---
-DB_DRIVER = '{SQL Server Native Client 11.0}'
-DB_SERVER = 'roghipsql01.vandewiele.local\\emsreset'
-DB_DATABASE = 'Traceability_rs'
-DB_UID = 'emsreset'
-DB_PWD = 'E6QhqKUxHFXTbkB7eA8c9ya'
-DB_CONN_STR = (f'DRIVER={DB_DRIVER};SERVER={DB_SERVER};DATABASE={DB_DATABASE};'
-               f'UID={DB_UID};PWD={DB_PWD};MARS_Connection=Yes;TrustServerCertificate=Yes')
-
 
 # # --- CONFIGURAZIONE DATABASE ---
 DB_DRIVER = '{SQL Server Native Client 11.0}'
@@ -668,7 +660,6 @@ class Database:
             logger.error(f"Errore nella creazione del NPI Engine: {e}")
             raise
 
-
     def disconnect(self):
         """Closes the cursor and connection safely, preventing errors if called multiple times."""
         if self.cursor:
@@ -682,6 +673,34 @@ class Database:
             self.npi_engine = None
 
         # NUOVO METODO: Cerca documenti esistenti attivi che corrispondono ai parametri
+
+    def mark_document_out_of_validation(self, document_id):
+        """Marca un documento come fuori validazione aggiornando DateOutOfValidation"""
+        try:
+            from datetime import datetime
+
+            query = """
+                    UPDATE [Traceability_RS].[dbo].[ProductDocuments]
+                    SET
+                        DateOutOfValidation = ?, Validated = 0
+                    WHERE DocumentProductionID = ? \
+                    """
+
+            params = (datetime.now(), document_id)
+
+            self.cursor.execute(query, params)
+            self.conn.commit()
+
+            logger.info(
+                "Document %s marked out of validation",
+                document_id
+            )
+            return True
+
+        except Exception as e:
+            self.last_error_details = str(e)
+            logger.error("Error marking document out of validation: %s", e)
+            return False
 
     def get_calibration_expired(self):
         """Recupera equipaggiamenti con calibrazione scaduta o senza calibrazione"""
@@ -3004,6 +3023,297 @@ class Database:
             logger.error(f"Errore nell'aggiornamento calibrazione {calibration_id}: {e}")
             raise
 
+    # --- Room Booking Methods ---
+    def fetch_meeting_rooms(self):
+        """Recupera tutte le sale riunioni."""
+        query = "SELECT MeetingRoomId, MeetingRoomName FROM [Employee].[dbo].[MeetingRooms] ORDER BY MeetingRoomName"
+        try:
+            self.cursor.execute(query)
+            return self.cursor.fetchall()
+        except Exception as e:
+            self.last_error_details = str(e)
+            logger.error(f"Errore fetch meeting rooms: {e}")
+            return []
+
+    def add_meeting_room(self, name):
+        """Aggiunge una nuova sala riunioni."""
+        query = "INSERT INTO [Employee].[dbo].[MeetingRooms] (MeetingRoomName) VALUES (?)"
+        try:
+            self.cursor.execute(query, name)
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            logger.error(f"Errore add meeting room: {e}")
+            return False
+
+    def update_meeting_room(self, room_id, name):
+        """Aggiorna il nome di una sala riunioni."""
+        query = "UPDATE [Employee].[dbo].[MeetingRooms] SET MeetingRoomName = ? WHERE MeetingRoomId = ?"
+        try:
+            self.cursor.execute(query, name, room_id)
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            logger.error(f"Errore update meeting room: {e}")
+            return False
+
+    def delete_meeting_room(self, room_id):
+        """Elimina una sala riunioni."""
+        query = "DELETE FROM [Employee].[dbo].[MeetingRooms] WHERE MeetingRoomId = ?"
+        try:
+            self.cursor.execute(query, room_id)
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            logger.error(f"Errore delete meeting room: {e}")
+            return False
+
+    def fetch_room_bookings(self, start_date, end_date, room_name=None):
+        """Recupera le prenotazioni in un intervallo di date."""
+        query = """
+            SELECT BookingID, RoomName, MeetingTitle, Organizer, StartTime, EndTime, BookingStatus
+            FROM [Employee].[dbo].[RoomBookings]
+            WHERE StartTime < ? AND EndTime > ?
+            AND BookingStatus <> 'Cancelled'
+        """
+        params = [end_date, start_date]
+        if room_name:
+            query += " AND RoomName = ?"
+            params.append(room_name)
+        
+        query += " ORDER BY StartTime"
+        try:
+            self.cursor.execute(query, params)
+            return self.cursor.fetchall()
+        except Exception as e:
+            self.last_error_details = str(e)
+            logger.error(f"Errore fetch room bookings: {e}")
+            return []
+
+    def check_room_availability(self, room_name, start_time, end_time, exclude_booking_id=None):
+        """Verifica se una sala è libera."""
+        query = """
+            SELECT COUNT(*) FROM [Employee].[dbo].[RoomBookings]
+            WHERE RoomName = ? 
+            AND StartTime < ? AND EndTime > ?
+            AND BookingStatus <> 'Cancelled'
+        """
+        params = [room_name, end_time, start_time]
+        if exclude_booking_id:
+            query += " AND BookingID <> ?"
+            params.append(exclude_booking_id)
+            
+        try:
+            self.cursor.execute(query, params)
+            count = self.cursor.fetchone()[0]
+            return count == 0
+        except Exception as e:
+            self.last_error_details = str(e)
+            logger.error(f"Errore check availability: {e}")
+            return False
+
+    def add_room_booking(self, room_name, title, organizer, start_time, end_time):
+        """Aggiunge una prenotazione."""
+        if not self.check_room_availability(room_name, start_time, end_time):
+            return False, "Room not available"
+            
+        query = """
+            INSERT INTO [Employee].[dbo].[RoomBookings]
+            (RoomName, MeetingTitle, Organizer, StartTime, EndTime, BookingStatus)
+            VALUES (?, ?, ?, ?, ?, 'Confirmed')
+        """
+        try:
+            self.cursor.execute(query, room_name, title, organizer, start_time, end_time)
+            self.conn.commit()
+            return True, "Booking confirmed"
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            logger.error(f"Errore add booking: {e}")
+            return False, str(e)
+
+    def update_room_booking(self, booking_id, room_name, title, start_time, end_time):
+        """Aggiorna una prenotazione."""
+        if not self.check_room_availability(room_name, start_time, end_time, exclude_booking_id=booking_id):
+             return False, "Room not available"
+
+        query = """
+            UPDATE [Employee].[dbo].[RoomBookings]
+            SET RoomName = ?, MeetingTitle = ?, StartTime = ?, EndTime = ?
+            WHERE BookingID = ?
+        """
+        try:
+            self.cursor.execute(query, room_name, title, start_time, end_time, booking_id)
+            self.conn.commit()
+            return True, "Booking updated"
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            logger.error(f"Errore update booking: {e}")
+            return False, str(e)
+
+    def cancel_room_booking(self, booking_id):
+        """Cancella (o marca come cancellata) una prenotazione."""
+        query = "UPDATE [Employee].[dbo].[RoomBookings] SET BookingStatus = 'Cancelled' WHERE BookingID = ?"
+        try:
+            self.cursor.execute(query, booking_id)
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            logger.error(f"Errore cancel booking: {e}")
+            return False
+
+    # --- Guest Management Methods ---
+    def fetch_guests(self, filters=None):
+        """Recupera la lista degli ospiti con filtri opzionali."""
+        query = """
+            SELECT [VisitorId], [RegistryId], [CompanyName], [GuestName], 
+                   [StartVisit], [EndVisit], [Pourpose], [WelcomeMessage]
+            FROM [Employee].[dbo].[Visitors]
+            WHERE [IsActive] = 0
+        """
+        params = []
+        
+        if filters:
+            if filters.get('start_date'):
+                query += " AND [StartVisit] >= ?"
+                params.append(filters['start_date'])
+            if filters.get('end_date'):
+                query += " AND [EndVisit] <= ?"
+                params.append(filters['end_date'])
+            if filters.get('company'):
+                query += " AND [CompanyName] LIKE ?"
+                params.append(f"%{filters['company']}%")
+            if filters.get('guest_name'):
+                query += " AND [GuestName] LIKE ?"
+                params.append(f"%{filters['guest_name']}%")
+                
+        query += " ORDER BY [StartVisit] DESC"
+        
+        try:
+            self.cursor.execute(query, params)
+            return self.cursor.fetchall()
+        except Exception as e:
+            self.last_error_details = str(e)
+            logger.error(f"Errore fetch guests: {e}")
+            return []
+
+    def fetch_distinct_guest_info(self):
+        """Recupera liste distinte di aziende e nomi ospiti per autocomplete."""
+        info = {'companies': [], 'guests': []}
+        try:
+            # Companies
+            self.cursor.execute("SELECT DISTINCT [CompanyName] FROM [Employee].[dbo].[Visitors] WHERE [CompanyName] IS NOT NULL ORDER BY [CompanyName]")
+            info['companies'] = [row[0] for row in self.cursor.fetchall()]
+            
+            # Guests
+            self.cursor.execute("SELECT DISTINCT [GuestName] FROM [Employee].[dbo].[Visitors] WHERE [GuestName] IS NOT NULL ORDER BY [GuestName]")
+            info['guests'] = [row[0] for row in self.cursor.fetchall()]
+            
+            return info
+        except Exception as e:
+            self.last_error_details = str(e)
+            logger.error(f"Errore fetch distinct guest info: {e}")
+            return info
+
+    def get_registry_id(self, user_name):
+        """Recupera un nuovo RegistryId tramite SP."""
+        try:
+            # Parametri per la SP Employee.dbo.Registro
+            # @RegistryTypeId = 930
+            # @IussedBy = user_name
+            # @EmployeerId = 1
+            # @RegistroId OUTPUT
+            
+            # Nota: pyodbc gestisce i parametri di output in modo specifico, 
+            # ma spesso è più semplice fare una SELECT dopo o usare sintassi specifica.
+            # Qui proviamo con la sintassi standard T-SQL EXEC
+            
+            sql = """
+                DECLARE @NewId INT;
+                EXEC [Employee].[dbo].[Registro]
+                    @RegistryTypeId = 930,
+                    @anno = ?,
+                    @DataDocumento = ?,
+                    @IussedBy = ?,
+                    @EmployeerId = 1,
+                    @RegistroId = @NewId OUTPUT;
+                SELECT @NewId;
+            """
+            
+            now = datetime.now()
+            anno = now.year
+            data_doc = now.date()
+            
+            self.cursor.execute(sql, anno, data_doc, user_name)
+            row = self.cursor.fetchone()
+            if row:
+                return row[0]
+            return None
+            
+        except Exception as e:
+            self.last_error_details = str(e)
+            logger.error(f"Errore get_registry_id: {e}")
+            return None
+
+    def add_guest(self, registry_id, company, name, start, end, purpose, welcome_msg):
+        """Aggiunge un nuovo ospite."""
+        query = """
+            INSERT INTO [Employee].[dbo].[Visitors]
+            ([RegistryId], [CompanyName], [GuestName], [StartVisit], [EndVisit], 
+             [Pourpose], [WelcomeMessage], [ShowFrom], [ShowUntil], [IsActive], [CreatedAt])
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, GETDATE())
+        """
+        try:
+            # ShowFrom/ShowUntil uguali a StartVisit/EndVisit
+            self.cursor.execute(query, registry_id, company, name, start, end, purpose, welcome_msg, start, end)
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            logger.error(f"Errore add guest: {e}")
+            return False
+
+    def update_guest(self, visitor_id, company, name, start, end, purpose, welcome_msg):
+        """Aggiorna un ospite esistente."""
+        query = """
+            UPDATE [Employee].[dbo].[Visitors]
+            SET [CompanyName] = ?, [GuestName] = ?, [StartVisit] = ?, [EndVisit] = ?,
+                [Pourpose] = ?, [WelcomeMessage] = ?, [ShowFrom] = ?, [ShowUntil] = ?
+            WHERE [VisitorId] = ?
+        """
+        try:
+            self.cursor.execute(query, company, name, start, end, purpose, welcome_msg, start, end, visitor_id)
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            logger.error(f"Errore update guest: {e}")
+            return False
+
+    def delete_guest(self, visitor_id):
+        """Elimina un ospite."""
+        query = "DELETE FROM [Employee].[dbo].[Visitors] WHERE [VisitorId] = ?"
+        try:
+            self.cursor.execute(query, visitor_id)
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            logger.error(f"Errore delete guest: {e}")
+            return False
+
     def get_equipment_info(self, equipment_id):
         """Recupera le informazioni del macchinario dal database."""
         try:
@@ -3331,6 +3641,655 @@ class Database:
         except pyodbc.Error as e:
             self.last_error_details = str(e)
             return []
+
+    def fetch_all(self, query, params=None):
+        """
+        Esegue una query SELECT e restituisce tutti i risultati
+
+        Args:
+            query: Query SQL (può contenere %s come placeholder)
+            params: Tuple o List con i parametri (opzionale)
+
+        Returns:
+            List: Lista di tuple con i risultati, lista vuota se errore
+        """
+        try:
+            if params:
+                self.cursor.execute(query, params)
+            else:
+                self.cursor.execute(query)
+
+            results = self.cursor.fetchall()
+            logger.debug(f"[DATABASE] fetch_all eseguito - Righe recuperate: {len(results)}")
+            return results
+
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            logger.exception(f"[DATABASE] Errore fetch_all: {e}")
+            return []
+        except Exception as e:
+            self.last_error_details = str(e)
+            logger.exception(f"[DATABASE] Errore inaspettato fetch_all: {e}")
+            return []
+
+    def get_claim_document(self, claim_log_id: int, output_path: str) -> bool:
+        """
+        Recupera il documento allegato a un reclamo e lo salva su disco
+
+        Args:
+            claim_log_id: ID del reclamo
+            output_path: Percorso dove salvare il file
+
+        Returns:
+            bool: True se successo, False altrimenti
+        """
+        try:
+            query = """
+                    SELECT
+                        [TransportDocumentData]
+                    FROM [Traceability_RS].[clm].[ClaimLogs]
+                    WHERE [ClaimLogId] = ? \
+                    """
+
+            result = self.fetch_one(query, (claim_log_id,))
+
+            if result and result[0]:
+                file_data = result[0]
+
+                with open(output_path, 'wb') as f:
+                    f.write(file_data)
+
+                logger.info(f"[DATABASE] File salvato: {output_path} ({len(file_data)} bytes)")
+                return True
+            else:
+                logger.warning(f"[DATABASE] Nessun documento trovato per reclamo {claim_log_id}")
+                return False
+
+        except Exception as e:
+            logger.exception(f"[DATABASE] Errore recupero documento: {e}")
+            return False
+
+    def delete_claim_document(self, claim_log_id: int) -> bool:
+        """
+        Elimina il documento allegato a un reclamo
+
+        Args:
+            claim_log_id: ID del reclamo
+
+        Returns:
+            bool: True se successo, False altrimenti
+        """
+        try:
+            query = """
+                    UPDATE [Traceability_RS].[clm].[ClaimLogs]
+                    SET [TransportDocumentData] = NULL
+                    WHERE [ClaimLogId] = ? \
+                    """
+
+            return self.execute_query(query, (claim_log_id,))
+
+        except Exception as e:
+            logger.exception(f"[DATABASE] Errore eliminazione documento: {e}")
+            return False
+
+    def fetch_one(self, query, params=None):
+        """
+        Esegue una query SELECT e restituisce il primo risultato
+        11
+        Args:
+            query: Query SQL (può contenere %s come placeholder)
+            params: Tuple o List con i parametri (opzionale)
+
+        Returns:
+            Tuple: Prima riga risultato, None se nessun risultato o errore
+        """
+        try:
+            if params:
+                self.cursor.execute(query, params)
+            else:
+                self.cursor.execute(query)
+
+            result = self.cursor.fetchone()
+
+            if result:
+                logger.debug(f"[DATABASE] fetch_one eseguito - Risultato trovato")
+            else:
+                logger.debug(f"[DATABASE] fetch_one eseguito - Nessun risultato")
+
+            return result
+
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            logger.exception(f"[DATABASE] Errore fetch_one: {e}")
+            return None
+        except Exception as e:
+            self.last_error_details = str(e)
+            logger.exception(f"[DATABASE] Errore inaspettato fetch_one: {e}")
+            return None
+
+    def execute_query(self, query, params=None):
+        """
+        Esegue una query (INSERT, UPDATE, DELETE) senza restituire risultati
+
+        Args:
+            query: Query SQL (può contenere %s come placeholder)
+            params: Tuple o List con i parametri (opzionale)
+
+        Returns:
+            bool: True se successo, False altrimenti
+        """
+        try:
+            if params:
+                self.cursor.execute(query, params)
+            else:
+                self.cursor.execute(query)
+
+            self.conn.commit()
+            logger.debug(f"[DATABASE] execute_query completato - Righe modificate: {self.cursor.rowcount}")
+            return True
+
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            self.conn.rollback()
+            logger.exception(f"[DATABASE] Errore execute_query: {e}")
+            return False
+        except Exception as e:
+            self.last_error_details = str(e)
+            self.conn.rollback()
+            logger.exception(f"[DATABASE] Errore inaspettato execute_query: {e}")
+            return False
+
+    def execute_query_with_id(self, query, params=None):
+        """
+        Esegue una query INSERT e restituisce l'ID della riga inserita
+
+        Args:
+            query: Query SQL (può contenere ? come placeholder)
+            params: Tuple o List con i parametri (opzionale)
+
+        Returns:
+            int: ID della riga inserita (SCOPE_IDENTITY()), None se errore
+        """
+        try:
+            logger.debug(f"[DATABASE] execute_query_with_id: query length={len(query)}")
+
+            if params:
+                logger.debug(f"[DATABASE] params: {len(params)} elementi")
+                self.cursor.execute(query, params)
+            else:
+                logger.debug(f"[DATABASE] nessun params")
+                self.cursor.execute(query)
+
+            logger.debug(f"[DATABASE] Query INSERT eseguita, righe modificate: {self.cursor.rowcount}")
+
+            # Recupera l'ID della riga inserita
+            id_query = "SELECT SCOPE_IDENTITY() as id"
+            logger.debug(f"[DATABASE] Esecuzione query SCOPE_IDENTITY()...")
+            self.cursor.execute(id_query)
+
+            result = self.cursor.fetchone()
+            logger.debug(f"[DATABASE] SCOPE_IDENTITY() result: {result}")
+
+            self.conn.commit()
+            logger.debug(f"[DATABASE] Commit eseguito")
+
+            inserted_id = result[0] if result and result[0] else None
+
+            if inserted_id:
+                logger.info(f"[DATABASE] ✅ ID generato: {inserted_id}")
+            else:
+                logger.error(f"[DATABASE] ❌ SCOPE_IDENTITY() ha restituito: {result}")
+
+            return inserted_id
+
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            self.conn.rollback()
+            logger.exception(f"[DATABASE] ❌ pyodbc.Error in execute_query_with_id: {e}")
+            return None
+        except Exception as e:
+            self.last_error_details = str(e)
+            self.conn.rollback()
+            logger.exception(f"[DATABASE] ❌ Exception in execute_query_with_id: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+###sALVATAGGIO DATI COMPLAIN
+    def insert_claim_header(self, header) -> Optional[int]:
+        """
+        Inserisce la testata del reclamo e restituisce l'ID generato usando OUTPUT INSERTED.
+        """
+        try:
+            # Usiamo OUTPUT INSERTED.ClaimLogId per ricevere immediatamente l'ID,
+            # funziona meglio di SCOPE_IDENTITY() con pyodbc.
+            query = """
+                    INSERT INTO [Traceability_RS].[clm].[ClaimLogs]
+                    ([ClaimTypeId]
+                        , [IdProduct]
+                        , [DateClaim]
+                        , [AWB]
+                        , [TransportDocument]
+                        , [TransportDocumentData]
+                        , [DateSys]
+                        , [CustomerClaimNumber]
+                        , [InternalClaimNumber]
+                        , [ShortClaimDescription]
+                        , [TargetDate]
+                        , [Quantity]
+                        , [ClaimDecisionId]
+                        , [USERName])
+                        OUTPUT INSERTED.ClaimLogId
+                    VALUES
+                        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                    """
+
+            # Preparazione parametri
+            # Assicurati che header.TransportDocumentData sia bytes oppure None
+            params = (
+                header.ClaimTypeId,
+                header.IdProduct,
+                header.DateClaim,
+                header.AWB,
+                header.TransportDocument,
+                header.TransportDocumentData,  # Questo deve essere bytes o None
+                header.DateSys,
+                header.CustomerClaimNumber,
+                header.InternalClaimNumber,
+                header.ShortClaimDescription,
+                header.TargetDate,
+                header.Quantity,
+                header.ClaimDecisionId,
+                header.USERName
+            )
+
+            cursor = self.conn.cursor()
+
+            logger.debug(f"[DATABASE] Esecuzione INSERT header con InternalClaimNumber: {header.InternalClaimNumber}")
+
+            # Eseguiamo la query
+            cursor.execute(query, params)
+
+            # Recuperiamo subito l'ID restituito dalla clausola OUTPUT
+            row = cursor.fetchone()
+
+            if row:
+                new_id = int(row[0])
+                self.conn.commit()  # Confermiamo la transazione solo se abbiamo l'ID
+                cursor.close()
+                logger.info(f"[DATABASE] Header inserito con successo. ClaimLogId generato: {new_id}")
+                return new_id
+            else:
+                logger.error("[DATABASE] INSERT eseguita ma nessun ID restituito da OUTPUT INSERTED.")
+                self.conn.rollback()
+                cursor.close()
+                return None
+
+        except Exception as e:
+            logger.exception(f"[DATABASE] Errore critico in insert_claim_header: {e}")
+            try:
+                self.conn.rollback()
+            except:
+                pass
+            return None
+
+    def insert_claim_details(self, claim_log_id: int, claim_details: List) -> bool:
+        """
+        Inserisce i dettagli di un reclamo nel database
+
+        Args:
+            claim_log_id: ID della testata del reclamo
+            claim_details: Lista di dettagli (ClaimDetail objects o dict)
+
+        Returns:
+            bool: True se successo, False altrimenti
+        """
+        try:
+            query = """
+                    INSERT INTO [Traceability_RS].[clm].[ClaimDataLogs]
+                    ([ClaimLogId],
+                        [FirstInspectionResultId],
+                        [LabelCod],
+                        [RootCause],
+                        [SummaryCorrectiveAction],
+                        [SummaryPreventiveAction],
+                        [ClaimStatusId],
+                    [ClaimDefectId])
+                    VALUES
+                        (?, ?, ?, ?, ?, ?, ?, ?) \
+                    """
+
+            for detail in claim_details:
+                # Se è un dict
+                if isinstance(detail, dict):
+                    params = (
+                        claim_log_id,
+                        detail.get('FirstInspectionResultId'),
+                        detail.get('LabelCod'),
+                        detail.get('RootCause'),
+                        detail.get('SummaryCorrectiveAction'),
+                        detail.get('SummaryPreventiveAction'),
+                        detail.get('ClaimStatusId'),
+                        detail.get('ClaimDefectId')
+                    )
+                else:
+                    # Se è un oggetto ClaimDetail
+                    params = (
+                        claim_log_id,
+                        detail.FirstInspectionResultId,
+                        detail.LabelCod,
+                        detail.RootCause,
+                        detail.SummaryCorrectiveAction,
+                        detail.SummaryPreventiveAction,
+                        detail.ClaimStatusId,
+                        detail.ClaimDefectId
+                    )
+
+                success = self.execute_query(query, params)
+                if not success:
+                    return False
+
+            logger.info(f"[DATABASE] {len(claim_details)} dettagli reclamo inseriti per ClaimLogId={claim_log_id}")
+            return True
+
+        except Exception as e:
+            logger.exception(f"[DATABASE] Errore inserimento dettagli reclamo: {e}")
+            return False
+
+    def get_claim_by_id(self, claim_log_id: int) -> Optional[Dict]:
+        """
+        Recupera una testata di reclamo dal database
+
+        Args:
+            claim_log_id: ID del reclamo
+
+        Returns:
+            dict: Dati del reclamo, None se non trovato
+        """
+        try:
+            query = """
+                    SELECT
+                        [ClaimLogId], [ClaimTypeId], [IdProduct], [DateClaim], [AWB], [TransportDocument], [TransportDocumentData], [DateSys], [CustomerClaimNumber], [InternalClaimNumber], [ShortClaimDescription], [TargetDate], [Quantity], [ClaimDecisionId], [USERName]
+                    FROM [Traceability_RS].[clm].[ClaimLogs]
+                    WHERE [ClaimLogId] = ? \
+                    """
+
+            result = self.fetch_one(query, (claim_log_id,))
+
+            if result:
+                return {
+                    'ClaimLogId': result[0],
+                    'ClaimTypeId': result[1],
+                    'IdProduct': result[2],
+                    'DateClaim': result[3],
+                    'AWB': result[4],
+                    'TransportDocument': result[5],
+                    'TransportDocumentData': result[6],
+                    'DateSys': result[7],
+                    'CustomerClaimNumber': result[8],
+                    'InternalClaimNumber': result[9],
+                    'ShortClaimDescription': result[10],
+                    'TargetDate': result[11],
+                    'Quantity': result[12],
+                    'ClaimDecisionId': result[13],
+                    'USERName': result[14]
+                }
+
+            return None
+
+        except Exception as e:
+            logger.exception(f"[DATABASE] Errore recupero reclamo: {e}")
+            return None
+
+    def get_claim_details(self, claim_log_id: int) -> List[Dict]:
+        """
+        Recupera i dettagli di un reclamo
+
+        Args:
+            claim_log_id: ID della testata del reclamo
+
+        Returns:
+            List[dict]: Lista dei dettagli del reclamo
+        """
+        try:
+            query = """
+                    SELECT
+                        [ClaimLogDataId], [ClaimLogId], [FirstInspectionResultId], [LabelCod], [RootCause], [SummaryCorrectiveAction], [SummaryPreventiveAction], [ClaimStatusId], [ClaimDefectId]
+                    FROM [Traceability_RS].[clm].[ClaimDataLogs]
+                    WHERE [ClaimLogId] = ?
+                    ORDER BY [ClaimLogDataId] \
+                    """
+
+            results = self.fetch_all(query, (claim_log_id,))
+
+            details = []
+            for row in results:
+                details.append({
+                    'ClaimLogDataId': row[0],
+                    'ClaimLogId': row[1],
+                    'FirstInspectionResultId': row[2],
+                    'LabelCod': row[3],
+                    'RootCause': row[4],
+                    'SummaryCorrectiveAction': row[5],
+                    'SummaryPreventiveAction': row[6],
+                    'ClaimStatusId': row[7],
+                    'ClaimDefectId': row[8]
+                })
+
+            return details
+
+        except Exception as e:
+            logger.exception(f"[DATABASE] Errore recupero dettagli reclamo: {e}")
+            return []
+
+    def get_claims_by_date_range(self, start_date: str, end_date: str) -> List[Dict]:
+        """
+        Recupera i reclami in un intervallo di date
+
+        Args:
+            start_date: Data inizio (formato YYYY-MM-DD)
+            end_date: Data fine (formato YYYY-MM-DD)
+
+        Returns:
+            List[dict]: Lista dei reclami
+        """
+        try:
+            query = """
+                    SELECT
+                        [ClaimLogId], [ClaimTypeId], [InternalClaimNumber], [CustomerClaimNumber], [ShortClaimDescription], [DateClaim], [TargetDate], [Quantity], [USERName]
+                    FROM [Traceability_RS].[clm].[ClaimLogs]
+                    WHERE [DateClaim] BETWEEN ? AND ?
+                    ORDER BY [DateClaim] DESC \
+                    """
+
+            results = self.fetch_all(query, (start_date, end_date))
+
+            claims = []
+            for row in results:
+                claims.append({
+                    'ClaimLogId': row[0],
+                    'ClaimTypeId': row[1],
+                    'InternalClaimNumber': row[2],
+                    'CustomerClaimNumber': row[3],
+                    'ShortClaimDescription': row[4],
+                    'DateClaim': row[5],
+                    'TargetDate': row[6],
+                    'Quantity': row[7],
+                    'USERName': row[8]
+                })
+
+            return claims
+
+        except Exception as e:
+            logger.exception(f"[DATABASE] Errore recupero reclami per data: {e}")
+            return []
+
+    def get_claims_by_client(self, client_id: int) -> List[Dict]:
+        """
+        Recupera i reclami di un cliente
+
+        Args:
+            client_id: ID del cliente (IDFinalClient)
+
+        Returns:
+            List[dict]: Lista dei reclami del cliente
+        """
+        try:
+            query = """
+                    SELECT
+                        [ClaimLogId], [InternalClaimNumber], [CustomerClaimNumber], [ShortClaimDescription], [DateClaim], [Quantity], [USERName]
+                    FROM [Traceability_RS].[clm].[ClaimLogs]
+                    WHERE [IDFinalClient] = ?
+                    ORDER BY [DateClaim] DESC \
+                    """
+
+            results = self.fetch_all(query, (client_id,))
+
+            claims = []
+            for row in results:
+                claims.append({
+                    'ClaimLogId': row[0],
+                    'InternalClaimNumber': row[1],
+                    'CustomerClaimNumber': row[2],
+                    'ShortClaimDescription': row[3],
+                    'DateClaim': row[4],
+                    'Quantity': row[5],
+                    'USERName': row[6]
+                })
+
+            return claims
+
+        except Exception as e:
+            logger.exception(f"[DATABASE] Errore recupero reclami per cliente: {e}")
+            return []
+
+    def search_claims(self, search_term: str) -> List[Dict]:
+        """
+        Cerca reclami per numero interno o numero cliente
+
+        Args:
+            search_term: Termine di ricerca
+
+        Returns:
+            List[dict]: Lista dei reclami trovati
+        """
+        try:
+            query = """
+                    SELECT TOP 100 [ClaimLogId],
+                    [InternalClaimNumber],
+                    [CustomerClaimNumber],
+                    [ShortClaimDescription],
+                    [DateClaim],
+                    [Quantity],
+                    [USERName]
+                    FROM [Traceability_RS].[clm].[ClaimLogs]
+                    WHERE [InternalClaimNumber] LIKE ?
+                       OR [CustomerClaimNumber] LIKE ?
+                       OR [ShortClaimDescription] LIKE ?
+                    ORDER BY [DateClaim] DESC \
+                    """
+
+            search_pattern = f"%{search_term}%"
+            results = self.fetch_all(query, (search_pattern, search_pattern, search_pattern))
+
+            claims = []
+            for row in results:
+                claims.append({
+                    'ClaimLogId': row[0],
+                    'InternalClaimNumber': row[1],
+                    'CustomerClaimNumber': row[2],
+                    'ShortClaimDescription': row[3],
+                    'DateClaim': row[4],
+                    'Quantity': row[5],
+                    'USERName': row[6]
+                })
+
+            return claims
+
+        except Exception as e:
+            logger.exception(f"[DATABASE] Errore ricerca reclami: {e}")
+            return []
+
+    def update_claim_header(self, claim_log_id: int, updates: dict) -> bool:
+        """
+        Aggiorna una testata di reclamo
+
+        Args:
+            claim_log_id: ID della testata
+            updates: Dizionario con i campi da aggiornare
+
+        Returns:
+            bool: True se successo, False altrimenti
+        """
+        try:
+            if not updates:
+                return False
+
+            # Costruisci la query dinamicamente
+            set_clause = ", ".join([f"[{k}] = %s" for k in updates.keys()])
+            values = list(updates.values())
+            values.append(claim_log_id)
+
+            query = f"""
+                UPDATE [Traceability_RS].[clm].[ClaimLogs]
+                SET {set_clause}
+                WHERE [ClaimLogId] = %s
+            """
+
+            cursor = self.conn.cursor()
+            cursor.execute(query, values)
+            self.conn.commit()
+            cursor.close()
+
+            logger.info(f"[DATABASE] Testata reclamo aggiornata: ClaimLogId={claim_log_id}")
+            return True
+
+        except Exception as e:
+            logger.exception(f"[DATABASE] Errore aggiornamento testata: {e}")
+            self.conn.rollback()
+            return False
+
+    def delete_claim(self, claim_log_id: int) -> bool:
+        """
+        Elimina un reclamo (testata e dettagli)
+
+        Args:
+            claim_log_id: ID della testata
+
+        Returns:
+            bool: True se successo, False altrimenti
+        """
+        try:
+            cursor = self.conn.cursor()
+
+            # Elimina prima i dettagli
+            query_details = """
+                            DELETE \
+                            FROM [Traceability_RS].[clm].[ClaimDataLogs]
+                            WHERE [ClaimLogId] = %s \
+                            """
+            cursor.execute(query_details, (claim_log_id,))
+
+            # Poi elimina la testata
+            query_header = """
+                           DELETE \
+                           FROM [Traceability_RS].[clm].[ClaimLogs]
+                           WHERE [ClaimLogId] = %s \
+                           """
+            cursor.execute(query_header, (claim_log_id,))
+
+            self.conn.commit()
+            cursor.close()
+
+            logger.info(f"[DATABASE] Reclamo eliminato: ClaimLogId={claim_log_id}")
+            return True
+
+        except Exception as e:
+            logger.exception(f"[DATABASE] Errore eliminazione reclamo: {e}")
+            self.conn.rollback()
+            return False
+
+    ###fine metodi db claims
 
     def add_new_site(self, name, address, vat, country, logo):
         """Aggiunge una nuova compagnia."""
@@ -4780,11 +5739,11 @@ class Database:
     #             self.last_error_details = "Inserimento riuscito ma impossibile recuperare il nuovo ID."
     #             return None
 
-        except pyodbc.Error as e:
-            self.conn.rollback()
-            print(f"Errore nell'aggiunta nuova parte di ricambio: {e}")
-            self.last_error_details = str(e)
-            return None
+        # except pyodbc.Error as e:
+        #     self.conn.rollback()
+        #     print(f"Errore nell'aggiunta nuova parte di ricambio: {e}")
+        #     self.last_error_details = str(e)
+        #     return None
 
     def insert_spare_part_request(self, equipment_id, spare_part_id, quantity, notes, requested_by):
         """Inserisce una nuova richiesta di parti di ricambio o intervento."""
@@ -5296,93 +6255,198 @@ class Database:
             return []
 
     def fetch_existing_documents(self, product_id, parent_phase_id):
-        """
-        Recupera i metadati dei documenti per una data fase.
-        """
-        query = """
-                SELECT DocumentProductionID, documentName, DocumentRevisionNumber, CONVERT(bit, Validated) as IsValid
-                FROM Traceability_RS.dbo.ProductDocuments
-                WHERE Productid = ?
-                  AND ParentPhaseId = ?
-                  AND DateOutOfValidation IS NULL;
-                """
+        """Recupera i documenti di un prodotto per una fase"""
         try:
-            self.cursor.execute(query, product_id, parent_phase_id)
-            return self.cursor.fetchall()
-        except pyodbc.Error as e:
-            print(f"Errore critico in fetch_existing_documents: {e}")
-            self.last_error_details = str(e)
+            query = """
+                    SELECT DocumentProductionID, \
+                           DocumentName, \
+                           DocumentRevisionNumber, \
+                           Validated, \
+                           ApprovatoDa, \
+                           DocumentData
+                    FROM [Traceability_RS].[dbo].[ProductDocuments]
+                    WHERE ProductId = ? AND ParentPhaseId = ?
+                    ORDER BY DateSys DESC \
+                    """
+
+            self.cursor.execute(query, (product_id, parent_phase_id))
+            rows = self.cursor.fetchall()
+
+            return rows
+
+        except Exception as e:
+            logger.error("Error fetching existing documents: %s", e)
             return []
 
     def fetch_and_open_document(self, document_id):
-        """Recupera i dati binari di un PDF dal DB, li salva in un file temporaneo e lo apre."""
+        """Recupera il documento dal database e lo apre (solo se validato)"""
         try:
-            sql_select = "SELECT DocumentData FROM Traceability_RS.dbo.ProductDocuments WHERE DocumentProductionID = ?"
-            self.cursor.execute(sql_select, document_id)
+            query = """
+                    SELECT DocumentName, \
+                           DocumentData, \
+                           Validated, \
+                           ApprovatoDa
+                    FROM [Traceability_RS].[dbo].[ProductDocuments]
+                    WHERE DocumentProductionID = ? \
+                    """
+
+            self.cursor.execute(query, (document_id,))
             row = self.cursor.fetchone()
 
-            if row and row.DocumentData:
-                pdf_binary_data = row.DocumentData
-
-                # Crea un file temporaneo sicuro
-                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
-                temp_file.write(pdf_binary_data)
-                temp_file.close()
-
-                print(f"Apertura del file temporaneo: {temp_file.name}")
-                # Metodo cross-platform per aprire il file con l'applicazione predefinita
-                os.startfile(temp_file.name)
-                return True
-            else:
-                print("Nessun dato binario trovato per questo ID documento.")
+            if not row:
+                logger.error("Document not found: %s", document_id)
                 return False
 
-        except pyodbc.Error as e:
-            print(f"Errore durante il recupero del documento dal DB: {e}")
-            return False
-        except Exception as e:
-            print(f"Errore durante l'apertura del file temporaneo: {e}")
-            return False
+            # NUOVO: Controlla se il documento è validato
+            if not row.Validated or row.ApprovatoDa is None:
+                logger.warning("Document %s is not validated (ApprovatoDa is NULL)", document_id)
+                return False
 
-    def save_document_to_db(self, product_id, parent_phase_id, doc_name, local_file_path, revision, user_name,
-                            validated_int):
-        """Legge un file e lo salva nel database, includendo il percorso del file originale."""
-        try:
-            # 1. Leggi i dati binari del file
-            with open(local_file_path, 'rb') as f:
-                binary_data = f.read()
+            doc_name = row.DocumentName
+            doc_data = row.DocumentData
 
-            # 2. Prepara la NUOVA query di INSERT, come da te specificato
-            # I nomi delle colonne 'InsertedBy' e 'InsertionDate' sono stati corretti
-            # in 'UserName' e 'Datein' per corrispondere alla tua nuova query.
-            sql_insert = """
-                         INSERT INTO Traceability_RS.dbo.ProductDocuments
-                         (ProductId, ParentPhaseId, documentName, DocumentRevisionNumber, DocumentData, UserName,
-                          Datein, Validated, DocumentPath)
-                         VALUES (?, ?, ?, ?, ?, ?, GETDATE(), ?, ?);
-                         """
+            if not doc_data:
+                logger.error("Document has no binary data: %s", document_id)
+                return False
 
-            # 3. Esegui la query passando anche il nuovo parametro 'local_file_path'
-            self.cursor.execute(sql_insert,
-                                product_id,
-                                parent_phase_id,
-                                doc_name,
-                                revision,
-                                binary_data,  # Dati del file
-                                user_name,
-                                validated_int,
-                                local_file_path)  # <-- NUOVO PARAMETRO AGGIUNTO
-            self.conn.commit()
+            # Crea file temporaneo
+            import tempfile
+            temp_dir = tempfile.gettempdir()
+            temp_path = os.path.join(temp_dir, doc_name)
+
+            with open(temp_path, 'wb') as f:
+                f.write(doc_data)
+
+            # Apri il file
+            if sys.platform == 'win32':
+                os.startfile(temp_path)
+            elif sys.platform == 'darwin':
+                os.system(f'open "{temp_path}"')
+            else:
+                os.system(f'xdg-open "{temp_path}"')
+
+            logger.info("Document opened: %s", doc_name)
             return True
 
-        except pyodbc.Error as e:
-            self.conn.rollback()
-            self.last_error_details = str(e)
-            print(f"Errore durante il salvataggio del documento nel DB: {e}")
+        except Exception as e:
+            logger.error("Error fetching and opening document: %s", e)
             return False
+
+    def save_document_to_db(
+            self,
+            product_id,
+            parent_phase_id,
+            doc_name,
+            local_file_path,
+            revision,
+            user_name,
+            validated_as_int,
+            document_date=None,
+            validator_info=None
+    ):
+        """Salva il documento nella tabella ProductDocuments con data e info validatore"""
+        try:
+            # Leggi il file
+            with open(local_file_path, 'rb') as f:
+                file_content = f.read()
+
+            from datetime import datetime
+            date_sys = datetime.now()
+            data_caricamento = datetime.now()
+
+            # Se nessuna data fornita, usa quella attuale
+            if document_date is None:
+                document_date = date_sys
+
+            query = """
+                    INSERT INTO [Traceability_RS].[dbo].[ProductDocuments]
+                    (ProductId, \
+                     ParentPhaseId, \
+                     DocumentName, \
+                     DocumentRevisionNumber, \
+                     DocumentPath, \
+                     Validated, \
+                     DateIn, \
+                     UserName, \
+                     DateSys, \
+                     DocumentData, \
+                     IsGenericDocument, \
+                     DataCaricamento, \
+                     ApprovatoDa, \
+                     ApprovatoOn)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                    """
+
+            # Prepara i valori
+            approvato_on = datetime.now() if (validated_as_int == 1 and validator_info) else None
+            document_path = local_file_path
+            is_generic_document = 0
+
+            params = (
+                product_id,
+                parent_phase_id,
+                doc_name,
+                revision,
+                document_path,
+                validated_as_int,
+                document_date,
+                user_name,
+                date_sys,
+                file_content,
+                is_generic_document,
+                data_caricamento,
+                validator_info,
+                approvato_on
+            )
+
+            self.cursor.execute(query, params)
+            self.conn.commit()
+
+            logger.info(
+                "Document saved successfully to ProductDocuments: %s (validated=%s, validator=%s)",
+                doc_name,
+                validated_as_int,
+                validator_info
+            )
+            return True
+
         except FileNotFoundError:
-            self.last_error_details = f"File non trovato al percorso: {local_file_path}"
-            print(self.last_error_details)
+            self.last_error_details = f"File non trovato: {local_file_path}"
+            logger.error("File not found: %s", local_file_path)
+            return False
+
+        except Exception as e:
+            self.last_error_details = str(e)
+            logger.error("Error saving document to ProductDocuments: %s", e)
+            return False
+
+    def update_document_validation(self, document_id, validator_name):
+        """Aggiorna lo stato di validazione di un documento nella tabella ProductDocuments"""
+        try:
+            from datetime import datetime
+
+            query = """
+                    UPDATE [Traceability_RS].[dbo].[ProductDocuments]
+                    SET
+                        Validated = 1, ApprovatoDa = ?, ApprovatoOn = ?, DateOutOfValidation = NULL
+                    WHERE DocumentProductionID = ? \
+                    """
+
+            params = (validator_name, datetime.now(), document_id)
+
+            self.cursor.execute(query, params)
+            self.connection.commit()
+
+            logger.info(
+                "Document %s validated by %s in ProductDocuments table",
+                document_id,
+                validator_name
+            )
+            return True
+
+        except Exception as e:
+            self.last_error_details = str(e)
+            logger.error("Error updating document validation in ProductDocuments: %s", e)
             return False
 
     def fetch_latest_version_info(self, software_name):
@@ -5628,6 +6692,7 @@ class InsertDocumentForm(tk.Toplevel):
         self.db = db_handler
         self.user_name = user_name
         self.lang = lang_manager
+        self.master_window = master
 
         self.products_data = {}
         self.all_product_names = []
@@ -5636,15 +6701,18 @@ class InsertDocumentForm(tk.Toplevel):
         self.product_var = tk.StringVar()
         self.parent_phase_var = tk.StringVar()
         self.file_name_var = tk.StringVar()
+        self.document_date_var = tk.StringVar()
         self.revision_var = tk.StringVar()
         self.validated_var = tk.BooleanVar()
+
+        self.validated_var.trace('w', self._on_validated_check_changed)
 
         self._create_widgets()
         self.update_texts()
         self._load_products()
 
     def _create_widgets(self):
-        self.geometry("650x650")
+        self.geometry("650x750")  # Altezza aumentata
         frame = ttk.Frame(self, padding="10")
         frame.pack(fill=tk.BOTH, expand=True)
 
@@ -5677,8 +6745,14 @@ class InsertDocumentForm(tk.Toplevel):
         self.revision_entry = ttk.Entry(self.details_frame, textvariable=self.revision_var, state="disabled")
         self.revision_entry.grid(row=1, column=1, columnspan=2, sticky=tk.EW, padx=5, pady=5)
 
+        # NUOVO: Campo Data Documento
+        self.document_date_label = ttk.Label(self.details_frame)
+        self.document_date_label.grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
+        self.document_date_entry = ttk.Entry(self.details_frame, textvariable=self.document_date_var, state="disabled")
+        self.document_date_entry.grid(row=2, column=1, columnspan=2, sticky=tk.EW, padx=5, pady=5)
+
         self.validated_check = ttk.Checkbutton(self.details_frame, variable=self.validated_var, state="disabled")
-        self.validated_check.grid(row=2, column=1, columnspan=2, sticky=tk.W, padx=5, pady=5)
+        self.validated_check.grid(row=3, column=1, columnspan=2, sticky=tk.W, padx=5, pady=5)
 
         self.docs_frame = ttk.LabelFrame(frame, padding="10")
         self.docs_frame.grid(row=5, column=0, columnspan=2, sticky=tk.EW, pady=(0, 15))
@@ -5697,10 +6771,23 @@ class InsertDocumentForm(tk.Toplevel):
         self.file_name_label.config(text=self.lang.get('label_file_name'))
         self.browse_button.config(text=self.lang.get('button_browse'))
         self.revision_label.config(text=self.lang.get('label_revision'))
+        self.document_date_label.config(text=self.lang.get('label_document_date'))
         self.validated_check.config(text=self.lang.get('check_validated'))
         self.docs_frame.config(text=self.lang.get('frame_active_docs'))
         self.save_button.config(text=self.lang.get('button_save'))
         self._refresh_document_list()
+
+    def _on_product_keyrelease(self, event):
+        """Filtra il combobox mentre l'utente digita"""
+        typed_text = self.product_var.get()
+        if not typed_text:
+            self.product_combo['values'] = self.all_product_names
+        else:
+            filtered_list = [
+                name for name in self.all_product_names
+                if typed_text.lower() in name.lower()
+            ]
+            self.product_combo['values'] = filtered_list
 
     def _load_products(self):
         products = self.db.fetch_products()
@@ -5711,13 +6798,20 @@ class InsertDocumentForm(tk.Toplevel):
         else:
             messagebox.showwarning(self.lang.get('app_title'), self.lang.get('warn_no_products_found'))
 
-    def _on_product_keyrelease(self, event):
-        typed_text = self.product_var.get()
-        if not typed_text:
-            self.product_combo['values'] = self.all_product_names
-        else:
-            filtered_list = [name for name in self.all_product_names if typed_text.lower() in name.lower()]
-            self.product_combo['values'] = filtered_list
+    def _on_product_select(self, event=None):
+        self._reset_phase_section()
+        self._reset_details_section()
+        product_id = self.products_data.get(self.product_var.get())
+
+        if product_id:
+            parent_phases = self.db.fetch_parent_phases(product_id)
+            if parent_phases:
+                self.parent_phases_data = {p.Phase: p.IDParentPhase for p in parent_phases}
+                self.parent_phase_combo['values'] = list(self.parent_phases_data.keys())
+                self.parent_phase_combo.config(state="readonly")
+            else:
+                messagebox.showerror(self.lang.get('app_title'), self.lang.get('error_no_phases_found'))
+                self.product_combo.focus()
 
     def _on_product_select(self, event=None):
         self._reset_phase_section()
@@ -5735,13 +6829,72 @@ class InsertDocumentForm(tk.Toplevel):
                 self.product_combo.focus()
 
     def _on_phase_select(self, event=None):
-        self._reset_details_section()
+        """Popola la lista dei documenti e abilita l'inserimento"""
+        self.docs_listbox.delete(0, tk.END)
+        self.documents_in_phase = []
+
+        # Abilita i campi di input per un nuovo documento
         self.file_entry.config(state="readonly")
         self.browse_button.config(state="normal")
         self.revision_entry.config(state="normal")
+        self.document_date_entry.config(state="normal")
         self.validated_check.config(state="normal")
         self.save_button.config(state="normal")
-        self._refresh_document_list()
+
+        product_id = self.products_data.get(self.product_var.get())
+        parent_phase_id = self.parent_phases_data.get(self.parent_phase_var.get())
+
+        if not (product_id and parent_phase_id):
+            return
+
+        # Recupera i documenti esistenti per questa fase
+        existing_docs = self.db.fetch_existing_documents(product_id, parent_phase_id)
+
+        if existing_docs:
+            # Se ci sono documenti, mostrarli nella listbox
+            self.documents_in_phase = existing_docs
+            yes_text = self.lang.get('text_yes')
+            no_text = self.lang.get('text_no')
+            for i, doc in enumerate(existing_docs):
+                is_valid_text = yes_text if doc.Validated else no_text
+                display_text = f"{doc.DocumentName} (Rev: {doc.DocumentRevisionNumber}) - Validato: {is_valid_text}"
+                self.docs_listbox.insert(tk.END, display_text)
+                if doc.Validated:
+                    self.docs_listbox.itemconfig(i, {'bg': '#c8e6c9'})
+        else:
+            # Se non ci sono documenti, mostra un messaggio informativo
+            self.docs_listbox.insert(tk.END, self.lang.get('info_no_existing_docs',
+                                                           "Nessun documento esistente. Inserisci un nuovo documento."))
+
+    def _open_selected_document(self):
+        """Apre il documento selezionato (solo se validato)"""
+        selected_indices = self.docs_listbox.curselection()
+        if not selected_indices:
+            messagebox.showwarning(
+                self.lang.get('app_title'),
+                self.lang.get('warn_no_document_selected', "Selezionare un documento da aprire"),
+                parent=self
+            )
+            return
+
+        selected_index = selected_indices[0]
+        selected_doc = self.documents_in_phase[selected_index]
+
+        # NUOVO: Controlla se il documento è validato
+        if not selected_doc.Validated or selected_doc.ApprovatoDa is None:
+            messagebox.showerror(
+                self.lang.get('app_title'),
+                self.lang.get('error_doc_not_validated', "Il documento prescelto non è ancora validato"),
+                parent=self
+            )
+            return
+
+        success = self.db.fetch_and_open_document(selected_doc.DocumentProductionID)
+        if not success:
+            messagebox.showerror(
+                self.lang.get('error_title', "Errore"),
+                "Impossibile aprire il documento.",
+                parent=self)
 
     def _browse_file(self, event=None):
         file_path = filedialog.askopenfilename(title=self.lang.get('insert_doc_title'),
@@ -5749,17 +6902,67 @@ class InsertDocumentForm(tk.Toplevel):
         if file_path:
             self.file_name_var.set(file_path)
 
+    def _on_validated_check_changed(self, *args):
+        """Gestisce il cambio dello stato del checkbox Validato"""
+        if self.validated_var.get():
+            # Annulla il cambio temporaneamente
+            self.validated_var.set(False)
+
+            # Verifica che master_window sia disponibile
+            if not hasattr(self.master_window, '_execute_authorized_action'):
+                messagebox.showerror(
+                    self.lang.get('app_title'),
+                    "Errore: finestra principale non disponibile"
+                )
+                return
+
+            # Chiama la procedura di autorizzazione
+            if self.master_window._execute_authorized_action(
+                    'validatore_documenti',
+                    self._apply_validation
+            ):
+                self.validated_var.set(True)
+                messagebox.showinfo(
+                    self.lang.get('app_title'),
+                    self.lang.get('info_document_validated')
+                )
+            else:
+                self.validated_var.set(False)
+
+    def _apply_validation(self):
+        """NUOVO: Callback da eseguire dopo autorizzazione riuscita"""
+        # Questo metodo sarà chiamato solo se l'utente è autorizzato
+        pass
+
     def _save_document(self):
+        """Validazione aggiornata con data documento e gestione sostituzione"""
         # Validazione input
-        if not all([self.product_var.get(), self.parent_phase_var.get(), self.file_name_var.get(),
-                    self.revision_var.get()]):
+        required_fields = [
+            self.product_var.get(),
+            self.parent_phase_var.get(),
+            self.file_name_var.get(),
+            self.revision_var.get(),
+            self.document_date_var.get()
+        ]
+
+        if not all(required_fields):
             messagebox.showerror(self.lang.get('app_title'), self.lang.get('error_input_all_fields'))
             return
 
-        # ... altre validazioni
+        # Validazione formato data
+        try:
+            from datetime import datetime
+            document_date = datetime.strptime(self.document_date_var.get(), "%d/%m/%Y")
+        except ValueError:
+            messagebox.showerror(
+                self.lang.get('app_title'),
+                self.lang.get('error_invalid_date_format', "Formato data non valido. Utilizzare DD/MM/YYYY")
+            )
+            return
+
+        # Validazione lunghezza revisione
         revision = self.revision_var.get()
         if len(revision) > 10:
-            # Gestione sicura del messaggio di errore se il template usa .replace()
             msg_template = self.lang.get_raw('error_input_revision_length')
             msg = msg_template.replace('{revision}', revision).replace('{length}', str(len(revision)))
             messagebox.showerror(self.lang.get('app_title'), msg)
@@ -5773,6 +6976,34 @@ class InsertDocumentForm(tk.Toplevel):
         is_validated_bool = self.validated_var.get()
         validated_as_int = 1 if is_validated_bool else 0
 
+        # NUOVO: Preparare informazioni di validazione
+        validator_info = None
+        if is_validated_bool and hasattr(self.master_window, 'last_authenticated_user_name'):
+            validator_info = self.master_window.last_authenticated_user_name
+
+        # NUOVO: Controlla se esiste già un documento per questa fase
+        existing_docs = self.db.fetch_existing_documents(product_id, parent_phase_id)
+
+        if existing_docs:
+            # Chiedi conferma per sostituire il documento esistente
+            existing_doc_names = ", ".join([doc.DocumentName for doc in existing_docs])
+            response = messagebox.askyesno(
+                self.lang.get('app_title'),
+                self.lang.get(
+                    'confirm_replace_document',
+                    f"Esiste già un documento per questa fase: {existing_doc_names}.\nDesideri sostituirlo?"
+                ),
+                parent=self
+            )
+
+            if response:
+                # Marca i documenti esistenti come "non più validi"
+                for doc in existing_docs:
+                    self.db.mark_document_out_of_validation(doc.DocumentProductionID)
+            else:
+                # Utente ha annullato
+                return
+
         success = self.db.save_document_to_db(
             product_id,
             parent_phase_id,
@@ -5780,7 +7011,9 @@ class InsertDocumentForm(tk.Toplevel):
             local_file_path,
             revision,
             self.user_name,
-            validated_as_int
+            validated_as_int,
+            document_date,
+            validator_info
         )
 
         if success:
@@ -5788,7 +7021,6 @@ class InsertDocumentForm(tk.Toplevel):
             self._reset_input_fields()
             self._refresh_document_list()
         else:
-            # Gestione sicura del messaggio di errore se il template usa .replace()
             msg_template = self.lang.get_raw('error_save_failed')
             msg = msg_template.replace('{e}', self.db.last_error_details)
             messagebox.showerror(self.lang.get('app_title'), msg)
@@ -5805,22 +7037,23 @@ class InsertDocumentForm(tk.Toplevel):
         yes_text = self.lang.get('text_yes')
         no_text = self.lang.get('text_no')
         for i, doc in enumerate(existing_docs):
-            # Accesso alle proprietà dell'oggetto Row di pyodbc
             is_valid_text = yes_text if doc.IsValid else no_text
             display_text = f"File: {doc.documentName} | Rev: {doc.DocumentRevisionNumber} | Validato: {is_valid_text}"
             self.docs_listbox.insert(tk.END, display_text)
             if doc.IsValid:
-                self.docs_listbox.itemconfig(i, {'bg': '#c8e6c9'})  # Verde chiaro per validati
+                self.docs_listbox.itemconfig(i, {'bg': '#c8e6c9'})
 
     def _reset_phase_section(self):
         self.parent_phase_var.set("")
         self.parent_phase_combo.config(state="disabled", values=[])
+
 
     def _reset_details_section(self):
         self._reset_input_fields()
         self.file_entry.config(state="disabled")
         self.browse_button.config(state="disabled")
         self.revision_entry.config(state="disabled")
+        self.document_date_entry.config(state="disabled")  # NUOVO
         self.validated_check.config(state="disabled")
         self.save_button.config(state="disabled")
         self.docs_listbox.delete(0, tk.END)
@@ -5828,8 +7061,235 @@ class InsertDocumentForm(tk.Toplevel):
     def _reset_input_fields(self):
         self.file_name_var.set("")
         self.revision_var.set("")
+        self.document_date_var.set("")  # NUOVO
         self.validated_var.set(False)
         self.file_entry.config(state="readonly")
+
+class ViewDocumentForm(tk.Toplevel):
+    """Finestra per visualizzare un documento (di Produzione)."""
+
+    def __init__(self, master, db_handler, lang_manager):
+        super().__init__(master)
+        self.db = db_handler
+        self.lang = lang_manager
+        self.master_window = master  # NUOVO
+
+        self.transient(master)
+        self.grab_set()
+
+        self.products_data = {}
+        self.all_product_names = []
+        self.parent_phases_data = {}
+        self.documents_in_phase = []
+
+        self.product_var = tk.StringVar()
+        self.parent_phase_var = tk.StringVar()
+
+        self._create_widgets()
+        self.update_texts()
+        self._load_products()
+
+    def _create_widgets(self):
+        self.geometry("700x450")
+        frame = ttk.Frame(self, padding="20")
+        frame.pack(fill=tk.BOTH, expand=True)
+        frame.columnconfigure(0, weight=1)
+
+        self.product_label = ttk.Label(frame, font=("Helvetica", 10, "bold"))
+        self.product_label.pack(fill=tk.X, pady=(0, 5))
+        self.product_combo = ttk.Combobox(frame, textvariable=self.product_var, width=50)
+        self.product_combo.pack(fill=tk.X, pady=(0, 15))
+        self.product_combo.bind("<<ComboboxSelected>>", self._on_product_select)
+        self.product_combo.bind("<KeyRelease>", self._on_product_keyrelease)
+
+        self.phase_label = ttk.Label(frame, font=("Helvetica", 10, "bold"))
+        self.phase_label.pack(fill=tk.X, pady=(0, 5))
+        self.parent_phase_combo = ttk.Combobox(
+            frame,
+            textvariable=self.parent_phase_var,
+            state="disabled",
+            width=50
+        )
+        self.parent_phase_combo.pack(fill=tk.X, pady=(0, 15))
+        self.parent_phase_combo.bind("<<ComboboxSelected>>", self._on_phase_select)
+
+        self.docs_listbox = tk.Listbox(frame, height=8)
+        self.docs_listbox.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
+        self.docs_listbox.bind("<Double-1>", self._open_selected_document)
+
+        # Frame per i pulsanti
+        button_frame = ttk.Frame(frame)
+        button_frame.pack(fill=tk.X, pady=(0, 10))
+
+        # ASSICURATI CHE QUESTI TRE PULSANTI SIANO CREATI
+        self.open_button = ttk.Button(
+            button_frame,
+            text="Apri",  # Testo temporaneo
+            command=self._open_selected_document
+        )
+        self.open_button.pack(side="left", padx=(0, 5))
+
+        self.validate_button = ttk.Button(
+            button_frame,
+            text="Valida",  # Testo temporaneo
+            command=self._validate_selected_document
+        )
+        self.validate_button.pack(side="left", padx=(0, 5))
+
+        self.close_button = ttk.Button(
+            button_frame,
+            text="Chiudi",  # Testo temporaneo
+            command=self.destroy
+        )
+        self.close_button.pack(side="right")
+
+    def update_texts(self):
+        """Aggiorna i testi della UI."""
+        self.title(self.lang.get('view_doc_title'))
+        self.product_label.config(text=self.lang.get('label_select_product'))
+        self.phase_label.config(text=self.lang.get('label_select_phase'))
+        self.open_button.config(text=self.lang.get('button_open'))  # NUOVO
+        self.validate_button.config(text=self.lang.get('button_validate_doc'))  # NUOVO
+        self.close_button.config(text=self.lang.get('button_close'))
+
+    def _load_products(self):
+        products = self.db.fetch_products_with_documents()
+        if products:
+            self.products_data = {p.ProductCode: p.IDProduct for p in products}
+            self.all_product_names = list(self.products_data.keys())
+            self.product_combo['values'] = self.all_product_names
+        else:
+            messagebox.showwarning(self.lang.get('app_title'), self.lang.get('warn_no_products_found'), parent=self)
+
+    def _on_product_keyrelease(self, event):
+        typed_text = self.product_var.get()
+        if not typed_text:
+            self.product_combo['values'] = self.all_product_names
+        else:
+            filtered_list = [name for name in self.all_product_names if typed_text.lower() in name.lower()]
+            self.product_combo['values'] = filtered_list
+
+    def _on_product_select(self, event=None):
+        self.parent_phase_var.set("")
+        self.parent_phase_combo.config(state="disabled", values=[])
+        self.docs_listbox.delete(0, tk.END)
+        self.documents_in_phase = []
+
+        product_id = self.products_data.get(self.product_var.get())
+        if product_id:
+            parent_phases = self.db.fetch_phases_with_documents_for_product(product_id)
+            if parent_phases:
+                self.parent_phases_data = {p.ParentPhaseName: p.IDParentPhase for p in parent_phases}
+                self.parent_phase_combo.config(state="readonly", values=list(self.parent_phases_data.keys()))
+            else:
+                messagebox.showwarning(
+                    self.lang.get('app_title'),
+                    self.lang.get('warn_no_document_found_for_product',
+                                  "Nessun documento trovato per il prodotto selezionato."),
+                    parent=self
+                )
+
+    def _on_phase_select(self, event=None):
+        """Popola la lista dei documenti."""
+        self.docs_listbox.delete(0, tk.END)
+        self.documents_in_phase = []
+
+        product_id = self.products_data.get(self.product_var.get())
+        parent_phase_id = self.parent_phases_data.get(self.parent_phase_var.get())
+
+        if not (product_id and parent_phase_id):
+            return
+
+        self.documents_in_phase = self.db.fetch_existing_documents(product_id, parent_phase_id)
+
+        if not self.documents_in_phase:
+            messagebox.showwarning(self.lang.get('app_title'), self.lang.get('warn_no_document_found'), parent=self)
+        else:
+            yes_text = self.lang.get('text_yes')
+            no_text = self.lang.get('text_no')
+            for i, doc in enumerate(self.documents_in_phase):
+                is_valid_text = yes_text if doc.IsValid else no_text
+                display_text = f"{doc.documentName} (Rev: {doc.DocumentRevisionNumber}) - Validato: {is_valid_text}"
+                self.docs_listbox.insert(tk.END, display_text)
+                if doc.IsValid:
+                    self.docs_listbox.itemconfig(i, {'bg': '#c8e6c9'})
+
+    def _open_selected_document(self):
+        """NUOVO: Apre il documento selezionato"""
+        selected_indices = self.docs_listbox.curselection()
+        if not selected_indices:
+            messagebox.showwarning(
+                self.lang.get('app_title'),
+                self.lang.get('warn_no_document_selected', "Selezionare un documento da aprire"),
+                parent=self
+            )
+            return
+
+        selected_index = selected_indices[0]
+        selected_doc = self.documents_in_phase[selected_index]
+
+        success = self.db.fetch_and_open_document(selected_doc.DocumentProductionID)
+        if not success:
+            messagebox.showerror(
+                self.lang.get('error_title', "Errore"),
+                "Impossibile aprire il documento.",
+                parent=self
+            )
+
+    def _validate_selected_document(self):
+        """NUOVO: Valida il documento selezionato con autorizzazione"""
+        selected_indices = self.docs_listbox.curselection()
+        if not selected_indices:
+            messagebox.showwarning(
+                self.lang.get('app_title'),
+                self.lang.get('warn_no_document_selected', "Selezionare un documento da validare"),
+                parent=self
+            )
+            return
+
+        selected_index = selected_indices[0]
+        selected_doc = self.documents_in_phase[selected_index]
+
+        # Se già validato, chiedi conferma
+        if selected_doc.IsValid:
+            response = messagebox.askyesno(
+                self.lang.get('app_title'),
+                self.lang.get('confirm_revalidate_document',
+                              "Il documento è già validato. Desideri convalidarlo di nuovo?"),
+                parent=self
+            )
+            if not response:
+                return
+
+        # Chiama la procedura di autorizzazione
+        if self.master_window._execute_authorized_action(
+                'validatore_documenti',
+                lambda: self._apply_document_validation(selected_doc)
+        ):
+            messagebox.showinfo(
+                self.lang.get('app_title'),
+                self.lang.get('info_document_validated'),
+                parent=self
+            )
+            self._on_phase_select()  # Aggiorna la lista
+        else:
+            messagebox.showerror(
+                self.lang.get('app_title'),
+                self.lang.get('error_validation_failed', "Validazione non riuscita"),
+                parent=self
+            )
+
+    def _apply_document_validation(self, doc):
+        """NUOVO: Callback per applicare la validazione dopo autorizzazione"""
+        validator_name = getattr(self.master_window, 'last_authenticated_user_name', None)
+
+        success = self.db.update_document_validation(
+            doc.DocumentProductionID,
+            validator_name
+        )
+
+        if not success:
+            raise Exception("Errore durante l'aggiornamento del documento nel database")
 
 class KanbanLocationCreateForm(tk.Toplevel):
     """
@@ -7359,140 +8819,6 @@ class PrinterSetupDialog(tk.Toplevel):
         else:
             messagebox.showerror(self.lang.get('error_title', "Errore"),
                                  self.lang.get('print_error', f"Errore di stampa: {err}"), parent=self)
-
-class ViewDocumentForm(tk.Toplevel):
-    """Finestra per visualizzare un documento (di Produzione)."""
-
-    def __init__(self, master, db_handler, lang_manager):
-        super().__init__(master)
-        self.db = db_handler
-        self.lang = lang_manager
-
-        self.transient(master)
-        self.grab_set()
-
-        self.products_data = {}
-        self.all_product_names = []
-        self.parent_phases_data = {}
-        self.documents_in_phase = []
-
-        self.product_var = tk.StringVar()
-        self.parent_phase_var = tk.StringVar()
-
-        self._create_widgets()
-        self.update_texts()
-        self._load_products()
-
-    def _create_widgets(self):
-        self.geometry("600x350")
-        frame = ttk.Frame(self, padding="20")
-        frame.pack(fill=tk.BOTH, expand=True)
-        frame.columnconfigure(0, weight=1)
-
-        self.product_label = ttk.Label(frame, font=("Helvetica", 10, "bold"))
-        self.product_label.pack(fill=tk.X, pady=(0, 5))
-        self.product_combo = ttk.Combobox(frame, textvariable=self.product_var, width=50)
-        self.product_combo.pack(fill=tk.X, pady=(0, 15))
-        self.product_combo.bind("<<ComboboxSelected>>", self._on_product_select)
-        self.product_combo.bind("<KeyRelease>", self._on_product_keyrelease)
-
-        self.phase_label = ttk.Label(frame, font=("Helvetica", 10, "bold"))
-        self.phase_label.pack(fill=tk.X, pady=(0, 5))
-        self.parent_phase_combo = ttk.Combobox(frame, textvariable=self.parent_phase_var, state="disabled", width=50)
-        self.parent_phase_combo.pack(fill=tk.X, pady=(0, 15))
-        self.parent_phase_combo.bind("<<ComboboxSelected>>", self._on_phase_select)
-
-        self.docs_listbox = tk.Listbox(frame, height=5)
-        self.docs_listbox.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
-        self.docs_listbox.bind("<Double-1>", self._on_doc_double_click)  # Evento doppio click
-
-        self.close_button = ttk.Button(frame, command=self.destroy)
-        self.close_button.pack(side="bottom", pady=10)
-
-    def update_texts(self):
-        """Aggiorna i testi della UI."""
-        self.title(self.lang.get('view_doc_title'))
-        self.product_label.config(text=self.lang.get('label_select_product'))
-        self.phase_label.config(text=self.lang.get('label_select_phase'))
-        self.close_button.config(text=self.lang.get('button_close'))
-
-    def _load_products(self):
-        products = self.db.fetch_products_with_documents()
-        if products:
-            self.products_data = {p.ProductCode: p.IDProduct for p in products}
-            self.all_product_names = list(self.products_data.keys())
-            self.product_combo['values'] = self.all_product_names
-        else:
-            messagebox.showwarning(self.lang.get('app_title'), self.lang.get('warn_no_products_found'), parent=self)
-
-    def _on_product_keyrelease(self, event):
-        typed_text = self.product_var.get()
-        if not typed_text:
-            self.product_combo['values'] = self.all_product_names
-        else:
-            filtered_list = [name for name in self.all_product_names if typed_text.lower() in name.lower()]
-            self.product_combo['values'] = filtered_list
-
-    def _on_product_select(self, event=None):
-        self.parent_phase_var.set("")
-        self.parent_phase_combo.config(state="disabled", values=[])
-        self.docs_listbox.delete(0, tk.END)
-        self.documents_in_phase = []
-
-        product_id = self.products_data.get(self.product_var.get())
-        if product_id:
-            # --- RIGA MODIFICATA ---
-            # Ora chiama il nuovo metodo per ottenere solo le fasi con documenti
-            parent_phases = self.db.fetch_phases_with_documents_for_product(product_id)
-            # --- FINE MODIFICA ---
-
-            if parent_phases:
-                # La logica per popolare il combobox rimane la stessa
-                self.parent_phases_data = {p.ParentPhaseName: p.IDParentPhase for p in parent_phases}
-                self.parent_phase_combo.config(state="readonly", values=list(self.parent_phases_data.keys()))
-            else:
-                # Questo messaggio ora significa che non ci sono documenti per questo prodotto
-                messagebox.showwarning(self.lang.get('app_title'), self.lang.get('warn_no_document_found_for_product',
-                                                                                 "Nessun documento trovato per il prodotto selezionato."),
-                                       parent=self)
-
-    def _on_phase_select(self, event=None):
-        """Popola la lista dei documenti."""
-        self.docs_listbox.delete(0, tk.END)
-        self.documents_in_phase = []
-
-        product_id = self.products_data.get(self.product_var.get())
-        parent_phase_id = self.parent_phases_data.get(self.parent_phase_var.get())
-
-        if not (product_id and parent_phase_id):
-            return
-
-        # 1. Recupera la lista di tutti i documenti per la fase scelta
-        self.documents_in_phase = self.db.fetch_existing_documents(product_id, parent_phase_id)
-
-        if not self.documents_in_phase:
-            messagebox.showwarning(self.lang.get('app_title'), self.lang.get('warn_no_document_found'), parent=self)
-        else:
-            # 2. Popola la Listbox con i nomi dei documenti trovati
-            for doc in self.documents_in_phase:
-                self.docs_listbox.insert(tk.END, f"{doc.documentName} (Rev: {doc.DocumentRevisionNumber})")
-
-    def _on_doc_double_click(self, event=None):
-        """Gestisce il doppio click su un documento nella lista."""
-        selected_indices = self.docs_listbox.curselection()
-        if not selected_indices:
-            return
-
-        selected_index = selected_indices[0]
-        # Recupera il documento corrispondente dalla lista che abbiamo salvato
-        selected_doc = self.documents_in_phase[selected_index]
-
-        # Chiama il metodo corretto per recuperare e aprire il file binario usando il suo ID
-        print(f"Richiesta apertura documento con ID: {selected_doc.DocumentProductionID}")
-        success = self.db.fetch_and_open_document(selected_doc.DocumentProductionID)
-        if not success:
-            messagebox.showerror(self.lang.get('error_title', "Errore"), "Impossibile aprire il documento.",
-                                 parent=self)
 
 class LineStoppageReportForm(tk.Toplevel):
     def __init__(self, parent, db_handler, lang_manager):
@@ -9337,6 +10663,13 @@ class App(tk.Tk):
         self.tools_menu = tk.Menu(self.menubar, tearoff=0)
         self.help_menu = tk.Menu(self.menubar, tearoff=0)
         self.npi_menu = tk.Menu(self.operations_menu, tearoff=0)
+        # Menu Gestione Reclami
+        self.complaints_menu = tk.Menu(self.menubar, tearoff=False)
+        self.complaints_submenu = tk.Menu(self.complaints_menu, tearoff=False)
+        
+        # Menu Personale
+        self.personnel_menu = tk.Menu(self.operations_menu, tearoff=0)
+        self.guests_submenu = tk.Menu(self.personnel_menu, tearoff=0)
 
     def _init_production_submenus(self):
         """Inizializza la gerarchia completa del menu Produzione"""
@@ -9388,6 +10721,7 @@ class App(tk.Tk):
         """Inizializza i sottomenu di Strumenti"""
         self.permissions_submenu = tk.Menu(self.tools_menu, tearoff=0)
         self.materials_submenu = tk.Menu(self.tools_menu, tearoff=0)
+        self.room_booking_submenu = tk.Menu(self.tools_menu, tearoff=0)
 
     def _init_help_submenus(self):
         """Inizializza i sottomenu di Aiuto"""
@@ -9479,6 +10813,40 @@ class App(tk.Tk):
         )
         self.npi_menu.delete(0, 'end')  # Pulisce prima di riempire
 
+        self.operations_menu.add_separator()
+
+        # 3. Popola il sottomenu 'Gestione Reclami'
+        self.operations_menu.add_cascade(
+            label=self.lang.get('menu_complaints_management', 'Gestione Reclami'),
+            menu=self.complaints_menu
+        )
+        self._update_complaints_menu()
+
+        self.operations_menu.add_separator()
+
+        # 4. Popola il sottomenu 'Personale'
+        self.operations_menu.add_cascade(
+            label=self.lang.get('menu_personnel', 'Personale'),
+            menu=self.personnel_menu
+        )
+        self.personnel_menu.delete(0, 'end')
+        
+        self.personnel_menu.add_cascade(
+            label=self.lang.get('submenu_guests', 'Ospiti'),
+            menu=self.guests_submenu
+        )
+        self.guests_submenu.delete(0, 'end')
+        
+        self.guests_submenu.add_command(
+            label=self.lang.get('submenu_guest_registration', 'Registrazione Ospiti'),
+            command=self.open_guest_registration_with_login
+        )
+        
+        self.guests_submenu.add_command(
+            label=self.lang.get('submenu_guest_report', 'Report Ospiti'),
+            command=self.open_guest_report_with_login
+        )
+
         # Comandi del menu NPI
 
         self.npi_menu.add_command(
@@ -9498,6 +10866,8 @@ class App(tk.Tk):
             label=self.lang.get('npi_setup_tasks', 'Configura Catalogo Task...'),
             command=self._configura_catalogo_task_npi
         )
+
+
 
         # Disabilita tutto se il gestore NPI non è partito
         if self.npi_manager is None:
@@ -9698,7 +11068,6 @@ class App(tk.Tk):
             command=self._generate_calibration_report
         )
 
-
     def _update_coating_submenu(self):
         """Aggiorna il sottomenu Coating con struttura organizzata"""
         self.coating_submenu.delete(0, 'end')
@@ -9892,6 +11261,22 @@ class App(tk.Tk):
         )
 
         self.tools_menu.add_separator()
+
+        # Room Booking
+        self.tools_menu.add_cascade(label=self.lang.get('menu_room_booking', "Room Booking"), menu=self.room_booking_submenu)
+        self.room_booking_submenu.delete(0, 'end')
+
+        self.room_booking_submenu.add_command(
+            label=self.lang.get('submenu_manage_rooms', "Manage Rooms"),
+            command=self.open_manage_rooms_with_login
+        )
+
+        self.room_booking_submenu.add_command(
+            label=self.lang.get('submenu_manage_booking', "Manage Booking"),
+            command=self.open_manage_booking_with_login
+        )
+
+        self.tools_menu.add_separator()
         self.tools_menu.add_command(label=self.lang.get('submenu_suppliers', "Produttori"),
                                     command=self.open_suppliers_manager_with_login)
         self.tools_menu.add_command(label=self.lang.get('submenu_maint_cycles', "Cicli Manutenzione"),
@@ -10014,8 +11399,13 @@ class App(tk.Tk):
             try:
                 # 'user_name' arriva dal login e non lo usiamo qui, ma è richiesto dal callback
                 logger.debug(f"Utente '{user_name}' autorizzato. Apertura Dashboard NPI.")
-                dashboard = NpiDashboardWindow(master=self, npi_manager=self.npi_manager, lang=self.lang)
+                dashboard = NpiDashboardWindow(master=self,
+                                               npi_manager=self.npi_manager,
+                                               lang=self.lang,
+                                               logged_in_user=user_name)
+
                 self.wait_window(dashboard)  # Rende la finestra modale
+
             except Exception as e:
                 logger.error("Errore nell'apertura della NpiDashboardWindow: %s", e, exc_info=True)
                 messagebox.showerror("Errore", f"Impossibile aprire la dashboard NPI: {e}")
@@ -10036,8 +11426,6 @@ class App(tk.Tk):
             menu_translation_key='npi_setup_tasks',  # La chiave corrisponde al MenuValue nel DB
             action_callback=self._launch_config_window
         )
-
-    # --- METODI "LAUNCHER" PER LE FINESTRE NPI ---
 
     def _launch_dashboard_window(self, username):
         """
@@ -10141,6 +11529,175 @@ class App(tk.Tk):
         except Exception as e:
             logger.error("Errore nell'apertura della NpiConfigWindow: %s", e, exc_info=True)
             messagebox.showerror("Errore", f"Impossibile aprire la configurazione NPI: {e}")
+
+    def _update_complaints_menu(self):
+        """Aggiorna il menu Gestione Reclami con i sottomenu"""
+        self.complaints_menu.delete(0, 'end')
+
+        self.complaints_menu.add_cascade(
+            label=self.lang.get('submenu_complaints', 'Reclami'),
+            menu=self.complaints_submenu
+        )
+        self._update_complaints_submenu()
+
+    def _update_complaints_submenu(self):
+        """Aggiorna il sottomenu Reclami con tutte le sezioni"""
+        self.complaints_submenu.delete(0, 'end')
+
+        # 1. Aggiungi Reclamo
+        self.complaints_submenu.add_command(
+            label=self.lang.get('menu_add_complaint', 'Aggiungi Reclamo'),
+            command=self._add_complaint
+        )
+        # 2. Gestisci Reclamo
+        self.complaints_submenu.add_command(
+            label=self.lang.get('menu_manage_complaint', 'Gestisci Reclamo'),
+            command=self._manage_complaint
+        )
+
+        # 3. Analisi Reclami
+        self.complaints_submenu.add_command(
+            label=self.lang.get('menu_complaints_analysis', 'Analisi Reclami'),
+            command=self._analyze_complaints
+        )
+
+        # 4. Report Reclami
+        self.complaints_submenu.add_command(
+            label=self.lang.get('menu_complaints_report', 'Report Reclami'),
+            command=self._complaints_report
+        )
+
+    def _add_complaint(self):
+        """Apre la finestra per aggiungere un reclamo - con autorizzazione"""
+        self._execute_authorized_action(
+            'aggiungi_reclami',
+            self._add_complaint_authorized
+        )
+
+    def _add_complaint_authorized(self):
+        """
+        Esegue l'aggiunta reclamo dopo autorizzazione
+        Chiamato solo se l'utente è autorizzato
+        """
+        try:
+            title = self.lang.get('title_add_complaint', 'Aggiungi Reclamo')
+            logger.info(f"[COMPLAINTS] Utente {self.last_authenticated_user_name} ha accesso a: {title}")
+
+            #Apri finestra per aggiungere un nuovo reclamo
+            AddComplaintWindow(
+                self,
+                self.db,
+                self.lang,
+                self.last_authenticated_user_name
+            )
+
+            logger.debug(f"[COMPLAINTS] Finestra aggiunta reclamo aperta")
+
+        except Exception as e:
+            logger.exception(f"[COMPLAINTS] Errore nell'apertura aggiunta reclamo: {e}")
+            messagebox.showerror(
+                "Errore",
+                f"Errore nell'apertura della finestra: {str(e)}",
+                parent=self
+            )
+
+
+    def _manage_complaint(self):
+        """Apre la finestra per la gestione del reclamo"""
+        self._execute_authorized_action(
+            'gestici_reclami',
+            self._manage_complaint_authorized
+        )
+
+    def _manage_complaint_authorized(self):
+        """
+                Esegue l'aggiunta reclamo dopo autorizzazione
+                Chiamato solo se l'utente è autorizzato
+                """
+        try:
+            title = self.lang.get('title_add_complaint', 'Aggiungi Reclamo')
+            logger.info(f"[COMPLAINTS] Utente {self.last_authenticated_user_name} ha accesso a: {title}")
+
+            # TODO: Implementare la finestra di aggiunta reclamo
+            messagebox.showinfo(
+                title,
+                f"Funzione in fase di sviluppo\nUtente autorizzato: {self.last_authenticated_user_name}",
+                parent=self
+            )
+            logger.debug(f"[COMPLAINTS] Finestra aggiunta reclamo aperta")
+
+        except Exception as e:
+            logger.exception(f"[COMPLAINTS] Errore nell'apertura aggiunta reclamo: {e}")
+            messagebox.showerror(
+                "Errore",
+                f"Errore nell'apertura della finestra: {str(e)}",
+                parent=self
+            )
+
+
+    def _analyze_complaints(self):
+        """Apre la finestra per analizzare reclami - con autorizzazione"""
+        self._execute_authorized_action(
+            'analizza_reclami',
+            self._analyze_complaints_authorized
+        )
+
+    def _analyze_complaints_authorized(self):
+        """
+        Esegue l'analisi reclami dopo autorizzazione
+        Chiamato solo se l'utente è autorizzato
+        """
+        try:
+            title = self.lang.get('title_analyze_complaints', 'Analisi Reclami')
+            logger.info(f"[COMPLAINTS] Utente {self.last_authenticated_user_name} ha accesso a: {title}")
+
+            # TODO: Implementare la finestra di analisi reclami
+            messagebox.showinfo(
+                title,
+                f"Funzione in fase di sviluppo\nUtente autorizzato: {self.last_authenticated_user_name}",
+                parent=self
+            )
+            logger.debug(f"[COMPLAINTS] Finestra analisi reclami aperta")
+
+        except Exception as e:
+            logger.exception(f"[COMPLAINTS] Errore nell'apertura analisi reclami: {e}")
+            messagebox.showerror(
+                "Errore",
+                f"Errore nell'apertura della finestra: {str(e)}",
+                parent=self
+            )
+
+    def _complaints_report(self):
+        """Apre la finestra per il report reclami - con autorizzazione"""
+        self._execute_authorized_action(
+            'report_reclami',
+            self._complaints_report_authorized
+        )
+
+    def _complaints_report_authorized(self):
+        """
+        Esegue il report reclami dopo autorizzazione
+        Chiamato solo se l'utente è autorizzato
+        """
+        try:
+            title = self.lang.get('title_complaints_report', 'Report Reclami')
+            logger.info(f"[COMPLAINTS] Utente {self.last_authenticated_user_name} ha accesso a: {title}")
+
+            # TODO: Implementare la finestra di report reclami
+            messagebox.showinfo(
+                title,
+                f"Funzione in fase di sviluppo\nUtente autorizzato: {self.last_authenticated_user_name}",
+                parent=self
+            )
+            logger.debug(f"[COMPLAINTS] Finestra report reclami aperta")
+
+        except Exception as e:
+            logger.exception(f"[COMPLAINTS] Errore nell'apertura report reclami: {e}")
+            messagebox.showerror(
+                "Errore",
+                f"Errore nell'apertura della finestra: {str(e)}",
+                parent=self
+            )
 
     def open_coating_thickness_with_login(self):
         """Apre la finestra di controllo spessore coating dopo login"""
@@ -10360,6 +11917,30 @@ class App(tk.Tk):
         self._execute_authorized_action(
             menu_translation_key='submenu_scrap_types',
             action_callback=lambda: scarti_gui.open_scrap_reasons_manager(self, self.db, self.lang)
+        )
+
+    def open_manage_rooms_with_login(self):
+        self._execute_authorized_action(
+            menu_translation_key='manage_room',
+            action_callback=lambda: room_booking_gui.RoomManagerWindow(self, self.db, self.lang)
+        )
+
+    def open_manage_booking_with_login(self):
+        self._execute_simple_login(
+            action_callback=lambda user_name: room_booking_gui.BookingManagerWindow(self, self.db, self.lang, user_name)
+        )
+
+    def open_guest_registration_with_login(self):
+        self._execute_authorized_action(
+            menu_translation_key='manage_guests',
+            action_callback=lambda: guests_gui.GuestRegistrationWindow(
+                self, self.db, self.lang, self.last_authenticated_user_name
+            )
+        )
+
+    def open_guest_report_with_login(self):
+        self._execute_simple_login(
+            action_callback=lambda user_name: guests_gui.GuestReportWindow(self, self.db, self.lang)
         )
 
     def _change_language(self, lang_code):
