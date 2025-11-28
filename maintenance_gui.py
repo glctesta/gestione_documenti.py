@@ -692,6 +692,7 @@ class FillTemplateWindow(tk.Toplevel):
 
         self.equipment_var = tk.StringVar()
         self.plan_var = tk.StringVar()
+        self.only_with_plan_var = tk.BooleanVar(value=False)
 
         self._create_widgets()
         self._load_equipments()
@@ -709,6 +710,15 @@ class FillTemplateWindow(tk.Toplevel):
         self.equipment_combo.pack(side=tk.LEFT, padx=5)
         self.equipment_combo.bind("<<ComboboxSelected>>", self._on_equipment_select)
         self.equipment_combo.bind('<KeyRelease>', self._filter_equipment_combo)
+
+        # Checkbox per filtrare solo macchine con piano attivo
+        self.plan_filter_check = ttk.Checkbutton(
+            selection_frame,
+            text=self.lang.get('only_with_active_plan', "Solo con piano attivo"),
+            variable=self.only_with_plan_var,
+            command=self._load_equipments
+        )
+        self.plan_filter_check.pack(side=tk.LEFT, padx=5)
 
         ttk.Label(selection_frame, text=self.lang.get('select_maintenance_plan', "Seleziona Piano:")).pack(side=tk.LEFT, padx=5)
         self.plan_combo = ttk.Combobox(selection_frame, textvariable=self.plan_var, state='disabled', width=40)
@@ -757,7 +767,7 @@ class FillTemplateWindow(tk.Toplevel):
         self.save_button.pack(side=tk.RIGHT, padx=5)
 
     def _load_equipments(self):
-        equipments = self.db.fetch_all_equipments()
+        equipments = self.db.fetch_all_equipments(only_with_plan=self.only_with_plan_var.get())
         if equipments:
             self.equipments_data = {f"{row.InternalName or 'N/D'} [{row.SerialNumber}]": row.EquipmentId for row in equipments}
             self.all_equipment_names = sorted(list(self.equipments_data.keys()))
@@ -1578,10 +1588,11 @@ class AddMaintenanceTasksWindow(tk.Toplevel):
 def open_fill_templates(parent, db, lang, user_name=None):
     # Controlla se user_name è stato fornito (dovrebbe esserlo se chiamato tramite login da App)
     if user_name:
+        debug.info(f"Apertura finestra Compilazione Schede per utente: {user_name}")
         FillTemplateWindow(parent, db, lang, user_name)  # Passa user_name alla classe
     else:
         # Fallback di sicurezza nel caso venga chiamata erroneamente senza utente
-        print("Errore: Tentativo di aprire Compilazione Schede senza autenticazione.")
+        logger.error(f"Errore: Tentativo di aprire Compilazione Schede senza autenticazione. {user_name}")
 
 def open_add_machine(parent, db, lang):
     AddMachineWindow(parent, db, lang)
@@ -1629,6 +1640,7 @@ def generate_missing_action_report(parent, db, lang):
 
     if error:
         messagebox.showerror(lang.get('error_title', "Errore"), error, parent=parent)
+        logger.error(f"Errore durante l'esecuzione della stored procedure: {error}")
         return
 
     if not results:

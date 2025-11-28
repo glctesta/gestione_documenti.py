@@ -1,6 +1,7 @@
 # permissions_gui.py
 import tkinter as tk
 from tkinter import ttk, messagebox
+from utils import get_employee_work_email, send_email
 
 
 class ViewPermissionsWindow(tk.Toplevel):
@@ -155,7 +156,6 @@ class ManagePermissionsWindow(tk.Toplevel):
         self.employee_combo['values'] = filtered_list
 
     def _populate_lists(self, event=None):
-        # ... questo metodo rimane invariato ...
         self.available_list.delete(0, tk.END)
         self.assigned_list.delete(0, tk.END)
         self.available_perms_data.clear()
@@ -178,7 +178,6 @@ class ManagePermissionsWindow(tk.Toplevel):
                 self.assigned_perms_data[perm.MenuKey] = perm.AuthorizedUsedId
 
     def _grant_permission(self):
-        # ... questo metodo rimane invariato ...
         selections = self.available_list.curselection()
         if not selections: return
         employee_id = self.employees_data[self.employee_var.get()]
@@ -188,10 +187,20 @@ class ManagePermissionsWindow(tk.Toplevel):
             translation_key = self.available_perms_data[display_name]
             self.db.grant_permission(employee_id, translation_key)
 
+            # --- NUOVO: Invia email di notifica ---
+            try:
+                # Recupera email
+                work_email = get_employee_work_email(self.db.conn, employee_id)
+                if work_email:
+                    subject = self.lang.get('email_perm_subject', "Nuovo Permesso Assegnato")
+                    body = f"{self.lang.get('email_perm_body', 'Ti è stato assegnato un nuovo permesso')}: {display_name}"
+                    send_email([work_email], subject, body)
+            except Exception as e:
+                print(f"Errore invio email notifica permesso: {e}")
+
         self._populate_lists()
 
     def _revoke_permission(self):
-        # ... questo metodo rimane invariato ...
         selections = self.assigned_list.curselection()
         if not selections: return
 

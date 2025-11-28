@@ -1004,6 +1004,76 @@ class GestoreNPI:
         finally:
             session.close()
 
+    def get_npi_statistics(self):
+        """
+        Calcola le statistiche per la dashboard:
+        - Totale progetti NPI
+        - Progetti completati (Stato = 'Chiuso')
+        - Progetti in ritardo (Stato != 'Chiuso' e ScadenzaProgetto < Oggi)
+        - Statistiche per cliente
+        """
+        session = self._get_session()
+        try:
+            stats = {
+                'total_projects': 0,
+                'completed_projects': 0,
+                'delayed_projects': 0,
+                'customer_stats': []
+            }
+
+            # 1. Totale Progetti
+            stats['total_projects'] = session.scalar(
+                select(func.count(ProgettoNPI.ProgettoId))
+            )
+
+            # 2. Progetti Completati
+            stats['completed_projects'] = session.scalar(
+                select(func.count(ProgettoNPI.ProgettoId))
+                .where(ProgettoNPI.StatoProgetto == 'Chiuso')
+            )
+
+            # 3. Progetti in Ritardo
+            stats['delayed_projects'] = session.scalar(
+                select(func.count(ProgettoNPI.ProgettoId))
+                .where(
+                    and_(
+                        ProgettoNPI.StatoProgetto != 'Chiuso',
+                        ProgettoNPI.ScadenzaProgetto < datetime.now()
+                    )
+                )
+            )
+
+            # 4. Statistiche per Cliente
+            customer_query = (
+                select(
+                    Prodotto.Cliente,
+                    func.count(ProgettoNPI.ProgettoId).label('count')
+                )
+                .join(Prodotto, ProgettoNPI.ProdottoID == Prodotto.ProdottoID)
+                .group_by(Prodotto.Cliente)
+                .order_by(func.count(ProgettoNPI.ProgettoId).desc())
+            )
+            
+            customer_results = session.execute(customer_query).all()
+            
+            total = stats['total_projects'] or 1
+            
+            for client, count in customer_results:
+                client_name = client or "N/A"
+                percentage = (count / total) * 100
+                stats['customer_stats'].append({
+                    'client': client_name,
+                    'count': count,
+                    'percentage': round(percentage, 1)
+                })
+
+            return stats
+        except Exception as e:
+            logger.error(f"Errore nel calcolo statistiche NPI: {e}", exc_info=True)
+            return None
+        finally:
+            session.close()
+
     def get_project_analysis(self, project_id: int):
         """
         Analizza un progetto per trovare i task in ritardo per ogni owner.

@@ -278,8 +278,8 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "2.0.0"  # Versione aggiornata
-APP_DEVELOPER = "@Gianluca Testa"
+APP_VERSION = "2.0.6"  # Versione aggiornata
+APP_DEVELOPER = "Gianluca Testa"
 
 # # --- CONFIGURAZIONE DATABASE ---
 DB_DRIVER = '{SQL Server Native Client 11.0}'
@@ -1803,8 +1803,9 @@ class Database:
         Elenco per combo: IdComponent, ComponentCode, ComponentDescription
         """
         sql = """
-        SELECT IdComponent, ComponentCode, ComponentDescription
-        FROM dbo.Components
+        SELECT c.IdComponent, c.ComponentCode, c.ComponentDescription
+        FROM Traceability_rs.dbo.Components as C inner join Traceability_rs.[knb].[KanBanRecords] as K on C.IdComponent = K.IdComponent
+        inner join Traceability_rs.knb.Locations as L on K.LocationId = L.LocationId
         ORDER BY ComponentCode;
         """
         self.cursor.execute(sql)
@@ -1897,6 +1898,34 @@ class Database:
         except Exception as e:
             self.last_error_details = str(e)
             return []
+
+    def fetch_component_id_by_code(self, component_code: str):
+        """
+        Ritorna IdComponent dato il ComponentCode.
+        Ritorna None se non trovato.
+        """
+        sql = "SELECT IdComponent FROM dbo.Components WHERE ComponentCode = ?;"
+        try:
+            self.cursor.execute(sql, component_code)
+            row = self.cursor.fetchone()
+            return row.IdComponent if row else None
+        except Exception as e:
+            self.last_error_details = str(e)
+            return None
+
+    def fetch_location_id_by_code(self, location_code: str):
+        """
+        Ritorna LocationId dato il LocationCode.
+        Ritorna None se non trovato.
+        """
+        sql = "SELECT LocationId FROM knb.Locations WHERE LocationCode = ?;"
+        try:
+            self.cursor.execute(sql, location_code)
+            row = self.cursor.fetchone()
+            return row.LocationId if row else None
+        except Exception as e:
+            self.last_error_details = str(e)
+            return None
 
     def fetch_all_kanban_rules(self):
         """
@@ -2915,8 +2944,9 @@ class Database:
             cursor.execute(permissions_query, user_id)
             # Creiamo un set con tutte le chiavi di permesso trovate
             permissions = {row.PermissionKey for row in cursor.fetchall()}
+            logger.info(f"Permissions for user_id={user_id}: {permissions}")
         except Exception as e:
-            print(f"ATTENZIONE: Impossibile caricare i permessi per l'utente {user_id}. Errore: {e}")
+            logger.error(f"ATTENZIONE: Impossibile caricare i permessi per l'utente {user_id}. Errore: {e}")
             # L'utente potrà accedere ma non avrà permessi speciali
         finally:
             if cursor:
@@ -3176,7 +3206,8 @@ class Database:
         """Recupera la lista degli ospiti con filtri opzionali."""
         query = """
             SELECT [VisitorId], [RegistryId], [CompanyName], [GuestName], 
-                   [StartVisit], [EndVisit], [Pourpose], [WelcomeMessage]
+                   [StartVisit], [EndVisit], [Pourpose], [WelcomeMessage],
+                   [SponsorGuy], [Logo]
             FROM [Employee].[dbo].[Visitors]
             WHERE [IsActive] = 0
         """
@@ -3224,6 +3255,39 @@ class Database:
             logger.error(f"Errore fetch distinct guest info: {e}")
             return info
 
+    def fetch_sponsors(self):
+        """Recupera la lista degli sponsor."""
+        query = """
+            select upper(e.employeesurname+ ' ' + e.employeename ) as Sponsor,
+            c.CdcDescription + ' (' + f.FunctionDescription +')' As Department
+            from employee.dbo.employees e 
+            inner join employee.dbo.EmployeeHireHistory H on e.employeeid=h.employeeid and h.employeerid = 2 and h.EndWorkDate is null 
+            inner join employee.dbo.EmployeeCdcStories ec on h.employeehirehistoryid = ec.employeehirehistoryid and ec.dateout is null
+            inner join employee.dbo.Functions F on f.FunctionId=ec.FunctionId
+            inner join employee.dbo.CdcSub cs on cs.SubCdcId=ec.SubCdcId
+            inner join employee.dbo.CostCenters c on c.CdcId=cs.CdcId
+            where f.FunctionCode >= 45
+            order by e.employeename + ' ' + e.employeesurname;
+        """
+        try:
+            self.cursor.execute(query)
+            return [f"{row.Sponsor} - {row.Department}" for row in self.cursor.fetchall()]
+        except Exception as e:
+            self.last_error_details = str(e)
+            logger.error(f"Errore fetch sponsors: {e}")
+            return []
+
+    def fetch_guests_by_company(self, company_name):
+        """Recupera i nomi degli ospiti associati a una specifica azienda."""
+        query = "SELECT DISTINCT [GuestName] FROM [Employee].[dbo].[Visitors] WHERE [CompanyName] = ? ORDER BY [GuestName]"
+        try:
+            self.cursor.execute(query, company_name)
+            return [row[0] for row in self.cursor.fetchall()]
+        except Exception as e:
+            self.last_error_details = str(e)
+            logger.error(f"Errore fetch guests by company: {e}")
+            return []
+
     def get_registry_id(self, user_name):
         """Recupera un nuovo RegistryId tramite SP."""
         try:
@@ -3264,17 +3328,19 @@ class Database:
             logger.error(f"Errore get_registry_id: {e}")
             return None
 
-    def add_guest(self, registry_id, company, name, start, end, purpose, welcome_msg):
+    def add_guest(self, registry_id, company, name, start, end, purpose, welcome_msg, sponsor_guy, logo_data):
         """Aggiunge un nuovo ospite."""
         query = """
             INSERT INTO [Employee].[dbo].[Visitors]
             ([RegistryId], [CompanyName], [GuestName], [StartVisit], [EndVisit], 
-             [Pourpose], [WelcomeMessage], [ShowFrom], [ShowUntil], [IsActive], [CreatedAt])
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, GETDATE())
+             [Pourpose], [WelcomeMessage], [ShowFrom], [ShowUntil], [IsActive], [CreatedAt],
+             [SponsorGuy], [Logo])
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, GETDATE(), ?, ?)
         """
         try:
             # ShowFrom/ShowUntil uguali a StartVisit/EndVisit
-            self.cursor.execute(query, registry_id, company, name, start, end, purpose, welcome_msg, start, end)
+            # logo_data deve essere bytes o None
+            self.cursor.execute(query, registry_id, company, name, start, end, purpose, welcome_msg, start, end, sponsor_guy, logo_data)
             self.conn.commit()
             return True
         except Exception as e:
@@ -3283,16 +3349,17 @@ class Database:
             logger.error(f"Errore add guest: {e}")
             return False
 
-    def update_guest(self, visitor_id, company, name, start, end, purpose, welcome_msg):
+    def update_guest(self, visitor_id, company, name, start, end, purpose, welcome_msg, sponsor_guy, logo_data):
         """Aggiorna un ospite esistente."""
         query = """
             UPDATE [Employee].[dbo].[Visitors]
             SET [CompanyName] = ?, [GuestName] = ?, [StartVisit] = ?, [EndVisit] = ?,
-                [Pourpose] = ?, [WelcomeMessage] = ?, [ShowFrom] = ?, [ShowUntil] = ?
+                [Pourpose] = ?, [WelcomeMessage] = ?, [ShowFrom] = ?, [ShowUntil] = ?,
+                [SponsorGuy] = ?, [Logo] = ?
             WHERE [VisitorId] = ?
         """
         try:
-            self.cursor.execute(query, company, name, start, end, purpose, welcome_msg, start, end, visitor_id)
+            self.cursor.execute(query, company, name, start, end, purpose, welcome_msg, start, end, sponsor_guy, logo_data, visitor_id)
             self.conn.commit()
             return True
         except Exception as e:
@@ -3302,8 +3369,9 @@ class Database:
             return False
 
     def delete_guest(self, visitor_id):
-        """Elimina un ospite."""
-        query = "DELETE FROM [Employee].[dbo].[Visitors] WHERE [VisitorId] = ?"
+        """Elimina (o disattiva) un ospite."""
+        # Soft delete
+        query = "UPDATE [Employee].[dbo].[Visitors] SET [IsActive] = 1 WHERE [VisitorId] = ?"
         try:
             self.cursor.execute(query, visitor_id)
             self.conn.commit()
@@ -3870,7 +3938,6 @@ class Database:
                         , [DateClaim]
                         , [AWB]
                         , [TransportDocument]
-                        , [TransportDocumentData]
                         , [DateSys]
                         , [CustomerClaimNumber]
                         , [InternalClaimNumber]
@@ -3881,18 +3948,16 @@ class Database:
                         , [USERName])
                         OUTPUT INSERTED.ClaimLogId
                     VALUES
-                        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
                     """
 
-            # Preparazione parametri
-            # Assicurati che header.TransportDocumentData sia bytes oppure None
+            # Preparazione parametri (TransportDocumentData rimosso)
             params = (
                 header.ClaimTypeId,
                 header.IdProduct,
                 header.DateClaim,
                 header.AWB,
                 header.TransportDocument,
-                header.TransportDocumentData,  # Questo deve essere bytes o None
                 header.DateSys,
                 header.CustomerClaimNumber,
                 header.InternalClaimNumber,
@@ -4209,6 +4274,172 @@ class Database:
         except Exception as e:
             logger.exception(f"[DATABASE] Errore ricerca reclami: {e}")
             return []
+
+    # === NUOVI METODI PER GESTIONE DOCUMENTI RECLAMI ===
+    
+    def fetch_claim_doc_types(self):
+        """
+        Recupera i tipi di documento disponibili per i reclami
+        
+        Returns:
+            List[tuple]: Lista di tuple (ClaimDocTypeId, ClaimDocType)
+        """
+        try:
+            query = """
+                    SELECT [ClaimDocTypeId], [ClaimDocType]
+                    FROM [Traceability_RS].[dbo].[ClaimDocTypes]
+                    ORDER BY [ClaimDocType] \
+                    """
+            
+            results = self.fetch_all(query)
+            logger.debug(f"[DATABASE] Caricati {len(results)} tipi di documento reclami")
+            return results
+            
+        except Exception as e:
+            logger.exception(f"[DATABASE] Errore caricamento tipi documento reclami: {e}")
+            return []
+    
+    def save_claim_document(self, claim_log_id: int, doc_type_id: int, doc_data: bytes, doc_name: str) -> bool:
+        """
+        Salva un documento nella tabella ClaimLogDocs
+        
+        Args:
+            claim_log_id: ID del reclamo
+            doc_type_id: ID del tipo di documento
+            doc_data: Dati binari del documento
+            doc_name: Nome del file (non salvato - solo per logging)
+            
+        Returns:
+            bool: True se successo, False altrimenti
+        """
+        try:
+            # NOTE: DocumentName column doesn't exist in ClaimLogDocs table
+            # Only ClaimLogId, ClaimDocTypeId, and ClaimDoc are stored
+            query = """
+                    INSERT INTO [Traceability_RS].[dbo].[ClaimLogDocs]
+                    ([ClaimLogId], [ClaimDocTypeId], [ClaimDoc])
+                    VALUES (?, ?, ?)
+                    """
+            
+            params = (claim_log_id, doc_type_id, doc_data)
+            
+            success = self.execute_query(query, params)
+            
+            if success:
+                logger.info(f"[DATABASE] Documento '{doc_name}' salvato per ClaimLogId={claim_log_id}, Type={doc_type_id}")
+            else:
+                logger.error(f"[DATABASE] Errore salvataggio documento '{doc_name}' per ClaimLogId={claim_log_id}")
+                
+            return success
+            
+        except Exception as e:
+            logger.exception(f"[DATABASE] Errore salvataggio documento reclamo: {e}")
+            return False
+
+    
+    def get_claim_documents_count(self, claim_log_id: int) -> int:
+        """
+        Recupera il numero di documenti caricati per un reclamo
+        
+        Args:
+            claim_log_id: ID del reclamo
+            
+        Returns:
+            int: Numero di documenti caricati
+        """
+        try:
+            query = """
+                    SELECT COUNT(*) as DocCount
+                    FROM [Traceability_RS].[dbo].[ClaimLogDocs]
+                    WHERE [ClaimLogId] = ? \
+                    """
+            
+            result = self.fetch_one(query, (claim_log_id,))
+            
+            if result:
+                count = int(result[0])
+                logger.debug(f"[DATABASE] ClaimLogId={claim_log_id} ha {count} documenti")
+                return count
+            else:
+                return 0
+                
+        except Exception as e:
+            logger.exception(f"[DATABASE] Errore conteggio documenti reclamo: {e}")
+            return 0
+    
+    def send_claim_notification_email(self, claim_log_id: int, claim_header) -> bool:
+        """
+        Invia email di notifica per un reclamo completato
+        
+        Args:
+            claim_log_id: ID del reclamo
+            claim_header: Oggetto ClaimHeader con i dati del reclamo
+            
+        Returns:
+            bool: True se successo, False altrimenti
+        """
+        try:
+            # Recupera gli indirizzi email dalla configurazione
+            query_setting = """
+                           SELECT [Value]
+                           FROM [Traceability_RS].[dbo].[settings]
+                           WHERE [atribute] = 'sys_claim_notice' \
+                           """
+            
+            result = self.fetch_one(query_setting)
+            
+            if not result or not result[0]:
+                logger.warning("[DATABASE] Impostazione 'sys_claim_notice' non trovata o vuota")
+                return False
+            
+            email_addresses = result[0]
+            logger.debug(f"[DATABASE] Email destinatari notifica reclamo: {email_addresses}")
+            
+            # Prepara il contenuto dell'email
+            subject = f"Nuovo Reclamo: {claim_header.InternalClaimNumber}"
+            
+            body = f"""
+Nuovo reclamo inserito nel sistema:
+
+Numero Interno: {claim_header.InternalClaimNumber}
+Numero Cliente: {claim_header.CustomerClaimNumber}
+Descrizione: {claim_header.ShortClaimDescription}
+Data Reclamo: {claim_header.DateClaim}
+Data Target: {claim_header.TargetDate}
+Quantità: {claim_header.Quantity}
+Inserito da: {claim_header.USERName}
+
+Accedi al sistema per visualizzare i dettagli completi.
+"""
+            
+            # Invia l'email usando il metodo esistente (se disponibile)
+            # Nota: Questo richiede che esista un metodo send_email nel database o in utils
+            try:
+                # Prova a importare e usare il metodo di invio email
+                import utils
+                if hasattr(utils, 'send_email'):
+                    success = utils.send_email(
+                        to_addresses=email_addresses,
+                        subject=subject,
+                        body=body
+                    )
+                    if success:
+                        logger.info(f"[DATABASE] Email notifica inviata per ClaimLogId={claim_log_id}")
+                    else:
+                        logger.error(f"[DATABASE] Errore invio email per ClaimLogId={claim_log_id}")
+                    return success
+                else:
+                    logger.warning("[DATABASE] Metodo send_email non disponibile in utils")
+                    # TODO: Implementare invio email alternativo
+                    return False
+                    
+            except ImportError:
+                logger.warning("[DATABASE] Modulo utils non disponibile per invio email")
+                return False
+                
+        except Exception as e:
+            logger.exception(f"[DATABASE] Errore invio notifica email reclamo: {e}")
+            return False
 
     def update_claim_header(self, claim_log_id: int, updates: dict) -> bool:
         """
@@ -5084,14 +5315,21 @@ class Database:
 
     def grant_permission(self, employee_hire_history_id, translation_key):
         """Assegna un permesso a un utente."""
-        query = "INSERT INTO AutorizedUsers (EmployeeHireHistoryId ,TranslationKey) VALUES (?, ?);"
-        query2 = "INSERT INTO [Traceability_RS].[dbo].[EmployeePermissions] ("
+        query = "INSERT INTO [Traceability_RS].[dbo].AutorizedUsers (EmployeeHireHistoryId ,TranslationKey) VALUES (?, ?);"
+        query2 = """
+            INSERT INTO [Traceability_RS].[dbo].[EmployeePermissions] ( [UserId] ,[User] ,[PermissionId] ,[Datein]) 
+            VALUES (?,(SELECT UPPER(Left(EmployeeName,1) + EmployeeSurName) as EmployeeName FROM Employee.dbo.employees e inner join employee.dbo.employeehirehistory h on 
+            h.employeeid = e.employeeid WHERE h.EmployeeHireHistoryId = ?),
+            (SELECT [PermissionId] FROM [Traceability_RS].[dbo].[Permissions] where  [PermissionKey]  = ?),GETDATE())
+            """
         try:
             logger.info(f"HistoryHireId:{employee_hire_history_id} per argomento  {translation_key}")
             self.cursor.execute(query, employee_hire_history_id, translation_key)
+            self.cursor.execute(query2, employee_hire_history_id, employee_hire_history_id, translation_key)
             self.conn.commit()
             return True
-        except pyodbc.Error:
+        except pyodbc.Error as e:
+            logger.error(f"Errore durante l'assegnazione del permesso: {e} per {employee_hire_history_id} e {translation_key}")
             self.conn.rollback()
             return False
 
@@ -6062,10 +6300,17 @@ class Database:
             print(f"Errore nel recupero dettagli completi macchina: {e}")
             return None
 
-    def fetch_all_equipments(self):
+    def fetch_all_equipments(self, only_with_plan=False):
         """Recupera ID, Nome Interno e Seriale di tutte le macchine per la selezione."""
         #query = "SELECT EquipmentId, InternalName, SerialNumber FROM eqp.Equipments ORDER BY InternalName, SerialNumber;"
-        query = "SELECT  distinct e.EquipmentId, InternalName +  + iif(cm.CompitoId is null, '',' (*) ') As InternalName, SerialNumber FROM eqp.Equipments E left join [eqp].[CompitiManutenzione] CM on e.EquipmentId=cm.EquipmentId ORDER BY InternalName, SerialNumber;"
+        
+        query = "SELECT distinct e.EquipmentId, InternalName + iif(cm.CompitoId is null, '',' (*) ') As InternalName, SerialNumber FROM eqp.Equipments E left join [eqp].[CompitiManutenzione] CM on e.EquipmentId=cm.EquipmentId"
+        
+        if only_with_plan:
+            query += " WHERE cm.CompitoId IS NOT NULL"
+            
+        query += " ORDER BY InternalName, SerialNumber;"
+
         try:
             self.cursor.execute(query)
             return self.cursor.fetchall()
@@ -6255,7 +6500,7 @@ class Database:
             return []
 
     def fetch_existing_documents(self, product_id, parent_phase_id):
-        """Recupera i documenti di un prodotto per una fase"""
+        """Recupera i documenti di un prodotto per una fase (tutte le revisioni)"""
         try:
             query = """
                     SELECT DocumentProductionID, \
@@ -6263,9 +6508,10 @@ class Database:
                            DocumentRevisionNumber, \
                            Validated, \
                            ApprovatoDa, \
-                           DocumentData
+                           DocumentData, \
+                           DateOutOfValidation
                     FROM [Traceability_RS].[dbo].[ProductDocuments]
-                    WHERE ProductId = ? AND ParentPhaseId = ?
+                    WHERE ProductId = ? AND ParentPhaseId = ?                       
                     ORDER BY DateSys DESC \
                     """
 
@@ -6279,13 +6525,14 @@ class Database:
             return []
 
     def fetch_and_open_document(self, document_id):
-        """Recupera il documento dal database e lo apre (solo se validato)"""
+        """Recupera il documento dal database e lo apre (solo se validato e non fuori validazione)"""
         try:
             query = """
                     SELECT DocumentName, \
                            DocumentData, \
                            Validated, \
-                           ApprovatoDa
+                           ApprovatoDa, \
+                           DateOutOfValidation
                     FROM [Traceability_RS].[dbo].[ProductDocuments]
                     WHERE DocumentProductionID = ? \
                     """
@@ -6297,9 +6544,14 @@ class Database:
                 logger.error("Document not found: %s", document_id)
                 return False
 
-            # NUOVO: Controlla se il documento è validato
+            # Controlla se il documento è validato e non fuori validazione
             if not row.Validated or row.ApprovatoDa is None:
                 logger.warning("Document %s is not validated (ApprovatoDa is NULL)", document_id)
+                return False
+            
+            # NUOVO: Controlla anche DateOutOfValidation
+            if row.DateOutOfValidation is not None:
+                logger.warning("Document %s is out of validation (DateOutOfValidation is set)", document_id)
                 return False
 
             doc_name = row.DocumentName
@@ -6813,21 +7065,6 @@ class InsertDocumentForm(tk.Toplevel):
                 messagebox.showerror(self.lang.get('app_title'), self.lang.get('error_no_phases_found'))
                 self.product_combo.focus()
 
-    def _on_product_select(self, event=None):
-        self._reset_phase_section()
-        self._reset_details_section()
-        product_id = self.products_data.get(self.product_var.get())
-
-        if product_id:
-            parent_phases = self.db.fetch_parent_phases(product_id)
-            if parent_phases:
-                self.parent_phases_data = {p.Phase: p.IDParentPhase for p in parent_phases}
-                self.parent_phase_combo['values'] = list(self.parent_phases_data.keys())
-                self.parent_phase_combo.config(state="readonly")
-            else:
-                messagebox.showerror(self.lang.get('app_title'), self.lang.get('error_no_phases_found'))
-                self.product_combo.focus()
-
     def _on_phase_select(self, event=None):
         """Popola la lista dei documenti e abilita l'inserimento"""
         self.docs_listbox.delete(0, tk.END)
@@ -6866,7 +7103,7 @@ class InsertDocumentForm(tk.Toplevel):
             self.docs_listbox.insert(tk.END, self.lang.get('info_no_existing_docs',
                                                            "Nessun documento esistente. Inserisci un nuovo documento."))
 
-    def _open_selected_document(self):
+    def _open_selected_document(self, event=None):
         """Apre il documento selezionato (solo se validato)"""
         selected_indices = self.docs_listbox.curselection()
         if not selected_indices:
@@ -7037,10 +7274,10 @@ class InsertDocumentForm(tk.Toplevel):
         yes_text = self.lang.get('text_yes')
         no_text = self.lang.get('text_no')
         for i, doc in enumerate(existing_docs):
-            is_valid_text = yes_text if doc.IsValid else no_text
-            display_text = f"File: {doc.documentName} | Rev: {doc.DocumentRevisionNumber} | Validato: {is_valid_text}"
+            is_valid_text = yes_text if doc.Validated else no_text
+            display_text = f"File: {doc.DocumentName} | Rev: {doc.DocumentRevisionNumber} | Validato: {is_valid_text}"
             self.docs_listbox.insert(tk.END, display_text)
-            if doc.IsValid:
+            if doc.Validated:
                 self.docs_listbox.itemconfig(i, {'bg': '#c8e6c9'})
 
     def _reset_phase_section(self):
@@ -7190,7 +7427,7 @@ class ViewDocumentForm(tk.Toplevel):
                 )
 
     def _on_phase_select(self, event=None):
-        """Popola la lista dei documenti."""
+        """Popola la lista dei documenti (tutte le revisioni)."""
         self.docs_listbox.delete(0, tk.END)
         self.documents_in_phase = []
 
@@ -7205,17 +7442,25 @@ class ViewDocumentForm(tk.Toplevel):
         if not self.documents_in_phase:
             messagebox.showwarning(self.lang.get('app_title'), self.lang.get('warn_no_document_found'), parent=self)
         else:
-            yes_text = self.lang.get('text_yes')
-            no_text = self.lang.get('text_no')
             for i, doc in enumerate(self.documents_in_phase):
-                is_valid_text = yes_text if doc.IsValid else no_text
-                display_text = f"{doc.documentName} (Rev: {doc.DocumentRevisionNumber}) - Validato: {is_valid_text}"
+                # Determina se il documento è valido
+                is_valid = doc.Validated == 1 and doc.DateOutOfValidation is None
+                
+                # Formatta il testo di visualizzazione
+                approver_info = f" - Approvato da: {doc.ApprovatoDa}" if doc.ApprovatoDa else ""
+                status_text = "✓ VALIDO" if is_valid else "✗ Non valido"
+                
+                display_text = f"{doc.DocumentName} (Rev: {doc.DocumentRevisionNumber}){approver_info} [{status_text}]"
                 self.docs_listbox.insert(tk.END, display_text)
-                if doc.IsValid:
-                    self.docs_listbox.itemconfig(i, {'bg': '#c8e6c9'})
+                
+                # Colora in base alla validità
+                if is_valid:
+                    self.docs_listbox.itemconfig(i, {'bg': '#c8e6c9'})  # Verde chiaro per validi
+                else:
+                    self.docs_listbox.itemconfig(i, {'bg': '#e0e0e0', 'fg': '#757575'})  # Grigio per non validi
 
-    def _open_selected_document(self):
-        """NUOVO: Apre il documento selezionato"""
+    def _open_selected_document(self, event=None):
+        """Apre il documento selezionato (solo se valido)"""
         selected_indices = self.docs_listbox.curselection()
         if not selected_indices:
             messagebox.showwarning(
@@ -7227,6 +7472,18 @@ class ViewDocumentForm(tk.Toplevel):
 
         selected_index = selected_indices[0]
         selected_doc = self.documents_in_phase[selected_index]
+
+        # NUOVO: Verifica che il documento sia valido prima di aprirlo
+        is_valid = selected_doc.Validated == 1 and selected_doc.DateOutOfValidation is None
+        
+        if not is_valid:
+            messagebox.showwarning(
+                self.lang.get('app_title'),
+                self.lang.get('warn_cannot_open_invalid_doc', 
+                             "Impossibile aprire questo documento. Solo i documenti validi possono essere aperti."),
+                parent=self
+            )
+            return
 
         success = self.db.fetch_and_open_document(selected_doc.DocumentProductionID)
         if not success:
@@ -7251,7 +7508,7 @@ class ViewDocumentForm(tk.Toplevel):
         selected_doc = self.documents_in_phase[selected_index]
 
         # Se già validato, chiedi conferma
-        if selected_doc.IsValid:
+        if selected_doc.Validated:
             response = messagebox.askyesno(
                 self.lang.get('app_title'),
                 self.lang.get('confirm_revalidate_document',
@@ -8222,6 +8479,7 @@ class KanbanMoveForm(tk.Toplevel):
                     self.lang.get('load_requires_login', 'Per eseguire un carico è necessario effettuare il login.'),
                     parent=self
                 )
+        self._refresh_component_dependent_ui()
 
     def _load_lists(self):
         # Componenti
@@ -8276,6 +8534,9 @@ class KanbanMoveForm(tk.Toplevel):
             return None, None, None
         code = text.split(" - ", 1)[0].strip()
         code = code.replace(" (***)", "")  # rimuove marcatura
+        # Rimuove eventuale (Qty: ...)
+        code = re.sub(r"\s*\(Qty:.*?\)", "", code)
+
         for (lid, lcode, area) in self._locations:
             if lcode == code:
                 return lid, lcode, area
@@ -8396,6 +8657,7 @@ class KanbanMoveForm(tk.Toplevel):
                     reader = csv.DictReader(f)
                     # Mappa header a canonici
                     field_map = {h: _canon(h) for h in reader.fieldnames or []}
+                    logger.info(f"Import CSV Headers: {reader.fieldnames} -> Mapped: {field_map}")
                     for r in reader:
                         row = {field_map.get(k, k): (v if v is not None else '') for k, v in r.items()}
                         rows.append(row)
@@ -8414,6 +8676,7 @@ class KanbanMoveForm(tk.Toplevel):
                 headers = []
                 for j, cell in enumerate(ws[1], start=1):
                     headers.append(_canon(str(cell.value) if cell.value is not None else f'Col{j}'))
+                logger.info(f"Import XLSX Headers (canon): {headers}")
                 for i, xrow in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
                     r = {}
                     for j, val in enumerate(xrow):
@@ -8543,24 +8806,36 @@ class KanbanMoveForm(tk.Toplevel):
                 if hasattr(self, '_append_log'):
                     sign = '+' if qty > 0 else ''
                     self._append_log(f"{sign}{qty} {comp_code} @ {loc_code} - {user_to_save} - OK")
+                    logger.info(f"Riga {idx}: OK - {comp_code} @ {loc_code} Qty={qty} User={user_to_save}")
             else:
                 err_count += 1
                 if first_error_msg is None:
                     first_error_msg = self.lang.get('import_err_db', f'Riga {idx}: Errore DB: {err}')
                 if hasattr(self, '_append_log'):
                     self._append_log(f"{qty} {comp_code} @ {loc_code} - {user_to_save} - ERR: {err}")
-
+                    logger.error(f"Riga {idx}: ERR - {comp_code} @ {loc_code} Qty={qty} User={user_to_save} Error={err}")
         # Riepilogo
         if err_count == 0:
+            msg_fmt = self.lang.get('import_ok', 'Import completato: {ok} movimenti importati.')
+            msg = msg_fmt.format(ok=ok_count)
             messagebox.showinfo(
                 self.lang.get('success_title', 'Successo'),
-                self.lang.get('import_ok', f'Import completato: {ok_count} movimenti importati.'),
+                msg,
                 parent=self
             )
+            logger.info(msg)
         else:
-            msg = self.lang.get('import_summary',
-                                f'Import terminato: OK={ok_count}, Errori={err_count}.\n{first_error_msg or ""}')
+            msg_fmt = self.lang.get('import_summary',
+                                'Import terminato: OK={ok}, Errori={err}.\n{msg}')
+            try:
+                msg = msg_fmt.format(ok=ok_count, err=err_count, msg=first_error_msg or "",
+                                     ok_count=ok_count, err_count=err_count)
+            except Exception:
+                # Fallback se format fallisce (es. chiavi strane)
+                msg = f"Import terminato: OK={ok_count}, Errori={err_count}.\n{first_error_msg or ''}"
+            
             messagebox.showwarning(self.lang.get('warn_title', 'Attenzione'), msg, parent=self)
+            logger.warning(msg)
 
         # Refresh UI/saldi dopo import
         if hasattr(self, '_refresh_component_dependent_ui'):
@@ -8584,6 +8859,7 @@ class KanbanMoveForm(tk.Toplevel):
     def _refresh_component_dependent_ui(self):
         """
         Dopo la scelta del componente: marca le locazioni in uso (***), aggiorna i saldi.
+        Se 'unload' (Prelievo), filtra solo le locazioni con stock > 0 e auto-seleziona.
         """
         comp_id, _, _ = self._resolve_component(self.component_var.get())
         if not comp_id:
@@ -8602,15 +8878,33 @@ class KanbanMoveForm(tk.Toplevel):
         loc_map = self.db.get_component_locations_with_stock(comp_id)  # {LocationId: Qty}
         self._in_use_location_ids = set(loc_map.keys())
 
-        # Ricostruisci la lista locazioni con (***) dove presente stock
+        op = self.op_var.get()
         items = []
-        for (lid, code, area) in self._locations:
-            star = " (***)" if lid in self._in_use_location_ids else ""
-            label = f"{code}{star} - {area}" if area else f"{code}{star}"
-            items.append(label)
-        self.cb_location["values"] = items
 
-        self._update_balances()
+        if op == "unload":
+            # Filtra: solo locazioni con stock
+            for (lid, code, area) in self._locations:
+                if lid in self._in_use_location_ids:
+                    qty = loc_map.get(lid, 0)
+                    label = f"{code} (Qty: {qty}) - {area}" if area else f"{code} (Qty: {qty})"
+                    items.append(label)
+            self.cb_location["values"] = items
+
+            # Auto-select prima locazione se presente
+            if items:
+                self.cb_location.current(0)
+                self._on_location_selected()
+            else:
+                self.cb_location.set('')
+                self._update_balances()
+        else:
+            # Load: mostra tutte, marca con (***)
+            for (lid, code, area) in self._locations:
+                star = " (***)" if lid in self._in_use_location_ids else ""
+                label = f"{code}{star} - {area}" if area else f"{code}{star}"
+                items.append(label)
+            self.cb_location["values"] = items
+            self._update_balances()
 
     def _update_balances(self):
         """
@@ -9889,7 +10183,37 @@ class App(tk.Tk):
 
     # Materiali
     def open_kanban_materials_management(self):
-        KanbanMaterialsManagementForm(self, self.db, self.lang)
+        ok = self._execute_authorized_action(
+            menu_translation_key='kanban_move',
+            action_callback=lambda: KanbanMaterialsManagementForm(self, self.db, self.lang)
+        )
+        if not ok:
+            return
+
+    def open_kanban_load(self):
+        """Apre la maschera per il caricamento materiali KanBan (manuale o da Excel) con autorizzazione."""
+        logger.info("open_kanban_load chiamata - richiesta apertura form caricamento KanBan")
+        ok = self._execute_authorized_action(
+            menu_translation_key='kanban_load',
+            action_callback=lambda: KanbanMoveForm(self, self.db, self.lang)
+        )
+        if not ok:
+            logger.warning("open_kanban_load - autorizzazione negata o annullata")
+            return
+        logger.info("open_kanban_load - form aperta con successo")
+
+    # Alias per compatibilità con diverse configurazioni menu
+    def open_kanban_refill(self):
+        """Alias per open_kanban_load"""
+        return self.open_kanban_load()
+    
+    def open_kanban_reload(self):
+        """Alias per open_kanban_load"""
+        return self.open_kanban_load()
+    
+    def kanban_load(self):
+        """Alias per open_kanban_load"""
+        return self.open_kanban_load()
 
     def open_kanban_manage(self):
         self._not_implemented('KanBan', 'Gestione')
@@ -9907,27 +10231,6 @@ class App(tk.Tk):
             menu_translation_key='submenu_scrap_declaration',
             action_callback=lambda:scarti_gui.open_scrap_declaration_window(self, self.db, self.lang)
         )
-
-    # def open_calibrations_manager_with_login(self):
-    #     """
-    #     Questa funzione agisce da "ponte". Prima esegue il login
-    #     e SOLO SE ha successo, apre la finestra.
-    #     """
-    #     # Chiama il login in modalità "gatekeeper", richiedendo un permesso specifico.
-    #     # La funzione _execute_simple_login restituirà l'utente se il login
-    #     # e la verifica dei permessi vanno a buon fine, altrimenti None.
-    #     user_che_ha_fatto_login = self._execute_simple_login(
-    #         required_permission='calibration_management'
-    #     )
-    #
-    #     # L'if controlla che il login sia andato a buon fine.
-    #     if user_che_ha_fatto_login:
-    #         # Solo ora, con la certezza che l'utente è autorizzato,
-    #         # creiamo e apriamo la finestra delle calibrazioni.
-    #         try:
-    #             CalibrationsWindow(self, self.db, self.lang)
-    #         except Exception as e:
-    #             messagebox.showerror("Errore", f"Impossibile aprire il modulo di calibrazione: {e}")
 
     def open_calibrations_manager_with_login(self):
         logger = logging.getLogger("TraceabilityRS")
@@ -10271,10 +10574,82 @@ class App(tk.Tk):
 
         valid_extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.gif')
         try:
-            self.image_files = [
-                os.path.join(folder_path, f) for f in os.listdir(folder_path)
+            all_images = [
+                f for f in os.listdir(folder_path)
                 if f.lower().endswith(valid_extensions)
             ]
+            
+            # --- Seasonal Logic ---
+            from datetime import date
+            current_date = datetime.now().date()
+            
+            def get_int(key):
+                val = self.db.fetch_setting(key)
+                try:
+                    return int(val)
+                except (ValueError, TypeError):
+                    return 0
+
+            def get_list(key):
+                val = self.db.fetch_setting(key)
+                if not val: return []
+                return [x.strip() for x in val.split(';') if x.strip()]
+
+            special_images_to_add = []
+            special_images_set = set()
+
+            # 1. Christmas
+            christmas_imgs = get_list('Sys_natale')
+            if christmas_imgs:
+                for img in christmas_imgs:
+                    special_images_set.add(img)
+                
+                christmas_pre = get_int('Sys_natale_preallert')
+                christmas_post = get_int('Sys_natale_postallert')
+                
+                c_date = date(current_date.year, 12, 25)
+                delta = (current_date - c_date).days
+                
+                if -christmas_pre <= delta <= christmas_post:
+                    special_images_to_add.extend(christmas_imgs)
+
+            # 2. New Year
+            ny_imgs = get_list('Sys_HappyNewYear')
+            if ny_imgs:
+                for img in ny_imgs:
+                    special_images_set.add(img)
+                
+                ny_pre = get_int('Sys_HappyNewYear_Preallert')
+                ny_post = get_int('Sys_HappyNewYear_PostAllert')
+                
+                ny_date_curr = date(current_date.year, 1, 1)
+                delta_curr = (current_date - ny_date_curr).days
+                
+                ny_date_next = date(current_date.year + 1, 1, 1)
+                delta_next = (current_date - ny_date_next).days
+                
+                in_range = False
+                if -ny_pre <= delta_curr <= ny_post:
+                    in_range = True
+                elif -ny_pre <= delta_next <= ny_post:
+                    in_range = True
+                    
+                if in_range:
+                    special_images_to_add.extend(ny_imgs)
+
+            # Construct final list
+            self.image_files = []
+            for img in all_images:
+                if img not in special_images_set:
+                    self.image_files.append(os.path.join(folder_path, img))
+            
+            if special_images_to_add:
+                # Add them 10 times for higher frequency
+                for _ in range(10):
+                    for img in special_images_to_add:
+                        if img in all_images:
+                            self.image_files.append(os.path.join(folder_path, img))
+
         except Exception as e:
             print(f"Errore durante la lettura della cartella immagini: {e}")
 
@@ -10515,6 +10890,7 @@ class App(tk.Tk):
 
     def open_fill_templates_with_login(self):
         """Apre la finestra per compilare le schede dopo un login semplice."""
+        logger.info("open_fill_templates_with_login called")
         self._execute_simple_login(
             action_callback=lambda user_name: maintenance_gui.open_fill_templates(self, self.db, self.lang, user_name)
         )
@@ -10980,9 +11356,13 @@ class App(tk.Tk):
             command=self.open_kanban_move
         )
         self.kanban_core_submenu.add_command(
-            label=self.lang.get('kanban_verify', 'Verifica'),
-            command=self._schedule_kanban_refill_check
+            label=self.lang.get('kanban_load', 'Ricarica (TEST)'),
+            command=self.open_kanban_load
         )
+        # self.kanban_core_submenu.add_command(
+        #     label=self.lang.get('kanban_verify', 'Verifica'),
+        #     command=self._schedule_kanban_refill_check
+        # )
         self.kanban_core_submenu.add_command(
             label=self.lang.get('submenu_manage', 'Gestione'),
             command=self.open_kanban_manage
@@ -11531,38 +11911,28 @@ class App(tk.Tk):
             messagebox.showerror("Errore", f"Impossibile aprire la configurazione NPI: {e}")
 
     def _update_complaints_menu(self):
-        """Aggiorna il menu Gestione Reclami con i sottomenu"""
+        """Aggiorna il sottomenu Reclami con tutte le sezioni"""
         self.complaints_menu.delete(0, 'end')
 
-        self.complaints_menu.add_cascade(
-            label=self.lang.get('submenu_complaints', 'Reclami'),
-            menu=self.complaints_submenu
-        )
-        self._update_complaints_submenu()
-
-    def _update_complaints_submenu(self):
-        """Aggiorna il sottomenu Reclami con tutte le sezioni"""
-        self.complaints_submenu.delete(0, 'end')
-
         # 1. Aggiungi Reclamo
-        self.complaints_submenu.add_command(
+        self.complaints_menu.add_command(
             label=self.lang.get('menu_add_complaint', 'Aggiungi Reclamo'),
             command=self._add_complaint
         )
         # 2. Gestisci Reclamo
-        self.complaints_submenu.add_command(
+        self.complaints_menu.add_command(
             label=self.lang.get('menu_manage_complaint', 'Gestisci Reclamo'),
             command=self._manage_complaint
         )
 
         # 3. Analisi Reclami
-        self.complaints_submenu.add_command(
+        self.complaints_menu.add_command(
             label=self.lang.get('menu_complaints_analysis', 'Analisi Reclami'),
             command=self._analyze_complaints
         )
 
         # 4. Report Reclami
-        self.complaints_submenu.add_command(
+        self.complaints_menu.add_command(
             label=self.lang.get('menu_complaints_report', 'Report Reclami'),
             command=self._complaints_report
         )
@@ -11601,7 +11971,6 @@ class App(tk.Tk):
                 parent=self
             )
 
-
     def _manage_complaint(self):
         """Apre la finestra per la gestione del reclamo"""
         self._execute_authorized_action(
@@ -11633,7 +12002,6 @@ class App(tk.Tk):
                 f"Errore nell'apertura della finestra: {str(e)}",
                 parent=self
             )
-
 
     def _analyze_complaints(self):
         """Apre la finestra per analizzare reclami - con autorizzazione"""
@@ -11751,28 +12119,6 @@ class App(tk.Tk):
             self, self.db, self.lang, user_id
         )
 
-    # ✅ ===== METODI COATING =====
-    # def open_coating_settings_with_login(self):
-    #     """Apre la finestra di gestione tipi vernice con autenticazione autorizzata"""
-    #
-    #     def action():
-    #         try:
-    #             from coating_gui import CoatingSettingsWindow
-    #             window = CoatingSettingsWindow(
-    #                 parent=self,
-    #                 conn_str=self.db.conn_str,
-    #                 language_code=self.lang.current_language
-    #             )
-    #             window.show()
-    #             logger.info("Aperta finestra Coating Settings")
-    #         except Exception as e:
-    #             logger.error(f"Errore apertura Coating Settings: {e}")
-    #             messagebox.showerror(
-    #                 self.lang.get('error', "Errore"),
-    #                 f"{self.lang.get('window_open_error', 'Impossibile aprire la finestra')}: {str(e)}"
-    #             )
-    #
-    #     self._execute_authorized_action('submenu_coating_materials_manage', action)
     def open_coating_types_with_login(self):
         """Apre la finestra di gestione tipi vernice con autenticazione autorizzata"""
 
@@ -11859,7 +12205,6 @@ class App(tk.Tk):
                 f"{self.lang.get('window_open_error', 'Impossibile aprire la finestra')}: {str(e)}"
             )
 
-    # ✅ ===== FINE METODI COATING =====
     def stop_fct_loop(self):
         """Ferma il loop FCT e invia notifica email"""
         if self.fct_loop_running:
@@ -11949,13 +12294,13 @@ class App(tk.Tk):
         self.update_texts()
         self._save_language_setting(lang_code)
 
-        # Mostra un messaggio per informare l'utente
-        messagebox.showinfo(
-            self.lang.get('lang_change_title', "Language Changed"),
-            self.lang.get('lang_change_message',
-                          "The language has been updated. Please reopen any open windows to apply the changes."),
-            parent=self
-        )
+        # # Mostra un messaggio per informare l'utente
+        # messagebox.showinfo(
+        #     self.lang.get('lang_change_title', "Language Changed"),
+        #     self.lang.get('lang_change_message',
+        #                   "The language has been updated. Please reopen any open windows to apply the changes."),
+        #     parent=self
+        # )
 
     def _open_fct_settings(self):
         """Apre la finestra di configurazione FCT Transfer (con controllo login)"""

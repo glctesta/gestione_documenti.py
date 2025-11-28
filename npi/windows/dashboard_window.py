@@ -30,7 +30,7 @@ class NpiDashboardWindow(tk.Toplevel):
         self.logged_in_user = logged_in_user
 
         self.title(self.lang.get('npi_dashboard_title', "Dashboard Progetti NPI"))
-        self.geometry("1200x600")  # Finestra più larga per nuove colonne
+        self.geometry("1200x700")
         self.transient(master)
         self.grab_set()
 
@@ -40,6 +40,41 @@ class NpiDashboardWindow(tk.Toplevel):
     def _create_widgets(self):
         main_frame = ttk.Frame(self, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # --- SEZIONE STATISTICHE ---
+        stats_frame = ttk.LabelFrame(main_frame, text="Riepilogo NPI", padding=10)
+        stats_frame.pack(fill=tk.X, pady=(0, 10))
+
+        # Frame per i contatori principali (Sinistra)
+        counters_frame = ttk.Frame(stats_frame)
+        counters_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 20))
+
+        # Helper per creare box statistica
+        def create_stat_box(parent, label_text, color='black'):
+            f = ttk.Frame(parent)
+            f.pack(fill=tk.X, pady=2)
+            ttk.Label(f, text=label_text, width=25).pack(side=tk.LEFT)
+            l = ttk.Label(f, text="0", font=('Helvetica', 10, 'bold'), foreground=color)
+            l.pack(side=tk.RIGHT)
+            return l
+
+        self.lbl_total = create_stat_box(counters_frame, "Totale NPI Caricati:")
+        self.lbl_completed = create_stat_box(counters_frame, "Completati (Chiusi):", 'green')
+        self.lbl_delayed = create_stat_box(counters_frame, "In Ritardo (vs Scadenza):", 'red')
+
+        # Separatore verticale
+        ttk.Separator(stats_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
+
+        # Frame per statistiche clienti (Destra)
+        customer_frame = ttk.Frame(stats_frame)
+        customer_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        ttk.Label(customer_frame, text="Dettaglio per Cliente:", font=('Helvetica', 9, 'underline')).pack(anchor='w', pady=(0, 5))
+
+        # Container scrollabile per i clienti
+        self.customer_stats_inner_frame = ttk.Frame(customer_frame)
+        self.customer_stats_inner_frame.pack(fill=tk.BOTH, expand=True)
+        # --- FINE SEZIONE STATISTICHE ---
 
         list_frame = ttk.LabelFrame(main_frame, text=self.lang.get('active_npi_projects', "Progetti NPI Attivi"),
                                     padding=10)
@@ -73,7 +108,7 @@ class NpiDashboardWindow(tk.Toplevel):
         self.project_tree.bind('<Double-1>', self._on_double_click)
         self.project_tree.bind("<Button-3>", self._show_project_context_menu)
 
-        # ... (il resto del metodo con i pulsanti rimane invariato)
+        # Pulsanti
         button_frame = ttk.Frame(main_frame, padding=(0, 10, 0, 0))
         button_frame.pack(fill=tk.X)
         ttk.Button(button_frame, text=self.lang.get('btn_refresh', 'Aggiorna'), command=self.load_npi_projects).pack(
@@ -87,7 +122,42 @@ class NpiDashboardWindow(tk.Toplevel):
             self.export_pdf_button.config(state=tk.DISABLED)
         ttk.Button(button_frame, text=self.lang.get('btn_close', 'Chiudi'), command=self.destroy).pack(side=tk.RIGHT)
 
+    def _update_statistics(self):
+        """Aggiorna la sezione delle statistiche."""
+        try:
+            stats = self.npi_manager.get_npi_statistics()
+            if not stats:
+                return
+
+            # Aggiorna etichette totali
+            self.lbl_total.config(text=str(stats['total_projects']))
+            self.lbl_completed.config(text=str(stats['completed_projects']))
+            self.lbl_delayed.config(text=str(stats['delayed_projects']))
+
+            # Aggiorna statistiche clienti (pulisci frame prima)
+            for widget in self.customer_stats_inner_frame.winfo_children():
+                widget.destroy()
+
+            # Intestazione tabella clienti
+            ttk.Label(self.customer_stats_inner_frame, text="Cliente", font=('Helvetica', 8, 'bold')).grid(row=0, column=0, sticky='w', padx=10)
+            ttk.Label(self.customer_stats_inner_frame, text="N°", font=('Helvetica', 8, 'bold')).grid(row=0, column=1, sticky='e', padx=10)
+            ttk.Label(self.customer_stats_inner_frame, text="%", font=('Helvetica', 8, 'bold')).grid(row=0, column=2, sticky='e', padx=10)
+
+            # Limita a visualizzare i primi 4-5 clienti per non intasare
+            for i, item in enumerate(stats['customer_stats']):
+                if i > 5: 
+                     ttk.Label(self.customer_stats_inner_frame, text="...").grid(row=i+1, column=0, sticky='w', padx=10)
+                     break
+                
+                row = i + 1
+                ttk.Label(self.customer_stats_inner_frame, text=item['client']).grid(row=row, column=0, sticky='w', padx=10)
+                ttk.Label(self.customer_stats_inner_frame, text=str(item['count'])).grid(row=row, column=1, sticky='e', padx=10)
+                ttk.Label(self.customer_stats_inner_frame, text=f"{item['percentage']}%").grid(row=row, column=2, sticky='e', padx=10)
+        except Exception as e:
+            logger.error(f"Errore aggiornamento statistiche: {e}")
+
     def load_npi_projects(self):
+        self._update_statistics()
         for i in self.project_tree.get_children():
             self.project_tree.delete(i)
 
@@ -100,13 +170,11 @@ class NpiDashboardWindow(tk.Toplevel):
                 return
 
             for proj in progetti:
-                # --- **MODIFICA QUI: LOGICA DEI TAG** ---
                 due_date = proj.ScadenzaMilestoneFinale
                 display_date = due_date.strftime('%d/%m/%Y') if due_date else "N/D"
                 status_icon = ''
-                row_tags = ()  # Inizializza tupla dei tag vuota
+                row_tags = ()
 
-                # Controlla se il progetto è scaduto
                 is_overdue = due_date and due_date.date() < datetime.now().date()
                 if is_overdue:
                     status_icon = 'X'
@@ -122,51 +190,12 @@ class NpiDashboardWindow(tk.Toplevel):
                         proj.Cliente or "",
                         display_date
                     ),
-                    tags=row_tags  # Applica il tag alla riga
+                    tags=row_tags
                 )
-                # --- **FINE MODIFICA** ---
         except Exception as e:
             logger.error(f"Errore nel caricamento progetti dashboard: {e}", exc_info=True)
             self.project_tree.insert('', tk.END, text="-1",
                                      values=('', "Errore", "Impossibile caricare i dati.", str(e), ""))
-
-    # def load_npi_projects(self):
-    #     for i in self.project_tree.get_children():
-    #         self.project_tree.delete(i)
-    #
-    #     try:
-    #         # --- USA IL NUOVO METODO DEL MANAGER ---
-    #         progetti = self.npi_manager.get_dashboard_projects()
-    #
-    #         if not progetti:
-    #             self.project_tree.insert('', tk.END, text="-1",
-    #                                      values=(self.lang.get('no_active_projects', "Nessun progetto attivo trovato."),
-    #                                              "", "", ""))
-    #             return
-    #
-    #         for proj in progetti:
-    #             due_date = proj.ScadenzaMilestoneFinale
-    #             display_date = due_date.strftime('%d/%m/%Y') if due_date else "N/D"
-    #
-    #             # Aggiungi simbolo di warning se scaduto
-    #             if due_date and due_date.date() < datetime.now().date():
-    #                 display_date += ' ❗'  # Simbolo di warning
-    #
-    #             # L'ID progetto è salvato nel campo 'text' nascosto
-    #             self.project_tree.insert(
-    #                 '', tk.END,
-    #                 text=str(proj.ProgettoId),
-    #                 values=(
-    #                     proj.NomeProgetto,
-    #                     proj.CodiceProdotto or "",
-    #                     proj.Cliente or "",
-    #                     display_date
-    #                 )
-    #             )
-    #     except Exception as e:
-    #         logger.error(f"Errore nel caricamento progetti dashboard: {e}", exc_info=True)
-    #         self.project_tree.insert('', tk.END, text="-1",
-    #                                  values=("Errore", "Impossibile caricare i dati.", str(e), ""))
 
     def _on_double_click(self, event):
         """Il doppio click ora lancia la finestra di analisi."""
@@ -227,7 +256,6 @@ class NpiDashboardWindow(tk.Toplevel):
         if hasattr(self.master_app, '_execute_authorized_action'):
             self.master_app._execute_authorized_action(
                 menu_translation_key='project_window',
-                # La callback ora usa la variabile 'logged_user' locale, che è corretta e sicura
                 action_callback=lambda: ProjectWindow(self, self.npi_manager, self.lang, project_id, self.master_app,
                                                       logged_user)
             )

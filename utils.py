@@ -1,4 +1,3 @@
-# utils.py
 from email_connector import EmailSender
 import logging
 import re
@@ -41,6 +40,11 @@ def get_email_recipients(conn, attribute: str = 'Sys_Email_Purchase') -> List[st
     except Exception as e:
         logger.error(f"Errore nel recupero degli indirizzi email ({attribute}): {str(e)}")
         raise
+
+
+
+
+
 def send_email(
     recipients: List[str],
     subject: str,
@@ -87,4 +91,46 @@ def send_email(
         print("email inviata")
     except Exception as e:
         logger.error("Errore nell'invio dell'email: %s", str(e))
+        raise
+
+
+def get_employee_work_email(conn, user_id: int) -> Optional[str]:
+    """
+    Recupera l'indirizzo email lavorativo (WorkEmail) di un dipendente in base all'ID utente.
+
+    Args:
+        conn: Connessione al database
+        user_id: ID dell'utente (employeehirehistoryid)
+
+    Returns:
+        L'indirizzo email lavorativo come stringa se trovato, altrimenti None
+    """
+    try:
+        query = """
+        SELECT a.WorkEmail 
+        FROM employee.dbo.employees e 
+        INNER JOIN employee.dbo.EmployeeAddress a 
+            ON a.EmployeeId = e.EmployeeId 
+            AND a.DateOut IS NULL 
+        INNER JOIN employee.dbo.employeehirehistory h 
+            ON e.employeeid = h.employeeid 
+            AND h.EndWorkDate IS NULL 
+            AND h.employeerid = 2
+        WHERE h.employeehirehistoryid = ?
+        """
+
+        with conn.cursor() as cursor:
+            cursor.execute(query, user_id)
+            row = cursor.fetchone()
+
+        if row and row[0]:
+            work_email = row[0].strip()
+            logger.info(f"WorkEmail trovata per user_id {user_id}: {work_email}")
+            return work_email
+
+        logger.warning(f"Nessun risultato trovato per user_id:{user_id}")
+        return None
+
+    except Exception as e:
+        logger.error(f"Errore nel recupero della WorkEmail per user_id {user_id}: {e}")
         raise
