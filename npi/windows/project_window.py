@@ -62,6 +62,7 @@ class ProjectWindow(tk.Toplevel):
         self.selected_file_data = None
         self.active_docs_for_task = {}
         self.doc_types_properties = {}
+        
 
         # Mappe per clienti finali
         self.final_customers = final_customers if final_customers else []
@@ -93,160 +94,184 @@ class ProjectWindow(tk.Toplevel):
         self.grab_set()
 
         self.show_assigned_var = tk.BooleanVar(value=True)
-
-        # 3. CREA I WIDGET
         self._create_widgets()
 
-        # 4. CARICA I DATI E POPOLA I WIDGET
-        self._load_data_and_populate_ui()
-
     def _create_widgets(self):
+        # Main Layout
+        main_frame = ttk.Frame(self)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        header_frame = ttk.LabelFrame(self, text=self.lang.get('project_info_title'), padding=10)
-        header_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
-        self.header_label = ttk.Label(header_frame, text="...", font=('Helvetica', 12))
-        self.header_label.pack(side=tk.LEFT, padx=(0, 20))
-        btn_save_dates = ttk.Button(header_frame, text=self.lang.get('btn_save_dates', "Salva Date"),
-                                    command=self._save_project_dates)
-        btn_save_dates.pack(side=tk.RIGHT, padx=5)
-        ttk.Label(header_frame, text=self.lang.get('label_project_due_date', "Scadenza Progetto:")).pack(side=tk.RIGHT,
-                                                                                                         padx=(10, 5))
-        self.project_due_date_entry = DateEntry(header_frame, width=12, date_pattern='dd/MM/yyyy')
-        self.project_due_date_entry.pack(side=tk.RIGHT)
-        ttk.Label(header_frame, text=self.lang.get('label_project_start_date', "Inizio Progetto:")).pack(side=tk.RIGHT,
-                                                                                                         padx=(10, 5))
-        self.project_start_date_entry = DateEntry(header_frame, width=12, date_pattern='dd/MM/yyyy')
-        self.project_start_date_entry.pack(side=tk.RIGHT)
+        # Header
+        header_frame = ttk.Frame(main_frame)
+        header_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.header_label = ttk.Label(header_frame, text="", font=('Segoe UI', 16, 'bold'))
+        self.header_label.pack(side=tk.LEFT)
 
-        # --- Paned Window principale (Orizzontale) ---
-        main_paned_window = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
-        main_paned_window.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        # --- Sx: Lista Task ---
-        list_frame = ttk.Frame(main_paned_window, padding=5)
-        main_paned_window.add(list_frame, weight=3)
-        action_frame = ttk.Frame(list_frame)
-        action_frame.pack(fill=tk.X, pady=(0, 5))
-        filter_check = ttk.Checkbutton(action_frame, text=self.lang.get('show_assigned_tasks', 'Mostra assegnati'),
-                                       variable=self.show_assigned_var, onvalue=True, offvalue=False,
-                                       command=self._populate_treeview)
-        filter_check.pack(side=tk.LEFT, padx=(0, 20))
-
-        # --- NUOVA FUNZIONALITÀ: Pulsante Esporta ---
-        self.export_button = ttk.Button(action_frame,
-                                        text=self.lang.get('btn_export_costs', 'Esporta Riepilogo Costi...'),
-                                        command=self._export_cost_report, state=tk.DISABLED)
+        # Buttons in Header (Moved here as requested)
+        self.import_button = ttk.Button(header_frame, text=self.lang.get('btn_import_tasks', 'Importa Task'), command=self._launch_import_tasks_window)
+        self.import_button.pack(side=tk.LEFT, padx=10)
+        
+        self.export_button = ttk.Button(header_frame, text=self.lang.get('btn_export_excel', 'Export Excel'), command=self._export_cost_report, state=tk.DISABLED)
         self.export_button.pack(side=tk.LEFT, padx=5)
+        
+        ttk.Checkbutton(header_frame, text=self.lang.get('show_assigned', 'Mostra Assegnati'), variable=self.show_assigned_var, command=self._populate_treeview).pack(side=tk.LEFT, padx=5)
 
+        # Project Dates
+        dates_frame = ttk.LabelFrame(header_frame, text=self.lang.get('project_dates_title', 'Date Progetto'))
+        dates_frame.pack(side=tk.RIGHT, padx=10)
+        
+        ttk.Label(dates_frame, text=self.lang.get('start_date', 'Inizio:')).pack(side=tk.LEFT, padx=5)
+        self.project_start_date_entry = DateEntry(dates_frame, width=12, background='darkblue', foreground='white', borderwidth=2, date_pattern='dd/mm/yyyy')
+        self.project_start_date_entry.pack(side=tk.LEFT, padx=5)
+        
+        ttk.Label(dates_frame, text=self.lang.get('due_date', 'Scadenza:')).pack(side=tk.LEFT, padx=5)
+        self.project_due_date_entry = DateEntry(dates_frame, width=12, background='darkblue', foreground='white', borderwidth=2, date_pattern='dd/mm/yyyy')
+        self.project_due_date_entry.pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(dates_frame, text=self.lang.get('save_dates', 'Salva Date'), command=self._save_project_dates).pack(side=tk.LEFT, padx=5)
 
-        self.import_button = ttk.Button(action_frame, text=self.lang.get('btn_import_tasks', 'Importa Assegnamenti...'),
-                                        command=self._launch_import_tasks_window, state=tk.DISABLED)
-        self.import_button.pack(side=tk.LEFT)
+        # Content Split
+        paned = ttk.PanedWindow(main_frame, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True)
 
-        self.view_docs_button = ttk.Button(action_frame, text=self.lang.get('btn_view_docs', 'Verifica Documenti'),
-                                           command=self._launch_view_documents_window, state=tk.DISABLED)
-        self.view_docs_button.pack(side=tk.RIGHT, padx=5)
+        # Left Panel: Treeview
+        left_frame = ttk.Frame(paned)
+        paned.add(left_frame, weight=1)
 
-        cols = ('task_name', 'category', 'owner', 'status', 'due_date')
-        self.tree = ttk.Treeview(list_frame, columns=cols, show='headings', selectmode='browse')
-        self.tree.heading('task_name', text=self.lang.get('col_task_name', 'Task'))
-        self.tree.heading('category', text=self.lang.get('col_category', 'Categoria'))
-        self.tree.heading('owner', text=self.lang.get('col_owner', 'Owner'))
-        self.tree.heading('status', text=self.lang.get('col_status', 'Stato'))
-        self.tree.heading('due_date', text=self.lang.get('col_due_date', 'Scadenza'))
-        self.tree.column('task_name', width=250)
-        self.tree.column('category', width=150)
-        self.tree.pack(fill=tk.BOTH, expand=True)
+        columns = ('Name', 'Category', 'Owner', 'Status', 'DueDate')
+        self.tree = ttk.Treeview(left_frame, columns=columns, show='headings')
+        self.tree.heading('Name', text=self.lang.get('col_task', 'Task'))
+        self.tree.heading('Category', text=self.lang.get('col_category', 'Categoria'))
+        self.tree.heading('Owner', text=self.lang.get('col_owner', 'Assegnato a'))
+        self.tree.heading('Status', text=self.lang.get('col_status', 'Stato'))
+        self.tree.heading('DueDate', text=self.lang.get('col_due_date', 'Scadenza'))
+        
+        self.tree.column('Name', width=200)
+        self.tree.column('Category', width=100)
+        self.tree.column('Owner', width=100)
+        self.tree.column('Status', width=100)
+        self.tree.column('DueDate', width=80)
+        
+        self.tree.tag_configure('special_task', foreground='red')
+        self.tree.tag_configure('bold_task', font=('Segoe UI', 9, 'bold'))
         self.tree.bind('<<TreeviewSelect>>', self._on_task_select)
-        self.tree.tag_configure('special_task', foreground='red', font=('Helvetica', 9, 'bold'))
+        
+        scrollbar = ttk.Scrollbar(left_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscroll=scrollbar.set)
+        
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # --- Dx: Paned Window Verticale ---
-        right_paned_window = ttk.PanedWindow(main_paned_window, orient=tk.VERTICAL)
-        main_paned_window.add(right_paned_window, weight=2)
+        # Right Panel: Details
+        right_frame = ttk.Frame(paned)
+        paned.add(right_frame, weight=1)
 
-        # --- Dx-Top: Form Dettagli Task ---
-        form_frame = ttk.LabelFrame(right_paned_window, text=self.lang.get('task_details_title'), padding=10)
-        right_paned_window.add(form_frame, weight=1)
+        # Task Details Form
+        details_frame = ttk.LabelFrame(right_frame, text=self.lang.get('task_details', 'Dettagli Task'))
+        details_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        # Fields
+        grid_frame = ttk.Frame(details_frame)
+        grid_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Name & Category (Read-only)
+        ttk.Label(grid_frame, text=self.lang.get('label_task', 'Task:')).grid(row=0, column=0, sticky=tk.W)
+        self.fields['task_name'] = ttk.Label(grid_frame, text="", font=('Segoe UI', 10, 'bold'))
+        self.fields['task_name'].grid(row=0, column=1, sticky=tk.W)
+        
+        ttk.Label(grid_frame, text=self.lang.get('label_category', 'Categoria:')).grid(row=1, column=0, sticky=tk.W)
+        self.fields['task_category'] = ttk.Label(grid_frame, text="")
+        self.fields['task_category'].grid(row=1, column=1, sticky=tk.W)
+
+        # Editable Fields
         labels_config = [
-            ('task_name', self.lang.get('label_task_name'), 'label'),
-            ('task_category', self.lang.get('label_category'), 'label'),
-            ('OwnerID', self.lang.get('label_owner'), 'combo'), ('Stato', self.lang.get('label_status'), 'combo'),
-            ('DataScadenza', self.lang.get('label_due_date'), 'date'),
-            ('DataInizio', self.lang.get('label_start_date'), 'date'),
-            ('DataCompletamento', self.lang.get('label_completion_date'), 'date'),
-            ('Note', self.lang.get('label_notes'), 'text')
+            ('OwnerID', self.lang.get('label_owner', 'Assegnato a'), 'combo'),
+            ('Stato', self.lang.get('label_status', 'Stato'), 'combo'),
+            ('DataInizio', self.lang.get('label_start_date', 'Data Inizio'), 'date'),
+            ('DataScadenza', self.lang.get('label_due_date', 'Data Scadenza'), 'date'),
+            ('DataCompletamento', self.lang.get('label_completion_date', 'Data Completamento'), 'date'),
         ]
-        for i, (fname, ltext, wtype) in enumerate(labels_config):
-            ttk.Label(form_frame, text=ltext).grid(row=i, column=0, sticky=tk.NW, pady=5, padx=5)
-            if wtype == 'label':
-                widget = ttk.Label(form_frame, text="", wraplength=300)
-            elif wtype == 'combo':
-                widget = ttk.Combobox(form_frame, state='readonly')
-            elif wtype == 'date':
-                widget = DateEntry(form_frame, width=12, date_pattern='dd/MM/yyyy', state='readonly')
-            elif wtype == 'text':
-                widget = tk.Text(form_frame, height=4, width=40)
-            widget.grid(row=i, column=1, sticky=tk.EW, pady=5, padx=5)
-            self.fields[fname] = widget
-        form_frame.columnconfigure(1, weight=1)
-        self.fields['Note'].grid_configure(sticky=tk.NSEW)
-        form_frame.rowconfigure(labels_config.index(('Note', self.lang.get('label_notes'), 'text')), weight=1)
-        ttk.Button(form_frame, text=self.lang.get('btn_save_changes'), command=self._save_task_details).grid(
-            row=len(labels_config), column=1, sticky=tk.E, pady=20)
 
-        # --- Dx-Bottom: Form Gestione Documenti ---
-        doc_frame = ttk.LabelFrame(right_paned_window, text=self.lang.get('document_management_title'), padding=10)
-        right_paned_window.add(doc_frame, weight=1)
-        doc_frame.columnconfigure(1, weight=1)
-        ttk.Label(doc_frame, text=self.lang.get('label_doc_type')).grid(row=0, column=0, sticky=tk.W, pady=2)
-        self.doc_widgets['type'] = ttk.Combobox(doc_frame, state='readonly')
-        self.doc_widgets['type'].grid(row=0, column=1, columnspan=2, sticky=tk.EW, pady=2)
+        r = 2
+        for field_name, label_text, widget_type in labels_config:
+            ttk.Label(grid_frame, text=label_text).grid(row=r, column=0, sticky=tk.W, pady=2)
+            if widget_type == 'combo':
+                w = ttk.Combobox(grid_frame, state='readonly')
+            elif widget_type == 'date':
+                w = DateEntry(grid_frame, width=12, background='darkblue', foreground='white', borderwidth=2, date_pattern='dd/mm/yyyy')
+            self.fields[field_name] = w
+            w.grid(row=r, column=1, sticky=tk.EW, pady=2)
+            r += 1
+
+        # Checkbox IsPostFinalMilestone
+        self.fields['IsPostFinalMilestone'] = ttk.Checkbutton(grid_frame, text="Target NPI", command=self._on_target_npi_change)
+        self.fields['IsPostFinalMilestone'].var = tk.BooleanVar()
+        self.fields['IsPostFinalMilestone'].config(variable=self.fields['IsPostFinalMilestone'].var)
+        self.fields['IsPostFinalMilestone'].grid(row=r, column=1, sticky=tk.W, pady=2)
+        r += 1
+
+        # Notes
+        ttk.Label(grid_frame, text=self.lang.get('label_notes', 'Note')).grid(row=r, column=0, sticky=tk.NW, pady=2)
+        self.fields['Note'] = tk.Text(grid_frame, height=4, width=40)
+        self.fields['Note'].grid(row=r, column=1, sticky=tk.EW, pady=2)
+        r += 1
+
+        ttk.Button(details_frame, text=self.lang.get('btn_save', 'Salva Modifiche'), command=self._save_task_details).pack(pady=5)
+
+        # Documents Section
+        doc_frame = ttk.LabelFrame(right_frame, text=self.lang.get('documents_title', 'Documenti'))
+        doc_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Doc Form
+        df = ttk.Frame(doc_frame)
+        df.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Label(df, text=self.lang.get('doc_type', 'Tipo:')).grid(row=0, column=0, sticky=tk.W)
+        self.doc_widgets['type'] = ttk.Combobox(df, state='readonly')
+        self.doc_widgets['type'].grid(row=0, column=1, columnspan=2, sticky=tk.EW)
         self.doc_widgets['type'].bind('<<ComboboxSelected>>', self._on_doc_type_selected)
-        ttk.Label(doc_frame, text=self.lang.get('label_doc_title')).grid(row=1, column=0, sticky=tk.W, pady=2)
-        self.doc_widgets['title'] = ttk.Entry(doc_frame)
-        self.doc_widgets['title'].grid(row=1, column=1, columnspan=2, sticky=tk.EW, pady=2)
-        ttk.Label(doc_frame, text=self.lang.get('label_final_client')).grid(row=2, column=0, sticky=tk.W, pady=2)
-        self.doc_widgets['final_client'] = ttk.Combobox(doc_frame, state='readonly',
-                                                        values=list(self.final_clients_map.keys()))
-        self.doc_widgets['final_client'].grid(row=2, column=1, columnspan=2, sticky=tk.EW, pady=2)
-        self.doc_widgets['value_label'] = ttk.Label(doc_frame, text=self.lang.get('label_doc_value'))
-        self.doc_widgets['value_entry'] = ttk.Entry(doc_frame, validate="key",
-                                                    validatecommand=(self.register(self._validate_float), '%P'))
-        self.doc_widgets['due_date_label'] = ttk.Label(doc_frame, text=self.lang.get('label_doc_due_date'))
-        self.doc_widgets['due_date_entry'] = DateEntry(doc_frame, width=12, date_pattern='dd/MM/yyyy')
-        self.doc_widgets['file_btn'] = ttk.Button(doc_frame, text=self.lang.get('btn_select_file', "Scegli..."),
-                                                  command=self._select_file)
-        self.doc_widgets['file_btn'].grid(row=5, column=0, sticky=tk.W, pady=5)
-        self.doc_widgets['file_label'] = ttk.Label(doc_frame, text=self.lang.get('no_file_selected'),
-                                                   style="Italic.TLabel")
-        self.doc_widgets['file_label'].grid(row=5, column=1, columnspan=2, sticky=tk.EW, pady=5, padx=5)
-        self.doc_widgets['is_replacement_var'] = tk.BooleanVar(value=False)
-        self.doc_widgets['is_replacement_check'] = ttk.Checkbutton(doc_frame,
-                                                                   text=self.lang.get('is_replacement_check'),
-                                                                   variable=self.doc_widgets['is_replacement_var'],
-                                                                   command=self._toggle_replacement_combo)
-        self.doc_widgets['is_replacement_check'].grid(row=6, column=0, columnspan=3, sticky=tk.W, pady=5)
-        self.doc_widgets['replaces_combo'] = ttk.Combobox(doc_frame, state='disabled')
-        self.doc_widgets['replaces_combo'].grid(row=7, column=0, columnspan=3, sticky=tk.EW, pady=2, padx=10)
-        ttk.Label(doc_frame, text=self.lang.get('label_notes')).grid(row=8, column=0, sticky=tk.NW, pady=5)
-        note_frame = ttk.Frame(doc_frame)
-        note_frame.grid(row=8, column=1, columnspan=2, sticky=tk.NSEW, pady=2)
-        note_frame.rowconfigure(0, weight=1);
-        note_frame.columnconfigure(0, weight=1)
-        self.doc_widgets['note_text'] = tk.Text(note_frame, height=3)
-        self.doc_widgets['note_text'].grid(row=0, column=0, sticky=tk.NSEW)
-        scrollbar = ttk.Scrollbar(note_frame, orient=tk.VERTICAL, command=self.doc_widgets['note_text'].yview)
-        scrollbar.grid(row=0, column=1, sticky=tk.NS)
-        self.doc_widgets['note_text']['yscrollcommand'] = scrollbar.set
-        self.doc_widgets['save_btn'] = ttk.Button(doc_frame, text=self.lang.get('btn_save_document'),
-                                                  command=self._save_document)
-        self.doc_widgets['save_btn'].grid(row=9, column=1, columnspan=2, sticky=tk.E, pady=10)
-        doc_frame.rowconfigure(8, weight=1)
-        self.style = ttk.Style()
-        self.style.configure("Italic.TLabel", font=("Helvetica", 9, "italic"))
 
-    def _validate_float(self, P):
-        return P == "" or P == "-" or (P.replace('.', '', 1).isdigit() and P.count('.') <= 1)
+        ttk.Label(df, text=self.lang.get('doc_title', 'Titolo:')).grid(row=1, column=0, sticky=tk.W)
+        self.doc_widgets['title'] = ttk.Entry(df)
+        self.doc_widgets['title'].grid(row=1, column=1, columnspan=2, sticky=tk.EW)
+
+        ttk.Label(df, text=self.lang.get('final_client', 'Cliente Finale:')).grid(row=2, column=0, sticky=tk.W)
+        self.doc_widgets['final_client'] = ttk.Combobox(df, values=[fc[0] for fc in self.final_customers])
+        self.doc_widgets['final_client'].grid(row=2, column=1, columnspan=2, sticky=tk.EW)
+
+        # Dynamic fields
+        self.doc_widgets['value_label'] = ttk.Label(df, text=self.lang.get('doc_value', 'Valore (€):'))
+        self.doc_widgets['value_entry'] = ttk.Entry(df)
+        
+        self.doc_widgets['due_date_label'] = ttk.Label(df, text=self.lang.get('doc_due_date', 'Scadenza Doc:'))
+        self.doc_widgets['due_date_entry'] = DateEntry(df, width=12, background='darkblue', foreground='white', borderwidth=2, date_pattern='dd/mm/yyyy')
+
+        # Replacement logic
+        self.doc_widgets['is_replacement_var'] = tk.BooleanVar()
+        cb = ttk.Checkbutton(df, text=self.lang.get('is_replacement', 'Sostituisce doc esistente'), variable=self.doc_widgets['is_replacement_var'], command=self._toggle_replacement_combo)
+        cb.grid(row=5, column=0, columnspan=3, sticky=tk.W)
+        
+        self.doc_widgets['replaces_combo'] = ttk.Combobox(df, state='disabled')
+        self.doc_widgets['replaces_combo'].grid(row=6, column=0, columnspan=3, sticky=tk.EW)
+
+        # File selection
+        ttk.Button(df, text=self.lang.get('select_file', 'Seleziona File...'), command=self._select_file).grid(row=7, column=0, sticky=tk.W)
+        self.doc_widgets['file_label'] = ttk.Label(df, text=self.lang.get('no_file_selected', 'Nessun file'))
+        self.doc_widgets['file_label'].grid(row=7, column=1, columnspan=2, sticky=tk.W)
+
+        # Note Doc
+        ttk.Label(df, text=self.lang.get('notes', 'Note:')).grid(row=8, column=0, sticky=tk.NW)
+        self.doc_widgets['note_text'] = tk.Text(df, height=3, width=30)
+        self.doc_widgets['note_text'].grid(row=8, column=1, columnspan=2, sticky=tk.EW)
+
+        ttk.Button(df, text=self.lang.get('save_doc', 'Carica Documento'), command=self._save_document).grid(row=9, column=1, pady=5)
+        
+        self.view_docs_button = ttk.Button(doc_frame, text=self.lang.get('view_docs', 'Vedi Documenti Caricati'), command=self._launch_view_documents_window, state=tk.DISABLED)
+        self.view_docs_button.pack(pady=5)
+
+        # Initial call to load data
+        self.after(100, self._load_data_and_populate_ui)
 
     def _on_doc_type_selected(self, event=None):
         doc_type_desc = self.doc_widgets['type'].get()
@@ -440,11 +465,53 @@ class ProjectWindow(tk.Toplevel):
                 due_date+= " *"
 
             status = self.status_map_display.get(task.Stato, task.Stato)
-            tags = ('special_task',) if task.task_catalogo and task.task_catalogo.IsFinalMilestone else ()
+            tags = []
+            if task.IsPostFinalMilestone:
+                tags.append('special_task')
+                tags.append('bold_task')
+            
             cat = task.task_catalogo.categoria.Category if task.task_catalogo and task.task_catalogo.categoria else ""
             name = task.task_catalogo.NomeTask if task.task_catalogo else "Catalogo non trovato"
             self.tree.insert('', tk.END, text=task.TaskProdottoID, values=(name, cat, owner, status, due_date),
-                             tags=tags)
+                             tags=tuple(tags))
+
+    def _on_target_npi_change(self):
+        """Gestisce il cambio immediato del flag Target NPI."""
+        if not self.current_task_id: return
+        
+        is_target = self.fields['IsPostFinalMilestone'].var.get()
+        
+        # Se l'utente ha deselezionato, permettiamo (nessun target)
+        # Se ha selezionato, chiamiamo il manager per l'esclusività
+        
+        if is_target:
+            try:
+                self.npi_manager.set_target_npi_task(self.current_task_id, self.project_id)
+                # Aggiorna il modello locale (opzionale se ricarichiamo tutto)
+                # Ricarica tutto per aggiornare la treeview e gli altri task
+                self._load_data_and_populate_ui()
+                # Ripristina la selezione
+                # (omesso per semplicità, l'utente vedrà il refresh)
+            except Exception as e:
+                logger.error(f"Errore impostazione Target NPI: {e}")
+                messagebox.showerror("Errore", f"Impossibile impostare il Target NPI:\n{e}", parent=self)
+                # Revert checkbox
+                self.fields['IsPostFinalMilestone'].var.set(False)
+        else:
+             # Se deseleziona, dobbiamo aggiornare solo questo task nel DB?
+             # La richiesta dice "solo 1 task... deve essere marchato". 
+             # Se deseleziono, nessuno è target.
+             # Implementiamo un update semplice per questo caso o usiamo set_target_npi_task?
+             # set_target_npi_task imposta a True.
+             # Per impostare a False, usiamo update_task_prodotto standard o una nuova chiamata.
+             # Usiamo update standard per semplicità.
+             try:
+                 self.npi_manager.update_task_prodotto(self.current_task_id, {'IsPostFinalMilestone': False})
+                 self._load_data_and_populate_ui()
+             except Exception as e:
+                 logger.error(f"Errore rimozione Target NPI: {e}")
+                 messagebox.showerror("Errore", f"Impossibile rimuovere il Target NPI:\n{e}", parent=self)
+                 self.fields['IsPostFinalMilestone'].var.set(True)
 
     def _on_task_select(self, event=None):
         sel = self.tree.selection()
@@ -494,6 +561,8 @@ class ProjectWindow(tk.Toplevel):
         self.fields['DataScadenza'].set_date(task.DataScadenza);
         self.fields['DataInizio'].set_date(task.DataInizio)
         self.fields['DataCompletamento'].set_date(task.DataCompletamento)
+        if 'IsPostFinalMilestone' in self.fields:
+             self.fields['IsPostFinalMilestone'].var.set(task.IsPostFinalMilestone or False)
 
     def _disable_form(self):
         self.current_task_id = None
@@ -660,13 +729,12 @@ class ProjectWindow(tk.Toplevel):
             'Note': self.fields['Note'].get('1.0', tk.END).strip(),
             'DataScadenza': self.fields['DataScadenza'].get(),
             'DataInizio': self.fields['DataInizio'].get(),
-            'DataCompletamento': self.fields['DataCompletamento'].get()
+            'DataCompletamento': self.fields['DataCompletamento'].get(),
+            'IsPostFinalMilestone': self.fields['IsPostFinalMilestone'].var.get()
         }
 
         try:
             task = self.npi_manager.update_task_prodotto(self.current_task_id, data)
-
-            # Chiedi se inviare notifiche
             if messagebox.askyesno(
                     self.lang.get('notification_send_title', 'Conferma Notifiche'),
                     self.lang.get('notification_send_prompt', 'Inviare notifiche per questo task?'),

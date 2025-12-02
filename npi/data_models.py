@@ -59,7 +59,6 @@ class Prodotto(Base):
     Cliente = Column(String(255))
     DataScadenzaProgetto = Column(DateTime)
 
-    # --- CORREZIONE QUI ---
     # La relazione punta al NOME DELLA CLASSE, non alla tabella del DB
     progetti_npi = relationship("ProgettoNPI", back_populates="prodotto")
 
@@ -122,14 +121,11 @@ class TaskCatalogo(Base):
     CategoryId = Column(Integer, ForeignKey('dbo.Categories.CategoryId'))
     NrOrdin = Column('NrOrdin', Integer)  # Corretto nome in minuscolo
     IsTitle = Column(Boolean, default=False)
-    IsFinalMilestone = Column(Boolean, default=False, nullable=False)
+    # IsFinalMilestone removed as requested
 
     # Relationship
-    # --- CORREZIONE QUI ---
     # Anche qui, si usa il nome della classe
     categoria = relationship("Categoria", back_populates="tasks_catalogo")
-
-
 # ========================================
 # 7. TaskProdotto
 # ========================================
@@ -149,11 +145,13 @@ class TaskProdotto(Base):
     Costo = Column(Float)
     Note = Column(Text)  # Cambiato a Text per uniformità
     PercentualeCompletamento = Column(Integer, default=0)
+    IsPostFinalMilestone = Column(Boolean, default=False)
+
 
     # Relationships ai modelli dello stesso DB
+    wave = relationship("WaveNPI", back_populates="tasks")
     task_catalogo = relationship("TaskCatalogo")
     prodotto = relationship("Prodotto", back_populates="task_prodotto")
-    wave = relationship("WaveNPI", back_populates="tasks")
     notification_logs = relationship("NotificationLog", back_populates="task_prodotto", cascade="all, delete-orphan")
     documents = relationship("NpiDocument", back_populates="task_prodotto", cascade="all, delete-orphan")
 

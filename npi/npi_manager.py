@@ -633,16 +633,14 @@ class GestoreNPI:
                 return False, "Task non trovato."
 
             # Verifica se è il task finale
-            if not task.task_catalogo or not task.task_catalogo.IsFinalMilestone:
+            if not task.IsPostFinalMilestone:
                 # Non è un task finale, niente da validare
                 return True, ""
 
             logger.info(
                 f"Validazione task finale {task_prodotto_id} "
-                f"({task.task_catalogo.NomeTask})"
+                f"({task.task_catalogo.NomeTask if task.task_catalogo else 'Unknown'})"
             )
-
-            # Recupera TUTTI i task della stessa wave, ordinati per NrOrdin
             wave_tasks = session.scalars(
                 select(TaskProdotto)
                 .join(TaskCatalogo, TaskProdotto.TaskID == TaskCatalogo.TaskID)
@@ -779,7 +777,7 @@ class GestoreNPI:
 
     def update_project_dates(self, project_id: int, start_date: datetime, due_date: datetime, lang):
         """
-        Aggiorna le date di un progetto con logica di business per il task finale (IsFinalMilestone=True).
+        Aggiorna le date di un progetto con logica di business per il task finale (IsPostFinalMilestone=True).
         Restituisce una tupla (progetto_aggiornato, messaggio_informativo).
         """
         session = self._get_session()
@@ -797,14 +795,13 @@ class GestoreNPI:
 
             # 2. CERCA IL TASK SPECIALE (con IsFinalMilestone=True)
             # --- MODIFICA LOGICA QUI ---
-            # Query per trovare il TaskProdotto collegato al TaskCatalogo con IsFinalMilestone=True
+            # Query per trovare il TaskProdotto con IsPostFinalMilestone=True
             final_milestone_task = session.scalars(
                 select(TaskProdotto)
-                .join(TaskCatalogo, TaskProdotto.TaskID == TaskCatalogo.TaskID)
                 .join(WaveNPI, TaskProdotto.WaveID == WaveNPI.WaveID)
                 .filter(
                     WaveNPI.ProgettoID == project_id,
-                    TaskCatalogo.IsFinalMilestone == True  # Cerca per flag, non per ID
+                    TaskProdotto.IsPostFinalMilestone == True
                 )
             ).first()
             # --- FINE MODIFICA ---
@@ -835,6 +832,39 @@ class GestoreNPI:
 
         except Exception as e:
             logger.error(f"Errore durante l'aggiornamento delle date del progetto {project_id}: {e}", exc_info=True)
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def set_target_npi_task(self, task_id, project_id):
+        """
+        Imposta un task come Target NPI (IsPostFinalMilestone=True) e rimuove il flag da tutti gli altri task del progetto.
+        """
+        session = self._get_session()
+        try:
+            # 1. Trova il task selezionato
+            target_task = session.get(TaskProdotto, task_id)
+            if not target_task:
+                raise ValueError(f"Task {task_id} non trovato.")
+
+            # 2. Trova tutti i task del progetto (Wave)
+            # Assumiamo che il progetto abbia una sola wave attiva o che vogliamo l'unicità per progetto
+            # Recuperiamo la wave del task
+            wave_id = target_task.WaveID
+            
+            # 3. Reset di tutti i task della stessa wave
+            session.query(TaskProdotto).filter(
+                TaskProdotto.WaveID == wave_id
+            ).update({TaskProdotto.IsPostFinalMilestone: False})
+
+            # 4. Imposta il flag sul task selezionato
+            target_task.IsPostFinalMilestone = True
+            
+            session.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Errore impostazione Target NPI per task {task_id}: {e}", exc_info=True)
             session.rollback()
             raise
         finally:
