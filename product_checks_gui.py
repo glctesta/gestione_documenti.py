@@ -13,7 +13,13 @@ import tempfile
 import os
 import subprocess
 from datetime import datetime
+import openpyxl
+from openpyxl.utils import get_column_letter
+import openpyxl
+from openpyxl.utils import get_column_letter
+import logging
 
+logger = logging.getLogger("TraceabilityRS")  # usa la config fatta in main.py
 
 class ProductChecksManagementWindow(tk.Toplevel):
     """Finestra per la gestione della periodicità delle verifiche prodotti"""
@@ -114,7 +120,7 @@ class ProductChecksManagementWindow(tk.Toplevel):
         checks = self.db.fetch_all_product_checks()
         for check in checks:
             self.tree.insert('', 'end', values=(
-                check.PeriodicalProductCheckId,
+                check.PeriodicalProductCheckLogId,
                 check.ProductCode,
                 check.ProductName,
                 check.PeriodicityInQty
@@ -194,7 +200,6 @@ class ProductChecksManagementWindow(tk.Toplevel):
             else:
                 messagebox.showerror(self.lang.get('error', 'Errore'),
                                      self.lang.get('delete_error', 'Errore durante l\'eliminazione'))
-
 
 class CheckTasksManagementWindow(tk.Toplevel):
     """Finestra per la gestione dei task di verifica (generici e specifici)"""
@@ -313,7 +318,7 @@ class CheckTasksManagementWindow(tk.Toplevel):
     def _load_products(self):
         """Carica i prodotti con verifiche configurate"""
         products = self.db.fetch_products_with_checks()
-        self.products_dict = {f"{p.ProductCode} - {p.ProductName}": p.PeriodicalProductCheckId for p in products}
+        self.products_dict = {f"{p.ProductCode} - {p.ProductName}": p.PeriodicalProductCheckLogId for p in products}
         self.product_combo['values'] = list(self.products_dict.keys())
 
     def _load_tasks(self):
@@ -487,7 +492,6 @@ class CheckTasksManagementWindow(tk.Toplevel):
             else:
                 messagebox.showerror(self.lang.get('error', 'Errore'),
                                      self.lang.get('delete_error', 'Errore durante l\'eliminazione'))
-
 
 class ProductVerificationWindow(tk.Toplevel):
     """Finestra per l'esecuzione delle verifiche sui prodotti"""
@@ -909,3 +913,697 @@ class ProductVerificationWindow(tk.Toplevel):
         self._check_items = []
         for item in self.checklist_tree.get_children():
             self.checklist_tree.delete(item)
+
+class VerificationReportsWindow(tk.Toplevel):
+    """Finestra per i rapporti di verifica e statistiche"""
+
+    def __init__(self, parent, db_handler, lang_manager, user_id):
+        super().__init__(parent)
+        self.db = db_handler
+        self.lang = lang_manager
+        self.user_name = user_id
+
+        self.title(self.lang.get('verification_reports_title', 'Rapporti Verifiche'))
+        self.geometry('1300x850')
+        self.transient(parent)
+
+        self._build_ui()
+        self._load_users()
+        self._update_stats()
+
+    def _build_ui(self):
+        logger.info("Building UI")
+        # Main container
+        main_frame = ttk.Frame(self)
+        main_frame.pack(fill='both', expand=True, padx=10, pady=10)
+
+        # --- Filters Frame ---
+        filter_frame = ttk.LabelFrame(main_frame, text=self.lang.get('filters', 'Filtri'))
+        filter_frame.pack(fill='x', pady=(0, 10))
+
+        # CheckUser Filter
+        ttk.Label(filter_frame, text=self.lang.get('check_user_label', "Utente Controllo:")).pack(side='left', padx=5)
+        self.user_var = tk.StringVar()
+        self.user_combo = ttk.Combobox(filter_frame, textvariable=self.user_var, state='readonly', width=30)
+        self.user_combo.pack(side='left', padx=5)
+        self.user_combo.bind("<<ComboboxSelected>>", lambda e: self._on_search())
+        # LabelCode Filter
+        ttk.Label(filter_frame, text=self.lang.get('label_code_label', "Codice Etichetta:")).pack(side='left', padx=5)
+        self.label_code_var = tk.StringVar(value=None) # Default from request
+        self.label_code_entry = ttk.Entry(filter_frame, textvariable=self.label_code_var, width=20)
+        self.label_code_entry.pack(side='left', padx=5)
+        self.label_code_entry.bind("<KeyRelease>", lambda e: self._on_search())
+
+        # IsAnalized Filter
+        self.is_analyzed_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(filter_frame, text=self.lang.get('is_analyzed_label', "Analizzato"), variable=self.is_analyzed_var, command=self._on_search).pack(side='left', padx=10)
+
+        # Buttons
+        ttk.Button(filter_frame, text=self.lang.get('search', 'Cerca'), command=self._on_search).pack(side='left', padx=10)
+        ttk.Button(filter_frame, text=self.lang.get('export_excel', 'Export Excel'), command=self._on_export).pack(side='left', padx=10)
+        
+        # Mark as Analyzed Button (Right aligned)
+        #ttk.Button(filter_frame, text=self.lang.get('mark_as_analyzed_btn', "Segna come Analizzato"), command=self._on_mark_analyzed).pack(side='right', padx=10)
+
+        # --- Results Treeview ---
+        tree_frame = ttk.Frame(main_frame)
+        tree_frame.pack(fill='both', expand=True)
+
+        columns = ('CheckUser', 'LabelCod', 'ProductCode', 'ResultRepair', 'Minute', 'TimeDefectAfterCheck', 
+                   'CodRiferimento', 'ComponentType', 'ComponentCode', 'Defect', 'BoxCode', 'ShipmentStatus')
+        
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show='headings')
+        
+        # Configure columns
+        for col in columns:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=100)
+        
+        self.tree.column('CheckUser', width=150)
+        self.tree.column('Defect', width=200)
+        self.tree.column('TimeDefectAfterCheck', width=150)
+
+        scrollbar_y = ttk.Scrollbar(tree_frame, orient='vertical', command=self.tree.yview)
+        scrollbar_x = ttk.Scrollbar(tree_frame, orient='horizontal', command=self.tree.xview)
+        self.tree.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
+
+        self.tree.grid(row=0, column=0, sticky='nsew')
+        scrollbar_y.grid(row=0, column=1, sticky='ns')
+        scrollbar_x.grid(row=1, column=0, sticky='ew')
+
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
+
+        # --- Statistics Panel ---
+        logger.info("Building Statistics Panel")
+        stats_frame = ttk.LabelFrame(main_frame, text=self.lang.get('statistics', 'Statistiche Utenti (Top 1000)'))
+        stats_frame.pack(fill='x', pady=(10, 0))
+
+        self.stats_tree = ttk.Treeview(stats_frame, columns=('User', 'Count', 'Pass', 'Fail', 'FailPercent', 'Not_True', 'Not_True_Percent'), show='headings', height=5)
+        self.stats_tree.heading('User', text=self.lang.get('stats_user', 'Utente'))
+        self.stats_tree.heading('Count', text=self.lang.get('stats_total', 'Totale'))
+        self.stats_tree.heading('Pass', text='Pass')
+        self.stats_tree.heading('Fail', text='Fail')
+        self.stats_tree.heading('FailPercent', text='Fail %')
+        self.stats_tree.heading('Not_True', text='Not True')
+        self.stats_tree.heading('Not_True_Percent', text='Not True %')
+        
+        self.stats_tree.column('User', width=200)
+        self.stats_tree.column('Count', width=80, anchor='center')
+        self.stats_tree.column('Pass', width=80, anchor='center')
+        self.stats_tree.column('Fail', width=80, anchor='center')
+        self.stats_tree.column('FailPercent', width=80, anchor='center')
+        self.stats_tree.column('Not_True', width=80, anchor='center')
+        self.stats_tree.column('Not_True_Percent', width=80, anchor='center')
+        
+        self.stats_tree.tag_configure('red_bold', foreground='red', font=('Segoe UI', 9, 'bold'))
+        self.stats_tree.pack(fill='x', padx=5, pady=5)
+
+    def _load_users(self):
+        """Carica la lista utenti per il filtro"""
+        sql = """
+        SELECT Distinct         
+            UPPER(e.EmployeeSurname + ' ' +e.EmployeeName) AS FullName              
+        FROM employee.dbo.employees e 
+        INNER JOIN resetservices.dbo.tbuserkey u ON e.employeeid = u.idanga
+        inner join employee.dbo.employeehirehistory h on e.employeeid = h.employeeid and h.EndWorkDate is null and h.employeerid =2
+        inner join Traceability_rs.dbo.PeriodicalProductCheckLogs pl on u.NomeUser collate database_default =pl.UserCheck
+        order by  UPPER(e.EmployeeSurname + ' ' +e.EmployeeName)  ;
+        """
+        try:
+            cursor = self.db.conn.cursor()
+            try:
+                cursor.execute(sql)
+                users = [row[0] for row in cursor.fetchall()]
+                self.user_combo['values'] = [''] + users
+            finally:
+                cursor.close()
+        except Exception as e:
+            messagebox.showerror("Errore", f"Errore caricamento utenti: {e}")
+
+    def _on_search(self):
+        """Esegue la query principale"""
+        logger.info("Esecuzione query principale lancio verifica fail dopo verifica dei capiturno.")
+        is_analyzed = 1 if self.is_analyzed_var.get() else 0
+        label_code = self.label_code_var.get().strip() or None
+        check_user_filter = self.user_var.get().strip()
+
+        sql = """
+        DECLARE @IsAnalized bit = ?;
+        DECLARE @LabelCode as nvarchar(230) = ?;
+        DECLARE @CheckUserFilter as nvarchar(255) = ?;
+
+        WITH EmployeeMapping AS (
+            SELECT 
+                u.nomeuser,
+                UPPER( e.EmployeeSurname + ' ' +e.EmployeeName) AS FullName,
+                ROW_NUMBER() OVER (PARTITION BY u.nomeuser ORDER BY e.employeeid) AS rn
+            FROM employee.dbo.employees e 
+            INNER JOIN resetservices.dbo.tbuserkey u ON e.employeeid = u.idanga
+        ),
+        ComponentInfo AS (
+            SELECT 
+                ProductRiferiments.CodRiferimento,
+                ProductComponentsErp.IDProduct,
+                ParentPhases.ParentPhaseName,
+                Components.ComponentCode,
+                ROW_NUMBER() OVER (PARTITION BY ProductRiferiments.CodRiferimento, ProductComponentsErp.IDProduct 
+                                  ORDER BY (SELECT NULL)) AS rn
+            FROM ProductRiferiments 
+            INNER JOIN ProductComponentsErp ON ProductComponentsErp.IDProductCompErp = ProductRiferiments.IDProductCompErp
+            INNER JOIN ParentPhases ON ParentPhases.IDParentPhase = ProductRiferiments.IDParentPhase
+            LEFT JOIN Components ON Components.IDComponent = ProductComponentsErp.IDComponent
+        )
+        SELECT * from (
+        SELECT distinct   
+            EmployeeMapping.FullName AS CheckUser,
+            labelcodes.LabelCod,
+            Products.ProductCode,                
+            CASE WHEN ScanDefects.IsPass = 1 THEN 'REPAIRED' ELSE 'SCRAP' END AS ResultRepair,  
+            DATEDIFF(MINUTE, PC.CheckTime, ScanDefects.StopTime) as [Minute], 
+            CASE 
+                WHEN DATEDIFF(MINUTE, PC.CheckTime, ScanDefects.StopTime) < 60 
+                    THEN CAST(DATEDIFF(MINUTE, PC.CheckTime, ScanDefects.StopTime) AS NVARCHAR(10)) + ' MINUTE'
+                WHEN DATEDIFF(HOUR, PC.CheckTime, ScanDefects.StopTime) >= 24 
+                    THEN CAST(DATEDIFF(DAY, PC.CheckTime, ScanDefects.StopTime) AS NVARCHAR(10)) + ' DAYS'
+                ELSE CAST(DATEDIFF(HOUR, PC.CheckTime, ScanDefects.StopTime) AS NVARCHAR(10)) + ' HOURS'
+            END AS TimeDefectAfterCheck,       
+            
+            Riferiments.CodRiferimento,
+            ISNULL(ComponentInfo.ParentPhaseName, 'PTHM') AS ComponentType,  
+            ISNULL(ComponentInfo.ComponentCode, '#N/D') AS ComponentCode,
+            Defects.DefectNameRO AS Defect,        
+            IIF(CAST(Boxes.BoxCode AS NVARCHAR(12)) is not null ,'IN BOX', 'NOT IN A BOX') AS BoxCode,
+            IIF(PackingLists.CodePack IS NULL, 'NOT SHIPPED YET', 'SHIPPED ALREADY') AS ShipmentStatus
+            
+        FROM ScanDefects 
+        INNER JOIN ScanDefectDetails ON ScanDefects.IDScanDefect = ScanDefectDetails.IDScanDefect
+        INNER JOIN DefectsRiferiments ON DefectsRiferiments.IDScanDefectDet = ScanDefectDetails.IDScanDefectDet
+        INNER JOIN Riferiments ON Riferiments.IDDibaRiferimento = DefectsRiferiments.IDDibaRiferimento
+        INNER JOIN Defects ON ScanDefectDetails.IDDefect = Defects.IDDefect
+        INNER JOIN Scannings ON Scannings.IDScan = ScanDefects.IDScan
+        INNER JOIN OrderPhases ON OrderPhases.IDOrderPhase = Scannings.IDOrderPhase
+        INNER JOIN Orders ON OrderPhases.IDOrder = Orders.IDOrder
+        INNER JOIN Products ON Products.IDProduct = Orders.IDProduct
+        INNER JOIN Phases ON OrderPhases.IDPhase = Phases.IDPhase
+        INNER JOIN Clients ON Clients.IDClient = Products.IDClient
+        INNER JOIN Boards ON Scannings.IDBoard = Boards.IDBoard
+        INNER JOIN Teams ON Teams.IDTeam = ScanDefects.IdTeam
+        INNER JOIN WorkLines ON WorkLines.IDWorkLine = Teams.IDWorkLine
+        INNER JOIN LabelCodes ON Boards.IDBoard = LabelCodes.IDBoard
+        INNER JOIN PeriodicalProductCheckLogs PC ON LabelCodes.IDLabelCode = PC.IDLabelCode and isnull(pc.isanalized,0) = @IsAnalized 
+
+        LEFT JOIN EmployeeMapping ON EmployeeMapping.nomeuser COLLATE database_default = PC.UserCheck 
+            AND EmployeeMapping.rn = 1
+        LEFT JOIN ComponentInfo ON ComponentInfo.CodRiferimento = Riferiments.CodRiferimento 
+            AND ComponentInfo.IDProduct = Orders.IDProduct 
+            AND ComponentInfo.rn = 1
+
+        LEFT JOIN Areas ON Areas.IDArea = ScanDefectDetails.IDArea
+        LEFT JOIN BoxDetails ON BoxDetails.IDBoard = Boards.IDBoard
+        LEFT JOIN Boxes ON Boxes.IDBox = BoxDetails.IDBox
+        LEFT JOIN BoxPKs ON BoxPKs.IDBoxPK = Boxes.IDBoxPK
+        LEFT JOIN PalletPKs ON PalletPKs.IDPalletPK = BoxPKs.IDPalletPK
+        LEFT JOIN PackingLists ON PackingLists.IDPackingList = PalletPKs.IDPackingList
+
+        WHERE 
+            Phases.IDPhase IN (102, 103, 107)
+            AND PC.Status = 'PASS'
+            AND ScanDefects.StopTime > PC.CheckTime
+            and ISNULL(ComponentInfo.ParentPhaseName, 'PTHM') = 'PTHM'
+            AND NOT defects.DefectNameRO IN ('Schimbare pin fixture test','Componenta iesita din tolerante')
+            and labelcodes.LabelCod = iif(@LabelCode is null,labelcodes.LabelCod,@LabelCode)
+        ) as H 
+        WHERE (@CheckUserFilter IS NULL OR @CheckUserFilter = '' OR H.CheckUser = @CheckUserFilter)
+        Order By [Minute];
+        """
+        
+        # Clear tree
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        try:
+            cursor = self.db.conn.cursor()
+            try:
+                cursor.execute(sql, (is_analyzed, label_code, check_user_filter))
+                rows = cursor.fetchall()
+                
+                for row in rows:
+                    self.tree.insert('', 'end', values=[str(x) if x is not None else '' for x in row])
+            finally:
+                cursor.close()
+                
+        except Exception as e:
+            messagebox.showerror("Errore Query", f"Errore esecuzione ricerca: {e}")
+
+    def _on_export(self):
+        """Esporta i dati in Excel"""
+        if not self.tree.get_children():
+            messagebox.showwarning("Attenzione", "Nessun dato da esportare")
+            return
+
+        file_path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel files", "*.xlsx")])
+        if not file_path:
+            return
+
+        try:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Verification Report"
+
+            # Headers
+            columns = self.tree['columns']
+            ws.append(columns)
+
+            # Data
+            for item in self.tree.get_children():
+                values = self.tree.item(item)['values']
+                ws.append(values)
+
+            wb.save(file_path)
+            messagebox.showinfo("Successo", "Esportazione completata")
+            os.startfile(file_path)
+        except Exception as e:
+            messagebox.showerror("Errore Export", f"Errore durante l'esportazione: {e}")
+
+    def _update_stats(self):
+        """Calcola e mostra le statistiche"""
+        sql = """
+        WITH EmployeeMapping AS (
+             SELECT 
+                 u.nomeuser,
+                 UPPER(e.EmployeeSurname + ' ' + e.EmployeeName) AS FullName,
+                 ROW_NUMBER() OVER (PARTITION BY u.nomeuser ORDER BY e.employeeid) AS rn
+             FROM employee.dbo.employees e 
+             INNER JOIN resetservices.dbo.tbuserkey u ON e.employeeid = u.idanga
+        ),
+        Stats AS (
+            SELECT 
+                EmployeeMapping.FullName,
+                COUNT(*) as CheckCount,
+                SUM(CASE WHEN PC.Status = 'PASS' THEN 1 ELSE 0 END) as PassCount,
+                SUM(CASE WHEN PC.Status <> 'PASS' OR PC.Status IS NULL THEN 1 ELSE 0 END) as FailCount
+            FROM [Traceability_RS].[dbo].[PeriodicalProductCheckLogs] PC
+            LEFT JOIN EmployeeMapping ON EmployeeMapping.nomeuser COLLATE database_default = PC.UserCheck 
+                AND EmployeeMapping.rn = 1
+            GROUP BY EmployeeMapping.FullName
+        ),
+        ComponentInfo AS (
+            SELECT 
+                ProductRiferiments.CodRiferimento,
+                ProductComponentsErp.IDProduct,
+                ParentPhases.ParentPhaseName,
+                Components.ComponentCode,
+                ROW_NUMBER() OVER (PARTITION BY ProductRiferiments.CodRiferimento, ProductComponentsErp.IDProduct 
+                                  ORDER BY (SELECT NULL)) AS rn
+            FROM ProductRiferiments 
+            INNER JOIN ProductComponentsErp ON ProductComponentsErp.IDProductCompErp = ProductRiferiments.IDProductCompErp
+            INNER JOIN ParentPhases ON ParentPhases.IDParentPhase = ProductRiferiments.IDParentPhase
+            LEFT JOIN Components ON Components.IDComponent = ProductComponentsErp.IDComponent
+        ),
+        DefectsStats AS (
+            SELECT 
+                EmployeeMapping.FullName AS CheckUser,
+                COUNT(*) AS TotalDefects
+            FROM ScanDefects 
+            INNER JOIN ScanDefectDetails ON ScanDefects.IDScanDefect = ScanDefectDetails.IDScanDefect
+            INNER JOIN DefectsRiferiments ON DefectsRiferiments.IDScanDefectDet = ScanDefectDetails.IDScanDefectDet
+            INNER JOIN Riferiments ON Riferiments.IDDibaRiferimento = DefectsRiferiments.IDDibaRiferimento
+            INNER JOIN Defects ON ScanDefectDetails.IDDefect = Defects.IDDefect
+            INNER JOIN Scannings ON Scannings.IDScan = ScanDefects.IDScan
+            INNER JOIN OrderPhases ON OrderPhases.IDOrderPhase = Scannings.IDOrderPhase
+            INNER JOIN Orders ON OrderPhases.IDOrder = Orders.IDOrder
+            INNER JOIN Products ON Products.IDProduct = Orders.IDProduct
+            INNER JOIN Phases ON OrderPhases.IDPhase = Phases.IDPhase
+            INNER JOIN Clients ON Clients.IDClient = Products.IDClient
+            INNER JOIN Boards ON Scannings.IDBoard = Boards.IDBoard
+            INNER JOIN Teams ON Teams.IDTeam = ScanDefects.IdTeam
+            INNER JOIN WorkLines ON WorkLines.IDWorkLine = Teams.IDWorkLine
+            INNER JOIN LabelCodes ON Boards.IDBoard = LabelCodes.IDBoard
+            INNER JOIN PeriodicalProductCheckLogs PC ON LabelCodes.IDLabelCode = PC.IDLabelCode 
+            
+            LEFT JOIN EmployeeMapping ON EmployeeMapping.nomeuser COLLATE database_default = PC.UserCheck 
+                AND EmployeeMapping.rn = 1
+            LEFT JOIN ComponentInfo ON ComponentInfo.CodRiferimento = Riferiments.CodRiferimento 
+                AND ComponentInfo.IDProduct = Orders.IDProduct 
+                AND ComponentInfo.rn = 1
+
+            LEFT JOIN Areas ON Areas.IDArea = ScanDefectDetails.IDArea
+            LEFT JOIN BoxDetails ON BoxDetails.IDBoard = Boards.IDBoard
+            LEFT JOIN Boxes ON Boxes.IDBox = BoxDetails.IDBox
+            LEFT JOIN BoxPKs ON BoxPKs.IDBoxPK = Boxes.IDBoxPK
+            LEFT JOIN PalletPKs ON PalletPKs.IDPalletPK = BoxPKs.IDPalletPK
+            LEFT JOIN PackingLists ON PackingLists.IDPackingList = PalletPKs.IDPackingList
+
+            WHERE 
+                Phases.IDPhase IN (102, 103, 107)
+                AND PC.Status = 'PASS'
+                AND ScanDefects.StopTime > PC.CheckTime
+                AND ISNULL(ComponentInfo.ParentPhaseName, 'PTHM') = 'PTHM'
+                AND NOT defects.DefectNameRO IN ('Schimbare pin fixture test','Componenta iesita din tolerante')
+            
+            GROUP BY EmployeeMapping.FullName
+        )
+        SELECT TOP (1000)
+            S.FullName,
+            S.CheckCount,
+            S.PassCount,
+            S.FailCount,
+            ISNULL(D.TotalDefects, 0) as TotalDefects
+        FROM Stats S
+        LEFT JOIN DefectsStats D ON S.FullName = D.CheckUser
+        ORDER BY S.CheckCount DESC
+        """
+        try:
+            # Clear stats tree
+            for item in self.stats_tree.get_children():
+                self.stats_tree.delete(item)
+
+            cursor = self.db.conn.cursor()
+            try:
+                cursor.execute(sql)
+                rows = cursor.fetchall()
+                
+                for row in rows:
+                    total = row[1]
+                    pass_count = row[2]
+                    fail_count = row[3]
+                    total_defects = row[4]
+                    
+                    fail_percent = (fail_count / total * 100) if total > 0 else 0
+                    defect_percent = (total_defects / pass_count * 100) if pass_count > 0 else 0
+                    
+                    tags = ('red_bold',) if total_defects > 0 else ()
+                    
+                    self.stats_tree.insert('', 'end', values=(
+                        row[0] or 'Unknown', 
+                        total, 
+                        pass_count, 
+                        fail_count, 
+                        f"{fail_percent:.2f}%",
+                        total_defects,
+                        f"{defect_percent:.2f}%"
+                    ), tags=tags)
+            finally:
+                cursor.close()
+                
+        except Exception as e:
+            print(f"Errore statistiche: {e}")
+
+    def _on_mark_analyzed(self):
+        """Marca i record visualizzati come analizzati"""
+        pass
+        # if not self.tree.get_children():
+        #     return
+
+        # if not messagebox.askyesno("Conferma", "Vuoi marcare tutti i record visualizzati come Analizzati?"):
+        #     return
+
+        # label_codes = []
+        # for item in self.tree.get_children():
+        #     vals = self.tree.item(item)['values']
+        #     if len(vals) > 1:
+        #         label_codes.append(vals[1])
+        
+        # if not label_codes:
+        #     return
+
+        # try:
+        #     cursor = self.db.conn.cursor()
+        #     try:
+        #         placeholders = ','.join(['?'] * len(label_codes))
+        #         sql_update = f"""
+        #         UPDATE PC
+        #         SET IsAnalized = 1
+        #         FROM [Traceability_RS].[dbo].[PeriodicalProductCheckLogs] PC
+        #         INNER JOIN LabelCodes LC ON PC.IDLabelCode = LC.IDLabelCode
+        #         WHERE LC.LabelCod IN ({placeholders})
+        #         """
+                
+        #         cursor.execute(sql_update, label_codes)
+        #         self.db.conn.commit()
+                
+        #         messagebox.showinfo("Successo", f"Aggiornati {cursor.rowcount} record.")
+        #     finally:
+        #         cursor.close()
+
+        #     self._on_search() # Refresh
+            
+        # except Exception as e:
+        #     self.db.conn.rollback()
+        #     messagebox.showerror("Errore Update", f"Errore durante l'aggiornamento: {e}")
+
+def check_and_notify_verification_discrepancies(db_handler):
+    """
+    Esegue una verifica in background per identificare discrepanze tra controlli operatore e difetti di produzione.
+    Se vengono trovati dati, invia un'email di notifica con allegato Excel.
+    """
+    import utils
+    import logging
+    import os
+    import tempfile
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill
+    from datetime import datetime
+    
+    logger = logging.getLogger('TraceabilityRS')
+    
+    # SQL Query fornita dall'utente
+    logger.info('Background check: Starting query execution...')
+    query = """
+        WITH EmployeeMapping AS (
+            SELECT 
+                u.nomeuser,
+                UPPER( e.EmployeeSurname + ' ' +e.EmployeeName) AS FullName,
+                ROW_NUMBER() OVER (PARTITION BY u.nomeuser ORDER BY e.employeeid) AS rn
+            FROM employee.dbo.employees e 
+            INNER JOIN resetservices.dbo.tbuserkey u ON e.employeeid = u.idanga
+        ),
+        ComponentInfo AS (
+            SELECT 
+                ProductRiferiments.CodRiferimento,
+                ProductComponentsErp.IDProduct,
+                ParentPhases.ParentPhaseName,
+                Components.ComponentCode,
+                ROW_NUMBER() OVER (PARTITION BY ProductRiferiments.CodRiferimento, ProductComponentsErp.IDProduct 
+                                  ORDER BY (SELECT NULL)) AS rn
+            FROM ProductRiferiments 
+            INNER JOIN ProductComponentsErp ON ProductComponentsErp.IDProductCompErp = ProductRiferiments.IDProductCompErp
+            INNER JOIN ParentPhases ON ParentPhases.IDParentPhase = ProductRiferiments.IDParentPhase
+            LEFT JOIN Components ON Components.IDComponent = ProductComponentsErp.IDComponent
+        )
+        SELECT * from (
+        SELECT distinct   
+            PC.PeriodicalProductCheckLogId, -- Aggiunto per poter aggiornare il record
+            EmployeeMapping.FullName AS CheckUser,
+            labelcodes.LabelCod,
+            Products.ProductCode,                
+            CASE WHEN ScanDefects.IsPass = 1 THEN 'REPAIRED' ELSE 'SCRAP' END AS ResultRepair,  
+            DATEDIFF(MINUTE, PC.CheckTime, ScanDefects.StopTime) as [Minute], 
+            CASE 
+                WHEN DATEDIFF(MINUTE, PC.CheckTime, ScanDefects.StopTime) < 60 
+                    THEN CAST(DATEDIFF(MINUTE, PC.CheckTime, ScanDefects.StopTime) AS NVARCHAR(10)) + ' MINUTE'
+                WHEN DATEDIFF(HOUR, PC.CheckTime, ScanDefects.StopTime) >= 24 
+                    THEN CAST(DATEDIFF(DAY, PC.CheckTime, ScanDefects.StopTime) AS NVARCHAR(10)) + ' DAYS'
+                ELSE CAST(DATEDIFF(HOUR, PC.CheckTime, ScanDefects.StopTime) AS NVARCHAR(10)) + ' HOURS'
+            END AS TimeDefectAfterCheck,       
+            
+            Riferiments.CodRiferimento,
+            ISNULL(ComponentInfo.ParentPhaseName, 'PTHM') AS ComponentType,  
+            ISNULL(ComponentInfo.ComponentCode, '#N/D') AS ComponentCode,
+            Defects.DefectNameRO AS Defect,        
+            IIF(CAST(Boxes.BoxCode AS NVARCHAR(12)) is not null ,'IN BOX', 'NOT IN A BOX') AS BoxCode,
+            IIF(PackingLists.CodePack IS NULL, 'NOT SHIPPED YET', 'SHIPPED ALREADY') AS ShipmentStatus
+            
+        FROM ScanDefects 
+        INNER JOIN Traceability_rs.dbo.ScanDefectDetails ON ScanDefects.IDScanDefect = ScanDefectDetails.IDScanDefect
+        INNER JOIN Traceability_rs.dbo.DefectsRiferiments ON DefectsRiferiments.IDScanDefectDet = ScanDefectDetails.IDScanDefectDet
+        INNER JOIN Traceability_rs.dbo.Riferiments ON Riferiments.IDDibaRiferimento = DefectsRiferiments.IDDibaRiferimento
+        INNER JOIN Traceability_rs.dbo.Defects ON ScanDefectDetails.IDDefect = Defects.IDDefect
+        INNER JOIN Traceability_rs.dbo.Scannings ON Scannings.IDScan = ScanDefects.IDScan
+        INNER JOIN Traceability_rs.dbo.OrderPhases ON OrderPhases.IDOrderPhase = Scannings.IDOrderPhase
+        INNER JOIN Traceability_rs.dbo.Orders ON OrderPhases.IDOrder = Orders.IDOrder
+        INNER JOIN Traceability_rs.dbo.Products ON Products.IDProduct = Orders.IDProduct
+        INNER JOIN Traceability_rs.dbo.Phases ON OrderPhases.IDPhase = Phases.IDPhase
+        INNER JOIN Traceability_rs.dbo.Clients ON Clients.IDClient = Products.IDClient
+        INNER JOIN Traceability_rs.dbo.Boards ON Scannings.IDBoard = Boards.IDBoard
+        INNER JOIN Traceability_rs.dbo.Teams ON Teams.IDTeam = ScanDefects.IdTeam
+        INNER JOIN Traceability_rs.dbo.WorkLines ON WorkLines.IDWorkLine = Teams.IDWorkLine
+        INNER JOIN Traceability_rs.dbo.LabelCodes ON Boards.IDBoard = LabelCodes.IDBoard
+        INNER JOIN Traceability_rs.dbo.PeriodicalProductCheckLogs PC ON LabelCodes.IDLabelCode = PC.IDLabelCode and isnull(pc.isanalized,0) = 0
+
+        LEFT JOIN EmployeeMapping ON EmployeeMapping.nomeuser COLLATE database_default = PC.UserCheck 
+            AND EmployeeMapping.rn = 1
+        LEFT JOIN ComponentInfo ON ComponentInfo.CodRiferimento = Riferiments.CodRiferimento 
+            AND ComponentInfo.IDProduct = Orders.IDProduct 
+            AND ComponentInfo.rn = 1
+
+        LEFT JOIN Areas ON Areas.IDArea = ScanDefectDetails.IDArea
+        LEFT JOIN BoxDetails ON BoxDetails.IDBoard = Boards.IDBoard
+        LEFT JOIN Boxes ON Boxes.IDBox = BoxDetails.IDBox
+        LEFT JOIN BoxPKs ON BoxPKs.IDBoxPK = Boxes.IDBoxPK
+        LEFT JOIN PalletPKs ON PalletPKs.IDPalletPK = BoxPKs.IDPalletPK
+        LEFT JOIN PackingLists ON PackingLists.IDPackingList = PalletPKs.IDPackingList
+
+        WHERE 
+            Phases.IDPhase IN (102, 103, 107)
+            AND PC.Status = 'PASS'
+            AND ScanDefects.StopTime > PC.CheckTime
+            and ISNULL(ComponentInfo.ParentPhaseName, 'PTHM') = 'PTHM'
+            AND NOT defects.DefectNameRO IN ('Schimbare pin fixture test','Componenta iesita din tolerante')          
+        ) as H 
+        Order By [checkuser],[Minute];
+    """
+    
+    try:
+        results = db_handler.fetch_all(query)
+        logger.info(f'Background check: Found {len(results) if results else 0} discrepancies.')
+        
+        if not results:
+            logger.info('Background check: No discrepancies found.')
+            return
+
+        # Se ci sono risultati, prepara l'email
+        logger.info(f'Background check: Found {len(results)} discrepancies. Sending notification...')
+        
+        # Recupera destinatari
+        recipients = utils.get_email_recipients(db_handler.conn, 'Sys_mail_verifiche')
+        if not recipients:
+            logger.warning('Background check: No recipients configured for Sys_mail_verifiche.')
+            return
+
+        # Costruisci corpo email
+        # Rimuoviamo la colonna PeriodicalProductCheckLogId dalla visualizzazione
+        display_results = []
+        ids_to_update = []
+        
+        for row in results:
+            # Assumiamo che PeriodicalProductCheckLogId sia la prima colonna (indice 0)
+            ids_to_update.append(row[0])
+            display_results.append(row[1:]) # Tutte le colonne tranne la prima
+        
+        # Genera file Excel
+        excel_file = None
+        try:
+            # Crea workbook
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Discrepancies Report"
+            
+            # Intestazioni (salta la prima colonna ID)
+            if results and hasattr(results[0], 'cursor_description'):
+                headers = [col[0] for col in results[0].cursor_description][1:]
+            else:
+                # Fallback headers
+                headers = ['CheckUser', 'LabelCod', 'ProductCode', 'ResultRepair', 'Minute', 
+                          'TimeDefectAfterCheck', 'CodRiferimento', 'ComponentType', 'ComponentCode',
+                          'Defect', 'BoxCode', 'ShipmentStatus']
+            
+            # Scrivi header
+            for col_idx, header in enumerate(headers, start=1):
+                cell = ws.cell(row=1, column=col_idx, value=header)
+                cell.font = Font(bold=True, color="FFFFFF")
+                cell.fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+            
+            # Scrivi dati
+            for row_idx, row_data in enumerate(display_results, start=2):
+                for col_idx, value in enumerate(row_data, start=1):
+                    ws.cell(row=row_idx, column=col_idx, value=value)
+            
+            # Auto-size colonne
+            for column in ws.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = min(max_length + 2, 50)
+                ws.column_dimensions[column_letter].width = adjusted_width
+            
+            # Salva in file temporaneo
+            temp_dir = tempfile.gettempdir()
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            excel_file = os.path.join(temp_dir, f"Verification_Discrepancies_{timestamp}.xlsx")
+            wb.save(excel_file)
+            logger.info(f'Background check: Excel file created at {excel_file}')
+            
+        except Exception as ex:
+            logger.error(f'Background check: Error creating Excel file: {ex}')
+            excel_file = None
+            
+        # Costruisci HTML table per email body
+        html_table = '<table border="1" style="border-collapse: collapse;">'
+        # Header
+        if results and hasattr(results[0], 'cursor_description'):
+            headers = [col[0] for col in results[0].cursor_description][1:]
+            html_table += '<tr>' + ''.join(f'<th style="padding: 5px; background-color: #f2f2f2;">{h}</th>' for h in headers) + '</tr>'
+        
+        for row in display_results:
+            html_table += '<tr>' + ''.join(f'<td style="padding: 5px;">{str(cell)}</td>' for cell in row) + '</tr>'
+        html_table += '</table>'
+
+        email_body = f"""
+        <html>
+        <body>
+            <p>Dear users,</p>
+            <p>Discrepancies have been found between operator statements and production defects.</p>
+            <p>It means that the hourly check control, done on one board, was not completed or was not completed correctly.</p>
+            <p>It is important to note that this is not a production defect, but a discrepancy between the operator's statement and the production defect.</p>
+            <p>Please check the production defects and the operator's statements to ensure that the production defects are correct.</p>
+            <p>On top of that, ensure that the operator follows the correct procedure for the hourly check control.</p>
+            <p>Note that the column 'TimeDefectAfterCheck' is the column that shows the time of the defect after the check. 
+            Some times, the defect declaration has been posted very few minutes after the 'PASS' check response.</p>
+            <p>Last point, please consider to enforce the correct procedure for the hourly check control, and the operator's preparation
+            for the check.</p>
+            <p>Below are the details:</p>
+            <br>
+            {html_table}
+            <br>
+            <p>The data can also be viewed in the Management Document program under the Reports section of the Verifications menu.</p>
+            <p>Cordially,<br>Traceability System</p>
+        </body>
+        </html>
+        """
+
+        # Invia email con allegato Excel
+        attachments_list = [excel_file] if excel_file and os.path.exists(excel_file) else []
+        
+        if utils.send_email(recipients, 'Notice on verify boards discrepancies', email_body, is_html=True, attachments=attachments_list):
+            logger.info('Background check: Email sent successfully.')
+            
+            # Pulisci file temporaneo
+            if excel_file and os.path.exists(excel_file):
+                try:
+                    os.remove(excel_file)
+                    logger.info('Background check: Temporary Excel file removed.')
+                except Exception as ex:
+                    logger.warning(f'Background check: Could not remove temp file: {ex}')
+            
+            # Aggiorna database (IsAnalized = 1)
+            if ids_to_update:
+                try:
+                    placeholders = ','.join(['?'] * len(ids_to_update))
+                    update_query = f"UPDATE [Traceability_RS].[dbo].[PeriodicalProductCheckLogs] SET IsAnalized = 1 WHERE PeriodicalProductCheckLogId IN ({placeholders})"
+                    
+                    cursor = db_handler.conn.cursor()
+                    cursor.execute(update_query, ids_to_update)
+                    db_handler.conn.commit()
+                    cursor.close()
+                    logger.info(f'Background check: Updated {len(ids_to_update)} records as analyzed.')
+                except Exception as ex:
+                    logger.error(f'Background check: Error updating database: {ex}')
+        else:
+            logger.error('Background check: Error sending email.')
+            # Pulisci file temporaneo anche in caso di errore
+            if excel_file and os.path.exists(excel_file):
+                try:
+                    os.remove(excel_file)
+                except:
+                    pass
+
+    except Exception as e:
+        logger.error(f'Background check error: {e}')

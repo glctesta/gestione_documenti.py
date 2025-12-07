@@ -168,12 +168,14 @@ class ProductManagementFrame(ttk.Frame):
         paned_window.add(list_frame, weight=1)
 
         cols = (self.lang.get('col_id'), self.lang.get('col_product_code'), self.lang.get('col_product_name'),
-                self.lang.get('col_customer'))
+                self.lang.get('col_customer'), self.lang.get('label_version', 'Versione'))
         self.tree = ttk.Treeview(list_frame, columns=cols, show='headings', selectmode='browse')
         for col in cols: self.tree.heading(col, text=col)
         self.tree.column(cols[0], width=50)
         self.tree.column(cols[1], width=100)
         self.tree.column(cols[2], width=200)
+        self.tree.column(cols[3], width=150)
+        self.tree.column(cols[4], width=80)
         self.tree.pack(fill=tk.BOTH, expand=True)
         self.tree.bind('<<TreeviewSelect>>', self._on_product_select)
 
@@ -199,9 +201,17 @@ class ProductManagementFrame(ttk.Frame):
         ttk.Button(button_frame, text=self.lang.get('btn_delete'), command=self._delete_product).pack(side=tk.LEFT,
                                                                                                       padx=5)
 
-        # --- FUNZIONALITA' DI GESTIONE PROGETTO RIPRISTINATA QUI ---
+        # --- FUNZIONALITA' DI GESTIONE PROGETTO CON VERSIONE ---
         project_frame = ttk.LabelFrame(form_panel, text=self.lang.get('project_npi_management_title'), padding=10)
         project_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Campo Versione per il progetto NPI
+        version_frame = ttk.Frame(project_frame)
+        version_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(version_frame, text=self.lang.get('label_version', 'Versione:')).pack(side=tk.LEFT, padx=(0, 5))
+        self.version_entry = ttk.Entry(version_frame, width=20)
+        self.version_entry.pack(side=tk.LEFT)
+        
         self.create_project_button = ttk.Button(project_frame, text=self.lang.get('btn_create_npi_project'),
                                                 command=self._create_npi_project, state=tk.DISABLED)
         self.create_project_button.pack(pady=10)
@@ -212,9 +222,15 @@ class ProductManagementFrame(ttk.Frame):
         for i in self.tree.get_children(): self.tree.delete(i)
         products = self.npi_manager.get_prodotti()
         if products:
+            # Recupera i progetti NPI per ottenere le versioni
+            progetti = self.npi_manager.get_progetti_attivi()
+            # Crea una mappa prodotto_id -> versione
+            version_map = {p.ProdottoID: p.Version for p in progetti if p.Version}
+            
             for p in products:
+                version = version_map.get(p.ProdottoID, "")
                 self.tree.insert('', tk.END,
-                                 values=(p.ProdottoID, p.CodiceProdotto or "", p.NomeProdotto, p.Cliente or ""))
+                                 values=(p.ProdottoID, p.CodiceProdotto or "", p.NomeProdotto, p.Cliente or "", version))
 
     def _on_product_select(self, event=None):
         if not self.tree.selection(): return
@@ -278,11 +294,19 @@ class ProductManagementFrame(ttk.Frame):
             messagebox.showwarning(self.lang.get('warning_no_selection_title'),
                                    self.lang.get('warning_select_product_to_create_project'), parent=self)
             return
+        
+        # Ottieni la versione dal campo di input
+        version = self.version_entry.get().strip() or None
+        
         try:
-            progetto = self.npi_manager.create_progetto_npi_for_prodotto(self.selected_product_id)
+            progetto = self.npi_manager.create_progetto_npi_for_prodotto(self.selected_product_id, version)
             if progetto:
                 messagebox.showinfo(self.lang.get('success_title'), self.lang.get('success_project_created').format(
                     product_name=progetto.prodotto.NomeProdotto), parent=self)
+                # Pulisci il campo versione dopo la creazione
+                self.version_entry.delete(0, tk.END)
+                # Ricarica la lista prodotti per mostrare la versione
+                self._load_products()
             else:
                 messagebox.showinfo(self.lang.get('info_title'), self.lang.get('info_project_already_exists'),
                                     parent=self)

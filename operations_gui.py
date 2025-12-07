@@ -3,7 +3,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 from tkcalendar import DateEntry
 from datetime import datetime, timedelta
-#import os
+import os
 import json
 import openpyxl
 from openpyxl.styles import Font, PatternFill
@@ -36,6 +36,9 @@ class AddInterruptionWindow(tk.Toplevel):
         self.action_plan_placeholder = self.lang.get('action_plan_placeholder', 'Inserire un piano d''azione...')
         self.comments_placeholder = self.lang.get('comments_placeholder',
                                                   'Digita una nota per spiegare meglio il problema...')
+        
+        # Lista per memorizzare i documenti caricati
+        self.uploaded_documents = []  # Format: [{'filename': str, 'description': str, 'binary_data': bytes}, ...]
 
         self._create_widgets()
         self._load_initial_data()
@@ -121,8 +124,30 @@ class AddInterruptionWindow(tk.Toplevel):
         notes_frame.grid(row=3, column=0, columnspan=4, sticky="nsew", pady=5)
         main_frame.rowconfigure(3, weight=1)
         notes_frame.columnconfigure(0, weight=1)
-        notes_frame.rowconfigure(0, weight=1)
-        notes_frame.rowconfigure(2, weight=1)
+        notes_frame.rowconfigure(1, weight=1)
+        notes_frame.rowconfigure(3, weight=1)
+        
+        # Sezione Documenti Allegati
+        docs_header_frame = ttk.Frame(notes_frame)
+        docs_header_frame.pack(fill="x", padx=5, pady=(5, 2))
+        ttk.Label(docs_header_frame, text=self.lang.get('documents_section_label', "Documenti Allegati:"), 
+                  font=("Helvetica", 9, "bold")).pack(side="left")
+        ttk.Button(docs_header_frame, text=self.lang.get('add_document_button', "Aggiungi Documento"),
+                   command=self._add_document).pack(side="left", padx=10)
+        ttk.Button(docs_header_frame, text=self.lang.get('remove_document_button', "Rimuovi Documento"),
+                   command=self._remove_document).pack(side="left")
+        
+        # Lista documenti
+        docs_list_frame = ttk.Frame(notes_frame)
+        docs_list_frame.pack(fill="x", padx=5, pady=(0, 5))
+        
+        self.docs_listbox = tk.Listbox(docs_list_frame, height=3)
+        self.docs_listbox.pack(side="left", fill="both", expand=True)
+        
+        docs_scrollbar = ttk.Scrollbar(docs_list_frame, orient="vertical", command=self.docs_listbox.yview)
+        docs_scrollbar.pack(side="right", fill="y")
+        self.docs_listbox.config(yscrollcommand=docs_scrollbar.set)
+        
         ttk.Label(notes_frame, text=self.lang.get('comments_label', "Commenti (*):")).pack(anchor="w")
         self.notes_text = tk.Text(notes_frame, height=4)
         self.notes_text.insert("1.0", self.comments_placeholder)
@@ -242,6 +267,85 @@ class AddInterruptionWindow(tk.Toplevel):
         if not self.action_text.get("1.0", "end-1c"):
             self.action_text.insert("1.0", self.action_plan_placeholder)
             self.action_text.config(foreground="grey")
+    
+    def _add_document(self):
+        """Apre un file dialog per selezionare un documento da allegare."""
+        file_path = filedialog.askopenfilename(
+            title=self.lang.get('select_document_title', "Seleziona Documento"),
+            filetypes=[
+                ("All Files", "*.*"),
+                ("PDF Files", "*.pdf"),
+                ("Image Files", "*.png *.jpg *.jpeg *.bmp *.gif"),
+                ("Word Documents", "*.doc *.docx"),
+                ("Excel Files", "*.xls *.xlsx")
+            ]
+        )
+        
+        if not file_path:
+            return
+        
+        # Chiedi la descrizione del documento
+        description = simpledialog.askstring(
+            self.lang.get('document_description_title', "Descrizione Documento"),
+            self.lang.get('document_description_prompt', "Inserisci una breve descrizione del documento:"),
+            parent=self
+        )
+        
+        if not description:
+            messagebox.showwarning(
+                self.lang.get('warning_title', "Attenzione"),
+                self.lang.get('description_required', "La descrizione è obbligatoria per allegare un documento."),
+                parent=self
+            )
+            return
+        
+        # Leggi il file come dati binari
+        try:
+            with open(file_path, 'rb') as f:
+                binary_data = f.read()
+            
+            filename = os.path.basename(file_path)
+            
+            # Aggiungi alla lista dei documenti
+            self.uploaded_documents.append({
+                'filename': filename,
+                'description': description,
+                'binary_data': binary_data
+            })
+            
+            self._update_document_list()
+            
+        except Exception as e:
+            messagebox.showerror(
+                self.lang.get('error_title', "Errore"),
+                self.lang.get('error_reading_file', f"Errore durante la lettura del file: {e}"),
+                parent=self
+            )
+    
+    def _remove_document(self):
+        """Rimuove il documento selezionato dalla lista."""
+        selection = self.docs_listbox.curselection()
+        
+        if not selection:
+            messagebox.showwarning(
+                self.lang.get('warning_title', "Attenzione"),
+                self.lang.get('no_document_selected', "Nessun documento selezionato."),
+                parent=self
+            )
+            return
+        
+        index = selection[0]
+        del self.uploaded_documents[index]
+        self._update_document_list()
+    
+    def _update_document_list(self):
+        """Aggiorna la listbox con i documenti caricati."""
+        self.docs_listbox.delete(0, tk.END)
+        
+        for doc in self.uploaded_documents:
+            display_text = f"{doc['filename']} - {doc['description']}"
+            self.docs_listbox.insert(tk.END, display_text)
+
 
     def _save_interruption(self):
         try:
@@ -282,9 +386,26 @@ class AddInterruptionWindow(tk.Toplevel):
                                                                       '') if order_name and '[' in order_name else None
             params['hours'] = round(params['lost_gain'] / 60.0, 2)
 
-            success, msg = self.db.add_production_interruption(params)
+            # Salva la testata dell'interruzione
+            success, msg, breakdown_id = self.db.add_production_interruption(params)
 
             if success:
+                # Se ci sono documenti da salvare, salvali ora
+                if self.uploaded_documents:
+                    doc_success, doc_msg = self.db.add_interruption_documents(
+                        breakdown_id, 
+                        self.uploaded_documents, 
+                        self.user_name
+                    )
+                    
+                    if not doc_success:
+                        messagebox.showwarning(
+                            self.lang.get('warning_title', "Attenzione"),
+                            self.lang.get('document_save_error', 
+                                         f"Interruzione salvata, ma errore nel salvataggio documenti: {doc_msg}"),
+                            parent=self
+                        )
+                
                 messagebox.showinfo("Successo", msg, parent=self)
                 self.destroy()
             else:
@@ -293,6 +414,7 @@ class AddInterruptionWindow(tk.Toplevel):
             messagebox.showerror("Dati Mancanti o non Validi",
                                  f"Assicurati che tutti i campi obbligatori (*) siano compilati correttamente.\n\nDettaglio: {e}",
                                  parent=self)
+
 
 class ShippingReportWindow(tk.Toplevel):
     """Finestra per la gestione avanzata dei piani di spedizione."""

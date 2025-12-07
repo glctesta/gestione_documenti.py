@@ -129,6 +129,10 @@ class ProjectWindow(tk.Toplevel):
         self.project_due_date_entry = DateEntry(dates_frame, width=12, background='darkblue', foreground='white', borderwidth=2, date_pattern='dd/mm/yyyy')
         self.project_due_date_entry.pack(side=tk.LEFT, padx=5)
         
+        ttk.Label(dates_frame, text=self.lang.get('label_version', 'Versione:')).pack(side=tk.LEFT, padx=5)
+        self.project_version_entry = ttk.Entry(dates_frame, width=10)
+        self.project_version_entry.pack(side=tk.LEFT, padx=5)
+        
         ttk.Button(dates_frame, text=self.lang.get('save_dates', 'Salva Date'), command=self._save_project_dates).pack(side=tk.LEFT, padx=5)
 
         # Content Split
@@ -309,10 +313,17 @@ class ProjectWindow(tk.Toplevel):
             self.progetto = self.npi_manager.get_dettagli_progetto(self.project_id)
             if not self.progetto: raise ValueError("Progetto non trovato.")
 
-            title = f"{self.progetto.prodotto.CodiceProdotto or 'N/A'} - {self.progetto.prodotto.NomeProdotto}"
+            # Costruisci il titolo con versione se presente
+            version_str = f" (v{self.progetto.Version})" if self.progetto.Version else ""
+            title = f"{self.progetto.prodotto.CodiceProdotto or 'N/A'} - {self.progetto.prodotto.NomeProdotto}{version_str}"
             self.header_label.config(text=title)
             self.project_start_date_entry.set_date(self.progetto.DataInizio)
             self.project_due_date_entry.set_date(self.progetto.ScadenzaProgetto)
+            
+            # Popola il campo Version
+            if self.progetto.Version:
+                self.project_version_entry.delete(0, tk.END)
+                self.project_version_entry.insert(0, self.progetto.Version)
 
             self._populate_treeview()
 
@@ -689,8 +700,14 @@ class ProjectWindow(tk.Toplevel):
         try:
             start = datetime.strptime(self.project_start_date_entry.get(), '%d/%m/%Y')
             due = datetime.strptime(self.project_due_date_entry.get(), '%d/%m/%Y')
+            version = self.project_version_entry.get().strip() or None
+            
+            # Salva le date
             updated, msg = self.npi_manager.update_project_dates(self.project_id, start, due, self.lang)
-            messagebox.showinfo("Successo", "Date aggiornate.", parent=self)
+            
+            # Salva la versione
+            self.npi_manager.update_progetto_npi(self.project_id, {'Version': version})
+            messagebox.showinfo("Successo", "Date e versione aggiornate.", parent=self)
             if msg: messagebox.showinfo('Informazione', msg, parent=self)
             self._load_data_and_populate_ui()
         except Exception as e:

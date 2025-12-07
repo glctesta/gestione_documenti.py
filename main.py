@@ -264,8 +264,6 @@ def setup_logging(debug: bool = False,
     return str(Path(file_path).resolve())
 
 
-
-# Esempio di utilizzo all’avvio (main.py):
 LOG_FILE_PATH = setup_logging(debug=False, logger_name="TraceabilityRS")
 logger = logging.getLogger("TraceabilityRS")
 logger.info("Logging avviato. File: %s", LOG_FILE_PATH)
@@ -278,7 +276,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = "2.0.6"  # Versione aggiornata
+APP_VERSION = "2.0.8"  # Versione aggiornata
 APP_DEVELOPER = "Gianluca Testa"
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -2955,6 +2953,21 @@ class Database:
         # 3. Creiamo e restituiamo l'oggetto User completo
         return User(name=employee_name, permissions=permissions)
 
+    def authenticate_and_get_user_simple(self, user_id, password):
+            """
+            Autentica un utente e, se ha successo, recupera i suoi dati e permessi.
+            :return: Un oggetto User in caso di successo, altrimenti None.
+            """
+            # 1. Eseguiamo l'autenticazione esistente per verificare le credenziali
+            employee_name = self.authenticate_user(user_id, password)
+            logger.info("authenticate_user result for user_id=%r: %s", user_id,
+                        "OK" if employee_name else "FAILED")
+
+            if not employee_name:
+                return None  # Login fallito
+
+            return User(name=employee_name)        
+
     def get_calibratable_equipment(self):
         """
         Recupera dal database la lista di tutte le attrezzature che
@@ -4419,7 +4432,7 @@ Accedi al sistema per visualizzare i dettagli completi.
                 import utils
                 if hasattr(utils, 'send_email'):
                     success = utils.send_email(
-                        to_addresses=email_addresses,
+                        recipients=email_addresses,
                         subject=subject,
                         body=body
                     )
@@ -5006,8 +5019,6 @@ Accedi al sistema per visualizzare i dettagli completi.
 
     def fetch_issue_problems_by_subarea(self, sub_area_id):
         """Recupera i problemi/eventi specifici per una Sotto-Area."""
-        # CORREZIONE 1: Nome tabella da '...PerLines' a '...PerLine'
-        # CORREZIONE 2: Nome colonna da 'bdl.IusseProblemId' a 'bdl.IssueProblemId'
         query = """
                 SELECT ip.IssueProblemId, ip.DescriptionEN
                 FROM ResetServices.BreakDown.IssueProblemsPerLines AS BDL
@@ -5091,16 +5102,17 @@ Accedi al sistema per visualizzare i dettagli completi.
             print(f"ERRORE SQL in fetch_issue_problems: {e}")
             self.last_error_details = str(e)
             return []
-
+    
     def add_production_interruption(self, params):
         """Salva un nuovo record di interruzione produzione in ReportIssueLogs."""
         query = """
-                INSERT INTO ResetServices.[BreakDown].[ReportIssueLogs] ([DateReport], [HourReport], [UserName], [IssueAreaId], \
-                                                            [WorkingAreaID],
-                    [WorkingLineID], [WorkingSubAreaID], [IssueProblemId], [FromHour], [ToHour],
-                    [Lost_OR_Gain], [Hours], [PoNumber], [ProductCode], [Note], [ActionPlan]) \
-                VALUES (?, GETDATE(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?); \
-                """
+            INSERT INTO ResetServices.[BreakDown].[ReportIssueLogs] ([DateReport], [HourReport], [UserName], [IssueAreaId], \
+                                                        [WorkingAreaID],
+                [WorkingLineID], [WorkingSubAreaID], [IssueProblemId], [FromHour], [ToHour],
+                [Lost_OR_Gain], [Hours], [PoNumber], [ProductCode], [Note], [ActionPlan]) \
+            VALUES (?, GETDATE(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?); \
+            SELECT SCOPE_IDENTITY() AS NewID;
+            """
         try:
             self.cursor.execute(query,
                                 params['report_date'], params['user_name'], params['issue_area_id'],
@@ -5110,13 +5122,40 @@ Accedi al sistema per visualizzare i dettagli completi.
                                 params['lost_gain'], params['hours'], params['po_number'], params['product_code'],
                                 params['note'], params['action_plan']
                                 )
+            
+            # Recupera l'ID appena inserito
+            row = self.cursor.fetchone()
+            breakdown_id = int(row.NewID) if row else None
+            
             self.conn.commit()
-            return True, "Interruzione di produzione registrata con successo."
+            return True, "Interruzione di produzione registrata con successo.", breakdown_id
         except Exception as e:
             self.conn.rollback()
             self.last_error_details = str(e)
-            return False, f"Errore durante il salvataggio: {e}"
-
+            return False, f"Errore durante il salvataggio: {e}", None
+    
+    def add_interruption_documents(self, breakdown_id, documents_list, user_name):
+        """Salva i documenti allegati a un'interruzione di produzione."""
+        query = """
+            INSERT INTO ResetServices.[BreakDown].[ReportedIssueLogDocs] 
+            ([BreakDownProblemLogId], [Document], [DocDescription], [AddBy])
+            VALUES (?, ?, ?, ?);
+            """
+        try:
+            for doc in documents_list:
+                self.cursor.execute(query, 
+                                   breakdown_id, 
+                                   doc['binary_data'], 
+                                   doc['description'], 
+                                   user_name)
+            
+            self.conn.commit()
+            return True, f"{len(documents_list)} documento/i salvato/i con successo."
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            return False, f"Errore durante il salvataggio dei documenti: {e}"
+    
     def check_if_material_exists(self, part_number):
         """Controlla se un materiale con un dato Codice Articolo esiste già. Restituisce True se esiste, altrimenti False."""
         query = "SELECT COUNT(*) FROM eqp.SparePartMaterials WHERE MaterialPartNumber = ?;"
@@ -5126,6 +5165,7 @@ Accedi al sistema per visualizzare i dettagli completi.
         except pyodbc.Error as e:
             print(f"Errore nel controllo esistenza materiale: {e}")
             return False  # Per sicurezza, non blocchiamo l'utente in caso di errore
+
 
     def fetch_material_document(self, material_id):
         """Recupera i dati binari del documento per un singolo materiale."""
@@ -9541,12 +9581,22 @@ class App(tk.Tk):
             self, self.db, self.lang, self._temp_authorized_user_id
         )
 
-    def _open_product_verification(self):
+    def _open_product_verification(self, user_id=None):
         """Apre la finestra di esecuzione verifiche prodotti"""
         import product_checks_gui
+        # Se user_id non è passato, usa _temp_authorized_user_id (fallback per vecchie chiamate)
+        if user_id is None:
+            user_id = getattr(self, '_temp_authorized_user_id', None)
         product_checks_gui.ProductVerificationWindow(
-            self, self.db, self.lang, self._temp_authorized_user_id
+            self, self.db, self.lang, user_id
         )
+    
+    def open_product_verification_with_login(self):
+        """Richiede il login e poi apre la finestra di verifica prodotti"""
+        self._execute_simple_login(
+            action_callback=lambda user_id: self._open_product_verification(user_id)
+        )
+
 
     def _start_product_check_routine(self):
         """Avvia la routine periodica di controllo prodotti"""
@@ -9604,181 +9654,204 @@ class App(tk.Tk):
 
     def _kanban_refill_check_worker(self, manual=False):
         pass
-        # """
-        # Logica di controllo Kanban refill
-        # """
-        # log = logging.getLogger("TraceabilityRS")
-        # try:
-        #     # Verifica preliminare della connessione
-        #     if not self.db._ensure_connection():
-        #         log.error("Connessione al database non disponibile per Kanban refill check")
-        #         if manual:
-        #             self.after(0, lambda: messagebox.showerror(
-        #                 self.lang.get('error_title', 'Errore'),
-        #                 "Connessione al database non disponibile. Riprovare più tardi."
-        #             ))
-        #         return
-        #
-        #     # 1. Stock corrente per componente
-        #     log.info("Recupero stock corrente...")
-        #     stock_map = self.db.fetch_kanban_current_stock_by_component()
-        #
-        #     # Gestione degli errori
-        #     if stock_map is None:  # Errore di connessione o query fallita
-        #         log.error("Errore nel recupero stock - connessione persa o query fallita")
-        #         if manual:
-        #             self.after(0, lambda: messagebox.showerror(
-        #                 self.lang.get('error_title', 'Errore'),
-        #                 "Errore di connessione durante il recupero dei dati stock."
-        #             ))
-        #         return
-        #
-        #     if not stock_map:  # Nessun dato ma senza errori (tabella vuota)
-        #         log.warning("Nessun dato stock recuperato (tabella vuota o tutti i componenti hanno DateOut)")
-        #         if manual:
-        #             self.after(0, lambda: messagebox.showinfo(
-        #                 self.lang.get('info_title', 'Informazione'),
-        #                 "Nessun componente trovato con stock attivo (tutti i componenti hanno DateOut compilato)."
-        #             ))
-        #         return
-        #
-        #     comp_ids = list(stock_map.keys())
-        #     log.info(f"Componenti da processare: {len(comp_ids)}")
-        #
-        #     # 2. Regole attive per componente
-        #     log.info("Recupero regole attive...")
-        #     # rules_map = self.db.fetch_active_rules_by_component()
-        #     # if rules_map is None:  # Errore di connessione
-        #     #     log.error("Errore nel recupero regole attive")
-        #     #     return
-        #     # log.info(f"Regole attive trovate: {len(rules_map)}")
-        #
-        #     # 3. Prima quantità (per chi ha regola percentuale)
-        #     # pct_comp_ids = [cid for cid, r in rules_map.items() if r.get('min_pct') is not None]
-        #     # first_qty_map = {}
-        #     # if pct_comp_ids:
-        #     #     log.info(f"Recupero prime quantità per {len(pct_comp_ids)} componenti...")
-        #     #     first_qty_map = self.db.fetch_first_load_qty_by_component(pct_comp_ids)
-        #     #     if first_qty_map is None:  # Errore di connessione
-        #     #         log.error("Errore nel recupero prime quantità")
-        #     #         return
-        #     #     log.info(f"Prime quantità recuperate: {len(first_qty_map)}")
-        #
-        #     # 4. Max singolo carico + record id
-        #     log.info("Recupero max carichi...")
-        #     max_load_map = self.db.fetch_max_single_load_by_component(comp_ids)
-        #     if max_load_map is None:  # Errore di connessione
-        #         log.error("Errore nel recupero max carichi")
-        #         return
-        #     log.info(f"Max carichi recuperati: {len(max_load_map)}")
-        #
-        #     # 5. Master component
-        #     log.info("Recupero master component...")
-        #     master_map = self.db.fetch_components_master(comp_ids)
-        #     if master_map is None:  # Errore di connessione
-        #         log.error("Errore nel recupero master component")
-        #         return
-        #     log.info(f"Master component recuperati: {len(master_map)}")
-        #
-        #     # 6. Valuta richieste
-        #     requests = []  # elementi: dict con info per Excel e per insert
-        #     for cid, cur_stock in stock_map.items():
-        #         rule = rules_map.get(cid)
-        #         if rule:
-        #             if rule.get('min_qty') is not None:
-        #                 threshold = int(rule['min_qty'])
-        #                 rule_type = "ABS"
-        #                 rule_value = threshold
-        #             else:
-        #                 # percentuale: calcolo su prima quantità
-        #                 base = int(first_qty_map.get(cid, 0))
-        #                 pct = int(rule.get('min_pct') or 0)
-        #                 # floor per non anticipare troppo
-        #                 threshold = int((base * pct) / 100) if base > 0 and pct > 0 else 0
-        #                 rule_type = "PCT"
-        #                 rule_value = pct
-        #         else:
-        #             threshold = 0
-        #             rule_type = "NA"
-        #             rule_value = None
-        #
-        #         if cur_stock <= threshold:
-        #             ml = max_load_map.get(cid)
-        #             if not ml:
-        #                 continue
-        #             qty_to_refill = int(ml['max_qty'])
-        #             krec_id = int(ml['record_id'])
-        #             # dedup: se già presente oggi per questa KanBanRecordId, salta
-        #             if self.db.has_refill_request_today(krec_id):
-        #                 continue
-        #             # prepara riga
-        #             meta = master_map.get(cid, {'code': f"#{cid}", 'desc': ''})
-        #             requests.append({
-        #                 'component_id': cid,
-        #                 'component_code': meta['code'],
-        #                 'component_desc': meta['desc'],
-        #                 'current_stock': int(cur_stock),
-        #                 'threshold': int(threshold),
-        #                 'rule_type': rule_type,
-        #                 'rule_value': rule_value,
-        #                 'max_single_load': qty_to_refill,
-        #                 'qty_to_refill': qty_to_refill,
-        #                 'kanban_record_id': krec_id
-        #             })
-        #
-        #     if not requests:
-        #         if manual:
-        #             self.after(0, lambda: messagebox.showinfo(
-        #                 self.lang.get('info_title', 'Informazione'),
-        #                 self.lang.get('kanban_refill_none', 'Nessun componente da richiedere.')
-        #             ))
-        #         return
-        #
-        #     # 7. Genera Excel in memoria
-        #     excel_bytes = self._build_kanban_refill_excel(requests)
-        #
-        #     # 8. Destinatari mail
-        #     try:
-        #         recipients = utils.get_email_recipients(self.db.conn, attribute='Sys_email_KanBanRefill')
-        #     except Exception as e:
-        #         log.error("KanbanRefill: error reading recipients: %s", e)
-        #         recipients = []
-        #
-        #     if not recipients:
-        #         log.warning("KanbanRefill: no recipients for Sys_email_KanBanRefill; skipping email.")
-        #         return
-        #
-        #     # 9. Invia email (con allegato Excel)
-        #     subject = "[Kanban] Refill request - Repair Kanban"
-        #     body = (
-        #         "Dear Colleagues,\n\n"
-        #         "Please find attached the refill request for dedicated materials of the repairers' KANBAN.\n"
-        #         "The list includes all components whose current stock is at or below the configured reorder point.\n\n"
-        #         "Regards,\nTraceability System"
-        #     )
-        #
-        #     try:
-        #         utils.send_email(
-        #             recipients=recipients,
-        #             subject=subject,
-        #             body=body,
-        #             attachments=[("KanbanRefill.xlsx", excel_bytes)]
-        #         )
-        #         log.info("KanbanRefill: email sent to %d recipients.", len(recipients))
-        #     except Exception as e:
-        #         log.error("KanbanRefill: email send failed: %s", e)
-        #         return
-        #
-        #     # 10. Registra richieste su DB
-        #     for req in requests:
-        #         ok = self.db.insert_refill_request(req['kanban_record_id'], req['qty_to_refill'])
-        #         if not ok:
-        #             log.warning("KanbanRefill: insert failed for KanBanRecordId=%s: %s",
-        #                         req['kanban_record_id'], self.db.last_error_details)
-        #
-        # except Exception as e:
-        #     logging.getLogger("TraceabilityRS").exception("KanbanRefill job failed: %s", e)
-        #     log.exception("KanbanRefill job failed completamente: %s", e)
+        """
+        Logica di controllo Kanban refill
+        """
+        log = logging.getLogger("TraceabilityRS")
+        try:
+            # Verifica preliminare della connessione
+            if not self.db._ensure_connection():
+                log.error("Connessione al database non disponibile per Kanban refill check")
+                if manual:
+                    self.after(0, lambda: messagebox.showerror(
+                        self.lang.get('error_title', 'Errore'),
+                        "Connessione al database non disponibile. Riprovare più tardi."
+                    ))
+                return
+        
+            # 1. Stock corrente per componente
+            log.info("Recupero stock corrente...")
+            stock_map = self.db.fetch_kanban_current_stock_by_component()
+        
+            # Gestione degli errori
+            if stock_map is None:  # Errore di connessione o query fallita
+                log.error("Errore nel recupero stock - connessione persa o query fallita")
+                if manual:
+                    self.after(0, lambda: messagebox.showerror(
+                        self.lang.get('error_title', 'Errore'),
+                        "Errore di connessione durante il recupero dei dati stock."
+                    ))
+                return
+        
+            if not stock_map:  # Nessun dato ma senza errori (tabella vuota)
+                log.warning("Nessun dato stock recuperato (tabella vuota o tutti i componenti hanno DateOut)")
+                if manual:
+                    self.after(0, lambda: messagebox.showinfo(
+                        self.lang.get('info_title', 'Informazione'),
+                        "Nessun componente trovato con stock attivo (tutti i componenti hanno DateOut compilato)."
+                    ))
+                return
+        
+            comp_ids = list(stock_map.keys())
+            log.info(f"Componenti da processare: {len(comp_ids)}")
+        
+            # 2. Regole attive per componente
+            log.info("Recupero regole attive...")
+            rules_map = self.db.fetch_active_rules_by_component()
+            if rules_map is None:  # Errore di connessione
+                log.error("Errore nel recupero regole attive")
+                return
+            log.info(f"Regole attive trovate: {len(rules_map)}")
+        
+            #3. Prima quantità (per chi ha regola percentuale)
+            pct_comp_ids = [cid for cid, r in rules_map.items() if r.get('min_pct') is not None]
+            first_qty_map = {}
+            if pct_comp_ids:
+                log.info(f"Recupero prime quantità per {len(pct_comp_ids)} componenti...")
+                first_qty_map = self.db.fetch_first_load_qty_by_component(pct_comp_ids)
+                if first_qty_map is None:  # Errore di connessione
+                    log.error("Errore nel recupero prime quantità")
+                    return
+                log.info(f"Prime quantità recuperate: {len(first_qty_map)}")
+        
+            # 4. Max singolo carico + record id
+            log.info("Recupero max carichi...")
+            max_load_map = self.db.fetch_max_single_load_by_component(comp_ids)
+            if max_load_map is None:  # Errore di connessione
+                log.error("Errore nel recupero max carichi")
+                return
+            log.info(f"Max carichi recuperati: {len(max_load_map)}")
+        
+            # 5. Master component
+            log.info("Recupero master component...")
+            master_map = self.db.fetch_components_master(comp_ids)
+            if master_map is None:  # Errore di connessione
+                log.error("Errore nel recupero master component")
+                return
+            log.info(f"Master component recuperati: {len(master_map)}")
+        
+            # 6. Valuta richieste
+            requests = []  # elementi: dict con info per Excel e per insert
+            for cid, cur_stock in stock_map.items():
+                rule = rules_map.get(cid)
+                if rule:
+                    if rule.get('min_qty') is not None:
+                        threshold = int(rule['min_qty'])
+                        rule_type = "ABS"
+                        rule_value = threshold
+                    else:
+                        # percentuale: calcolo su prima quantità
+                        base = int(first_qty_map.get(cid, 0))
+                        pct = int(rule.get('min_pct') or 0)
+                        # floor per non anticipare troppo
+                        threshold = int((base * pct) / 100) if base > 0 and pct > 0 else 0
+                        rule_type = "PCT"
+                        rule_value = pct
+                else:
+                    threshold = 0
+                    rule_type = "NA"
+                    rule_value = None
+        
+                if cur_stock <= threshold:
+                    ml = max_load_map.get(cid)
+                    if not ml:
+                        continue
+                    qty_to_refill = int(ml['max_qty'])
+                    krec_id = int(ml['record_id'])
+                    # dedup: se già presente oggi per questa KanBanRecordId, salta
+                    if self.db.has_refill_request_today(krec_id):
+                        continue
+                    # prepara riga
+                    meta = master_map.get(cid, {'code': f"#{cid}", 'desc': ''})
+                    requests.append({
+                        'component_id': cid,
+                        'component_code': meta['code'],
+                        'component_desc': meta['desc'],
+                        'current_stock': int(cur_stock),
+                        'threshold': int(threshold),
+                        'rule_type': rule_type,
+                        'rule_value': rule_value,
+                        'max_single_load': qty_to_refill,
+                        'qty_to_refill': qty_to_refill,
+                        'kanban_record_id': krec_id
+                    })
+        
+            if not requests:
+                if manual:
+                    self.after(0, lambda: messagebox.showinfo(
+                        self.lang.get('info_title', 'Informazione'),
+                        self.lang.get('kanban_refill_none', 'Nessun componente da richiedere.')
+                    ))
+                return
+        
+            # 7. Genera Excel in memoria
+            excel_bytes = self._build_kanban_refill_excel(requests)
+        
+            # 8. Destinatari mail
+            try:
+                recipients = utils.get_email_recipients(self.db.conn, attribute='Sys_email_KanBanRefill')
+            except Exception as e:
+                log.error("KanbanRefill: error reading recipients: %s", e)
+                recipients = []
+        
+            if not recipients:
+                log.warning("KanbanRefill: no recipients for Sys_email_KanBanRefill; skipping email.")
+                return
+        
+            # 9. Invia email (con allegato Excel)
+            subject = "[Kanban] Refill request - Repair Kanban"
+            body = (
+                "Dear Colleagues,\n\n"
+                "Please find attached the refill request for dedicated materials of the repairers' KANBAN.\n"
+                "The list includes all components whose current stock is at or below the configured reorder point.\n\n"
+                "Regards,\nTraceability System"
+            )
+        
+            try:
+                # Salva Excel in file temporaneo
+                import tempfile
+                import os
+                from datetime import datetime
+                
+                temp_dir = tempfile.gettempdir()
+                excel_temp_file = os.path.join(temp_dir, f"KanbanRefill_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
+                
+                with open(excel_temp_file, 'wb') as f:
+                    f.write(excel_bytes)
+                
+                # Invia email con allegato
+                success = utils.send_email(
+                    recipients=recipients,
+                    subject=subject,
+                    body=body,
+                    attachments=[excel_temp_file]
+                )
+                
+                if success:
+                    log.info("KanbanRefill: email sent to %d recipients.", len(recipients))
+                else:
+                    log.error("KanbanRefill: email send returned False")
+                
+                # Pulisci file temporaneo
+                try:
+                    os.remove(excel_temp_file)
+                except:
+                    pass
+                    
+            except Exception as e:
+                log.error("KanbanRefill: email send failed: %s", e)
+                return
+        
+            # 10. Registra richieste su DB
+            for req in requests:
+                ok = self.db.insert_refill_request(req['kanban_record_id'], req['qty_to_refill'])
+                if not ok:
+                    log.warning("KanbanRefill: insert failed for KanBanRecordId=%s: %s",
+                                req['kanban_record_id'], self.db.last_error_details)
+        
+        except Exception as e:
+            logging.getLogger("TraceabilityRS").exception("KanbanRefill job failed: %s", e)
+            log.exception("KanbanRefill job failed completamente: %s", e)
 
     def _build_kanban_refill_excel(self, rows: list[dict]) -> bytes:
         """
@@ -10556,6 +10629,27 @@ class App(tk.Tk):
         self.after(500, self._check_calibration_warnings_startup_async)
         logger.info('Avviato controllo quantita kanban')
         self._schedule_kanban_refill_check()
+        
+        logger.info('Avviato task verifica discrepanze background')
+        self.product_check_bg_job = self.after(5000, lambda: threading.Thread(target=self._run_verification_check_thread, daemon=True).start())
+
+    def _stop_product_check_background_task(self):
+        """Ferma/Pulisce il task di verifica discrepanze."""
+        if hasattr(self, 'product_check_bg_job') and self.product_check_bg_job:
+            try:
+                self.after_cancel(self.product_check_bg_job)
+            except Exception:
+                pass
+            self.product_check_bg_job = None
+
+    def _run_verification_check_thread(self):
+        """Esegue la logica di verifica in un thread separato."""
+        try:
+            logger.info("Background Check Thread: Inizio verifica...")
+            product_checks_gui.check_and_notify_verification_discrepancies(self.db)
+            logger.info("Background Check Thread: Verifica completata.")
+        except Exception as e:
+            logger.error(f"Errore nel thread di verifica background: {e}")
 
     def _setup_slideshow(self):
         """Legge le impostazioni e avvia il ciclo dello slideshow."""
@@ -10759,7 +10853,15 @@ class App(tk.Tk):
         self.wait_window(view_form)
 
     def _execute_simple_login(self, action_callback=None, required_permission=None):
-        logger.info("_execute_simple_login called; required_permission=%r", required_permission)
+        import inspect
+        # Get the caller information
+        caller_frame = inspect.stack()[1]
+        caller_function = caller_frame.function
+        caller_filename = caller_frame.filename
+        caller_lineno = caller_frame.lineno
+        
+        logger.info("_execute_simple_login called by function '%s' at %s:%d; required_permission=%r", 
+                    caller_function, caller_filename, caller_lineno, required_permission)
 
         login_form = LoginWindow(self, self.db, self.lang)
         self.wait_window(login_form)
@@ -10772,7 +10874,7 @@ class App(tk.Tk):
         logger.info("LoginWindow returned user_id=%r", user_id)
 
         password = login_form.password
-        user = self.db.authenticate_and_get_user(user_id, password)
+        user = self.db.authenticate_and_get_user_simple(user_id, password)
 
         if not user:
             logger.info("Authentication failed for user_id=%r", user_id)
@@ -10781,27 +10883,36 @@ class App(tk.Tk):
             return None
 
         logger.debug("Authenticated as %r; permissions=%s", user.name,
-                     sorted(user.permissions))
+                     sorted(user.permissions) if hasattr(user, 'permissions') else [])
 
-        if required_permission and not user.has_permission(required_permission):
-            logger.info("Permission check FAILED for %r -> required=%r",
-                         user.name, required_permission)
-            messagebox.showwarning(
-                self.lang.get('access_denied', "Accesso Negato"),
-                self.lang.get('permission_missing', "Non si dispone delle autorizzazioni per questa operazione."),
-                parent=self
-            )
-            return None
+        # Permessi commentati - login semplice senza controllo autorizzazioni
+        # if required_permission and not user.has_permission(required_permission):
+        #     logger.info("Permission check FAILED for %r -> required=%r",
+        #                  user.name, required_permission)
+        #     messagebox.showwarning(
+        #         self.lang.get('access_denied', "Accesso Negato"),
+        #         self.lang.get('permission_missing', "Non si dispone delle autorizzazioni per questa operazione."),
+        #         parent=self
+        #     )
+        #     return None
 
         if isinstance(action_callback, collections.abc.Callable):
-            # Passa il nome utente come da pattern esistente
-            action_callback(user.name)
+            # Passa user_id invece di user.name per compatibilità con _open_product_verification
+            action_callback(user_id)
 
         return user
 
     def _execute_authorized_action(self, menu_translation_key, action_callback):
-        logger.debug("_execute_authorized_action called; menu_translation_key=%r", menu_translation_key)
+        #logger.debug("_execute_authorized_action called; menu_translation_key=%r", menu_translation_key)
+        import inspect
+        # Get the caller information
+        caller_frame = inspect.stack()[1]
+        caller_function = caller_frame.function
+        caller_filename = caller_frame.filename
+        caller_lineno = caller_frame.lineno
         login_form = LoginWindow(self, self.db, self.lang)
+        logger.info("_execute_authorized_action called by function '%s' at %s:%d; menu_translation_key=%r", 
+                    caller_function, caller_filename, caller_lineno, menu_translation_key)
         self.wait_window(login_form)
 
         if not login_form.clicked_login:
@@ -11510,21 +11621,23 @@ class App(tk.Tk):
         self.product_checks_submenu.add_separator()
         self.product_checks_submenu.add_command(
             label=self.lang.get('submenu_verify_products', "Verifiche"),
-            command=lambda: self._execute_authorized_action(
-                'verify_product_check',
-                lambda: self._open_product_verification()
-            )
+            command=lambda: self.open_product_verification_with_login()
         )
 
         self.product_checks_submenu.add_separator()
         self.product_checks_submenu.add_command(
             label=self.lang.get('submenu_verification_reports', "Rapporti"),
-            command=lambda: messagebox.showinfo(
-                self.lang.get('info', 'Informazione'),
-                self.lang.get('feature_coming_soon', 'Funzionalità in arrivo')
-            ),
-            state='disabled'
+            command=lambda: self._open_verification_reports()
         )
+
+    def _open_verification_reports(self):
+        """Apre la finestra dei rapporti di verifica"""
+        try:
+            from product_checks_gui import VerificationReportsWindow
+            user = getattr(self, 'last_authenticated_user_name', 'Unknown')
+            VerificationReportsWindow(self, self.db, self.lang, user)
+        except Exception as e:
+            messagebox.showerror("Errore", f"Impossibile aprire i rapporti: {e}")
 
     def _update_reports_submenu(self):
         """Aggiorna il sottomenu Rapporti"""

@@ -556,7 +556,7 @@ class GestoreNPI:
         finally:
             session.close()
 
-    def create_progetto_npi_for_prodotto(self, prodotto_id):
+    def create_progetto_npi_for_prodotto(self, prodotto_id, version=None):
         """Crea un progetto NPI, la sua Wave 1.0 e tutti i task associati."""
         session = self._get_session()
         try:
@@ -571,7 +571,8 @@ class GestoreNPI:
             nuovo_progetto = ProgettoNPI(
                 ProdottoID=prodotto_id,
                 StatoProgetto='Attivo',
-                DataInizio=datetime.now()
+                DataInizio=datetime.now(),
+                Version=version  # Aggiungi la versione
             )
             session.add(nuovo_progetto)
             session.flush()
@@ -837,6 +838,28 @@ class GestoreNPI:
         finally:
             session.close()
 
+    def update_progetto_npi(self, project_id: int, data: dict):
+        """Aggiorna i campi di un progetto NPI."""
+        session = self._get_session()
+        try:
+            progetto = session.get(ProgettoNPI, project_id)
+            if not progetto:
+                raise ValueError(f"Progetto con ID {project_id} non trovato.")
+            
+            # Aggiorna i campi forniti
+            for key, value in data.items():
+                if hasattr(progetto, key):
+                    setattr(progetto, key, value)
+            
+            session.commit()
+            return self._detach_object(session, progetto)
+        except Exception as e:
+            logger.error(f"Errore durante l'aggiornamento del progetto {project_id}: {e}", exc_info=True)
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
     def set_target_npi_task(self, task_id, project_id):
         """
         Imposta un task come Target NPI (IsPostFinalMilestone=True) e rimuove il flag da tutti gli altri task del progetto.
@@ -1004,11 +1027,13 @@ class GestoreNPI:
 
     def get_dashboard_projects(self):
         """
-        Recupera i dati dei progetti per la dashboard principale, basandosi sulla milestone finale.
+        Recupera i dati dei progetti per la dashboard principale.
+        Mostra TUTTI i progetti, con la data della milestone finale se esiste.
         """
         session = self._get_session()
         try:
-            # Replica della query richiesta con SQLAlchemy
+            # Query modificata per mostrare TUTTI i progetti
+            # Usa LEFT JOIN per includere progetti senza milestone finale
             stmt = select(
                 ProgettoNPI.ProgettoId,
                 func.coalesce(ProgettoNPI.NomeProgetto, Prodotto.NomeProdotto).label("NomeProgetto"),
@@ -1017,14 +1042,12 @@ class GestoreNPI:
                 TaskProdotto.DataScadenza.label("ScadenzaMilestoneFinale")
             ).join(
                 Prodotto, ProgettoNPI.ProdottoID == Prodotto.ProdottoID
-            ).join(
+            ).outerjoin(
                 WaveNPI, ProgettoNPI.ProgettoId == WaveNPI.ProgettoID
-            ).join(
-                TaskProdotto, WaveNPI.WaveID == TaskProdotto.WaveID
-            ).join(
-                TaskCatalogo, TaskProdotto.TaskID == TaskCatalogo.TaskID
-            ).where(
-                TaskCatalogo.IsFinalMilestone == True
+            ).outerjoin(
+                TaskProdotto, 
+                (WaveNPI.WaveID == TaskProdotto.WaveID) & 
+                (TaskProdotto.IsPostFinalMilestone == True)
             ).order_by(
                 ProgettoNPI.DataInizio.desc()
             )
@@ -1129,7 +1152,7 @@ class GestoreNPI:
 
             for task in tasks:
                 # Trova la milestone finale per il reminder
-                if task.task_catalogo and task.task_catalogo.IsFinalMilestone:
+                if task.IsPostFinalMilestone:
                     final_milestone_task = task
 
                 # Controlla se il task è in ritardo

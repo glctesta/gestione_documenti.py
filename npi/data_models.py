@@ -79,6 +79,7 @@ class ProgettoNPI(Base):
     DataInizio = Column(DateTime)
     NomeProgetto = Column(String(255))
     ScadenzaProgetto = Column(DateTime, nullable=True)
+    Version = Column(String(50), nullable=True)  # Campo versione prodotto
 
     # Relationships
     prodotto = relationship("Prodotto", back_populates="progetti_npi")
@@ -86,6 +87,7 @@ class ProgettoNPI(Base):
 
     def __repr__(self):
         return f"<ProgettoNPI(ProgettoID={self.ProgettoId}, NomeProgetto='{self.NomeProgetto}')>"
+
 
 
 # ========================================
