@@ -681,7 +681,7 @@ class FillTemplateWindow(tk.Toplevel):
         self.start_time = None
 
         self.title(lang.get('submenu_fill_templates'))
-        self.geometry("950x600")
+        self.geometry("1500x650")
         self.transient(parent)
         self.grab_set()
 
@@ -689,12 +689,15 @@ class FillTemplateWindow(tk.Toplevel):
         self.plans_data = {}
         self.completed_tasks = set()
         self.all_equipment_names = []
+        self.phases_data = {}  # NUOVO: per mappare nome area -> ID
 
         self.equipment_var = tk.StringVar()
         self.plan_var = tk.StringVar()
+        self.phase_var = tk.StringVar()  # NUOVO: per area selezionata
         self.only_with_plan_var = tk.BooleanVar(value=False)
 
         self._create_widgets()
+        self._load_phases()  # NUOVO: carica le aree
         self._load_equipments()
 
     def _create_widgets(self):
@@ -704,6 +707,12 @@ class FillTemplateWindow(tk.Toplevel):
         # --- Sezione Selezione (Top) ---
         selection_frame = ttk.Frame(frame)
         selection_frame.pack(fill=tk.X, pady=10)
+
+        # NUOVO: Filtro per Area (ParentPhase)
+        ttk.Label(selection_frame, text=self.lang.get('area_label', 'Area:')).pack(side=tk.LEFT, padx=5)
+        self.phase_combo = ttk.Combobox(selection_frame, textvariable=self.phase_var, state='readonly', width=25)
+        self.phase_combo.pack(side=tk.LEFT, padx=5)
+        self.phase_combo.bind("<<ComboboxSelected>>", lambda e: self._load_equipments())
 
         ttk.Label(selection_frame, text=self.lang.get('select_machine_label')).pack(side=tk.LEFT, padx=5)
         self.equipment_combo = ttk.Combobox(selection_frame, textvariable=self.equipment_var, state='normal', width=40)
@@ -766,12 +775,55 @@ class FillTemplateWindow(tk.Toplevel):
         self.save_button = ttk.Button(action_frame, text=self.lang.get('save_completed_tasks', "Salva Compiti Eseguiti"), command=self._save_logs, state='disabled')
         self.save_button.pack(side=tk.RIGHT, padx=5)
 
+    def _load_phases(self):
+        """Carica le aree (ParentPhases) per il filtro."""
+        try:
+            cursor = self.db.conn.cursor()
+            query = """
+                SELECT DISTINCT p.parentphasename, p.IDParentPhase
+                FROM ParentPhases p
+                INNER JOIN [Traceability_RS].[eqp].[Equipments] e ON e.parentphaseid = p.IDParentPhase
+                ORDER BY p.parentphasename
+            """
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            cursor.close()
+            
+            if rows:
+                self.phases_data = {row[0]: row[1] for row in rows}
+                # Aggiungi opzione "Tutte" all'inizio
+                phase_names = [''] + list(self.phases_data.keys())
+                self.phase_combo['values'] = phase_names
+                self.phase_var.set('')  # Seleziona "Tutte" di default
+        except Exception as e:
+            print(f"Errore caricamento aree: {e}")
+
     def _load_equipments(self):
-        equipments = self.db.fetch_all_equipments(only_with_plan=self.only_with_plan_var.get())
+        """Carica le attrezzature filtrate per area e piano attivo."""
+        # Ottieni filtri
+        selected_phase_name = self.phase_var.get()
+        phase_id = self.phases_data.get(selected_phase_name) if selected_phase_name else None
+        only_with_plan = self.only_with_plan_var.get()
+        
+        # Carica attrezzature con filtri
+        equipments = self.db.fetch_all_equipments(
+            only_with_plan=only_with_plan,
+            phase_id=phase_id
+        )
+        
         if equipments:
             self.equipments_data = {f"{row.InternalName or 'N/D'} [{row.SerialNumber}]": row.EquipmentId for row in equipments}
             self.all_equipment_names = sorted(list(self.equipments_data.keys()))
             self.equipment_combo['values'] = self.all_equipment_names
+        else:
+            self.equipments_data = {}
+            self.all_equipment_names = []
+            self.equipment_combo['values'] = []
+        
+        # Reset selezione macchina se non più valida
+        if self.equipment_var.get() not in self.all_equipment_names:
+            self.equipment_var.set('')
+            self._reset_plan_and_tasks()
 
     def _filter_equipment_combo(self, event):
         typed_text = self.equipment_var.get().lower()
@@ -1361,7 +1413,7 @@ class AddMaintenanceTasksWindow(tk.Toplevel):
         self.lang = lang
         self.user_name = user_name
         self.title(lang.get('submenu_add_maint_task', "Gestione Task di Manutenzione"))
-        self.geometry("950x600")
+        self.geometry("950x900")
 
         # 1. Inizializzazione delle variabili di stato
         self.equipments_data = {}

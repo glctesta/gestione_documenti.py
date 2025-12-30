@@ -1,0 +1,2 @@
+Rows from Employee.dbo.Sarbatorilor for 2024-2025:
+Columns: ['SarbatorilorId', 'TipSarbatoare', 'Religion', 'SarbatoareDate']

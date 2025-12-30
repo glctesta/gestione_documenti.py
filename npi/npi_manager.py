@@ -6,7 +6,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy import select, update, delete, func, and_, event, text
 from sqlalchemy.pool import QueuePool
 from npi.data_models import (ProgettoNPI, Base, Prodotto, Soggetto, TaskCatalogo,
-                             Categoria, WaveNPI, TaskProdotto, NpiDocument, NpiDocumentType)
+                             Categoria, WaveNPI, TaskProdotto, NpiDocument, NpiDocumentType, TaskDependency)
 import urllib
 
 logger = logging.getLogger(__name__)
@@ -156,8 +156,6 @@ class GestoreNPI:
             session.close()
 
 
-            # --- METODI CRUD PER PRODOTTI ---
-
     def get_prodotti(self):
         """Recupera tutti i prodotti ordinati per nome."""
         session = self._get_session()
@@ -272,6 +270,65 @@ class GestoreNPI:
             return self._detach_object(session, category)
         except Exception as e:
             logger.error(f"Errore in get_category_by_id: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def get_tasks_by_category(self, category_id):
+        """
+        Recupera tutti i task del catalogo per una specifica categoria.
+        
+        Args:
+            category_id: ID della categoria
+            
+        Returns:
+            Lista di TaskCatalogo ordinati per NrOrdin
+        """
+        from sqlalchemy.orm import selectinload
+        
+        session = self._get_session()
+        try:
+            tasks = session.scalars(
+                select(TaskCatalogo).options(
+                    selectinload(TaskCatalogo.categoria)
+                ).where(
+                    TaskCatalogo.CategoryId == category_id
+                ).order_by(TaskCatalogo.NrOrdin)
+            ).all()
+            
+            return self._detach_list(session, tasks)
+        except Exception as e:
+            logger.error(f"Errore in get_tasks_by_category: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def is_category_used_in_projects(self, category_id):
+        """
+        Verifica se una categoria è stata utilizzata in almeno un progetto.
+        
+        Args:
+            category_id: ID della categoria
+            
+        Returns:
+            True se la categoria è usata, False altrimenti
+        """
+        session = self._get_session()
+        try:
+            # Query per verificare se esistono TaskProdotto con task di questa categoria
+            count = session.scalar(
+                select(func.count(TaskProdotto.TaskProdottoID)).join(
+                    TaskCatalogo, TaskProdotto.TaskID == TaskCatalogo.TaskID
+                ).where(
+                    TaskCatalogo.CategoryId == category_id
+                )
+            )
+            
+            return count > 0
+        except Exception as e:
+            logger.error(f"Errore in is_category_used_in_projects: {e}")
             session.rollback()
             raise
         finally:
@@ -437,57 +494,52 @@ class GestoreNPI:
         logger.info("Rinumerazione completata.")
 
     def create_catalogo_task(self, data, anchor_task_id=None):
-        """Crea un nuovo task nel catalogo."""
+        """
+        Crea un nuovo task nel catalogo con numerazione gerarchica.
+        
+        La numerazione segue il pattern: (NrOrdin_Categoria * 100) + numero_task
+        I task nella stessa categoria avanzano di 5 in 5.
+        
+        Esempio:
+        - Categoria con NrOrdin=10: task avranno 1005, 1010, 1015, ...
+        - Categoria con NrOrdin=20: task avranno 2005, 2010, 2015, ...
+        """
         session = self._get_session()
         try:
-            is_title = data.get('IsTitle', False)
-
-            if is_title and data.get('CategoryId') is not None:
-                min_ordin = session.scalar(
-                    select(func.min(TaskCatalogo.NrOrdin)).where(
-                        TaskCatalogo.CategoryId == data['CategoryId']
-                    )
+            category_id = data.get('CategoryId')
+            if not category_id:
+                raise ValueError("CategoryId è obbligatorio per creare un task")
+            
+            # Ottieni il NrOrdin della categoria
+            cat_ordin = session.scalar(
+                select(Categoria.NrOrdin).where(
+                    Categoria.CategoryId == category_id
                 )
-                if min_ordin is not None:
-                    data['NrOrdin'] = min_ordin - 5  # Si posiziona prima
-                else:
-                    cat_ordin = session.scalar(
-                        select(Categoria.NrOrdin).where(
-                            Categoria.CategoryId == data['CategoryId']
-                        )
-                    )
-                    data['NrOrdin'] = (cat_ordin or 0) * 100
+            )
+            if cat_ordin is None:
+                raise ValueError(f"Categoria con ID {category_id} non trovata")
+            
+            # Calcola la base per questa categoria (es: 10 -> 1000, 20 -> 2000)
+            category_base = cat_ordin * 100
+            
+            # Trova il massimo NrOrdin esistente per questa categoria
+            max_ordin_in_category = session.scalar(
+                select(func.max(TaskCatalogo.NrOrdin)).where(
+                    TaskCatalogo.CategoryId == category_id
+                )
+            )
+            
+            # Calcola il nuovo NrOrdin
+            if max_ordin_in_category is None:
+                # Primo task di questa categoria
+                new_ordin = category_base + 5
             else:
-                if anchor_task_id:
-                    anchor_task = session.get(TaskCatalogo, anchor_task_id)
-                    anchor_ordin = anchor_task.NrOrdin if anchor_task else 0
-
-                    next_ordin = session.scalar(
-                        select(TaskCatalogo.NrOrdin)
-                        .where(TaskCatalogo.NrOrdin > anchor_ordin)
-                        .order_by(TaskCatalogo.NrOrdin.asc())
-                        .limit(1)
-                    )
-                else:
-                    anchor_ordin = session.scalar(
-                        select(func.max(TaskCatalogo.NrOrdin))
-                    ) or 0
-                    next_ordin = None
-
-                if next_ordin is None:
-                    new_ordin = anchor_ordin + 10
-                else:
-                    gap = next_ordin - anchor_ordin
-                    if gap < 2:
-                        self._renumber_all_tasks(session)
-                        # Ricalcola dopo numerazione
-                        refreshed_anchor = session.get(TaskCatalogo, anchor_task_id)
-                        new_anchor_ordin = refreshed_anchor.NrOrdin if refreshed_anchor else 0
-                        new_ordin = new_anchor_ordin + 5
-                    else:
-                        new_ordin = anchor_ordin + gap // 2
-
-                data['NrOrdin'] = new_ordin
+                # Incrementa di 5 rispetto all'ultimo task della categoria
+                new_ordin = max_ordin_in_category + 5
+            
+            data['NrOrdin'] = new_ordin
+            
+            logger.info(f"Creazione task in categoria {category_id} (NrOrdin cat: {cat_ordin}): nuovo NrOrdin = {new_ordin}")
 
             nuovo = TaskCatalogo(**data)
             session.add(nuovo)
@@ -503,17 +555,48 @@ class GestoreNPI:
             session.close()
 
     def update_catalogo_task(self, task_id, data):
-        """Aggiorna un task del catalogo."""
+        """
+        Aggiorna un task del catalogo.
+        
+        Se viene modificato il NrOrdin, verifica che non esista già 
+        un altro task con lo stesso NrOrdin nella stessa categoria.
+        """
         session = self._get_session()
         try:
             task = session.get(TaskCatalogo, task_id)
-            if task:
-                for key, value in data.items():
-                    setattr(task, key, value)
-                session.commit()
-                session.refresh(task)
-                return self._detach_object(session, task)
-            return None
+            if not task:
+                return None
+            
+            # Se viene modificato il NrOrdin, verifica duplicati nella categoria
+            if 'NrOrdin' in data and data['NrOrdin'] != task.NrOrdin:
+                new_ordin = data['NrOrdin']
+                category_id = data.get('CategoryId', task.CategoryId)
+                
+                # Verifica se esiste già un task con questo NrOrdin nella stessa categoria
+                existing_task = session.scalar(
+                    select(TaskCatalogo).where(
+                        and_(
+                            TaskCatalogo.CategoryId == category_id,
+                            TaskCatalogo.NrOrdin == new_ordin,
+                            TaskCatalogo.TaskID != task_id
+                        )
+                    )
+                )
+                
+                if existing_task:
+                    raise ValueError(
+                        f"Il numero d'ordine {new_ordin} è già utilizzato "
+                        f"dal task '{existing_task.NomeTask}' nella stessa categoria."
+                    )
+            
+            # Applica le modifiche
+            for key, value in data.items():
+                setattr(task, key, value)
+            
+            session.commit()
+            session.refresh(task)
+            return self._detach_object(session, task)
+            
         except Exception as e:
             logger.error(f"Errore in update_catalogo_task: {e}")
             session.rollback()
@@ -556,7 +639,7 @@ class GestoreNPI:
         finally:
             session.close()
 
-    def create_progetto_npi_for_prodotto(self, prodotto_id, version=None):
+    def create_progetto_npi_for_prodotto(self, prodotto_id, version=None, owner_id=None, descrizione=None):
         """Crea un progetto NPI, la sua Wave 1.0 e tutti i task associati."""
         session = self._get_session()
         try:
@@ -572,7 +655,9 @@ class GestoreNPI:
                 ProdottoID=prodotto_id,
                 StatoProgetto='Attivo',
                 DataInizio=datetime.now(),
-                Version=version  # Aggiungi la versione
+                Version=version,
+                OwnerID=owner_id,
+                Descrizione=descrizione
             )
             session.add(nuovo_progetto)
             session.flush()
@@ -590,7 +675,7 @@ class GestoreNPI:
             for task_cat in tasks_catalogo:
                 nuovo_task_prodotto = TaskProdotto(
                     WaveID=nuova_wave.WaveID,
-                    TaskID=task_cat.TaskId
+                    TaskID=task_cat.TaskID  # Corretto: TaskID non TaskId
                 )
                 session.add(nuovo_task_prodotto)
 
@@ -606,6 +691,42 @@ class GestoreNPI:
             return self._detach_object(session, progetto_completo)
         except Exception as e:
             logger.error(f"Errore in create_progetto_npi_for_prodotto: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def get_progetto_by_prodotto(self, prodotto_id):
+        """Recupera il progetto NPI associato a un prodotto."""
+        session = self._get_session()
+        try:
+            progetto = session.scalars(
+                select(ProgettoNPI)
+                .options(joinedload(ProgettoNPI.prodotto))
+                .where(ProgettoNPI.ProdottoID == prodotto_id)
+            ).first()
+            return self._detach_object(session, progetto) if progetto else None
+        finally:
+            session.close()
+
+    def update_progetto_npi(self, progetto_id, data):
+        """Aggiorna i dati di un progetto NPI."""
+        session = self._get_session()
+        try:
+            progetto = session.get(ProgettoNPI, progetto_id)
+            if not progetto:
+                raise ValueError(f"Progetto {progetto_id} non trovato")
+            
+            # Aggiorna i campi
+            for key, value in data.items():
+                if hasattr(progetto, key):
+                    setattr(progetto, key, value)
+            
+            session.commit()
+            logger.info(f"Progetto {progetto_id} aggiornato")
+            return self._detach_object(session, progetto)
+        except Exception as e:
+            logger.error(f"Errore aggiornamento progetto: {e}")
             session.rollback()
             raise
         finally:
@@ -860,6 +981,186 @@ class GestoreNPI:
         finally:
             session.close()
 
+    # ========================================
+    # Task Dependencies Management
+    # ========================================
+    
+    def get_task_dependencies(self, task_prodotto_id):
+        """Recupera tutte le dipendenze di un task."""
+        session = self._get_session()
+        try:
+            dependencies = session.scalars(
+                select(TaskDependency)
+                .options(
+                    joinedload(TaskDependency.depends_on_task).joinedload(TaskProdotto.task_catalogo).joinedload(TaskCatalogo.categoria)
+                )
+                .where(TaskDependency.TaskProdottoID == task_prodotto_id)
+            ).all()
+            return self._detach_list(session, dependencies)
+        except Exception as e:
+            logger.error(f"Errore nel recupero dipendenze task {task_prodotto_id}: {e}", exc_info=True)
+            return []
+        finally:
+            session.close()
+    
+    def get_available_predecessor_tasks(self, task_id, wave_id):
+        """
+        Restituisce i task disponibili come predecessori per un dato task.
+        Esclude il task stesso e i task che creerebbero dipendenze circolari.
+        """
+        session = self._get_session()
+        try:
+            # Ottieni tutti i task della stessa wave
+            all_tasks = session.scalars(
+                select(TaskProdotto)
+                .options(
+                    joinedload(TaskProdotto.task_catalogo).joinedload(TaskCatalogo.categoria)
+                )
+                .where(TaskProdotto.WaveID == wave_id)
+                .where(TaskProdotto.TaskProdottoID != task_id)
+            ).all()
+            
+            # Filtra i task che creerebbero dipendenze circolari
+            available_tasks = []
+            for task in all_tasks:
+                if not self._would_create_circular_dependency(session, task_id, task.TaskProdottoID):
+                    available_tasks.append(task)
+            
+            return self._detach_list(session, available_tasks)
+        except Exception as e:
+            logger.error(f"Errore nel recupero predecessori disponibili: {e}", exc_info=True)
+            return []
+        finally:
+            session.close()
+    
+    def add_task_dependency(self, task_id, depends_on_task_id, dependency_type='FinishToStart'):
+        """
+        Aggiunge una dipendenza tra task.
+        Valida che non si creino dipendenze circolari.
+        """
+        session = self._get_session()
+        try:
+            # Verifica dipendenza circolare
+            if self._would_create_circular_dependency(session, task_id, depends_on_task_id):
+                return False, "Impossibile aggiungere: creerebbe una dipendenza circolare"
+            
+            # Verifica che la dipendenza non esista già
+            existing = session.scalars(
+                select(TaskDependency).where(
+                    and_(
+                        TaskDependency.TaskProdottoID == task_id,
+                        TaskDependency.DependsOnTaskProdottoID == depends_on_task_id
+                    )
+                )
+            ).first()
+            
+            if existing:
+                return False, "Questa dipendenza esiste già"
+            
+            # Crea la dipendenza
+            new_dependency = TaskDependency(
+                TaskProdottoID=task_id,
+                DependsOnTaskProdottoID=depends_on_task_id,
+                DependencyType=dependency_type
+            )
+            session.add(new_dependency)
+            session.commit()
+            
+            return True, "Dipendenza aggiunta con successo"
+        except Exception as e:
+            logger.error(f"Errore nell'aggiunta dipendenza: {e}", exc_info=True)
+            session.rollback()
+            return False, f"Errore: {str(e)}"
+        finally:
+            session.close()
+    
+    def remove_task_dependency(self, dependency_id):
+        """Rimuove una dipendenza tra task."""
+        session = self._get_session()
+        try:
+            dependency = session.get(TaskDependency, dependency_id)
+            if dependency:
+                session.delete(dependency)
+                session.commit()
+                return True, "Dipendenza rimossa con successo"
+            return False, "Dipendenza non trovata"
+        except Exception as e:
+            logger.error(f"Errore nella rimozione dipendenza: {e}", exc_info=True)
+            session.rollback()
+            return False, f"Errore: {str(e)}"
+        finally:
+            session.close()
+    
+    def validate_task_dependencies(self, task_id, lang=None):
+        """
+        Valida che tutte le dipendenze di un task siano soddisfatte.
+        Restituisce (is_valid, error_message).
+        """
+        session = self._get_session()
+        try:
+            dependencies = session.scalars(
+                select(TaskDependency)
+                .options(
+                    joinedload(TaskDependency.depends_on_task).joinedload(TaskProdotto.task_catalogo)
+                )
+                .where(TaskDependency.TaskProdottoID == task_id)
+            ).all()
+            
+            if not dependencies:
+                return True, ""
+            
+            unsatisfied = []
+            for dep in dependencies:
+                predecessor = dep.depends_on_task
+                if dep.DependencyType == 'FinishToStart':
+                    if predecessor.Stato != 'Completato':
+                        task_name = predecessor.task_catalogo.NomeTask if predecessor.task_catalogo else f"Task {predecessor.TaskProdottoID}"
+                        unsatisfied.append(f"  • {task_name} (Stato: {predecessor.Stato or 'Non assegnato'})")
+            
+            if unsatisfied:
+                if lang:
+                    error_msg = lang.get('error_dependency_not_satisfied', 
+                                        "Impossibile completare il task. Le seguenti dipendenze non sono soddisfatte:")
+                else:
+                    error_msg = "Impossibile completare il task. Le seguenti dipendenze non sono soddisfatte:"
+                error_msg += "\n\n" + "\n".join(unsatisfied)
+                return False, error_msg
+            
+            return True, ""
+        except Exception as e:
+            logger.error(f"Errore nella validazione dipendenze: {e}", exc_info=True)
+            return False, f"Errore durante la validazione: {str(e)}"
+        finally:
+            session.close()
+    
+    def _would_create_circular_dependency(self, session, task_id, depends_on_task_id):
+        """
+        Verifica ricorsivamente se aggiungere una dipendenza creerebbe un ciclo.
+        Restituisce True se si creerebbe un ciclo, False altrimenti.
+        """
+        # Se depends_on_task_id dipende da task_id (direttamente o indirettamente), abbiamo un ciclo
+        visited = set()
+        
+        def has_path(from_task, to_task):
+            if from_task == to_task:
+                return True
+            if from_task in visited:
+                return False
+            visited.add(from_task)
+            
+            # Trova tutti i task da cui from_task dipende
+            dependencies = session.scalars(
+                select(TaskDependency.DependsOnTaskProdottoID)
+                .where(TaskDependency.TaskProdottoID == from_task)
+            ).all()
+            
+            for dep_task_id in dependencies:
+                if has_path(dep_task_id, to_task):
+                    return True
+            return False
+        
+        return has_path(depends_on_task_id, task_id)
+
     def set_target_npi_task(self, task_id, project_id):
         """
         Imposta un task come Target NPI (IsPostFinalMilestone=True) e rimuove il flag da tutti gli altri task del progetto.
@@ -934,13 +1235,330 @@ class GestoreNPI:
             session.close()
 
     def invia_notifiche_task(self, task: TaskProdotto, conferma_utente: bool = True, lang: dict = None):
-        """Invia le notifiche per un task specifico."""
+        """Invia le notifiche email per un task assegnato."""
+        session = self._get_session()
         try:
-            logger.info(f"Notifiche inviate per task {task.TaskProdottoID}")
-            return True
+            # Ricarica il task con tutte le relazioni necessarie
+            task_completo = session.scalars(
+                select(TaskProdotto)
+                .options(
+                    joinedload(TaskProdotto.task_catalogo).joinedload(TaskCatalogo.categoria),
+                    joinedload(TaskProdotto.wave).joinedload(WaveNPI.progetto).joinedload(ProgettoNPI.prodotto),
+                    joinedload(TaskProdotto.wave).joinedload(WaveNPI.progetto).joinedload(ProgettoNPI.owner),
+                    joinedload(TaskProdotto.owner),
+                    joinedload(TaskProdotto.predecessors),
+                    joinedload(TaskProdotto.successors)
+                )
+                .where(TaskProdotto.TaskProdottoID == task.TaskProdottoID)
+            ).first()
+            
+            if not task_completo or not task_completo.owner or not task_completo.owner.Email:
+                logger.warning(f"Task {task.TaskProdottoID}: owner o email non disponibili")
+                return False
+            
+            # Ottieni il progetto e l'owner del progetto
+            progetto = task_completo.wave.progetto if task_completo.wave else None
+            if not progetto:
+                logger.warning(f"Task {task.TaskProdottoID}: progetto non trovato")
+                return False
+            
+            project_owner = progetto.owner if progetto.owner else None
+            
+            # Prepara i dati per l'email
+            email_data = {
+                'assignee_name': task_completo.owner.Nome,
+                'assignee_email': task_completo.owner.Email,
+                'project_name': progetto.prodotto.NomeProdotto if progetto.prodotto else "N/A",
+                'project_code': progetto.prodotto.CodiceProdotto if progetto.prodotto else "N/A",
+                'project_owner_name': project_owner.Nome if project_owner else "N/A",
+                'project_owner_email': project_owner.Email if project_owner else None,
+                'project_description': progetto.Descrizione or "Nessuna descrizione disponibile",
+                'project_start': progetto.DataInizio.strftime('%d/%m/%Y') if progetto.DataInizio else "N/A",
+                'project_due': progetto.ScadenzaProgetto.strftime('%d/%m/%Y') if progetto.ScadenzaProgetto else "N/A",
+                'project_version': progetto.Version or "N/A",
+                'task_item_id': task_completo.task_catalogo.ItemID if task_completo.task_catalogo else "N/A",
+                'task_name': task_completo.task_catalogo.NomeTask if task_completo.task_catalogo else "N/A",
+                'task_category': task_completo.task_catalogo.categoria.Category if task_completo.task_catalogo and task_completo.task_catalogo.categoria else "N/A",
+                'task_description': task_completo.task_catalogo.Descrizione if task_completo.task_catalogo else "N/A",
+                'task_due_date': task_completo.DataScadenza.strftime('%d/%m/%Y') if task_completo.DataScadenza else "N/A",
+                'task_status': task_completo.Stato or "Non Iniziato",
+                'predecessors': self._format_task_dependencies(task_completo.predecessors, session),
+                'successors': self._format_task_dependencies(task_completo.successors, session, is_successor=True)
+            }
+            
+            # Genera HTML email
+            email_html = self._generate_task_assignment_email_html(email_data)
+            
+            # Invia email usando utils.send_email
+            from utils import send_email
+            
+            subject = f"{email_data['project_name']} - Assegnazione Task NPI"
+            
+            try:
+                send_email(
+                    recipients=[task_completo.owner.Email],
+                    subject=subject,
+                    body=email_html,
+                    is_html=True
+                )
+                success = True
+                logger.info(f"Notifica inviata con successo per task {task.TaskProdottoID} a {task_completo.owner.Email}")
+            except Exception as email_error:
+                success = False
+                logger.error(f"Invio notifica fallito per task {task.TaskProdottoID}: {email_error}")
+            
+            return success
+            
         except Exception as e:
-            logger.error(f"Errore nell'invio notifiche per task {task.TaskProdottoID}: {e}")
+            logger.error(f"Errore nell'invio notifiche per task {task.TaskProdottoID}: {e}", exc_info=True)
             return False
+        finally:
+            session.close()
+    
+    def _format_task_dependencies(self, dependencies, session, is_successor=False):
+        """Formatta le dipendenze del task per l'email."""
+        if not dependencies:
+            return []
+        
+        formatted = []
+        for dep in dependencies:
+            # Ottieni l'ID del task dipendente
+            # Se is_successor=True, questo task è il "depends_on" e vogliamo il task principale
+            # Se is_successor=False, questo task è il principale e vogliamo il "depends_on"
+            dep_task_id = dep.TaskProdottoID if is_successor else dep.DependsOnTaskProdottoID
+            
+            # Carica il task dipendente
+            dep_task = session.get(TaskProdotto, dep_task_id)
+            if dep_task:
+                # Carica le relazioni necessarie
+                session.refresh(dep_task, ['task_catalogo', 'owner'])
+                
+                formatted.append({
+                    'item_id': dep_task.task_catalogo.ItemID if dep_task.task_catalogo else "N/A",
+                    'name': dep_task.task_catalogo.NomeTask if dep_task.task_catalogo else "N/A",
+                    'owner': dep_task.owner.Nome if dep_task.owner else "Non Assegnato",
+                    'due_date': dep_task.DataScadenza.strftime('%d/%m/%Y') if dep_task.DataScadenza else "N/A"
+                })
+        return formatted
+    
+    def _generate_task_assignment_email_html(self, data):
+        """Genera HTML professionale multilingua (IT, EN, RO) per email assegnazione task."""
+        
+        # Traduzioni
+        translations = {
+            'it': {
+                'title': 'Assegnazione Task NPI',
+                'subtitle': 'Sistema di Gestione Progetti NPI',
+                'greeting': f"Gentile <strong>{data['assignee_name']}</strong>,",
+                'intro': 'Ti è stato assegnato il seguente task per il progetto NPI:',
+                'project_details': 'DETTAGLI PROGETTO',
+                'project_name': 'Nome Progetto:',
+                'product_code': 'Codice Prodotto:',
+                'project_owner': 'Responsabile Progetto:',
+                'start_date': 'Data Inizio:',
+                'due_date': 'Scadenza Progetto:',
+                'version': 'Versione:',
+                'description': 'Descrizione:',
+                'your_task': 'IL TUO TASK ASSEGNATO',
+                'category': 'Categoria:',
+                'task_due': 'Scadenza Task:',
+                'status': 'Stato Attuale:',
+                'predecessors': '⚠ Questo task dipende da:',
+                'successors': 'ℹ Altri task dipendono da questo:',
+                'assigned_to': 'Assegnato a:',
+                'important_notes': '⚠ NOTE IMPORTANTI',
+                'note1': 'Rivedi attentamente le dipendenze del task',
+                'note2': 'Coordina con i membri del team per i task dipendenti',
+                'note3': 'Aggiorna regolarmente lo stato del task nel sistema',
+                'note4': 'Contatta il responsabile del progetto per qualsiasi domanda',
+                'regards': 'Cordiali saluti,',
+                'project_manager': 'Responsabile Progetto',
+                'disclaimer': 'Questa è una notifica automatica dal Sistema di Gestione Progetti NPI.<br>Si prega di non rispondere a questa email.'
+            },
+            'en': {
+                'title': 'NPI Task Assignment',
+                'subtitle': 'NPI Project Management System',
+                'greeting': f"Dear <strong>{data['assignee_name']}</strong>,",
+                'intro': 'You have been assigned the following task for the NPI project:',
+                'project_details': 'PROJECT DETAILS',
+                'project_name': 'Project Name:',
+                'product_code': 'Product Code:',
+                'project_owner': 'Project Manager:',
+                'start_date': 'Start Date:',
+                'due_date': 'Project Deadline:',
+                'version': 'Version:',
+                'description': 'Description:',
+                'your_task': 'YOUR ASSIGNED TASK',
+                'category': 'Category:',
+                'task_due': 'Task Deadline:',
+                'status': 'Current Status:',
+                'predecessors': '⚠ This task depends on:',
+                'successors': 'ℹ Other tasks depend on this:',
+                'assigned_to': 'Assigned to:',
+                'important_notes': '⚠ IMPORTANT NOTES',
+                'note1': 'Carefully review task dependencies',
+                'note2': 'Coordinate with team members for dependent tasks',
+                'note3': 'Regularly update task status in the system',
+                'note4': 'Contact the project manager for any questions',
+                'regards': 'Best regards,',
+                'project_manager': 'Project Manager',
+                'disclaimer': 'This is an automatic notification from the NPI Project Management System.<br>Please do not reply to this email.'
+            },
+            'ro': {
+                'title': 'Atribuire Task NPI',
+                'subtitle': 'Sistem de Management Proiecte NPI',
+                'greeting': f"Stimate <strong>{data['assignee_name']}</strong>,",
+                'intro': 'Ți-a fost atribuit următorul task pentru proiectul NPI:',
+                'project_details': 'DETALII PROIECT',
+                'project_name': 'Nume Proiect:',
+                'product_code': 'Cod Produs:',
+                'project_owner': 'Responsabil Proiect:',
+                'start_date': 'Data Început:',
+                'due_date': 'Termen Limită Proiect:',
+                'version': 'Versiune:',
+                'description': 'Descriere:',
+                'your_task': 'TASK-UL TĂU ATRIBUIT',
+                'category': 'Categorie:',
+                'task_due': 'Termen Limită Task:',
+                'status': 'Status Curent:',
+                'predecessors': '⚠ Acest task depinde de:',
+                'successors': 'ℹ Alte task-uri depind de acesta:',
+                'assigned_to': 'Atribuit către:',
+                'important_notes': '⚠ NOTE IMPORTANTE',
+                'note1': 'Revizuiește cu atenție dependențele task-ului',
+                'note2': 'Coordonează-te cu membrii echipei pentru task-urile dependente',
+                'note3': 'Actualizează regulat statusul task-ului în sistem',
+                'note4': 'Contactează responsabilul de proiect pentru orice întrebare',
+                'regards': 'Cu stimă,',
+                'project_manager': 'Responsabil Proiect',
+                'disclaimer': 'Aceasta este o notificare automată de la Sistemul de Management Proiecte NPI.<br>Vă rugăm să nu răspundeți la acest email.'
+            }
+        }
+        
+        # Genera sezioni per ogni lingua
+        sections_html = ""
+        for lang_code in ['it', 'en', 'ro']:
+            t = translations[lang_code]
+            
+            # Formatta predecessori
+            predecessors_html = ""
+            if data['predecessors']:
+                predecessors_html = f"<h4 style='color: #d9534f; margin-top: 15px;'>{t['predecessors']}</h4><ul style='margin: 5px 0;'>"
+                for pred in data['predecessors']:
+                    predecessors_html += f"<li><strong>{pred['item_id']}</strong> - {pred['name']} - {t['assigned_to']} {pred['owner']} - {t['task_due']} {pred['due_date']}</li>"
+                predecessors_html += "</ul>"
+            
+            # Formatta successori
+            successors_html = ""
+            if data['successors']:
+                successors_html = f"<h4 style='color: #5bc0de; margin-top: 15px;'>{t['successors']}</h4><ul style='margin: 5px 0;'>"
+                for succ in data['successors']:
+                    successors_html += f"<li><strong>{succ['item_id']}</strong> - {succ['name']} - {t['assigned_to']} {succ['owner']} - {t['task_due']} {succ['due_date']}</li>"
+                successors_html += "</ul>"
+            
+            # Aggiungi sezione lingua
+            lang_flag = {'it': '🇮🇹', 'en': '🇬🇧', 'ro': '🇷🇴'}[lang_code]
+            sections_html += f"""
+            <div class="lang-section" style="margin: 30px 0; padding: 20px; background: #f8f9fa; border-radius: 8px;">
+                <div style="text-align: center; margin-bottom: 20px;">
+                    <span style="font-size: 24px;">{lang_flag}</span>
+                    <h2 style="color: #0078d4; margin: 10px 0;">{t['title']}</h2>
+                </div>
+                
+                <p style="font-size: 16px; margin-bottom: 20px;">{t['greeting']}</p>
+                <p>{t['intro']}</p>
+                
+                <div class="section">
+                    <h2>📊 {t['project_details']}</h2>
+                    <div class="info-row"><span class="label">{t['project_name']}</span> <span class="value">{data['project_name']}</span></div>
+                    <div class="info-row"><span class="label">{t['product_code']}</span> <span class="value">{data['project_code']}</span></div>
+                    <div class="info-row"><span class="label">{t['project_owner']}</span> <span class="value">{data['project_owner_name']}</span></div>
+                    <div class="info-row"><span class="label">{t['start_date']}</span> <span class="value">{data['project_start']}</span></div>
+                    <div class="info-row"><span class="label">{t['due_date']}</span> <span class="value">{data['project_due']}</span></div>
+                    <div class="info-row"><span class="label">{t['version']}</span> <span class="value">{data['project_version']}</span></div>
+                    <div class="info-row" style="margin-top: 15px;">
+                        <span class="label">{t['description']}</span><br>
+                        <span class="value" style="display: block; margin-top: 5px; padding: 10px; background: white; border-radius: 4px;">{data['project_description']}</span>
+                    </div>
+                </div>
+                
+                <div class="section">
+                    <h2>✅ {t['your_task']}</h2>
+                    <div class="task-box">
+                        <h3>{data['task_item_id']} - {data['task_name']}</h3>
+                        <div class="info-row"><span class="label">{t['category']}</span> <span class="value">{data['task_category']}</span></div>
+                        <div class="info-row"><span class="label">{t['description']}</span> <span class="value">{data['task_description']}</span></div>
+                        <div class="info-row"><span class="label">{t['task_due']}</span> <span class="value" style="color: #d9534f; font-weight: bold;">{data['task_due_date']}</span></div>
+                        <div class="info-row"><span class="label">{t['status']}</span> <span class="value">{data['task_status']}</span></div>
+                        
+                        {predecessors_html}
+                        {successors_html}
+                    </div>
+                </div>
+                
+                <div class="important-notes">
+                    <h3>{t['important_notes']}</h3>
+                    <ul>
+                        <li>{t['note1']}</li>
+                        <li>{t['note2']}</li>
+                        <li>{t['note3']}</li>
+                        <li>{t['note4']}</li>
+                    </ul>
+                </div>
+                
+                <div class="footer">
+                    <p><strong>{t['regards']}</strong></p>
+                    <p><strong>{data['project_owner_name']}</strong><br>{t['project_manager']}</p>
+                    <hr style="border: none; border-top: 1px solid #ddd; margin: 15px 0;">
+                    <p style="font-size: 11px; color: #999;">{t['disclaimer']}</p>
+                </div>
+            </div>
+            {"<hr style='border: none; border-top: 3px solid #0078d4; margin: 40px 0;'>" if lang_code != 'ro' else ""}
+            """
+        
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <style>
+                body {{ font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; }}
+                .container {{ max-width: 800px; margin: 0 auto; padding: 20px; background-color: #f9f9f9; }}
+                .header {{ background: linear-gradient(135deg, #0078d4 0%, #005a9e 100%); color: white; padding: 30px 20px; border-radius: 8px 8px 0 0; text-align: center; }}
+                .header h1 {{ margin: 0; font-size: 28px; }}
+                .header p {{ margin: 5px 0 0 0; font-size: 14px; opacity: 0.9; }}
+                .content {{ background: white; padding: 30px; border-radius: 0 0 8px 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+                .section {{ margin: 25px 0; padding: 20px; background: white; border-left: 4px solid #0078d4; border-radius: 4px; }}
+                .section h2 {{ color: #0078d4; margin: 0 0 15px 0; font-size: 20px; border-bottom: 2px solid #0078d4; padding-bottom: 10px; }}
+                .task-box {{ background: white; padding: 20px; margin: 15px 0; border: 2px solid #0078d4; border-radius: 6px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }}
+                .task-box h3 {{ color: #0078d4; margin: 0 0 15px 0; font-size: 18px; }}
+                .label {{ font-weight: bold; color: #555; display: inline-block; min-width: 150px; }}
+                .value {{ color: #333; }}
+                .info-row {{ margin: 8px 0; }}
+                .footer {{ background: white; padding: 20px; margin-top: 20px; border-top: 3px solid #0078d4; border-radius: 4px; text-align: center; }}
+                .footer p {{ margin: 5px 0; color: #666; font-size: 13px; }}
+                .important-notes {{ background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; border-radius: 4px; }}
+                .important-notes h3 {{ color: #856404; margin: 0 0 10px 0; font-size: 16px; }}
+                .important-notes ul {{ margin: 10px 0; padding-left: 20px; color: #856404; }}
+                ul {{ line-height: 1.8; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>📋 NPI Task Assignment / Assegnazione Task NPI / Atribuire Task NPI</h1>
+                    <p>🇮🇹 Italiano | 🇬🇧 English | 🇷🇴 Română</p>
+                </div>
+                
+                <div class="content">
+                    {sections_html}
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        return html
 
     def get_gantt_data(self, progetto_id: int):
         """Recupera i dati di un progetto formattati per Plotly per il diagramma di Gantt."""
@@ -952,7 +1570,8 @@ class GestoreNPI:
                     joinedload(ProgettoNPI.prodotto),
                     subqueryload(ProgettoNPI.waves).subqueryload(WaveNPI.tasks).options(
                         joinedload(TaskProdotto.owner),
-                        joinedload(TaskProdotto.task_catalogo)
+                        joinedload(TaskProdotto.task_catalogo).joinedload(TaskCatalogo.categoria),
+                        subqueryload(TaskProdotto.dependencies)
                     )
                 )
                 .where(ProgettoNPI.ProgettoId == progetto_id)
@@ -969,20 +1588,22 @@ class GestoreNPI:
                         task.DataScadenza):
 
                     # Assicurati che la data di fine sia >= alla data di inizio
-                    if task.DataInizio > task.DataScadenza:
-                        data_inizio = task.DataScadenza
-                        data_fine = task.DataInizio
-                    else:
-                        data_inizio = task.DataInizio
-                        data_fine = task.DataScadenza
+                    data_inizio = min(task.DataInizio, task.DataScadenza)
+                    data_fine = max(task.DataInizio, task.DataScadenza)
+
+                    # Recupera le dipendenze
+                    deps = [d.DependsOnTaskProdottoID for d in task.dependencies]
 
                     df_data.append({
                         'Task': task.task_catalogo.NomeTask if task.task_catalogo else "Task non definito",
+                        'Category': task.task_catalogo.categoria.Category if (task.task_catalogo and task.task_catalogo.categoria) else "Nessuna Categoria",
                         'Start': data_inizio,
                         'Finish': data_fine,
                         'Owner': task.owner.Nome if task.owner else 'Non Assegnato',
                         'Status': task.Stato,
-                        'TaskProdottoID': task.TaskProdottoID
+                        'TaskProdottoID': task.TaskProdottoID,
+                        'Dependencies': deps,
+                        'Completion': task.PercentualeCompletamento if task.PercentualeCompletamento is not None else 0
                     })
 
             logger.debug(f"Totale task nel progetto: {len(progetto.waves[0].tasks)}")
@@ -1484,6 +2105,120 @@ class GestoreNPI:
 
             session.commit()
         except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def get_all_catalog_tasks(self):
+        """Ottiene tutti i task del catalogo."""
+        session = self._get_session()
+        try:
+            tasks = session.scalars(
+                select(TaskCatalogo)
+                .options(joinedload(TaskCatalogo.categoria))
+                .order_by(TaskCatalogo.NrOrdin)
+            ).all()
+            return [self._detach_object(session, t) for t in tasks]
+        finally:
+            session.close()
+
+    def add_catalog_tasks_to_project(self, wave_id, catalog_tasks):
+        """Aggiunge i task del catalogo mancanti a una wave del progetto."""
+        session = self._get_session()
+        try:
+            added_count = 0
+            for catalog_task in catalog_tasks:
+                # Crea un nuovo TaskProdotto per ogni task del catalogo
+                new_task = TaskProdotto(
+                    WaveID=wave_id,
+                    TaskID=catalog_task.TaskID
+                )
+                session.add(new_task)
+                added_count += 1
+            
+            session.commit()
+            logger.info(f"Aggiunti {added_count} task alla wave {wave_id}")
+            return added_count
+        except Exception as e:
+            logger.error(f"Errore aggiunta task al progetto: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    # ========================================
+    # GESTIONE DOCUMENTI PROGETTO
+    # ========================================
+
+    def add_progetto_documento(self, progetto_id, nome_file, tipo_file, dimensione, 
+                               contenuto, descrizione=None, caricato_da=None):
+        """Aggiunge un documento al progetto."""
+        session = self._get_session()
+        try:
+            from .data_models import ProgettoDocumento
+            
+            documento = ProgettoDocumento(
+                ProgettoID=progetto_id,
+                NomeFile=nome_file,
+                TipoFile=tipo_file,
+                Dimensione=dimensione,
+                Contenuto=contenuto,
+                Descrizione=descrizione,
+                CaricatoDa=caricato_da
+            )
+            session.add(documento)
+            session.commit()
+            logger.info(f"Documento {nome_file} aggiunto al progetto {progetto_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Errore aggiunta documento: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def get_progetto_documenti(self, progetto_id):
+        """Recupera tutti i documenti di un progetto."""
+        session = self._get_session()
+        try:
+            from .data_models import ProgettoDocumento
+            
+            documenti = session.scalars(
+                select(ProgettoDocumento)
+                .where(ProgettoDocumento.ProgettoID == progetto_id)
+                .order_by(ProgettoDocumento.DataCaricamento.desc())
+            ).all()
+            return [self._detach_object(session, d) for d in documenti]
+        finally:
+            session.close()
+
+    def get_progetto_documento(self, documento_id):
+        """Recupera un singolo documento."""
+        session = self._get_session()
+        try:
+            from .data_models import ProgettoDocumento
+            
+            documento = session.get(ProgettoDocumento, documento_id)
+            return self._detach_object(session, documento) if documento else None
+        finally:
+            session.close()
+
+    def delete_progetto_documento(self, documento_id):
+        """Elimina un documento."""
+        session = self._get_session()
+        try:
+            from .data_models import ProgettoDocumento
+            
+            documento = session.get(ProgettoDocumento, documento_id)
+            if documento:
+                session.delete(documento)
+                session.commit()
+                logger.info(f"Documento {documento_id} eliminato")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Errore eliminazione documento: {e}")
             session.rollback()
             raise
         finally:

@@ -1,7 +1,8 @@
 # File: npi/windows/config_window.py (VERSIONE DEFINITIVA E CORRETTA)
 
+import os
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 
 
 # --- Frame per la gestione dei Soggetti (Persone, Clienti, Fornitori) ---
@@ -33,8 +34,8 @@ class SubjectManagementFrame(ttk.Frame):
         paned_window.add(form_frame, weight=2)
 
         self.fields = {}
-        labels = {'NomeSoggetto': 'label_subject_name', 'Tipo': 'label_type', 'Email': 'label_email',
-                  'MSTeamsUserID': 'label_msteams_id'}
+        labels = {'Nome': 'label_subject_name', 'Tipo': 'label_type', 'Email': 'label_email',
+                  'TeamsAddress': 'label_msteams_id'}
         for i, (field, key) in enumerate(labels.items()):
             ttk.Label(form_frame, text=self.lang.get(key)).grid(row=i, column=0, sticky=tk.W, pady=2)
             if field == 'Tipo':
@@ -84,9 +85,9 @@ class SubjectManagementFrame(ttk.Frame):
     def _populate_form(self, soggetto):
         self._clear_form(clear_selection=False)
         self.selected_subject_id = soggetto.SoggettoId
-        self.fields['NomeSoggetto'].insert(0, soggetto.Nome or "")
+        self.fields['Nome'].insert(0, soggetto.Nome or "")
         self.fields['Email'].insert(0, soggetto.Email or "")
-        self.fields['MSTeamsUserID'].insert(0, soggetto.MSTeamsUserID or "")
+        self.fields['TeamsAddress'].insert(0, soggetto.TeamsAddress or "")
 
         tipo_display = soggetto.Tipo
         if tipo_display == 'Interno':
@@ -107,7 +108,7 @@ class SubjectManagementFrame(ttk.Frame):
                 widget.delete(0, tk.END)
 
     def _save_subject(self):
-        nome = self.fields['NomeSoggetto'].get()
+        nome = self.fields['Nome'].get()
         tipo_display = self.fields['Tipo'].get()
         if not nome or not tipo_display:
             messagebox.showerror(self.lang.get('error_title'), self.lang.get('validation_error_subject_required'),
@@ -120,8 +121,8 @@ class SubjectManagementFrame(ttk.Frame):
         elif tipo_display == self.lang.get('subject_type_supplier'):
             tipo_db = 'Fornitore'
 
-        data = {'NomeSoggetto': nome, 'Tipo': tipo_db, 'Email': self.fields['Email'].get(),
-                'MSTeamsUserID': self.fields['MSTeamsUserID'].get()}
+        data = {'Nome': nome, 'Tipo': tipo_db, 'Email': self.fields['Email'].get(),
+                'TeamsAddress': self.fields['TeamsAddress'].get()}
         try:
             if self.selected_subject_id is None:
                 self.npi_manager.create_soggetto(data)
@@ -212,6 +213,54 @@ class ProductManagementFrame(ttk.Frame):
         self.version_entry = ttk.Entry(version_frame, width=20)
         self.version_entry.pack(side=tk.LEFT)
         
+        # Campo Owner del progetto NPI
+        owner_frame = ttk.Frame(project_frame)
+        owner_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(owner_frame, text=self.lang.get('project_owner', 'Owner Progetto:')).pack(side=tk.LEFT, padx=(0, 5))
+        self.project_owner_combo = ttk.Combobox(owner_frame, state='readonly', width=30)
+        self.project_owner_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        # Campo Descrizione del progetto NPI
+        desc_label_frame = ttk.Frame(project_frame)
+        desc_label_frame.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(desc_label_frame, text=self.lang.get('project_description', 'Descrizione Progetto:')).pack(side=tk.LEFT)
+        
+        self.project_description_text = tk.Text(project_frame, height=4, wrap=tk.WORD, width=40)
+        self.project_description_text.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        
+        # Sezione Documenti Progetto
+        docs_label_frame = ttk.Frame(project_frame)
+        docs_label_frame.pack(fill=tk.X, pady=(5, 5))
+        ttk.Label(docs_label_frame, text=self.lang.get('project_documents', 'Documenti Progetto:')).pack(side=tk.LEFT)
+        
+        # Lista documenti
+        docs_list_frame = ttk.Frame(project_frame)
+        docs_list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
+        
+        cols = (self.lang.get('col_filename', 'Nome File'), 
+                self.lang.get('col_filesize', 'Dimensione'))
+        self.docs_tree = ttk.Treeview(docs_list_frame, columns=cols, show='headings', height=4)
+        self.docs_tree.heading(cols[0], text=cols[0])
+        self.docs_tree.heading(cols[1], text=cols[1])
+        self.docs_tree.column(cols[0], width=200)
+        self.docs_tree.column(cols[1], width=80)
+        self.docs_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        scrollbar = ttk.Scrollbar(docs_list_frame, orient=tk.VERTICAL, command=self.docs_tree.yview)
+        self.docs_tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Bottoni gestione documenti
+        docs_buttons = ttk.Frame(project_frame)
+        docs_buttons.pack(fill=tk.X, pady=(0, 10))
+        ttk.Button(docs_buttons, text=self.lang.get('btn_add_document', 'Aggiungi'), 
+                  command=self._add_project_document).pack(side=tk.LEFT, padx=5)
+        ttk.Button(docs_buttons, text=self.lang.get('btn_delete', 'Elimina'), 
+                  command=self._remove_project_document).pack(side=tk.LEFT, padx=5)
+        
+        # Inizializza lista documenti temporanea
+        self.project_documents = []
+        
         self.create_project_button = ttk.Button(project_frame, text=self.lang.get('btn_create_npi_project'),
                                                 command=self._create_npi_project, state=tk.DISABLED)
         self.create_project_button.pack(pady=10)
@@ -221,6 +270,12 @@ class ProductManagementFrame(ttk.Frame):
     def _load_products(self):
         for i in self.tree.get_children(): self.tree.delete(i)
         products = self.npi_manager.get_prodotti()
+        
+        # Carica i soggetti per il combobox owner
+        soggetti = self.npi_manager.get_soggetti()
+        self.soggetti_map = {s.Nome: s.SoggettoId for s in soggetti}
+        self.project_owner_combo['values'] = [''] + list(self.soggetti_map.keys())
+        
         if products:
             # Recupera i progetti NPI per ottenere le versioni
             progetti = self.npi_manager.get_progetti_attivi()
@@ -295,24 +350,181 @@ class ProductManagementFrame(ttk.Frame):
                                    self.lang.get('warning_select_product_to_create_project'), parent=self)
             return
         
-        # Ottieni la versione dal campo di input
+        # Ottieni i dati dal form
         version = self.version_entry.get().strip() or None
+        owner_name = self.project_owner_combo.get().strip()
+        owner_id = self.soggetti_map.get(owner_name) if owner_name else None
+        descrizione = self.project_description_text.get('1.0', tk.END).strip() or None
         
         try:
-            progetto = self.npi_manager.create_progetto_npi_for_prodotto(self.selected_product_id, version)
+            progetto = self.npi_manager.create_progetto_npi_for_prodotto(
+                self.selected_product_id, 
+                version,
+                owner_id=owner_id,
+                descrizione=descrizione
+            )
             if progetto:
+                # Salva i documenti allegati
+                if self.project_documents:
+                    for doc_data in self.project_documents:
+                        self.npi_manager.add_progetto_documento(
+                            progetto_id=progetto.ProgettoId,
+                            nome_file=doc_data['nome'],
+                            tipo_file=doc_data['tipo'],
+                            dimensione=doc_data['dimensione'],
+                            contenuto=doc_data['contenuto'],
+                            descrizione=None,
+                            caricato_da=None  # TODO: passare utente loggato
+                        )
+                
                 messagebox.showinfo(self.lang.get('success_title'), self.lang.get('success_project_created').format(
                     product_name=progetto.prodotto.NomeProdotto), parent=self)
-                # Pulisci il campo versione dopo la creazione
+                # Pulisci i campi dopo la creazione
                 self.version_entry.delete(0, tk.END)
+                self.project_owner_combo.set('')
+                self.project_description_text.delete('1.0', tk.END)
+                self._clear_project_documents()
                 # Ricarica la lista prodotti per mostrare la versione
                 self._load_products()
             else:
-                messagebox.showinfo(self.lang.get('info_title'), self.lang.get('info_project_already_exists'),
-                                    parent=self)
+                # Progetto già esistente - chiedi se aggiornare
+                if messagebox.askyesno(
+                    self.lang.get('info_title', 'Informazione'),
+                    self.lang.get('msg_project_exists_update', 
+                                 'Il progetto esiste già. Vuoi aggiornare i dati (owner, descrizione) e aggiungere documenti?'),
+                    parent=self
+                ):
+                    # Recupera il progetto esistente
+                    existing_project = self.npi_manager.get_progetto_by_prodotto(self.selected_product_id)
+                    if existing_project:
+                        # Aggiorna i dati del progetto
+                        update_data = {}
+                        if version:
+                            update_data['Version'] = version
+                        if owner_id:
+                            update_data['OwnerID'] = owner_id
+                        if descrizione:
+                            update_data['Descrizione'] = descrizione
+                        
+                        if update_data:
+                            self.npi_manager.update_progetto_npi(existing_project.ProgettoId, update_data)
+                        
+                        # Aggiungi i documenti
+                        if self.project_documents:
+                            for doc_data in self.project_documents:
+                                self.npi_manager.add_progetto_documento(
+                                    progetto_id=existing_project.ProgettoId,
+                                    nome_file=doc_data['nome'],
+                                    tipo_file=doc_data['tipo'],
+                                    dimensione=doc_data['dimensione'],
+                                    contenuto=doc_data['contenuto'],
+                                    descrizione=None,
+                                    caricato_da=None
+                                )
+                        
+                        messagebox.showinfo(
+                            self.lang.get('success_title', 'Successo'),
+                            self.lang.get('msg_project_updated', 'Progetto aggiornato con successo'),
+                            parent=self
+                        )
+                        
+                        # Pulisci i campi
+                        self.version_entry.delete(0, tk.END)
+                        self.project_owner_combo.set('')
+                        self.project_description_text.delete('1.0', tk.END)
+                        self._clear_project_documents()
+                        self._load_products()
         except Exception as e:
             messagebox.showerror(self.lang.get('error_title'), self.lang.get('error_create_project').format(error=e),
                                  parent=self)
+    
+    def _add_project_document(self):
+        """Aggiunge un documento alla lista temporanea."""
+        file_path = filedialog.askopenfilename(
+            title=self.lang.get('select_document', 'Seleziona Documento'),
+            filetypes=[
+                ('Tutti i file', '*.*'),
+                ('Immagini', '*.png;*.jpg;*.jpeg;*.gif;*.bmp'),
+                ('PDF', '*.pdf'),
+                ('Word', '*.doc;*.docx'),
+                ('Excel', '*.xls;*.xlsx')
+            ]
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            # Leggi il file
+            with open(file_path, 'rb') as f:
+                contenuto = f.read()
+            
+            nome_file = os.path.basename(file_path)
+            tipo_file = self._get_mime_type(nome_file)
+            dimensione = len(contenuto)
+            
+            # Aggiungi alla lista temporanea
+            doc_data = {
+                'nome': nome_file,
+                'tipo': tipo_file,
+                'dimensione': dimensione,
+                'contenuto': contenuto
+            }
+            self.project_documents.append(doc_data)
+            
+            # Aggiorna la lista visuale
+            size_kb = dimensione / 1024
+            size_str = f"{size_kb:.1f} KB"
+            self.docs_tree.insert('', tk.END, values=(nome_file, size_str))
+            
+        except Exception as e:
+            messagebox.showerror(
+                self.lang.get('error_title', 'Errore'),
+                f"Impossibile caricare il file:\n{e}",
+                parent=self
+            )
+    
+    def _remove_project_document(self):
+        """Rimuove un documento dalla lista temporanea."""
+        selection = self.docs_tree.selection()
+        if not selection:
+            messagebox.showwarning(
+                self.lang.get('warning_title', 'Attenzione'),
+                self.lang.get('msg_select_document', 'Seleziona un documento'),
+                parent=self
+            )
+            return
+        
+        # Ottieni l'indice del documento selezionato
+        item = selection[0]
+        index = self.docs_tree.index(item)
+        
+        # Rimuovi dalla lista e dalla treeview
+        del self.project_documents[index]
+        self.docs_tree.delete(item)
+    
+    def _clear_project_documents(self):
+        """Pulisce la lista documenti."""
+        self.project_documents = []
+        for item in self.docs_tree.get_children():
+            self.docs_tree.delete(item)
+    
+    def _get_mime_type(self, filename):
+        """Determina il MIME type dal nome file."""
+        ext = os.path.splitext(filename)[1].lower()
+        mime_types = {
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif',
+            '.bmp': 'image/bmp',
+            '.pdf': 'application/pdf',
+            '.doc': 'application/msword',
+            '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            '.xls': 'application/vnd.ms-excel',
+            '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        }
+        return mime_types.get(ext, 'application/octet-stream')
 
 
 # --- Frame per la gestione del Catalogo Task ---
@@ -408,11 +620,12 @@ class TaskManagementFrame(ttk.Frame):
 
         # Layout del form aggiornato
         labels_config = [
+            ('CategoryId', 'label_category', 'combo'),  # Categoria come primo campo
             ('ItemID', 'label_item_id', 'entry'),
             ('NomeTask', 'label_task_name', 'entry'),
-            ('CategoryId', 'label_category', 'combo'),
+            ('NrOrdin', 'label_order_number', 'entry'),  # Campo per NrOrdin
             ('Descrizione', 'label_description', 'text'),
-            ('IsTitle', 'label_is_title', 'check')  # NUOVO CAMPO
+            ('IsTitle', 'label_is_title', 'check')
         ]
 
         row_idx = 0
@@ -435,59 +648,97 @@ class TaskManagementFrame(ttk.Frame):
                 form_frame.rowconfigure(row_idx, weight=1)
 
             row_idx += 1
+        
+        # Aggiungi evento al combobox della categoria (gestisce sia filtro che suggerimento)
+        self.fields['CategoryId'].bind('<<ComboboxSelected>>', self._on_category_changed)
 
         form_frame.columnconfigure(1, weight=1)
 
         button_frame = ttk.Frame(form_frame)
         button_frame.grid(row=row_idx, column=0, columnspan=2, pady=20, sticky=tk.E)
-        ttk.Button(button_frame, text=self.lang.get('btn_new'), command=self._clear_form).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text=self.lang.get('btn_save'), command=self._save_task).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text=self.lang.get('btn_new'), command=self._new_task).pack(side=tk.LEFT, padx=5)
+        self.save_button = ttk.Button(button_frame, text=self.lang.get('btn_save'), command=self._save_task)
+        self.save_button.pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text=self.lang.get('btn_delete'), command=self._delete_task).pack(side=tk.LEFT, padx=5)
 
         self.refresh_data()
 
     def refresh_data(self):
-        self._load_categories_for_combobox()
+        # Salva la categoria attualmente selezionata prima del refresh
+        current_category = self.fields['CategoryId'].get() if 'CategoryId' in self.fields else None
+        self._load_categories_for_combobox(current_category)
         self._load_tasks()
 
-    def _load_categories_for_combobox(self):
+    def _load_categories_for_combobox(self, selected_category=None):
+        """Carica le categorie nella combobox con opzione per mostrare tutti i task
+        
+        Args:
+            selected_category: La categoria da mantenere selezionata dopo il caricamento
+        """
         categories = self.npi_manager.get_categories()
         self.category_map = {cat.Category: cat.CategoryId for cat in categories}
-        self.fields['CategoryId']['values'] = [""] + list(self.category_map.keys())
+        
+        # Aggiungi "Tutte le categorie" come prima opzione
+        all_categories_label = self.lang.get('all_categories', 'Tutte le categorie')
+        
+        # Ordina alfabeticamente le categorie
+        sorted_categories = sorted(self.category_map.keys())
+        
+        # Costruisci la lista con "Tutte" all'inizio, poi le categorie ordinate
+        category_values = [all_categories_label, ""] + sorted_categories
+        self.fields['CategoryId']['values'] = category_values
+        
+        # Ripristina la categoria precedentemente selezionata, se fornita
+        if selected_category and selected_category in category_values:
+            self.fields['CategoryId'].set(selected_category)
+        else:
+            self.fields['CategoryId'].current(0)  # Seleziona "Tutte" di default
+        
+        # NON sovrascrivere l'evento qui - è già collegato nell'__init__
 
     def _load_tasks(self):
         selected_iid_before = self.tree.selection()
-        #selected_id = self.tree.item(selected_iid_before[0])['values'][0] if selected_iid_before else None
 
-        for i in self.tree.get_children(): self.tree.delete(i)
+        for i in self.tree.get_children(): 
+            self.tree.delete(i)
 
-        #item_to_reselect = None
-        tasks = self.npi_manager.get_catalogo_task()
+        # Ottieni la categoria selezionata per il filtro
+        selected_category = self.fields['CategoryId'].get() if hasattr(self, 'fields') and 'CategoryId' in self.fields else None
+        filter_category_id = None
+        
+        all_categories_label = self.lang.get('all_categories', 'Tutte le categorie')
+        if selected_category and selected_category != all_categories_label and selected_category != '':
+            # Se è selezionata una categoria specifica, ottieni il suo ID
+            filter_category_id = self.category_map.get(selected_category)
+
+        # Carica i task (filtrati o tutti)
+        if filter_category_id is not None:
+            # Usa il metodo che filtra per categoria
+            tasks = self.npi_manager.get_tasks_by_category(filter_category_id)
+        else:
+            # Carica tutti i task
+            tasks = self.npi_manager.get_catalogo_task()
+        
+        # Ordina i task per ItemID prima di visualizzarli
         if tasks:
+            tasks = sorted(tasks, key=lambda t: t.ItemID or "")
+            
             for t in tasks:
                 category_name = t.categoria.Category if t.categoria else ""
                 tags_to_apply = ()
                 if t.IsTitle:
                     tags_to_apply = ('title_row',)
 
-                    # Inseriamo i dati
-                    # 'text' contiene il TaskID (PK), che non è visibile all'utente.
                 self.tree.insert(
                     '', tk.END, text=str(t.TaskID),
                     values=(t.ItemID, t.NomeTask, category_name),
                     tags=tags_to_apply
                 )
 
-                # Prova a ri-selezionare l'elemento precedente se ancora esiste
-                if selected_iid_before:
-                    if self.tree.exists(selected_iid_before[0]):
-                        self.tree.selection_set(selected_iid_before[0])
-
-        #         iid = self.tree.insert('', tk.END, values=(t.TaskID, t.ItemID, t.NomeTask, category_name))
-        #         if t.TaskID == selected_id:
-        #             item_to_reselect = iid
-        # if item_to_reselect:
-        #     self.tree.selection_set(item_to_reselect)
+            # Prova a ri-selezionare l'elemento precedente se ancora esiste
+            if selected_iid_before:
+                if self.tree.exists(selected_iid_before[0]):
+                    self.tree.selection_set(selected_iid_before[0])
 
     def _on_task_select(self, event=None):
         if not self.tree.selection(): return
@@ -500,16 +751,71 @@ class TaskManagementFrame(ttk.Frame):
 
         task = self.npi_manager.get_catalogo_task_by_id(self.selected_task_id)
         if task: self._populate_form(task)
-
-    def _populate_form(self, task):
-        self._clear_form(clear_selection=False)
-        self.selected_task_id = task.TaskID
-        self.fields['ItemID'].insert(0, task.ItemID or "")
-        self.fields['NomeTask'].insert(0, task.NomeTask or "")
-        self.fields['Descrizione'].delete('1.0', tk.END)
-        self.fields['Descrizione'].insert('1.0', task.Descrizione or "")
-        self.fields['CategoryId'].set(task.categoria.CategoryId if task.categoria else '')
-        self.is_title_var.set(bool(task.IsTitle))
+    
+    def _on_category_selected(self, event=None):
+        """Genera automaticamente un suggerimento per ItemID quando si seleziona una categoria."""
+        # Solo per nuovi task (non in modifica)
+        if self.selected_task_id is not None:
+            return
+        
+        # Solo se ItemID è vuoto
+        if self.fields['ItemID'].get().strip():
+            return
+        
+        category_name = self.fields['CategoryId'].get()
+        if not category_name or category_name == self.lang.get('all_categories', 'Tutte le categorie') or category_name == '':
+            return
+        
+        # Ottieni l'ID della categoria
+        category_id = self.category_map.get(category_name)
+        if not category_id:
+            return
+        
+        try:
+            # Ottieni tutti i task di questa categoria
+            tasks = self.npi_manager.get_tasks_by_category(category_id)
+            
+            if not tasks:
+                # Nessun task esistente, suggerisci il primo
+                # Usa le prime 3 lettere della categoria + "-005"
+                prefix = category_name[:3].upper()
+                suggested_id = f"{prefix}-005"
+            else:
+                # Analizza gli ItemID esistenti per trovare il pattern
+                item_ids = [t.ItemID for t in tasks if t.ItemID]
+                
+                if not item_ids:
+                    # Nessun ItemID valido, usa default
+                    prefix = category_name[:3].upper()
+                    suggested_id = f"{prefix}-005"
+                else:
+                    # Ordina gli ItemID
+                    item_ids.sort()
+                    last_id = item_ids[-1]
+                    
+                    # Prova a estrarre il pattern PREFIX-NUMERO
+                    import re
+                    match = re.match(r'^([A-Za-z]+)-?(\d+)$', last_id)
+                    
+                    if match:
+                        prefix = match.group(1)
+                        last_number = int(match.group(2))
+                        # Incrementa di 5 (arrotondato al multiplo di 5 superiore)
+                        next_number = ((last_number // 5) + 1) * 5
+                        suggested_id = f"{prefix}-{next_number:03d}"
+                    else:
+                        # Pattern non riconosciuto, usa default
+                        prefix = category_name[:3].upper()
+                        suggested_id = f"{prefix}-005"
+            
+            # Popola il campo ItemID con il suggerimento
+            self.fields['ItemID'].delete(0, tk.END)
+            self.fields['ItemID'].insert(0, suggested_id)
+            
+        except Exception as e:
+            # In caso di errore, non fare nulla (l'utente può inserire manualmente)
+            import logging
+            logging.warning(f"Errore nella generazione del suggerimento ItemID: {e}")
 
     def _clear_form(self, clear_selection=True):
         self.selected_task_id = None
@@ -523,7 +829,40 @@ class TaskManagementFrame(ttk.Frame):
                 self.is_title_var.set(False)
             else:
                 widget.delete(0, tk.END)
-        self.fields['ItemID'].focus()
+        # Disabilita il campo NrOrdin per i nuovi task (verrà calcolato automaticamente)
+        self.fields['NrOrdin'].config(state='disabled')
+        self.fields['CategoryId'].focus()  # Focus sulla categoria per iniziare
+    
+    def _new_task(self):
+        """Prepara il form per creare un nuovo task."""
+        self._clear_form()
+        # Aggiorna il testo del bottone per chiarezza
+        self.save_button.config(text=self.lang.get('btn_create', 'Crea Nuovo'))
+    
+    def _on_category_changed(self, event=None):
+        """Gestisce il cambio della categoria: filtra i task E suggerisce ItemID."""
+        # 1. Filtra i task visualizzati
+        self._load_tasks()
+        
+        # 2. Chiama il metodo esistente per suggerire ItemID
+        self._on_category_selected(event)
+    
+    def _populate_form(self, task):
+        """Popola il form con i dati di un task esistente."""
+        self._clear_form(clear_selection=False)
+        self.selected_task_id = task.TaskID
+        self.fields['CategoryId'].set(task.categoria.Category if task.categoria else '')
+        self.fields['ItemID'].insert(0, task.ItemID or "")
+        self.fields['NomeTask'].insert(0, task.NomeTask or "")
+        self.fields['Descrizione'].delete('1.0', tk.END)
+        self.fields['Descrizione'].insert('1.0', task.Descrizione or "")
+        # Mostra il NrOrdin e rendilo modificabile
+        self.fields['NrOrdin'].config(state='normal')
+        self.fields['NrOrdin'].delete(0, tk.END)
+        self.fields['NrOrdin'].insert(0, str(task.NrOrdin) if task.NrOrdin else "")
+        self.is_title_var.set(bool(task.IsTitle))
+        # Aggiorna il testo del bottone
+        self.save_button.config(text=self.lang.get('btn_save', 'Salva Modifiche'))
 
     # def _save_task(self):
     #     item_id_str = self.fields['ItemID'].get().strip()
@@ -559,7 +898,7 @@ class TaskManagementFrame(ttk.Frame):
     #                              parent=self)
 
     def _save_task(self):
-        """METODO MODIFICATO per gestire la logica di ordinamento e IsTitle."""
+        """Salva un nuovo task o modifica uno esistente (con conferma)."""
         item_id_str = self.fields['ItemID'].get().strip()
         nome_task_str = self.fields['NomeTask'].get().strip()
         if not item_id_str or not nome_task_str:
@@ -568,6 +907,17 @@ class TaskManagementFrame(ttk.Frame):
             return
 
         is_new_task = self.selected_task_id is None
+        
+        # Chiedi conferma
+        if is_new_task:
+            confirm_msg = f"Confermi la creazione del nuovo task '{item_id_str} - {nome_task_str}'?"
+            confirm_title = "Conferma Creazione"
+        else:
+            confirm_msg = f"Confermi la modifica del task '{item_id_str} - {nome_task_str}'?"
+            confirm_title = "Conferma Modifica"
+        
+        if not messagebox.askyesno(confirm_title, confirm_msg, parent=self):
+            return
 
         # Controllo duplicati
         existing_task = self.npi_manager.get_catalogo_task_by_itemid(item_id_str)
@@ -585,6 +935,18 @@ class TaskManagementFrame(ttk.Frame):
             'CategoryId': self.category_map.get(self.fields['CategoryId'].get()),
             'IsTitle': self.is_title_var.get()
         }
+        
+        # Se stiamo modificando un task esistente, includi NrOrdin se modificato
+        if not is_new_task:
+            nr_ordin_str = self.fields['NrOrdin'].get().strip()
+            if nr_ordin_str:
+                try:
+                    data['NrOrdin'] = int(nr_ordin_str)
+                except ValueError:
+                    messagebox.showerror(self.lang.get('error_title'), 
+                                       "Il Numero d'Ordine deve essere un numero intero.",
+                                       parent=self)
+                    return
 
         try:
             if is_new_task:
@@ -740,6 +1102,30 @@ class CategoryManagementFrame(ttk.Frame):
             command=self._delete_category
         ).pack(side=tk.LEFT, padx=5)
 
+        # Listbox per i task della categoria
+        tasks_label_frame = ttk.LabelFrame(
+            form_frame, 
+            text=self.lang.get('category_tasks_label', 'Task in questa categoria:'),
+            padding=10
+        )
+        tasks_label_frame.grid(row=len(labels) + 1, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=10)
+        tasks_label_frame.columnconfigure(0, weight=1)
+        tasks_label_frame.rowconfigure(0, weight=1)
+        
+        # Listbox con scrollbar
+        tasks_list_frame = ttk.Frame(tasks_label_frame)
+        tasks_list_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.tasks_listbox = tk.Listbox(tasks_list_frame, height=10)
+        self.tasks_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        tasks_scrollbar = ttk.Scrollbar(tasks_list_frame, orient=tk.VERTICAL, command=self.tasks_listbox.yview)
+        tasks_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tasks_listbox.config(yscrollcommand=tasks_scrollbar.set)
+        
+        # Permetti al form di espandersi verticalmente
+        form_frame.rowconfigure(len(labels) + 1, weight=1)
+
         # Carica i dati iniziali
         self._load_categories()
 
@@ -754,9 +1140,15 @@ class CategoryManagementFrame(ttk.Frame):
             categories = self.npi_manager.get_categories()
             if categories:
                 for cat in categories:
+                    # Verifica se la categoria è usata in progetti
+                    is_used = self.npi_manager.is_category_used_in_projects(cat.CategoryId)
+                    category_name = cat.Category
+                    if is_used:
+                        category_name += " ***"
+                    
                     self.tree.insert('', tk.END, values=(
                         cat.CategoryId,
-                        cat.Category,
+                        category_name,
                         cat.NrOrdin or ""
                     ))
         except Exception as e:
@@ -780,6 +1172,8 @@ class CategoryManagementFrame(ttk.Frame):
 
             if category:
                 self._populate_form(category)
+                # Carica i task della categoria
+                self._load_category_tasks(self.selected_category_id)
         except Exception as e:
             messagebox.showerror(
                 self.lang.get('db_error_title'),
@@ -808,6 +1202,37 @@ class CategoryManagementFrame(ttk.Frame):
         for widget in self.fields.values():
             if isinstance(widget, ttk.Entry):
                 widget.delete(0, tk.END)
+        
+        # Pulisci anche la listbox dei task
+        if hasattr(self, 'tasks_listbox'):
+            self.tasks_listbox.delete(0, tk.END)
+
+    def _load_category_tasks(self, category_id):
+        """Carica i task della categoria selezionata nella listbox."""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Pulisci la listbox
+        self.tasks_listbox.delete(0, tk.END)
+        
+        if category_id is None:
+            return
+        
+        try:
+            tasks = self.npi_manager.get_tasks_by_category(category_id)
+            
+            if not tasks:
+                self.tasks_listbox.insert(tk.END, self.lang.get('no_tasks_in_category', 'Nessun task in questa categoria'))
+            else:
+                for task in tasks:
+                    # Formato: ItemID - NomeTask
+                    display_text = f"{task.ItemID} - {task.NomeTask}"
+                    if task.IsTitle:
+                        display_text = f"[TITOLO] {display_text}"
+                    self.tasks_listbox.insert(tk.END, display_text)
+        except Exception as e:
+            logger.error(f"Errore caricamento task categoria: {e}")
+            self.tasks_listbox.insert(tk.END, f"Errore: {e}")
 
     def _save_category(self):
         """Salva la categoria (nuova o aggiornamento)."""
@@ -913,7 +1338,7 @@ class NpiConfigWindow(tk.Toplevel):
         self.app_master = master  # Salviamo un riferimento alla finestra principale App
 
         self.title(self.lang.get('config_window_title'))
-        self.geometry("1200x700")
+        self.geometry("1200x900")
         self.transient(master)
         self.grab_set()
 
@@ -992,6 +1417,8 @@ class TaskCatalogManagementFrame(ttk.Frame):
         ttk.Label(form_frame, text=self.lang.get('label_category')).grid(row=2, column=0, sticky=tk.W, pady=2)
         self.fields['CategoryId'] = ttk.Combobox(form_frame, state='readonly', width=38)
         self.fields['CategoryId'].grid(row=2, column=1, sticky=tk.EW, padx=5)
+        # Aggiungi evento per filtrare i task quando cambia la categoria
+        self.fields['CategoryId'].bind('<<ComboboxSelected>>', self._on_category_filter_change)
 
         # Descrizione
         ttk.Label(form_frame, text=self.lang.get('label_description')).grid(row=3, column=0, sticky=tk.NW, pady=2)
@@ -1031,26 +1458,53 @@ class TaskCatalogManagementFrame(ttk.Frame):
         self._load_tasks()
 
     def _load_categories_combo(self):
-        """Carica le categorie nella combobox"""
+        """Carica le categorie nella combobox con opzione per mostrare tutti i task"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         categories = self.npi_manager.get_categories()
         if categories:
             self.category_map = {cat.Category: cat.CategoryId for cat in categories}
             self.category_map_rev = {cat.CategoryId: cat.Category for cat in categories}
-            self.fields['CategoryId']['values'] = tuple(self.category_map.keys())
+            
+            # Aggiungi "Tutte le categorie" come prima opzione per il filtro
+            all_categories_label = self.lang.get('all_categories', 'Tutte le categorie')
+            category_values = [all_categories_label] + list(self.category_map.keys())
+            self.fields['CategoryId']['values'] = tuple(category_values)
+            self.fields['CategoryId'].current(0)  # Seleziona "Tutte" di default
+            
+            logger.info(f"📋 Combobox categorie popolata con {len(category_values)} voci (incluso '{all_categories_label}')")
+            print(f"📋 DEBUG: Combobox categorie popolata con {len(category_values)} voci")
+            print(f"   Prima voce: '{category_values[0]}'")
 
     def _load_tasks(self):
-        """Carica i task nella lista"""
+        """Carica i task nella lista, applicando il filtro per categoria se selezionato"""
         for i in self.tree.get_children():
             self.tree.delete(i)
+
+        # Ottieni la categoria selezionata dalla combobox
+        selected_category = self.fields['CategoryId'].get() if hasattr(self, 'fields') and 'CategoryId' in self.fields else None
+        filter_category_id = None
+        
+        all_categories_label = self.lang.get('all_categories', 'Tutte le categorie')
+        if selected_category and selected_category != all_categories_label and selected_category != '':
+            # Se è selezionata una categoria specifica, ottieni il suo ID
+            filter_category_id = self.category_map.get(selected_category)
 
         session = self.npi_manager.Session()
         try:
             from ..data_models import TaskCatalogo
             from sqlalchemy.orm import joinedload
 
-            tasks = session.query(TaskCatalogo).options(
+            query = session.query(TaskCatalogo).options(
                 joinedload(TaskCatalogo.categoria)
-            ).all()
+            )
+            
+            # Applica il filtro se una categoria è selezionata
+            if filter_category_id is not None:
+                query = query.filter(TaskCatalogo.CategoryId == filter_category_id)
+            
+            tasks = query.all()
 
             for task in tasks:
                 category_name = task.categoria.Category if task.categoria else ""
@@ -1061,6 +1515,15 @@ class TaskCatalogManagementFrame(ttk.Frame):
                 ))
         finally:
             session.close()
+
+    def _on_category_filter_change(self, event=None):
+        """Gestisce il cambio della categoria nella combobox per filtrare i task"""
+        import logging
+        logger = logging.getLogger(__name__)
+        selected = self.fields['CategoryId'].get()
+        logger.info(f"🔍 Filtro categoria cambiato: '{selected}'")
+        print(f"🔍 DEBUG: Filtro categoria cambiato: '{selected}'")
+        self._load_tasks()
 
     def _on_task_select(self, event=None):
         """Gestisce la selezione di un task dalla lista"""

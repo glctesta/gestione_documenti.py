@@ -1,5 +1,4 @@
-# File: npi/windows/project_window.py (VERSIONE COMPLETA E CORRETTA)
-
+# File: npi/windows/project_window.py (VERSION: 20251219_1040)
 import logging
 import os
 import tkinter as tk
@@ -19,6 +18,7 @@ except ImportError:
 # Assicurati che i percorsi di importazione siano corretti per la tua struttura
 from .import_tasks_window import ImportTasksWindow
 from .task_documents_window import TaskDocumentsWindow
+from .task_dependencies_window import TaskDependenciesWindow
 
 logger = logging.getLogger(__name__)
 
@@ -88,12 +88,16 @@ class ProjectWindow(tk.Toplevel):
         }
         self.status_map_db = {v: k for k, v in self.status_map_display.items()}
 
-        self.geometry("1400x900")
+        self.geometry("1400x1200")
         self.title(self.lang.get('project_window_title', 'Gestione Progetto NPI'))
         self.transient(master)
         self.grab_set()
 
         self.show_assigned_var = tk.BooleanVar(value=True)
+        self.category_filter_var = tk.StringVar(value='')  # Filtro categoria
+        self.dep_category_var = tk.StringVar(value='')     # Filtro categoria dipendenze
+        self.category_map = {}  # Mappa nome categoria -> ID
+        self.all_available_tasks = [] # Cache per task disponibili (dipendenze)
         self._create_widgets()
 
     def _create_widgets(self):
@@ -112,10 +116,20 @@ class ProjectWindow(tk.Toplevel):
         self.import_button = ttk.Button(header_frame, text=self.lang.get('btn_import_tasks', 'Importa Task'), command=self._launch_import_tasks_window)
         self.import_button.pack(side=tk.LEFT, padx=10)
         
+        # Bottone per sincronizzare task dal catalogo
+        self.sync_button = ttk.Button(header_frame, text=self.lang.get('btn_sync_catalog', 'Sincronizza Catalogo'), command=self._sync_catalog_tasks)
+        self.sync_button.pack(side=tk.LEFT, padx=5)
+        
         self.export_button = ttk.Button(header_frame, text=self.lang.get('btn_export_excel', 'Export Excel'), command=self._export_cost_report, state=tk.DISABLED)
         self.export_button.pack(side=tk.LEFT, padx=5)
         
         ttk.Checkbutton(header_frame, text=self.lang.get('show_assigned', 'Mostra Assegnati'), variable=self.show_assigned_var, command=self._populate_treeview).pack(side=tk.LEFT, padx=5)
+
+        # Filtro per categoria
+        ttk.Label(header_frame, text=self.lang.get('filter_category', 'Categoria:')).pack(side=tk.LEFT, padx=(10, 5))
+        self.category_filter_combo = ttk.Combobox(header_frame, textvariable=self.category_filter_var, state='readonly', width=20)
+        self.category_filter_combo.pack(side=tk.LEFT, padx=5)
+        self.category_filter_combo.bind('<<ComboboxSelected>>', lambda e: self._populate_treeview())
 
         # Project Dates
         dates_frame = ttk.LabelFrame(header_frame, text=self.lang.get('project_dates_title', 'Date Progetto'))
@@ -143,16 +157,18 @@ class ProjectWindow(tk.Toplevel):
         left_frame = ttk.Frame(paned)
         paned.add(left_frame, weight=1)
 
-        columns = ('Name', 'Category', 'Owner', 'Status', 'DueDate')
+        columns = ('Category', 'ItemID', 'Name', 'Owner', 'Status', 'DueDate')
         self.tree = ttk.Treeview(left_frame, columns=columns, show='headings')
-        self.tree.heading('Name', text=self.lang.get('col_task', 'Task'))
         self.tree.heading('Category', text=self.lang.get('col_category', 'Categoria'))
+        self.tree.heading('ItemID', text=self.lang.get('col_item_id', 'Codice'))
+        self.tree.heading('Name', text=self.lang.get('col_task', 'Task'))
         self.tree.heading('Owner', text=self.lang.get('col_owner', 'Assegnato a'))
         self.tree.heading('Status', text=self.lang.get('col_status', 'Stato'))
         self.tree.heading('DueDate', text=self.lang.get('col_due_date', 'Scadenza'))
         
+        self.tree.column('Category', width=120)
+        self.tree.column('ItemID', width=80)
         self.tree.column('Name', width=200)
-        self.tree.column('Category', width=100)
         self.tree.column('Owner', width=100)
         self.tree.column('Status', width=100)
         self.tree.column('DueDate', width=80)
@@ -221,6 +237,17 @@ class ProjectWindow(tk.Toplevel):
         self.fields['Note'].grid(row=r, column=1, sticky=tk.EW, pady=2)
         r += 1
 
+        # Dependencies Section
+        deps_label_frame = ttk.LabelFrame(details_frame, text=self.lang.get('dependencies_summary', 'Sommario Dipendenze'))
+        deps_label_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.deps_listbox = tk.Listbox(deps_label_frame, height=3, state=tk.DISABLED)
+        self.deps_listbox.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.btn_manage_deps = ttk.Button(deps_label_frame, text=self.lang.get('btn_manage_dependencies', 'Gestionează Dipendenze'), 
+                                         command=self._launch_task_dependencies_window)
+        self.btn_manage_deps.pack(pady=5)
+
         ttk.Button(details_frame, text=self.lang.get('btn_save', 'Salva Modifiche'), command=self._save_task_details).pack(pady=5)
 
         # Documents Section
@@ -274,8 +301,21 @@ class ProjectWindow(tk.Toplevel):
         self.view_docs_button = ttk.Button(doc_frame, text=self.lang.get('view_docs', 'Vedi Documenti Caricati'), command=self._launch_view_documents_window, state=tk.DISABLED)
         self.view_docs_button.pack(pady=5)
 
+        # Status Bar
+        self.status_bar = ttk.Label(self, text="Inizializzazione...", relief=tk.SUNKEN, anchor=tk.W)
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
         # Initial call to load data
         self.after(100, self._load_data_and_populate_ui)
+
+    def log_status(self, message):
+        """Aggiorna la barra di stato e il log di sistema."""
+        try:
+            if hasattr(self, 'status_bar'):
+                self.status_bar.config(text=message)
+            logger.info(message)
+        except Exception as e:
+            print(f"Error logging status: {e}")
 
     def _on_doc_type_selected(self, event=None):
         doc_type_desc = self.doc_widgets['type'].get()
@@ -302,6 +342,14 @@ class ProjectWindow(tk.Toplevel):
             self.soggetti_map_rev = {v: k for k, v in self.soggetti_map.items()}
             self.fields['OwnerID']['values'] = [''] + list(self.soggetti_map.keys())
             self.fields['Stato']['values'] = list(self.status_map_display.values())
+
+            # Carica le categorie per il filtro
+            categories = self.npi_manager.get_categories()
+            self.category_map = {cat.Category: cat.CategoryId for cat in categories}
+            all_categories_label = self.lang.get('all_categories', 'Tutte le categorie')
+            category_values = [all_categories_label] + list(self.category_map.keys())
+            self.category_filter_combo['values'] = category_values
+            self.category_filter_var.set(all_categories_label)  # Seleziona "Tutte" di default
 
             doc_types = self.npi_manager.get_npi_document_types()
             self.doc_types_map = {dt.NpiDocumentDescription: dt.NpiDocumentTypeId for dt in doc_types}
@@ -464,9 +512,23 @@ class ProjectWindow(tk.Toplevel):
         wave = self.progetto.waves[0]
         self.import_button.config(state=tk.DISABLED if any(t.OwnerID is not None for t in wave.tasks) else tk.NORMAL)
 
+        # Ottieni la categoria selezionata per il filtro
+        selected_category = self.category_filter_var.get()
+        all_categories_label = self.lang.get('all_categories', 'Tutte le categorie')
+        filter_category_id = None
+        
+        if selected_category and selected_category != all_categories_label:
+            filter_category_id = self.category_map.get(selected_category)
+
         for task in sorted(wave.tasks, key=lambda t: t.task_catalogo.ItemID if t.task_catalogo else ''):
 
             if self.show_assigned_var.get() != (task.OwnerID is not None): continue
+
+            # Applica filtro categoria se selezionato
+            if filter_category_id is not None:
+                task_category_id = task.task_catalogo.CategoryId if task.task_catalogo else None
+                if task_category_id != filter_category_id:
+                    continue
 
             owner = task.owner.Nome if task.owner else ""
             due_date = task.DataScadenza.strftime('%d/%m/%Y') if task.DataScadenza else ""
@@ -482,8 +544,9 @@ class ProjectWindow(tk.Toplevel):
                 tags.append('bold_task')
             
             cat = task.task_catalogo.categoria.Category if task.task_catalogo and task.task_catalogo.categoria else ""
+            item_id = task.task_catalogo.ItemID if task.task_catalogo else ""
             name = task.task_catalogo.NomeTask if task.task_catalogo else "Catalogo non trovato"
-            self.tree.insert('', tk.END, text=task.TaskProdottoID, values=(name, cat, owner, status, due_date),
+            self.tree.insert('', tk.END, text=task.TaskProdottoID, values=(cat, item_id, name, owner, status, due_date),
                              tags=tuple(tags))
 
     def _on_target_npi_change(self):
@@ -542,10 +605,55 @@ class ProjectWindow(tk.Toplevel):
             self.doc_widgets['replaces_combo']['values'] = list(self.active_docs_for_task.values())
             self.view_docs_button.config(state=tk.NORMAL if docs else tk.DISABLED)
             self._reset_doc_form()
+            
+            # Load dependencies summary
+            self._load_task_dependencies()
         else:
             self._disable_form();
             self._disable_doc_form()
 
+    def _load_task_dependencies(self):
+        """Carica e visualizza il sommario delle dipendenze del task corrente."""
+        if not self.current_task_id:
+            return
+        
+        self.deps_listbox.config(state=tk.NORMAL)
+        self.deps_listbox.delete(0, tk.END)
+        dependencies = self.npi_manager.get_task_dependencies(self.current_task_id)
+        
+        if not dependencies:
+            self.deps_listbox.insert(tk.END, self.lang.get('no_dependencies', 'Nessuna dipendenza definita'))
+        else:
+            for dep in dependencies:
+                pred = dep.depends_on_task
+                if pred and pred.task_catalogo:
+                    task_name = pred.task_catalogo.NomeTask
+                    self.deps_listbox.insert(tk.END, f"• {task_name}")
+        
+        self.deps_listbox.config(state=tk.DISABLED)
+
+    def _launch_task_dependencies_window(self):
+        """Apre la finestra dedicata per la gestione delle dipendenze."""
+        if not self.current_task_id:
+            return
+        
+        task = self._get_task_by_id(self.current_task_id)
+        if not task: return
+        
+        task_name = task.task_catalogo.NomeTask if task.task_catalogo else "N/A"
+        wave_id = self.progetto.waves[0].WaveID if self.progetto and self.progetto.waves else None
+        
+        def on_close():
+            self._load_task_dependencies()
+            win.destroy()
+
+        win = TaskDependenciesWindow(
+            self, self.npi_manager, self.lang, 
+            self.current_task_id, self.project_id, wave_id, task_name
+        )
+        # Quando la finestra si chiude, ricarichiamo il sommario
+        win.protocol("WM_DELETE_WINDOW", on_close)
+    
     def _reset_doc_form(self):
         self.doc_widgets['type'].set('')
         self.doc_widgets['title'].delete(0, tk.END)
@@ -565,8 +673,15 @@ class ProjectWindow(tk.Toplevel):
         cat = task.task_catalogo.categoria.Category if task.task_catalogo and task.task_catalogo.categoria else ""
         self.fields['task_name'].config(text=name);
         self.fields['task_category'].config(text=cat)
-        self.fields['OwnerID'].set(self.soggetti_map_rev.get(task.OwnerID, ""));
-        self.fields['Stato'].set(self.status_map_display.get(task.Stato, task.Stato))
+        # Mostra il nome dell'owner, non l'ID
+        owner_name = task.owner.Nome if task.owner else ""
+        self.fields['OwnerID'].set(owner_name)
+        # Imposta lo stato - assicurati che sia nella lista dei valori
+        stato_display = self.status_map_display.get(task.Stato, task.Stato)
+        if stato_display not in self.fields['Stato']['values']:
+            # Se lo stato non è nella lista, usa il primo valore o vuoto
+            stato_display = self.fields['Stato']['values'][0] if self.fields['Stato']['values'] else ""
+        self.fields['Stato'].set(stato_display)
         self.fields['Note'].delete('1.0', tk.END);
         self.fields['Note'].insert('1.0', task.Note or "")
         self.fields['DataScadenza'].set_date(task.DataScadenza);
@@ -723,9 +838,24 @@ class ProjectWindow(tk.Toplevel):
         nuovo_stato_display = self.fields['Stato'].get()
         nuovo_stato_db = self.status_map_db.get(nuovo_stato_display, 'Da Fare')
 
-        # ===== VALIDAZIONE MILESTONE FINALE =====
-        # Se il nuovo stato è 'Completato', verifica le dipendenze
+        # ===== VALIDAZIONE DIPENDENZE E MILESTONE FINALE =====
+        # Se il nuovo stato è 'Completato', verifica prima le dipendenze poi la milestone
         if nuovo_stato_db == 'Completato':
+            # 1. Valida dipendenze task
+            is_valid_deps, dep_error = self.npi_manager.validate_task_dependencies(
+                self.current_task_id,
+                self.lang
+            )
+            
+            if not is_valid_deps:
+                messagebox.showwarning(
+                    self.lang.get('validation_error_title', 'Errore Validazione'),
+                    dep_error,
+                    parent=self
+                )
+                return
+            
+            # 2. Valida milestone finale
             is_valid, error_msg = self.npi_manager.validate_final_milestone_completion(
                 self.current_task_id
             )
@@ -777,5 +907,68 @@ class ProjectWindow(tk.Toplevel):
             messagebox.showerror(
                 self.lang.get('error_title', 'Errore'),
                 f"Impossibile aggiornare il task:\n{e}",
+                parent=self
+            )
+    
+    def _sync_catalog_tasks(self):
+        """Sincronizza i task del catalogo con il progetto corrente."""
+        try:
+            # Conferma con l'utente
+            response = messagebox.askyesno(
+                self.lang.get('confirm_title', 'Conferma'),
+                self.lang.get('msg_sync_catalog', 
+                             'Questa operazione aggiungerà al progetto tutti i task del catalogo che non sono ancora presenti.\n\n'
+                             'I task già esistenti non verranno modificati.\n\n'
+                             'Vuoi continuare?'),
+                parent=self
+            )
+            
+            if not response:
+                return
+            
+            # Ottieni tutti i task del catalogo
+            all_catalog_tasks = self.npi_manager.get_all_catalog_tasks()
+            
+            # Ottieni i task già presenti nel progetto
+            wave = self.progetto.waves[0] if self.progetto and self.progetto.waves else None
+            if not wave:
+                messagebox.showerror(
+                    self.lang.get('error_title', 'Errore'),
+                    'Nessuna wave trovata per questo progetto',
+                    parent=self
+                )
+                return
+            
+            existing_task_ids = {t.TaskID for t in wave.tasks}
+            
+            # Trova i task mancanti
+            missing_tasks = [t for t in all_catalog_tasks if t.TaskID not in existing_task_ids]
+            
+            if not missing_tasks:
+                messagebox.showinfo(
+                    self.lang.get('info_title', 'Informazione'),
+                    self.lang.get('msg_no_missing_tasks', 'Tutti i task del catalogo sono già presenti nel progetto.'),
+                    parent=self
+                )
+                return
+            
+            # Aggiungi i task mancanti
+            added_count = self.npi_manager.add_catalog_tasks_to_project(wave.WaveID, missing_tasks)
+            
+            messagebox.showinfo(
+                self.lang.get('success_title', 'Successo'),
+                self.lang.get('msg_tasks_synced', f'Aggiunti {added_count} task dal catalogo.'),
+                parent=self
+            )
+            
+            # Ricarica la UI
+            self._load_data_and_populate_ui()
+            self.log_status(f"Sincronizzati {added_count} task dal catalogo")
+            
+        except Exception as e:
+            logger.error(f"Errore sincronizzazione catalogo: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error_title', 'Errore'),
+                f"Errore durante la sincronizzazione:\n{e}",
                 parent=self
             )

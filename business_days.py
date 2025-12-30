@@ -19,12 +19,10 @@ class BusinessDayChecker:
     FIXED_HOLIDAYS = [
         (1, 1),  # Capodanno
         (1, 6),  # Epifania
-        (4, 25),  # Festa della Liberazione (Italia)
         (5, 1),  # Festa dei Lavoratori
-        (6, 2),  # Festa della Repubblica (Italia)
         (8, 15),  # Ferragosto
         (11, 1),  # Ognissanti
-        (12, 8),  # Immacolata Concezione
+        (12, 1),  # Festa nazionale rumena
         (12, 25),  # Natale
         (12, 26),  # Santo Stefano
     ]

@@ -1,0 +1,509 @@
+Current DB: Traceability_RS
+
+Tables in ResetServices.dbo schema:
+- PayTerms
+- TbPrezziPerFase
+- TbSocietaInd
+- TbOriginalQty
+- TbImpNir
+- TbUserForms
+- TbFattPagate
+- PayTermHistories
+- TbSocietaTbConversion
+- SmtBoxPark
+- TbSocietaTipoBom
+- TbOrigine
+- TbImport
+- TbFormsButtons
+- TbCarrStory
+- TmpGrpDDT
+- ProductsCategory
+- TbOrdiniRiferimenti
+- TbProdFinXlsPhases
+- TmpImpRighe
+- TbChangeDateInvo
+- TbProdFinCoversionTable
+- TbOutPut
+- MissingMatIncoming
+- SmtPrinters
+- TbEmail
+- TmpInvMatSaldi
+- TbOrdiniPrezziBUlk
+- FreeDays
+- TbSocietaTrace
+- ProductPhaseCiclyTKTs
+- TbChangeWatch
+- WareHouses
+- TMPMAT20150102011140
+- TbSocietaValute
+- TbPallet
+- TbFattStory
+- DbRawMatQrReady
+- TmpMaterialToOrderMaterial
+- RecursiveExpensiveRows
+- MissingMatIncomingDetails
+- TbOrdiniBulkReinvoicePrices
+- TBconta
+- SmtLocationMaterial
+- TbPalletStory
+- TmpMoveMate
+- WareHouselocations
+- TbSocietLhon
+- TbContratti
+- TmpPickUP
+- TbUserGrantSerie
+- TbSubPoFigli
+- TbPayTerm
+- PayTermDesriptions
+- TbIncotermsStory
+- TbOrdiniToPreformVerify
+- TmpPnPrnt
+- BoardsInTheBox
+- TbSocietLiv
+- RecurringExpensiveGroups
+- TbCosti
+- TmpPoInResta
+- TbPck
+- ProjectsBudget
+- TbCounty
+- TmpPoTracker
+- CostTypes
+- TbSocTipoBom
+- PhaseDefinitionDetails
+- TbPlan
+- TbIncotermsStoryRif
+- TbUserKeyLogs
+- TbEmailDep
+- InventoryMasterData
+- SmtCheckValuePN
+- WareHouseMoviments
+- StatusEmployee
+- TbCqDocStory
+- TMPSALDIMAT
+- CostRebatTypes
+- TbPoz
+- tmpxls
+- TbSoluzRMA
+- DirInd
+- TbIncPO
+- TbCqStory
+- Users
+- Costs
+- ListePrelievo
+- TbPrezzi
+- TbProdFinAlloyConsumption
+- TbTermini
+- Projects
+- TbSubFatSupl
+- CaricoOrdini
+- TbUserKeyIPLog
+- TbIniFinStory
+- TbUserGrantFormsLog
+- TbDecont
+- TbBulkTypeWork
+- WarningBoardCount
+- TbProdFinLinkedMaterials
+- TbSubFatSuplStory
+- NeedRequest_OLD
+- TbIniProd
+- TbDecStory
+- WarningLatePoBoards
+- TbUmConversionTable
+- CostRebats
+- TbPrezziTrnsp
+- TbAppForms
+- TbProdFin
+- TbSubOdrStFatt
+- TbProdFinXlsSetUp
+- Forecast
+- WarningLateProductionLog
+- TbIsdn
+- InventoryLogs
+- TbSubOrdConcession
+- WarningLateStory
+- CostMarkUps
+- TbSocietaSpecialInvoiceMessages
+- TbKBCard
+- TbFaseConversionCiclo
+- TbInvoiceFactoring
+- TbDiBa
+- WarningLateStoryLog
+- TbUM
+- TbSubOrdDiba
+- TbProdFinBomValue
+- TbLabelId
+- CostListing
+- TbOrdini
+- TbImportDetails
+- WarningReject
+- TbSubOrdine
+- TbProdFinBox
+- TbDibaAlter
+- TbPrezziCalculateTypes
+- TbGlobalRevenue
+- TbDibaFunc
+- WarningStory
+- TbLabelRma
+- TbDibaStop
+- SmtSetupStoryNew
+- TbProdCicles
+- TbSubOrdNIR
+- SmtQtaBomPerPo
+- DbRawMatInventory
+- WarningTobeCharged
+- TbFamily
+- TbLastInvio
+- TbLeadTime
+- TbSubOrdRigaXls
+- WIP
+- TbLineaStory
+- TbSocietaLinked
+- TbProdFinFasiPO
+- TbImpIncStoryRighe
+- TbEmailAuto
+- TbSubOrdStatus
+- SmtSetUp
+- DbMatTipo
+- TbProdFinTools
+- TbSubOrdStory
+- TbProdFinSubPO
+- TbLinee
+- TbEmailCQ
+- TbProdFinTypes
+- TbProdFinTT
+- TbLineeStoryPro
+- Imp_scar
+- TbOrderToPreformZip
+- CDC
+- TbQtyImballi
+- MatConPO_WIP
+- TbSubOrdStoryStatus
+- PO_Aperti
+- SmtSetupStory
+- DaRestituire
+- CdcStory
+- TbOrderToPreformVerifyOLD
+- ValProdotti
+- DateCheckResoult
+- TbRawMatSUpl
+- TbEmailLiv
+- TbFase
+- ProjectDetails
+- ValPOApertiPerQty
+- FormsAmmitted
+- WipValue
+- DbRawMatChangeUm
+- TbSubTipoReg
+- TbRegiSplit
+- TbLingua
+- TbOrdiniToPreformCost
+- FamigliaMateriali
+- ProjectRules
+- TbLivAut
+- TbEmailTo
+- DbRawMat
+- TbRegistro
+- TbOrdiniForecast
+- DbRawMatToSell
+- TbFaseConversion
+- TbLivAutStory
+- TbEtaj
+- TbProdFinStuff
+- TbSocietaNote
+- TbUserLevel
+- DbMatScrapFactor
+- TbLivDiba
+- TbOrdiniApprontamentoLog
+- TmpTableDdt
+- TbExcange
+- SetUpPthGRPORD
+- TbTermStory
+- TbIncoterms
+- EnviromentValues
+- TbRegiSubPo
+- TbMatBalance
+- TbLivPass
+- ExtraTimeApprovalStory
+- TbUserLevelStory
+- SetUpPth
+- TbTipoDoc
+- TbLocMain
+- TbFamilyCodes
+- TbEmailForms
+- TbRepAnaDesc
+- TbFattLabelError
+- FolderNameSystem
+- TbTipoImballo
+- TbLooks
+- TbOrdiniDateDeliveryChanged
+- TbRepAnalysis
+- EmailAddressString
+- TbUserStory
+- IncomingChecked
+- TbSubOrdineRealMat
+- TbTipoIndirizzo
+- TbManufactor
+- MatInDelta
+- TbOrdiniToPreformBulkStory
+- SmtShiftcheckStories
+- TbRepAnaStory
+- TbFatStoRMAStory
+- TbProdFinScrap
+- Pagati
+- TbTipoMat
+- TbMatAlt
+- TbSocietaSubFornitore
+- TbCarType
+- Pagatinew
+- TbRepFasi
+- RegoleXlsPo
+- Department
+- TbEmailDepForm
+- TbOrdiniBulkPdfs
+- ProFinOrdine
+- TbTipoPag
+- TbMatCancellati
+- RevenewView
+- TbSocietaTipi
+- QtyPoToClose
+- TbRfqStory
+- OverTimeRules
+- SelectService
+- TbTipoReg
+- TbMateSaldi
+- Budget
+- TbFattLivLog
+- TbLicencePlate
+- TmpVendor
+- InvoicePaid
+- EmployeeByInvoice
+- TbRigImp
+- LogTable
+- Vi_pklist
+- TbFattLivrare
+- InvoicePaidStory
+- TbIncPoStory
+- XlsLogParamDefinitions
+- SetUpSmtGrp
+- TmpErroriBF
+- Employees
+- DbRawMatTimeTable
+- LabelGTS
+- TbRigImpRma
+- XlsLogParamters
+- TbSocietaSuppliers
+- Labels
+- TbTown
+- TbRigImpSub
+- dbRawNewCodeRequest
+- TbCarrier
+- DbRawMatRoute
+- Levels
+- TbRmaColpa
+- TbSupplierDocsIssues
+- TbMatImballo
+- TbOrdiniToPReformToPO
+- ListLabelsRejected
+- TbRmaCoplaCost
+- NewBom
+- TbUserGrant
+- TbMatInfo
+- TbSupplierDocsIssuesAskStory
+- TbRMAErr
+- TbFattSupl
+- TbMatInTRansit
+- TbOrdiniApprovalRma
+- TbPrezziBatch
+- TbSocietaClienti
+- TbRmaPics
+- TbFattSuplStory
+- NewIMPORT
+- TbEmailNomi
+- TBMatPrima
+- OrdersInLate
+- TbRMAShip
+- TbSupplierDocsIssuesRespStory
+- SmtSetUpCsvStory
+- TbFatture
+- TbOrdiniBulkZipFiles
+- ExcelListaInvoice
+- CaricoOrdiniFasi
+- TbMissMat
+- PackingShippment
+- TbRmaShipPicStory
+- PkListRmaAgenda
+- OverTime
+- TbRMAShipStory
+- TbMPN
+- TmpReportAviz
+- WorkingLines
+- SaldoMat
+- TbRMASol
+- TbMPNStory
+- TbSocietaVerifyViesLog
+- OverTimeStory
+- NeedRequest
+- TbRmaStory
+- PhaseDefinitions
+- TbProdFinDescriptionStory
+- TbMsg
+- TbFifoImport
+- TbFattDeclarations
+- Switchboard Items
+- TbSocietaSpecialInvoices
+- TbSocietaClientiIndirizzi
+- TbAlertMatStory
+- NeedRequestContacts
+- TbRmaTime
+- DbRawMatPrices
+- ExtraTimeApproval
+- TbProdFinAlloyConsumptionStory
+- TbNazione
+- TBFifoImpScarStory
+- TbAlertAvviso
+- TbUserCdc
+- TbValNazio
+- NeedRequestOffers
+- TbRMATimeCost
+- EmailsSentByRobot
+- LocalVat
+- TbFifoStory
+- NeedRequestReception
+- TbRmaTipoOp
+- InOutMaterials
+- TbFileXls
+- DbRawMatRouteSocOrder
+- TbOrdiniRichiestaDocs
+- NeedRequestStory
+- TbRmaWhat
+- TbFattureTipoNote
+- Escludi
+- TbIban
+- TbFatturaDaNonFare
+- TbAlertMsgLog
+- Archiver_POsystemActivity_DB_BackEnd
+- TbSaldiMateriali
+- TbSocietaPreferita
+- TbIbanScelto
+- TbAnnoMese
+- TbVama
+- TbSaldiMaterialiMese
+- ProductionPlans
+- TbSaldiprodotti
+- TbVarPrezzi
+- TbSaldiProdottiMese
+- TbImpExpCMR
+- TbAlertMat
+- TbScadenze
+- TmpPswOrders
+- TbFormAuthLevels
+- TbVerPF
+- TbAutoConv
+- TbOrdiniInfo
+- TbWip
+- TbScaFatture
+- TackTimes
+- TbSocietaFactoring
+- TbAutomazione
+- TbOrdiniToPreform
+- TbFattIncassi
+- TbOrdiniDataConsegna
+- TbFattureNotes
+- TbOrdiniRegole
+- OverTimeDescriptions
+- TbImpInc
+- TbUserGrantLog
+- NewDDTEutron
+- TbScar
+- Crypted
+- TbAutomLog
+- TbWipStory
+- TbOrdiniRules
+- TemplateXlsStandards
+- NeedRequestStory_OLD
+- TbScarStory
+- OverTimeDefaults
+- NewDDTGiordano
+- TbAviz
+- ExtraTimeOrders
+- TbProdFinCngDescription
+- SetUpSmtGrpStory
+- NewDDTIdeaRo
+- tEMPfATTURE
+- TbScrapMotivi
+- TbFormsEmails
+- TbFatturePastDueRequest
+- TbImpIncStory
+- SmtUserActivity
+- tf
+- TbScraps
+- TbOrdiniWarnings
+- TbOrdiniExpediting
+- TmpConfDDT
+- TbValute
+- TbSocieta
+- TbUserKey
+- ProjectRows
+- TbForms
+- TbBanca
+- sysdiagrams
+- TbFattureAutoGenerate
+- TbOrdiniWarningStory
+- TmpCostImport
+- TbCambi
+- TbOrdiniExpeditingStory
+
+--- Checking DB: ResetServices ---
+Checking columns for ResetServices.dbo.TbUserKey:
+  Col: IdUserKey, Type: int, MaxLen: None
+  Col: IdAnga, Type: int, MaxLen: None
+  Col: IdSoc, Type: int, MaxLen: None
+  Col: NomeUser, Type: nvarchar, MaxLen: 50
+  Col: Pass, Type: nvarchar, MaxLen: 255
+  Col: Local, Type: bit, MaxLen: None
+  Col: DataChangePass, Type: datetime2, MaxLen: None
+  Col: DataIn, Type: datetime2, MaxLen: None
+  Col: DataOut, Type: datetime2, MaxLen: None
+  Col: Nota, Type: nvarchar, MaxLen: 100
+  Col: SSMA_TimeStamp, Type: timestamp, MaxLen: None
+  Col: scade, Type: bit, MaxLen: None
+  Col: cambia, Type: bit, MaxLen: None
+  Col: scadenza, Type: smallint, MaxLen: None
+  Col: CNP, Type: nchar, MaxLen: 20
+  Col: IdSerie, Type: nchar, MaxLen: 20
+  Col: IdTracciabilita, Type: int, MaxLen: None
+  Col: Signed, Type: nvarchar, MaxLen: 250
+  Col: DirectAccess, Type: bit, MaxLen: None
+  Col: SensitiveAccess, Type: bit, MaxLen: None
+
+Checking columns for ResetServices.dbo.TbUserKeyLogs:
+  Col: UserKeyPassLogId, Type: int, MaxLen: None
+  Col: IduserKey, Type: int, MaxLen: None
+  Col: Password, Type: binary, MaxLen: 50
+  Col: DateChange, Type: datetime, MaxLen: None
+
+Checking columns for ResetServices.dbo.TbUserKaylogs:
+  No columns found for TbUserKaylogs in ResetServices
+
+Checking columns for ResetServices.dbo.tbuserkey:
+  Col: IdUserKey, Type: int, MaxLen: None
+  Col: IdAnga, Type: int, MaxLen: None
+  Col: IdSoc, Type: int, MaxLen: None
+  Col: NomeUser, Type: nvarchar, MaxLen: 50
+  Col: Pass, Type: nvarchar, MaxLen: 255
+  Col: Local, Type: bit, MaxLen: None
+  Col: DataChangePass, Type: datetime2, MaxLen: None
+  Col: DataIn, Type: datetime2, MaxLen: None
+  Col: DataOut, Type: datetime2, MaxLen: None
+  Col: Nota, Type: nvarchar, MaxLen: 100
+  Col: SSMA_TimeStamp, Type: timestamp, MaxLen: None
+  Col: scade, Type: bit, MaxLen: None
+  Col: cambia, Type: bit, MaxLen: None
+  Col: scadenza, Type: smallint, MaxLen: None
+  Col: CNP, Type: nchar, MaxLen: 20
+  Col: IdSerie, Type: nchar, MaxLen: 20
+  Col: IdTracciabilita, Type: int, MaxLen: None
+  Col: Signed, Type: nvarchar, MaxLen: 250
+  Col: DirectAccess, Type: bit, MaxLen: None
+  Col: SensitiveAccess, Type: bit, MaxLen: None
+

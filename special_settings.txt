@@ -1,0 +1,2 @@
+[Sys_eastern_data] = Select [SarbatoareDate] from Employee.dbo.Sarbatorilor where Year([SarbatoareDate]) = year(getdate()) and [Religion] = ? and [TipSarbatoare] = ?
+[Sys_pasqua] = pasqua1.jpg;pasqua2.jpg;pasqua3.jpg;pasqua4.jpg;pasqua5.jpg;pasqua6.jpg

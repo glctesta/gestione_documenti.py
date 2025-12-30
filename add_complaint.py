@@ -171,9 +171,9 @@ class AddComplaintWindow(tk.Toplevel):
             self.combo_data['clients_map'] = {f"{c[1]} ({c[2]})": c[0] for c in clients}
             logger.debug(f"[ADD_COMPLAINT] Clienti caricati: {len(clients)}")
 
-            # Products
+            # Products (con IDFinalClient per filtro)
             query_products = """
-                             SELECT idproduct, ProductCode, ProductName
+                             SELECT idproduct, ProductCode, ProductName, IDFinalClient
                              FROM products
                              WHERE CHARINDEX('cipr', ProductCode, 1) = 0
                                AND CHARINDEX('RMA', ProductCode, 1) = 0
@@ -311,6 +311,7 @@ class AddComplaintWindow(tk.Toplevel):
         )
         client_values = [f"{c[1]} ({c[2]})" for c in self.combo_data.get('clients', [])]
         self.combo_client['values'] = client_values
+        self.combo_client.bind('<<ComboboxSelected>>', self._on_client_selected)
         self.combo_client.pack(fill=tk.X, pady=(0, 10))
 
         # Customer Claim Number
@@ -449,6 +450,20 @@ class AddComplaintWindow(tk.Toplevel):
         # ===== PULSANTI NELLA TESTATA =====
         buttons_frame = ttk.Frame(header_frame)
         buttons_frame.pack(fill=tk.X, pady=(10, 0))
+
+        # Bottone per gestione prodotti (a sinistra)
+        ttk.Button(
+            buttons_frame,
+            text=self.lang.get('btn_manage_products', 'Gestione Prodotti'),
+            command=self._open_products_management
+        ).pack(side=tk.LEFT, padx=(0, 5))
+        
+        # Bottone per refresh manuale prodotti
+        ttk.Button(
+            buttons_frame,
+            text=self.lang.get('btn_refresh_products', '🔄 Refresh Prodotti'),
+            command=self._manual_refresh_products
+        ).pack(side=tk.LEFT, padx=(0, 5))
 
         ttk.Frame(buttons_frame).pack(side=tk.LEFT, expand=True)
 
@@ -954,6 +969,122 @@ class AddComplaintWindow(tk.Toplevel):
             messagebox.showerror(
                 self.lang.get('err_error', 'Errore'),
                 f"{self.lang.get('err_save_error', 'Errore nel salvataggio')}: {str(e)}",
+                parent=self
+            )
+
+    def _on_client_selected(self, event=None):
+        """Filtra i prodotti in base al cliente selezionato."""
+        client_text = self.var_client.get()
+        if not client_text:
+            # Nessun cliente selezionato, mostra tutti i prodotti
+            product_values = [f"{p[1]} - {p[2]}" for p in self.combo_data.get('products', [])]
+            self.combo_product['values'] = product_values
+            return
+        
+        # Ottieni l'ID del cliente selezionato
+        client_id = self.combo_data['clients_map'].get(client_text)
+        
+        if not client_id:
+            logger.warning(f"[ADD_COMPLAINT] Cliente non trovato: {client_text}")
+            return
+        
+        # Filtra i prodotti per questo cliente
+        all_products = self.combo_data.get('products', [])
+        filtered_products = [p for p in all_products if p[3] == client_id]  # p[3] è IDFinalClient
+        
+        if not filtered_products:
+            logger.warning(f"[ADD_COMPLAINT] Nessun prodotto trovato per cliente ID {client_id}")
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                f"Nessun prodotto associato al cliente selezionato.\n\n"
+                f"Usa il bottone 'Gestione Prodotti' per associare prodotti al cliente.",
+                parent=self
+            )
+            self.combo_product['values'] = []
+            self.var_product.set('')
+        else:
+            product_values = [f"{p[1]} - {p[2]}" for p in filtered_products]
+            self.combo_product['values'] = product_values
+            # Aggiorna la mappa dei prodotti filtrati
+            self.combo_data['products_map'] = {f"{p[1]} - {p[2]}": p[0] for p in filtered_products}
+            logger.debug(f"[ADD_COMPLAINT] Prodotti filtrati per cliente {client_id}: {len(filtered_products)}")
+    
+    def _open_products_management(self):
+        """Apre la gestione prodotti senza login aggiuntivo."""
+        try:
+            # Usa l'utente già autenticato per aprire la gestione prodotti
+            if hasattr(self.parent, 'traceability_manager'):
+                # Rilascia il grab PERMANENTEMENTE
+                # La finestra prodotti deve poter essere usata liberamente
+                self.grab_release()
+                logger.info("[ADD_COMPLAINT] Grab rilasciato per apertura gestione prodotti")
+                
+                # Apri la gestione prodotti
+                self.parent.traceability_manager.open_define_products(self.authenticated_user)
+                
+                # NON riprendere il grab qui!
+                # La finestra prodotti è ora aperta e deve rimanere interattiva
+                # Il grab verrà ripreso solo quando l'utente chiude questa form complaints
+                
+                logger.info("[ADD_COMPLAINT] Gestione prodotti aperta - grab NON ripreso")
+                
+            else:
+                messagebox.showerror(
+                    self.lang.get('err_error', 'Errore'),
+                    self.lang.get('err_cannot_open_products', 'Impossibile aprire la gestione prodotti'),
+                    parent=self
+                )
+                logger.error("[ADD_COMPLAINT] parent.traceability_manager non trovato")
+        except Exception as e:
+            logger.exception(f"[ADD_COMPLAINT] Errore apertura gestione prodotti: {e}")
+            messagebox.showerror(
+                self.lang.get('err_error', 'Errore'),
+                f"{self.lang.get('err_opening_products', 'Errore nell\'apertura della gestione prodotti')}: {str(e)}",
+                parent=self
+            )
+    
+    def _reload_products_data(self):
+        """Ricarica i dati dei prodotti dal database."""
+        try:
+            query_products = """
+                             SELECT idproduct, ProductCode, ProductName, IDFinalClient
+                             FROM products
+                             WHERE CHARINDEX('cipr', ProductCode, 1) = 0
+                               AND CHARINDEX('RMA', ProductCode, 1) = 0
+                             ORDER BY ProductCode
+                             """
+            products = self.db.fetch_all(query_products)
+            self.combo_data['products'] = products
+            self.combo_data['products_map'] = {f"{p[1]} - {p[2]}": p[0] for p in products}
+            logger.info(f"[ADD_COMPLAINT] Prodotti ricaricati: {len(products)}")
+        except Exception as e:
+            logger.exception(f"[ADD_COMPLAINT] Errore ricaricamento prodotti: {e}")
+            messagebox.showerror(
+                self.lang.get('err_error', 'Errore'),
+                f"Errore nel ricaricamento dei prodotti: {str(e)}",
+                parent=self
+            )
+    
+    def _manual_refresh_products(self):
+        """Ricarica manualmente i dati dei prodotti su richiesta dell'utente."""
+        try:
+            logger.info("[ADD_COMPLAINT] Refresh manuale prodotti richiesto dall'utente")
+            self._reload_products_data()
+            
+            # Riapplica il filtro se c'è un cliente selezionato
+            if self.var_client.get():
+                self._on_client_selected()
+            
+            messagebox.showinfo(
+                self.lang.get('info', 'Informazione'),
+                self.lang.get('msg_products_updated', 'Dati prodotti aggiornati!'),
+                parent=self
+            )
+        except Exception as e:
+            logger.exception(f"[ADD_COMPLAINT] Errore refresh manuale: {e}")
+            messagebox.showerror(
+                self.lang.get('err_error', 'Errore'),
+                f"{self.lang.get('err_refresh_failed', 'Errore durante il refresh')}: {str(e)}",
                 parent=self
             )
 

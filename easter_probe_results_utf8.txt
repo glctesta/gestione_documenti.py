@@ -1,0 +1,18 @@
+Query found: Select [SarbatoareDate] from Employee.dbo.Sarbatorilor where Year([SarbatoareDate]) = year(getdate()) and [Religion] = ? and [TipSarbatoare] = ?
+
+Religion/Sarbatoare Settings:
+
+Easter Images Settings:
+[Sys_HappyEastern] = BuonaPasqua.jpg
+[Sys_HappyEastern_Preallert] = 3
+[Sys_HappyEasterh_PostAllert] = 5
+[Sys_eastern_data] = Select [SarbatoareDate] from Employee.dbo.Sarbatorilor where Year([SarbatoareDate]) = year(getdate()) and [Religion] = ? and [TipSarbatoare] = ?
+[Sys_pasqua] = pasqua1.jpg;pasqua2.jpg;pasqua3.jpg;pasqua4.jpg;pasqua5.jpg;pasqua6.jpg
+
+Alert Window Settings:
+[Sys_BirthDay_PostAllert] = 0
+[Sys_HappyNewYear_Preallert] = 3
+[Sys_HappyNewYear_PostAllert] = 10
+[Sys_HappyEastern_Preallert] = 3
+[Sys_HappyEasterh_PostAllert] = 5
+[Sys_natale_postallert] = 2

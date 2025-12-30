@@ -25,7 +25,7 @@ class ProjectAnalysisWindow(tk.Toplevel):
         self.CHAR_UNCHECKED = ''  # o '☐' se preferisci
 
         self.title(f"{self.lang.get('analysis_window_title', 'Analisi Progetto')}: {self.project_name}")
-        self.geometry("800x600")
+        self.geometry("800x700")
         self.transient(master)
         self.grab_set()
 

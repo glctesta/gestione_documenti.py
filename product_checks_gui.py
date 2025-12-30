@@ -120,7 +120,7 @@ class ProductChecksManagementWindow(tk.Toplevel):
         checks = self.db.fetch_all_product_checks()
         for check in checks:
             self.tree.insert('', 'end', values=(
-                check.PeriodicalProductCheckLogId,
+                check.PeriodicalProductCheckId,
                 check.ProductCode,
                 check.ProductName,
                 check.PeriodicityInQty

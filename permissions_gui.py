@@ -149,6 +149,7 @@ class ManagePermissionsWindow(tk.Toplevel):
             self.employee_combo['values'] = self.all_employee_names
             # Se l'utente cancella il testo, pulisce anche le liste dei permessi
             self.available_list.delete(0, tk.END)
+            self.available_tree.delete(*self.available_tree.get_children())
             self.assigned_list.delete(0, tk.END)
             return
 
@@ -180,25 +181,214 @@ class ManagePermissionsWindow(tk.Toplevel):
     def _grant_permission(self):
         selections = self.available_list.curselection()
         if not selections: return
-        employee_id = self.employees_data[self.employee_var.get()]
+        
+        employee_name = self.employee_var.get()
+        employee_id = self.employees_data[employee_name]
 
         for i in selections:
             display_name = self.available_list.get(i)
             translation_key = self.available_perms_data[display_name]
             self.db.grant_permission(employee_id, translation_key)
 
-            # --- NUOVO: Invia email di notifica ---
+            # Invia email di notifica professionale
             try:
-                # Recupera email
-                work_email = get_employee_work_email(self.db.conn, employee_id)
-                if work_email:
-                    subject = self.lang.get('email_perm_subject', "Nuovo Permesso Assegnato")
-                    body = f"{self.lang.get('email_perm_body', 'Ti è stato assegnato un nuovo permesso')}: {display_name}"
-                    send_email([work_email], subject, body)
+                self._send_permission_notification_email(employee_name, translation_key)
             except Exception as e:
                 print(f"Errore invio email notifica permesso: {e}")
 
         self._populate_lists()
+
+    def _send_permission_notification_email(self, employee_name, menu_key):
+        """Invia email di notifica professionale multilingua con logo"""
+        try:
+            # Recupera l'email del dipendente
+            work_email = get_employee_work_email(self.db.conn, employee_name)
+            if not work_email:
+                print(f"Email non trovata per {employee_name}")
+                return
+
+            # Recupera il nome del servizio dalle traduzioni per IT, RO, EN
+            service_names = {}
+            for lang_code in ['it', 'ro', 'en']:
+                query = """
+                    SELECT MenuValue 
+                    FROM AppTranslations 
+                    WHERE TranslationKey = ? AND LanguageCode = ?
+                """
+                cursor = self.db.conn.cursor()
+                cursor.execute(query, (menu_key, lang_code))
+                row = cursor.fetchone()
+                cursor.close()
+                
+                if row:
+                    service_names[lang_code] = row.MenuValue
+                else:
+                    service_names[lang_code] = menu_key
+
+            # Costruisci il corpo dell'email in HTML con logo
+            html_body = f"""
+            <html>
+            <head>
+                <style>
+                    body {{
+                        font-family: 'Segoe UI', Arial, sans-serif;
+                        line-height: 1.6;
+                        color: #333;
+                        margin: 0;
+                        padding: 0;
+                    }}
+                    .container {{
+                        max-width: 650px;
+                        margin: 20px auto;
+                        background-color: #ffffff;
+                        border: 1px solid #e0e0e0;
+                        border-radius: 10px;
+                        overflow: hidden;
+                        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                    }}
+                    .header {{
+                        background: linear-gradient(135deg, #0066cc 0%, #004999 100%);
+                        color: white;
+                        text-align: center;
+                        padding: 30px 20px;
+                    }}
+                    .logo {{
+                        max-width: 180px;
+                        height: auto;
+                        margin-bottom: 15px;
+                    }}
+                    .header h2 {{
+                        margin: 0;
+                        font-size: 20px;
+                        font-weight: 300;
+                    }}
+                    .content {{
+                        padding: 30px;
+                        background-color: #f9f9f9;
+                    }}
+                    .service-box {{
+                        background-color: #fff;
+                        padding: 20px;
+                        margin: 20px 0;
+                        border-left: 5px solid #0066cc;
+                        border-radius: 5px;
+                        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+                    }}
+                    .service-name {{
+                        font-size: 18px;
+                        font-weight: bold;
+                        color: #0066cc;
+                        margin: 0;
+                    }}
+                    .language-section {{
+                        background-color: white;
+                        margin: 15px 0;
+                        padding: 20px;
+                        border-radius: 5px;
+                        border: 1px solid #e8e8e8;
+                    }}
+                    .language-title {{
+                        color: #0066cc;
+                        font-weight: bold;
+                        font-size: 14px;
+                        margin-bottom: 12px;
+                        padding-bottom: 8px;
+                        border-bottom: 2px solid #e8f4f8;
+                    }}
+                    .language-section p {{
+                        margin: 8px 0;
+                        line-height: 1.6;
+                    }}
+                    .footer {{
+                        background-color: #f0f0f0;
+                        text-align: center;
+                        padding: 20px;
+                        font-size: 11px;
+                        color: #666;
+                        border-top: 1px solid #e0e0e0;
+                    }}
+                    .footer p {{
+                        margin: 5px 0;
+                    }}
+                    .highlight {{
+                        background-color: #e8f4f8;
+                        padding: 2px 6px;
+                        border-radius: 3px;
+                        font-weight: 600;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        <img src="cid:logo" class="logo" alt="Company Logo">
+                        <h2>Notifica Autorizzazione / Notificare Autorizație / Authorization Notification</h2>
+                    </div>
+                    
+                    <div class="content">
+                        <div class="service-box">
+                            <p class="service-name">🔐 {service_names.get('it', menu_key)}</p>
+                        </div>
+
+                        <div class="language-section">
+                            <div class="language-title">🇮🇹 ITALIANO</div>
+                            <p>Gentile <span class="highlight">{employee_name}</span>,</p>
+                            <p>Le comunichiamo che è stato autorizzato ad accedere al seguente servizio:</p>
+                            <p><strong>{service_names.get('it', menu_key)}</strong></p>
+                            <p>L'autorizzazione è ora attiva. Può utilizzare il servizio accedendo all'applicazione con le sue credenziali.</p>
+                        </div>
+
+                        <div class="language-section">
+                            <div class="language-title">🇷🇴 ROMÂNĂ</div>
+                            <p>Stimate <span class="highlight">{employee_name}</span>,</p>
+                            <p>Vă informăm că ați fost autorizat să accesați următorul serviciu:</p>
+                            <p><strong>{service_names.get('ro', menu_key)}</strong></p>
+                            <p>Autorizația este acum activă. Puteți utiliza serviciul accesând aplicația cu acreditările dumneavoastră.</p>
+                        </div>
+
+                        <div class="language-section">
+                            <div class="language-title">🇬🇧 ENGLISH</div>
+                            <p>Dear <span class="highlight">{employee_name}</span>,</p>
+                            <p>We inform you that you have been authorized to access the following service:</p>
+                            <p><strong>{service_names.get('en', menu_key)}</strong></p>
+                            <p>The authorization is now active. You can use the service by accessing the application with your credentials.</p>
+                        </div>
+                    </div>
+
+                    <div class="footer">
+                        <p><strong>Questa è una notifica automatica. Si prega di non rispondere a questa email.</strong></p>
+                        <p><strong>Aceasta este o notificare automată. Vă rugăm să nu răspundeți la acest email.</strong></p>
+                        <p><strong>This is an automated notification. Please do not reply to this email.</strong></p>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+
+            # Percorso del logo
+            import os
+            logo_path = os.path.join(os.path.dirname(__file__), 'Logo.png')
+            
+            # Prepara gli allegati con il logo come inline image
+            attachments = []
+            if os.path.exists(logo_path):
+                attachments.append(('Logo.png', logo_path, 'logo'))
+            
+            # Invia l'email
+            send_email(
+                recipients=[work_email],
+                subject=f"🔐 Nuova Autorizzazione / Autorizație Nouă / New Authorization",
+                body=html_body,
+                is_html=True
+            )
+
+            
+            print(f"✓ Email di notifica inviata a {work_email} per autorizzazione: {menu_key}")
+            
+        except Exception as e:
+            print(f"✗ Errore invio email notifica autorizzazione: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _revoke_permission(self):
         selections = self.assigned_list.curselection()

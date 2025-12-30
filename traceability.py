@@ -8,6 +8,12 @@ class TraceabilityManager:
         self.db = db
         self.lang = lang
 
+    def _format_product_name_with_version(self, product_name, version):
+        """Formatta il nome del prodotto con la versione se presente."""
+        if version and version.strip():
+            return f"{product_name} [{version}]"
+        return product_name
+
     def open_manage_customers(self, user_name=None):
         """Apre la finestra per gestire i clienti finali"""
         window = tk.Toplevel(self.parent)
@@ -266,7 +272,7 @@ class TraceabilityManager:
         filter_entry.bind('<KeyRelease>', lambda e: self._filter_products(filter_var.get()))
 
         # Tabella prodotti
-        columns = ('id', 'code', 'name', 'is_final', 'customer_code', 'client_name', 'acronim')
+        columns = ('id', 'code', 'name', 'is_final', 'customer_code', 'client_name', 'acronim', 'version')
         self.products_tree = ttk.Treeview(main_frame, columns=columns, show='headings', height=20)
 
         # Intestazioni colonne
@@ -277,6 +283,7 @@ class TraceabilityManager:
         self.products_tree.heading('customer_code', text='Codice Cliente')
         self.products_tree.heading('client_name', text='Cliente Finale')
         self.products_tree.heading('acronim', text='Acronimo')
+        self.products_tree.heading('version', text='Versione')
 
         # Dimensioni colonne
         self.products_tree.column('id', width=50)
@@ -286,6 +293,7 @@ class TraceabilityManager:
         self.products_tree.column('customer_code', width=120)
         self.products_tree.column('client_name', width=150)
         self.products_tree.column('acronim', width=80)
+        self.products_tree.column('version', width=80)
 
         # Scrollbar
         scrollbar = ttk.Scrollbar(main_frame, orient=tk.VERTICAL, command=self.products_tree.yview)
@@ -323,7 +331,8 @@ class TraceabilityManager:
                 is_final,
                 customer_code,
                 product.FinalClientName or "",
-                product.AcronimForCode or ""
+                product.AcronimForCode or "",
+                product.Version or ""
             ))
 
     def _filter_products(self, filter_text):
@@ -352,7 +361,8 @@ class TraceabilityManager:
                 is_final,
                 customer_code,
                 product.FinalClientName or "",
-                product.AcronimForCode or ""
+                product.AcronimForCode or "",
+                product.Version or ""
             ))
 
     def _edit_product_final_info(self):
@@ -376,7 +386,7 @@ class TraceabilityManager:
         """Apre il form per modificare le informazioni di prodotto finale"""
         form_window = tk.Toplevel(parent)
         form_window.title("Modifica Prodotto Finale")
-        form_window.geometry("500x400")
+        form_window.geometry("500x450")
         form_window.grab_set()
 
         # Frame principale
@@ -422,17 +432,24 @@ class TraceabilityManager:
         ttk.Entry(form_frame, textvariable=customer_code_var, width=30).grid(row=4, column=1, sticky=tk.W, pady=5,
                                                                              padx=(10, 0))
 
+        # Versione
+        ttk.Label(form_frame, text="Versione:").grid(row=5, column=0, sticky=tk.W, pady=5)
+        version_var = tk.StringVar(value=product.Version if hasattr(product, 'Version') and product.Version else "")
+        ttk.Entry(form_frame, textvariable=version_var, width=30).grid(row=5, column=1, sticky=tk.W, pady=5,
+                                                                       padx=(10, 0))
+
         # Pulsanti
         button_frame = ttk.Frame(form_frame)
-        button_frame.grid(row=5, column=0, columnspan=2, pady=20)
+        button_frame.grid(row=6, column=0, columnspan=2, pady=20)
 
         def save_product_info():
             selected_client_name = client_var.get()
             final_client_id = client_dict.get(selected_client_name) if selected_client_name else None
             customer_code = customer_code_var.get().strip() or None
+            version = version_var.get().strip() or None
 
             success, message = self.db.update_product_final_info(
-                product.idproduct, is_final_var.get(), final_client_id, customer_code
+                product.idproduct, is_final_var.get(), final_client_id, customer_code, version
             )
 
             if success:
@@ -568,15 +585,27 @@ class TraceabilityManager:
 
             # Carica prodotti finali per questo cliente
             final_products = self.db.fetch_final_products_by_client(client_id)
-            final_options = [f"{p.ProductCode} - {p.ProductName}" for p in final_products]
+            final_options = [
+                f"{p.ProductCode} - {self._format_product_name_with_version(p.ProductName, p.Version)}" 
+                for p in final_products
+            ]
             self.final_product_combo['values'] = final_options
-            self.final_product_dict = {f"{p.ProductCode} - {p.ProductName}": p.idproduct for p in final_products}
+            self.final_product_dict = {
+                f"{p.ProductCode} - {self._format_product_name_with_version(p.ProductName, p.Version)}": p.idproduct 
+                for p in final_products
+            }
 
             # Carica semilavorati per questo cliente
             semi_products = self.db.fetch_semi_products_by_client(client_id)
-            semi_options = [f"{p.ProductCode} - {p.ProductName}" for p in semi_products]
+            semi_options = [
+                f"{p.ProductCode} - {self._format_product_name_with_version(p.ProductName, p.Version)}" 
+                for p in semi_products
+            ]
             self.semi_product_combo['values'] = semi_options
-            self.semi_product_dict = {f"{p.ProductCode} - {p.ProductName}": p.idproduct for p in semi_products}
+            self.semi_product_dict = {
+                f"{p.ProductCode} - {self._format_product_name_with_version(p.ProductName, p.Version)}": p.idproduct 
+                for p in semi_products
+            }
 
             # Carica i collegamenti per questo cliente
             self._load_links_for_client(client_id)
@@ -599,13 +628,17 @@ class TraceabilityManager:
 
         # Popola la tabella
         for link in links:
+            # Format product names with versions
+            final_name = self._format_product_name_with_version(link.FinalName, link.FinalVersion)
+            semi_name = self._format_product_name_with_version(link.SemiName, link.SemiVersion)
+            
             self.links_tree.insert('', tk.END, values=(
                 link.ProductLInkedTableId,
                 link.FinalClientName,
                 link.FinalCode,
-                link.FinalName,
+                final_name,
                 link.SemiCode,
-                link.SemiName,
+                semi_name,
                 "Elimina"
             ))
 

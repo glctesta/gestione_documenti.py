@@ -4,10 +4,12 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from datetime import timedelta, datetime
 import webbrowser
 import os
 import logging
+import base64
 import tempfile
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
@@ -185,6 +187,9 @@ class NpiGanttWindow(tk.Toplevel):
 
             # Task per owner
             tasks_per_owner = df['Owner'].value_counts().to_dict()
+            
+            # Task per category
+            tasks_per_category = df.get('Category', pd.Series(['N/A']*len(df))).value_counts().to_dict()
 
             # Durata media task
             df['Duration'] = (df['Finish'] - df['Start']).dt.days
@@ -213,6 +218,7 @@ class NpiGanttWindow(tk.Toplevel):
 📈 Completamento Stimato: {completion:.1f}% | ⚠️ Task in Ritardo: {late_tasks}
 🎯 Task Critici (>media): {critical_tasks} | ⏳ Durata Media: {avg_duration:.1f} giorni
 👥 Assegnazioni: {', '.join([f'{k}({v})' for k, v in tasks_per_owner.items()])}
+📂 Categorie: {', '.join([f'{k}({v})' for k, v in tasks_per_category.items()])}
             """.strip()
 
             self.stats_label.config(text=stats_text)
@@ -228,7 +234,8 @@ class NpiGanttWindow(tk.Toplevel):
                 'critical_tasks': critical_tasks,
                 'late_tasks': late_tasks,
                 'completion': completion,
-                'tasks_per_owner': tasks_per_owner
+                'tasks_per_owner': tasks_per_owner,
+                'tasks_per_category': tasks_per_category
             }
 
         except Exception as e:
@@ -236,43 +243,183 @@ class NpiGanttWindow(tk.Toplevel):
             self.stats_label.config(text="⚠️ Errore nel calcolo delle statistiche")
 
     def create_chart(self, df, product_name):
-        """Crea il diagramma di Gantt."""
+        """Crea il diagramma di Gantt professionale con Logo, Dipendenze e Milestones."""
         try:
-            self.log_status("Creazione grafico...")
+            self.log_status("Generazione visualizzazione grafica premium...")
 
-            fig = px.timeline(
-                df,
-                x_start="Start",
-                x_end="Finish",
-                y="Task",
-                color="Owner",
-                title=f"Gantt - {product_name}",
-                labels={"Task": "Attività", "Owner": "Assegnato a"}
-            )
+            if df is None or df.empty:
+                self.log_status("⚠️ Nessun dato da visualizzare")
+                return
 
-            # Layout
+            # 0. Gestione Logo (Ricerca robusta)
+            logo_base64 = ""
+            try:
+                # Cerca in: 1. CWD, 2. Script Dir, 3. Root Dir
+                possible_paths = [
+                    os.path.join(os.getcwd(), "Logo.png"),
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "Logo.png"),
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), "Logo.png")
+                ]
+                
+                logo_path = None
+                for p in possible_paths:
+                    if os.path.exists(p):
+                        logo_path = p
+                        break
+                
+                if logo_path:
+                    with open(logo_path, "rb") as image_file:
+                        encoded_string = base64.b64encode(image_file.read()).decode()
+                        logo_base64 = f"data:image/png;base64,{encoded_string}"
+                    logger.info(f"Logo caricato con successo da: {logo_path}")
+                else:
+                    logger.warning("File Logo.png non trovato nei percorsi previsti.")
+                    self.log_status("⚠️ Logo non trovato")
+            except Exception as e:
+                logger.warning(f"Errore caricamento logo: {e}")
+
+            # 1. Preparazione Dati
+            df['Start'] = pd.to_datetime(df['Start'])
+            df['Finish'] = pd.to_datetime(df['Finish'])
+            
+            # Ordinamento per Categoria e poi Data Inizio (molto importante per il raggruppamento visuale)
+            df = df.sort_values(by=['Category', 'Start'], ascending=[True, True])
+            
+            # Etichetta asse Y: Categoria + Nome Task + ID per unicità
+            df['Label'] = df.apply(lambda r: f"<b>[{r['Category'].upper()}]</b><br>{r['Task']} (ID:{r['TaskProdottoID']})", axis=1)
+            
+            # Inverti ordine per Plotly (dall'alto in basso)
+            df = df.iloc[::-1].reset_index(drop=True)
+            id_to_label = {row['TaskProdottoID']: row['Label'] for _, row in df.iterrows()}
+
+            fig = go.Figure()
+
+            # 2. Rendering Task
+            for i, row in df.iterrows():
+                # DURATA IN MILLISECONDI (fondamentale per Plotly go.Bar su date)
+                diff = row['Finish'] - row['Start']
+                duration_ms = diff.total_seconds() * 1000
+                is_milestone = duration_ms <= 0
+                
+                # Colori Stato
+                color = "#3498db"
+                if row['Status'] == 'Completato': color = "#2ecc71"
+                elif row['Status'] == 'In Corso': color = "#f1c40f"
+                elif row['Status'] == 'In Ritardo': color = "#e74c3c"
+
+                status_text = row.get('Status', 'N/A')
+                completion_val = row.get('Completion', 0)
+
+                if is_milestone:
+                    fig.add_trace(go.Scatter(
+                        x=[row['Start']], y=[row['Label']],
+                        mode='markers',
+                        marker=dict(symbol='diamond', size=14, color='#8e44ad', line=dict(width=1, color='black')),
+                        name="Milestone",
+                        hovertext=f"<b>{row['Task']}</b><br>Data: {row['Start'].strftime('%d/%m/%Y')}",
+                        hoverinfo='text', showlegend=False
+                    ))
+                else:
+                    # Barra Task
+                    fig.add_trace(go.Bar(
+                        base=[row['Start']],
+                        x=[duration_ms],
+                        y=[row['Label']],
+                        orientation='h',
+                        marker=dict(color=color, line=dict(color='black', width=0.5)),
+                        hovertext=f"<b>{row['Task']}</b><br>Responsabile: {row['Owner']}<br>Fine prevista: {row['Finish'].strftime('%d/%m/%Y')}<br>Completamento: {completion_val}%",
+                        hoverinfo='text',
+                        text=f" {completion_val}% ",
+                        textposition='auto',
+                        showlegend=False
+                    ))
+                    
+                    # Overlay Progresso
+                    if 0 < completion_val < 100:
+                        fig.add_trace(go.Bar(
+                            base=[row['Start']],
+                            x=[duration_ms * (completion_val / 100)],
+                            y=[row['Label']],
+                            orientation='h',
+                            marker=dict(color='rgba(0,0,0,0.2)'),
+                            showlegend=False, hoverinfo='skip'
+                        ))
+
+            # 3. Dipendenze
+            for _, row in df.iterrows():
+                deps = row.get('Dependencies', [])
+                for dep_id in deps:
+                    if dep_id in id_to_label:
+                        pred_label = id_to_label[dep_id]
+                        # Utilizziamo ID per il matching robusto
+                        pred_rows = df[df['TaskProdottoID'] == dep_id]
+                        if not pred_rows.empty:
+                            p_row = pred_rows.iloc[0]
+                            # Colore più scuro e visibile per le linee di collegamento
+                            link_color = "rgba(44, 62, 80, 0.7)" # Blu-grigio scuro
+                            
+                            fig.add_trace(go.Scatter(
+                                x=[p_row['Finish'], p_row['Finish'], row['Start']],
+                                y=[pred_label, row['Label'], row['Label']],
+                                mode='lines+markers',
+                                line=dict(color=link_color, width=1.4),
+                                marker=dict(
+                                    size=[0, 0, 8], 
+                                    symbol="triangle-right",
+                                    color=link_color
+                                ),
+                                showlegend=False, 
+                                hoverinfo='text',
+                                hovertext=f"Dipendenza: {p_row['Task']} ➔ {row['Task']}"
+                            ))
+
+            # 4. Layout
             fig.update_layout(
-                xaxis_title="Timeline",
-                yaxis_title="Attività",
-                height=max(500, len(df) * 25),
-                showlegend=True
+                title=dict(
+                    text=f"<b>PROJECT GANTT: {product_name}</b>",
+                    x=0.5, y=0.96, font=dict(size=24, color='#2c3e50')
+                ),
+                xaxis=dict(type='date', side='top', gridcolor='lightgrey', tickformat='%d/%m/%y'),
+                yaxis=dict(autorange="reversed", gridcolor='whitesmoke', automargin=True),
+                plot_bgcolor='white', paper_bgcolor='white',
+                height=max(600, len(df) * 45 + 160),
+                margin=dict(l=20, r=40, t=120, b=50),
+                barmode='overlay'
             )
 
-            fig.update_xaxes(tickformat="%d/%m/%Y")
-            fig.update_yaxes(autorange="reversed")
+            if logo_base64:
+                fig.add_layout_image(
+                    dict(
+                        source=logo_base64,
+                        xref="paper", yref="paper",
+                        x=0, y=1.15,
+                        sizex=0.18, sizey=0.18,
+                        xanchor="left", yanchor="top",
+                        layer="above"
+                    )
+                )
 
-            # Salva file
-            temp_dir = tempfile.gettempdir()
-            file_path = os.path.join(temp_dir, f"gantt_{self.progetto_id}.html")
+            # Oggi
+            today = datetime.now()
+            fig.add_shape(
+                type="line", x0=today, x1=today, y0=0, y1=1,
+                xref="x", yref="paper", line=dict(color="red", width=1.5, dash="dash")
+            )
+            fig.add_annotation(
+                x=today, y=1.02, yref="paper", text="OGGI",
+                showarrow=False, font=dict(color="red", size=11, family="Arial Black")
+            )
 
-            fig.write_html(file_path, auto_open=False)
-            webbrowser.open(f'file://{file_path}')
-
-            self.log_status(f"✅ Gantt generato: {file_path}")
-            self.log_status(f"📊 Task visualizzati: {len(df)}")
+            # 5. Export
+            temp_file = os.path.join(tempfile.gettempdir(), f"Gantt_NPI_{self.progetto_id}.html")
+            fig.write_html(temp_file, auto_open=False)
+            webbrowser.open(f'file://{temp_file}')
+            
+            self.log_status("✅ Gantt grafico rigenerato con successo!")
 
         except Exception as e:
-            self.log_status(f"❌ Errore creazione grafico: {str(e)}")
+            self.log_status(f"❌ Errore grafico: {str(e)}")
+            logger.error(f"Gantt creation error: {e}", exc_info=True)
             raise
 
     # ========== EXPORT EXCEL AVANZATO ==========
@@ -423,6 +570,10 @@ class NpiGanttWindow(tk.Toplevel):
 
         # Prepara dati
         export_df = self.df.copy()
+        
+        # Ordinamento per Categoria e poi Data Inizio
+        export_df = export_df.sort_values(by=['Category', 'Start'], ascending=[True, True])
+        
         export_df['Start'] = export_df['Start'].dt.strftime('%d/%m/%Y')
         export_df['Finish'] = export_df['Finish'].dt.strftime('%d/%m/%Y')
         export_df['Durata (gg)'] = (
@@ -440,15 +591,15 @@ class NpiGanttWindow(tk.Toplevel):
             lambda x: '✅ Completato' if x < 0 else ('⚠️ In Ritardo' if x < 7 else '🟢 In Corso')
         )
 
-        # Riordina colonne
-        column_order = ['Task', 'Owner', 'Start', 'Finish', 'Durata (gg)', 'Giorni Rimanenti', 'Status']
+        # Riordina colonne includendo CATEGORY
+        column_order = ['Category', 'Task', 'Owner', 'Start', 'Finish', 'Durata (gg)', 'Giorni Rimanenti', 'Status']
         export_df = export_df[column_order]
 
         # Scrivi header
         ws['A1'] = f"Gantt Chart - {self.product_name}"
         ws['A1'].font = Font(size=14, bold=True, color="FFFFFF")
         ws['A1'].fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-        ws.merge_cells('A1:G1')
+        ws.merge_cells('A1:H1')
 
         # Scrivi dati (inizia dalla riga 3)
         start_row = 3
@@ -458,7 +609,7 @@ class NpiGanttWindow(tk.Toplevel):
                 ws.cell(row=r_idx, column=c_idx, value=value)
 
         # ⭐ APPLICA TABELLA CON FILTRI
-        tab = Table(displayName="GanttTable", ref=f"A{start_row}:G{start_row + len(export_df)}")
+        tab = Table(displayName="GanttTable", ref=f"A{start_row}:H{start_row + len(export_df)}")
         style = TableStyleInfo(
             name="TableStyleMedium9",
             showFirstColumn=False,
@@ -470,8 +621,8 @@ class NpiGanttWindow(tk.Toplevel):
         ws.add_table(tab)
 
         # ⭐ FORMATTAZIONE CONDIZIONALE
-        # Giorni Rimanenti (colonna F)
-        col_letter = 'F'
+        # Giorni Rimanenti (colonna G ora, dopo Category e Task)
+        col_letter = 'G'
         first_row = start_row + 1
         last_row = start_row + len(export_df)
 
@@ -508,9 +659,9 @@ class NpiGanttWindow(tk.Toplevel):
             )
         )
 
-        # ⭐ COLOR SCALE per Durata
+        # ⭐ COLOR SCALE per Durata (colonna F ora)
         ws.conditional_formatting.add(
-            f'E{first_row}:E{last_row}',
+            f'F{first_row}:F{last_row}',
             ColorScaleRule(
                 start_type='min',
                 start_color='63BE7B',
@@ -523,13 +674,14 @@ class NpiGanttWindow(tk.Toplevel):
         )
 
         # Larghezza colonne
-        ws.column_dimensions['A'].width = 40
-        ws.column_dimensions['B'].width = 20
-        ws.column_dimensions['C'].width = 12
-        ws.column_dimensions['D'].width = 12
-        ws.column_dimensions['E'].width = 12
-        ws.column_dimensions['F'].width = 18
-        ws.column_dimensions['G'].width = 18
+        ws.column_dimensions['A'].width = 25 # Category
+        ws.column_dimensions['B'].width = 40 # Task
+        ws.column_dimensions['C'].width = 20 # Owner
+        ws.column_dimensions['D'].width = 12 # Start
+        ws.column_dimensions['E'].width = 12 # Finish
+        ws.column_dimensions['F'].width = 12 # Duration
+        ws.column_dimensions['G'].width = 18 # Days Left
+        ws.column_dimensions['H'].width = 18 # Status
 
         # Freeze panes
         ws.freeze_panes = 'A4'
@@ -541,25 +693,32 @@ class NpiGanttWindow(tk.Toplevel):
         # Calcola range date
         min_date = pd.to_datetime(self.df['Start']).min()
         max_date = pd.to_datetime(self.df['Finish']).max()
-
+        
         # Crea lista di settimane
         date_range = pd.date_range(start=min_date, end=max_date, freq='W-MON')
 
-        # Header
-        ws['A1'] = "Attività / Settimana"
-        ws['A1'].font = Font(bold=True, color="FFFFFF", size=11)
-        ws['A1'].fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-        ws['A1'].alignment = Alignment(horizontal="center", vertical="center")
+        # Ordinamento per Categoria e poi Data Inizio
+        df_sortedRequested = self.df.sort_values(by=['Category', 'Start'], ascending=[True, True])
 
-        # Date header
-        for col_idx, date in enumerate(date_range, start=2):
+        # Header
+        ws['A1'] = "Categoria"
+        ws['B1'] = "Attività / Settimana"
+        for cell_ref in ['A1', 'B1']:
+            cell = ws[cell_ref]
+            cell.font = Font(bold=True, color="FFFFFF", size=11)
+            cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        # Date header (Inizia da colonna C ora)
+        for col_idx, date in enumerate(date_range, start=3):
             cell = ws.cell(row=1, column=col_idx, value=date.strftime('%d/%m'))
             cell.font = Font(bold=True, size=8, color="FFFFFF")
             cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
             cell.alignment = Alignment(horizontal="center", vertical="center", text_rotation=90)
             ws.column_dimensions[cell.column_letter].width = 3.5
 
-        ws.column_dimensions['A'].width = 40
+        ws.column_dimensions['A'].width = 20
+        ws.column_dimensions['B'].width = 40
         ws.row_dimensions[1].height = 60
 
         # Righe task
@@ -571,21 +730,29 @@ class NpiGanttWindow(tk.Toplevel):
             bottom=Side(style='thin', color='FFFFFF')
         )
 
-        for row_idx, (_, row) in enumerate(self.df.iterrows(), start=2):
+        for row_idx, (_, row) in enumerate(df_sortedRequested.iterrows(), start=2):
+            # Categoria
+            cell_cat = ws.cell(row=row_idx, column=1, value=row['Category'])
+            cell_cat.font = Font(size=9, bold=True)
+            cell_cat.alignment = Alignment(vertical="center")
+            
             # Nome task
-            cell = ws.cell(row=row_idx, column=1, value=row['Task'])
-            cell.font = Font(size=9)
-            cell.alignment = Alignment(vertical="center")
+            cell_task = ws.cell(row=row_idx, column=2, value=row['Task'])
+            cell_task.font = Font(size=9)
+            cell_task.alignment = Alignment(vertical="center")
 
             task_start = pd.to_datetime(row['Start'])
             task_end = pd.to_datetime(row['Finish'])
 
             # Colora celle nel range
-            for col_idx, date in enumerate(date_range, start=2):
+            for col_idx, date in enumerate(date_range, start=3):
                 cell = ws.cell(row=row_idx, column=col_idx)
                 if task_start <= date <= task_end:
                     cell.fill = task_fill
                     cell.border = border
+
+        # Freeze panes
+        ws.freeze_panes = 'C2'
 
         # Legenda
         legend_row = len(self.df) + 4
@@ -620,15 +787,38 @@ class NpiGanttWindow(tk.Toplevel):
         chart1.x_axis.title = "Owner"
         chart1.y_axis.title = "Numero Task"
 
-        data = Reference(ws, min_col=3, min_row=row, max_row=row + len(tasks_per_owner))
-        cats = Reference(ws, min_col=2, min_row=row + 1, max_row=row + len(tasks_per_owner))
+        data1 = Reference(ws, min_col=3, min_row=row, max_row=row + len(tasks_per_owner))
+        cats1 = Reference(ws, min_col=2, min_row=row + 1, max_row=row + len(tasks_per_owner))
 
-        chart1.add_data(data, titles_from_data=True)
-        chart1.set_categories(cats)
+        chart1.add_data(data1, titles_from_data=True)
+        chart1.set_categories(cats1)
         chart1.height = 10
-        chart1.width = 20
-
+        chart1.width = 15
         ws.add_chart(chart1, f"E{row}")
+
+        # ⭐ GRAFICO 2: Task per Categoria (Bar Chart)
+        row_cat = row
+        ws.cell(row=row_cat, column=8, value="Categoria").font = Font(bold=True)
+        ws.cell(row=row_cat, column=9, value="N. Task").font = Font(bold=True)
+
+        tasks_per_cat = self.statistics['tasks_per_category']
+        for idx, (cat, count) in enumerate(tasks_per_cat.items(), start=row_cat + 1):
+            ws.cell(row=idx, column=8, value=cat)
+            ws.cell(row=idx, column=9, value=count)
+
+        chart_cat = BarChart()
+        chart_cat.title = "Task per Categoria"
+        chart_cat.x_axis.title = "Categoria"
+        chart_cat.y_axis.title = "Numero Task"
+
+        data_cat = Reference(ws, min_col=9, min_row=row_cat, max_row=row_cat + len(tasks_per_cat))
+        cats_cat = Reference(ws, min_col=8, min_row=row_cat + 1, max_row=row_cat + len(tasks_per_cat))
+
+        chart_cat.add_data(data_cat, titles_from_data=True)
+        chart_cat.set_categories(cats_cat)
+        chart_cat.height = 10
+        chart_cat.width = 15
+        ws.add_chart(chart_cat, f"K{row}")
 
         # ⭐ GRAFICO 2: Durata Task (Bar Chart)
         row = row + len(tasks_per_owner) + 5
@@ -855,42 +1045,72 @@ Task in Ritardo: {stats['late_tasks']}
         plt.close()
 
     def _create_pdf_gantt_page(self, pdf):
-        """Crea pagina Gantt nel PDF."""
+        """Crea pagina Gantt nel PDF con raggruppamento per categoria."""
         fig, ax = plt.subplots(figsize=(11, 8.5))
 
         # Prepara dati
         df = self.df.copy()
-        df = df.sort_values('Start')
+        # Ordinamento per Categoria e poi Data Inizio
+        df = df.sort_values(by=['Category', 'Start'], ascending=[True, True])
+        
+        # Mappa ID -> Indice per tracciare dipendenze nell'asse Y
+        id_to_idx = {row['TaskProdottoID']: i for i, (_, row) in enumerate(df.iterrows())}
 
         # Colori per owner
         owners = df['Owner'].unique()
         colors = plt.cm.Set3(range(len(owners)))
         owner_colors = dict(zip(owners, colors))
 
-        # Disegna barre
+        # 1. Disegna Linee Dipendenze (prima delle barre così stanno "sotto")
+        for i, (_, row) in enumerate(df.iterrows()):
+            deps = row.get('Dependencies', [])
+            for dep_id in deps:
+                if dep_id in id_to_idx:
+                    pred_idx = id_to_idx[dep_id]
+                    p_row = df.iloc[pred_idx]
+                    
+                    # Coord X: fine predecessore -> inizio successore
+                    x_start = mdates.date2num(p_row['Finish'])
+                    x_end = mdates.date2num(row['Start'])
+                    
+                    # Disegna linea spezzata (verticale a x_start, orizzontale a y=i)
+                    ax.plot([x_start, x_start, x_end], [pred_idx, i, i], 
+                            color='#7f8c8d', linestyle='-', linewidth=0.8, alpha=0.5, zorder=1)
+                    
+                    # Aggiungi freccia di direzione
+                    if x_end > x_start:
+                        ax.annotate('', xy=(x_end, i), xytext=(x_end - 0.05, i),
+                                    arrowprops=dict(arrowstyle="->", color='#7f8c8d', lw=0.8, alpha=0.5))
+
+        # 2. Disegna barre task
         for idx, (_, row) in enumerate(df.iterrows()):
             start = mdates.date2num(row['Start'])
             end = mdates.date2num(row['Finish'])
             duration = end - start
+            
+            # Impedisce durate zero per visibilità (milestones)
+            plot_width = max(duration, 0.1) 
 
-            ax.barh(idx, duration, left=start, height=0.6,
+            ax.barh(idx, plot_width, left=start, height=0.6,
                     color=owner_colors[row['Owner']],
                     edgecolor='black', linewidth=0.5,
+                    zorder=2,
                     label=row['Owner'] if row['Owner'] not in ax.get_legend_handles_labels()[1] else "")
 
-        # Etichette
+        # Etichette con CATEGORIA
         ax.set_yticks(range(len(df)))
-        ax.set_yticklabels(df['Task'], fontsize=8)
+        labels = [f"[{row['Category']}] {row['Task']}" for _, row in df.iterrows()]
+        ax.set_yticklabels(labels, fontsize=7)
         ax.set_xlabel('Timeline', fontsize=12)
         ax.set_title(f'Gantt Chart - {self.product_name}', fontsize=14, fontweight='bold')
 
         # Formatta asse X
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m/%Y'))
-        ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
         plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
 
         # Griglia
-        ax.grid(True, axis='x', alpha=0.3)
+        ax.grid(True, axis='x', alpha=0.3, zorder=0)
         ax.invert_yaxis()
 
         # Legenda

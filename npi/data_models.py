@@ -80,13 +80,43 @@ class ProgettoNPI(Base):
     NomeProgetto = Column(String(255))
     ScadenzaProgetto = Column(DateTime, nullable=True)
     Version = Column(String(50), nullable=True)  # Campo versione prodotto
+    OwnerID = Column(Integer, ForeignKey('dbo.vw_Soggetti.SoggettoId'), nullable=True)  # Owner del progetto
+    Descrizione = Column(Text, nullable=True)  # Descrizione del progetto
 
     # Relationships
     prodotto = relationship("Prodotto", back_populates="progetti_npi")
     waves = relationship("WaveNPI", back_populates="progetto", cascade="all, delete-orphan")
+    documenti = relationship("ProgettoDocumento", back_populates="progetto", cascade="all, delete-orphan")
+    owner = relationship(
+        "Soggetto",
+        primaryjoin="foreign(ProgettoNPI.OwnerID) == Soggetto.SoggettoId",
+        viewonly=True,
+        uselist=False
+    )
 
     def __repr__(self):
         return f"<ProgettoNPI(ProgettoID={self.ProgettoId}, NomeProgetto='{self.NomeProgetto}')>"
+
+
+class ProgettoDocumento(Base):
+    __tablename__ = 'ProgettoDocumenti'
+    __table_args__ = {'schema': 'dbo'}
+    
+    DocumentoID = Column(Integer, primary_key=True, autoincrement=True)
+    ProgettoID = Column(Integer, ForeignKey('dbo.ProgettiNPI.ProgettoID'), nullable=False)
+    NomeFile = Column(String(255), nullable=False)
+    TipoFile = Column(String(50), nullable=True)
+    Dimensione = Column(Integer, nullable=True)
+    Contenuto = Column(LargeBinary, nullable=False)
+    Descrizione = Column(String(500), nullable=True)
+    CaricatoDa = Column(String(255), nullable=True)
+    DataCaricamento = Column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    # Relationship
+    progetto = relationship("ProgettoNPI", back_populates="documenti")
+    
+    def __repr__(self):
+        return f"<ProgettoDocumento(DocumentoID={self.DocumentoID}, NomeFile='{self.NomeFile}')>"
 
 
 
@@ -156,6 +186,20 @@ class TaskProdotto(Base):
     prodotto = relationship("Prodotto", back_populates="task_prodotto")
     notification_logs = relationship("NotificationLog", back_populates="task_prodotto", cascade="all, delete-orphan")
     documents = relationship("NpiDocument", back_populates="task_prodotto", cascade="all, delete-orphan")
+    dependencies = relationship("TaskDependency", foreign_keys="TaskDependency.TaskProdottoID", back_populates="task", cascade="all, delete-orphan")
+    
+    # Relationships per predecessori e successori
+    predecessors = relationship(
+        "TaskDependency",
+        foreign_keys="TaskDependency.TaskProdottoID",
+        back_populates="task",
+        overlaps="dependencies"
+    )
+    successors = relationship(
+        "TaskDependency",
+        foreign_keys="TaskDependency.DependsOnTaskProdottoID",
+        overlaps="depends_on_task"
+    )
 
     # Relationship con Soggetto (VIEW)
     owner = relationship(
@@ -239,3 +283,24 @@ class NpiDocument(Base):
     # Relazioni
     task_prodotto = relationship("TaskProdotto", back_populates="documents")
     document_type = relationship("NpiDocumentType", back_populates="documents")
+
+
+# ========================================
+# 11. TaskDependency
+# ========================================
+class TaskDependency(Base):
+    __tablename__ = 'TaskDependencies'
+    __table_args__ = {'schema': 'dbo'}
+    
+    DependencyID = Column(Integer, primary_key=True, autoincrement=True)
+    TaskProdottoID = Column(Integer, ForeignKey('dbo.TaskProdotto.TaskProdottoID'), nullable=False)
+    DependsOnTaskProdottoID = Column(Integer, ForeignKey('dbo.TaskProdotto.TaskProdottoID'), nullable=False)
+    DependencyType = Column(String(20), default='FinishToStart')
+    LagDays = Column(Integer, default=0)
+    
+    # Relationships
+    task = relationship("TaskProdotto", foreign_keys=[TaskProdottoID], back_populates="dependencies")
+    depends_on_task = relationship("TaskProdotto", foreign_keys=[DependsOnTaskProdottoID])
+    
+    def __repr__(self):
+        return f"<TaskDependency(ID={self.DependencyID}, Task={self.TaskProdottoID} depends on {self.DependsOnTaskProdottoID})>"

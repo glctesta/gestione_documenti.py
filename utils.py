@@ -94,18 +94,28 @@ def send_email(
         raise
 
 
-def get_employee_work_email(conn, user_id: int) -> Optional[str]:
+def get_employee_work_email(conn, employee_name: str) -> Optional[str]:
     """
-    Recupera l'indirizzo email lavorativo (WorkEmail) di un dipendente in base all'ID utente.
+    Recupera l'indirizzo email lavorativo (WorkEmail) di un dipendente in base al nome completo.
 
     Args:
         conn: Connessione al database
-        user_id: ID dell'utente (employeehirehistoryid)
+        employee_name: Nome completo del dipendente (es. "TESTA GIANLUCA")
 
     Returns:
         L'indirizzo email lavorativo come stringa se trovato, altrimenti None
     """
     try:
+        # Dividi il nome in cognome e nome
+        # Assumendo formato "COGNOME NOME"
+        parts = employee_name.strip().split()
+        if len(parts) < 2:
+            logger.warning(f"Formato nome non valido: {employee_name}")
+            return None
+        
+        surname = parts[0]
+        name = ' '.join(parts[1:])  # In caso di nomi composti
+        
         query = """
         SELECT a.WorkEmail 
         FROM employee.dbo.employees e 
@@ -116,21 +126,21 @@ def get_employee_work_email(conn, user_id: int) -> Optional[str]:
             ON e.employeeid = h.employeeid 
             AND h.EndWorkDate IS NULL 
             AND h.employeerid = 2
-        WHERE h.employeehirehistoryid = ?
+        WHERE e.EmployeeSurname = ? AND e.EmployeeName = ?
         """
 
         with conn.cursor() as cursor:
-            cursor.execute(query, user_id)
+            cursor.execute(query, (surname, name))
             row = cursor.fetchone()
 
         if row and row[0]:
             work_email = row[0].strip()
-            logger.info(f"WorkEmail trovata per user_id {user_id}: {work_email}")
+            logger.info(f"WorkEmail trovata per {employee_name}: {work_email}")
             return work_email
 
-        logger.warning(f"Nessun risultato trovato per user_id:{user_id}")
+        logger.warning(f"Nessun risultato trovato per: {employee_name}")
         return None
 
     except Exception as e:
-        logger.error(f"Errore nel recupero della WorkEmail per user_id {user_id}: {e}")
+        logger.error(f"Errore nel recupero della WorkEmail per {employee_name}: {e}")
         raise
