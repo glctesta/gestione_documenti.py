@@ -270,8 +270,8 @@ APP_DEVELOPER = 'Gianluca Testa'
 DB_DRIVER = '{SQL Server Native Client 11.0}'
 DB_SERVER = 'roghipsql01.vandewiele.local\\emsreset'
 DB_DATABASE = 'Traceability_rs'
-DB_UID = 'emsreset'
-DB_PWD = 'E6QhqKUxHFXTbkB7eA8c9ya'
+DB_UID = 'userid'
+DB_PWD = 'pass'
 DB_CONN_STR = (f'DRIVER={DB_DRIVER};SERVER={DB_SERVER};DATABASE={DB_DATABASE};'
                f'UID={DB_UID};PWD={DB_PWD};MARS_Connection=Yes;TrustServerCertificate=Yes')
 
