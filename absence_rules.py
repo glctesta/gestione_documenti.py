@@ -311,9 +311,10 @@ class AbsenceRulesWindow(tk.Toplevel):
             except Exception as e:
                 self.db.conn.rollback()
                 logger.error(f"Errore nell'inserimento della regola: {e}", exc_info=True)
+                error_msg = self.lang.get('insert_error', 'Errore nell\'inserimento')
                 messagebox.showerror(
                     self.lang.get('error', 'Errore'),
-                    f"{self.lang.get('insert_error', 'Errore nell\'inserimento')}: {e}"
+                    f"{error_msg}: {e}"
                 )
 
     def _modify_days(self):
@@ -359,9 +360,10 @@ class AbsenceRulesWindow(tk.Toplevel):
             except Exception as e:
                 self.db.conn.rollback()
                 logger.error(f"Errore nell'aggiornamento della regola: {e}", exc_info=True)
+                error_msg = self.lang.get('update_error', 'Errore nell\'aggiornamento')
                 messagebox.showerror(
                     self.lang.get('error', 'Errore'),
-                    f"{self.lang.get('update_error', 'Errore nell\'aggiornamento')}: {e}"
+                    f"{error_msg}: {e}"
                 )
 
     def _delete_rule(self):
@@ -405,9 +407,10 @@ class AbsenceRulesWindow(tk.Toplevel):
         except Exception as e:
             self.db.conn.rollback()
             logger.error(f"Errore nell'eliminazione della regola: {e}", exc_info=True)
+            error_msg = self.lang.get('delete_error', 'Errore nell\'eliminazione')
             messagebox.showerror(
                 self.lang.get('error', 'Errore'),
-                f"{self.lang.get('delete_error', 'Errore nell\'eliminazione')}: {e}"
+                f"{error_msg}: {e}"
             )
 
 
