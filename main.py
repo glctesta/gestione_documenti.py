@@ -263,15 +263,15 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.2.8.2'  # Versione aggiornata
+APP_VERSION = '2.2.8.5'  # Versione aggiornata
 APP_DEVELOPER = 'Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
 DB_DRIVER = '{SQL Server Native Client 11.0}'
 DB_SERVER = 'roghipsql01.vandewiele.local\\emsreset'
 DB_DATABASE = 'Traceability_rs'
-DB_UID = 'userid'
-DB_PWD = 'pass'
+DB_UID = "emsreset"
+DB_PWD = 'E6QhqKUxHFXTbkB7eA8c9ya'
 DB_CONN_STR = (f'DRIVER={DB_DRIVER};SERVER={DB_SERVER};DATABASE={DB_DATABASE};'
                f'UID={DB_UID};PWD={DB_PWD};MARS_Connection=Yes;TrustServerCertificate=Yes')
 
@@ -3855,8 +3855,8 @@ class Database:
 
     # --- PASTE MANAGEMENT METHODS ---
     def fetch_paste_producers(self):
-        """Recupera i siti che possono produrre paste."""
-        query = "SELECT [IDSite], [SiteName] FROM [Traceability_RS].[dbo].[Sites] ORDER BY SiteName;"
+        """Recupera i produttori per le paste."""
+        query = "SELECT [ProducerId], [Producers] FROM [Traceability_RS].[dbo].[Producers] ORDER BY Producers;"
         try:
             self.cursor.execute(query)
             return self.cursor.fetchall()
@@ -3869,9 +3869,9 @@ class Database:
         """Recupera tutte le paste configurate."""
         query = """
         SELECT p.Pastaid, p.ProducerId, p.CreatedAt, p.CreatedBy, p.PastaCode, 
-               p.PastaDataSheet, p.DateEntry, s.SiteName
+               p.PastaDataSheet, p.DateEntry, pr.Producers
         FROM [Traceability_RS].[pst].[Pastas] p
-        LEFT JOIN [Traceability_RS].[dbo].[Sites] s ON p.ProducerId = s.IDSite
+        LEFT JOIN [Traceability_RS].[dbo].[Producers] pr ON p.ProducerId = pr.ProducerId
         WHERE p.DateEntry IS NOT NULL
         ORDER BY p.PastaCode
         """
@@ -11743,8 +11743,10 @@ class App(tk.Tk):
             
             try:
                 self.last_authenticated_user_name = auth_result.EmployeeName
+                self.last_authorized_user_id = auth_result.AuthorizedUsedId  # Salva l'EmployeeHireHistoryId
             except Exception:
                 self.last_authenticated_user_name = None
+                self.last_authorized_user_id = None
 
             self._temp_authorized_user_id = user_id
 
@@ -12083,6 +12085,9 @@ class App(tk.Tk):
         # Menu Personale
         self.personnel_menu = tk.Menu(self.operations_menu, tearoff=0)
         self.guests_submenu = tk.Menu(self.personnel_menu, tearoff=0)
+        
+        # Menu Assenze
+        self.absences_submenu = tk.Menu(self.personnel_menu, tearoff=0)
 
     def _init_production_submenus(self):
         """Inizializza la gerarchia completa del menu Produzione"""
@@ -12263,6 +12268,34 @@ class App(tk.Tk):
         self.guests_submenu.add_command(
             label=self.lang.get('submenu_guest_report', 'Report Ospiti'),
             command=self.generate_guests_pdf_report_with_login #open_guest_report_with_login
+        )
+        
+        # Sottomenu Assenze
+        self.personnel_menu.add_separator()
+        
+        self.personnel_menu.add_cascade(
+            label=self.lang.get('submenu_absences', 'Assenze'),
+            menu=self.absences_submenu
+        )
+        self.absences_submenu.delete(0, 'end')
+        
+        # Autorizzazione Assenze (diretto, senza sottomenu)
+        self.absences_submenu.add_command(
+            label=self.lang.get('submenu_absence_authorization', 'Autorizzazione Assenze'),
+            command=self.open_absence_authorization_with_login
+        )
+        
+        # Regole Assenze
+        self.absences_submenu.add_command(
+            label=self.lang.get('submenu_absence_rules', 'Regole Assenze'),
+            command=self.open_absence_rules_with_login
+        )
+        
+        # Messaggi
+        self.personnel_menu.add_separator()
+        self.personnel_menu.add_command(
+            label=self.lang.get('submenu_news', 'Messaggi'),
+            command=self.open_news_management_with_login
         )
 
         # Comandi del menu NPI
@@ -12619,7 +12652,13 @@ class App(tk.Tk):
         # In Produzione
         self.paste_transfer_submenu.add_command(
             label=self.lang.get('submenu_paste_to_production', "In Produzione"),
-            command=lambda: messagebox.showinfo("Info", "Funzione In Produzione - Da implementare")
+            command=self._open_paste_to_production
+        )
+
+        # Presa In Carico
+        self.paste_transfer_submenu.add_command(
+            label=self.lang.get('submenu_paste_take_charge', "Presa In Carico"),
+            command=self._open_paste_take_charge
         )
 
         # Inizio Uso
@@ -12633,6 +12672,24 @@ class App(tk.Tk):
             label=self.lang.get('submenu_paste_end_use', "Fine Uso"),
             command=lambda: messagebox.showinfo("Info", "Funzione Fine Uso - Da implementare")
         )
+
+    def _open_paste_to_production(self):
+        """Apre la finestra di trasferimento paste a produzione"""
+        def action():
+            import paste_transfer
+            paste_transfer.open_paste_to_production(
+                self, self.db, self.lang, self.last_authenticated_user_name
+            )
+        self._execute_authorized_action('submenu_paste_to_production', action)
+
+    def _open_paste_take_charge(self):
+        """Apre la finestra presa in carico paste"""
+        def action():
+            import paste_take_charge
+            paste_take_charge.open_paste_take_charge(
+                self, self.db, self.lang, self.last_authenticated_user_name
+            )
+        self._execute_authorized_action('submenu_paste_take_charge', action)
 
     def _update_product_checks_submenu(self):
         """Aggiorna il sottomenu Verifiche Prodotti"""
@@ -13453,7 +13510,7 @@ class App(tk.Tk):
         """Apre la finestra gestione locazioni frigoriferi"""
         def action():
             import paste_manager
-            paste_manager.open_paste_locations(self, self.db, self.lang, self.user_name)
+            paste_manager.open_paste_locations(self, self.db, self.lang, self.last_authenticated_user_name)
         
         self._execute_authorized_action('submenu_paste_locations', action)
 
@@ -13508,6 +13565,88 @@ class App(tk.Tk):
         
         logger.info("Chiamata _execute_simple_login...")
         self._execute_simple_login(action_callback=lambda user_name: action())
+
+    def open_absence_authorization_with_login(self):
+        """Apre la finestra di autorizzazione assenze con login autorizzato"""
+        logger.info("open_absence_authorization_with_login chiamata")
+        
+        def action():
+            try:
+                import absence_authorization
+                logger.info(f"Apertura finestra autorizzazione assenze per utente: {self.last_authenticated_user_name} (ID: {self.last_authorized_user_id})")
+                absence_authorization.AbsenceAuthorizationWindow(
+                    self,
+                    self.db,
+                    self.lang,
+                    self.last_authorized_user_id,  # Passa l'EmployeeHireHistoryId invece del nome
+                    self.last_authenticated_user_name  # Passa anche il nome per visualizzazione
+                )
+            except Exception as e:
+                logger.error(f"Errore apertura finestra autorizzazione assenze: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire la finestra di autorizzazione assenze: {str(e)}",
+                    parent=self
+                )
+        
+        self._execute_authorized_action(
+            menu_translation_key='autorizza_assenze',
+            action_callback=action
+        )
+
+    def open_absence_rules_with_login(self):
+        """Apre la finestra di gestione regole assenze con login autorizzato"""
+        logger.info("open_absence_rules_with_login chiamata")
+        
+        def action():
+            try:
+                import absence_rules
+                logger.info(f"Apertura finestra regole assenze per utente: {self.last_authenticated_user_name} (ID: {self.last_authorized_user_id})")
+                absence_rules.AbsenceRulesWindow(
+                    self,
+                    self.db,
+                    self.lang,
+                    self.last_authorized_user_id,
+                    self.last_authenticated_user_name
+                )
+            except Exception as e:
+                logger.error(f"Errore apertura finestra regole assenze: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire la finestra: {e}",
+                    parent=self
+                )
+        
+        self._execute_authorized_action(
+            menu_translation_key='gestione_regole_assenze',
+            action_callback=action
+        )
+
+
+    def open_news_management_with_login(self):
+        """Apre la finestra di gestione messaggi con login"""
+        logger.info("open_news_management_with_login chiamata")
+        
+        def action(user_name):
+            try:
+                import news_management
+                logger.info(f"Apertura finestra gestione messaggi per utente: {user_name}")
+                news_management.NewsManagementWindow(
+                    self,
+                    self.db,
+                    self.lang,
+                    user_name
+                )
+            except Exception as e:
+                logger.error(f"Errore apertura finestra gestione messaggi: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire la finestra di gestione messaggi: {str(e)}",
+                    parent=self
+                )
+        
+        logger.info("Chiamata _execute_simple_login...")
+        self._execute_simple_login(action_callback=lambda user_name: action(user_name))
 
     def _change_language(self, lang_code):
         """Cambia la lingua, aggiorna la UI, salva l'impostazione e mostra una notifica."""
