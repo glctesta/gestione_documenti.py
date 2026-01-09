@@ -12886,9 +12886,16 @@ class App(tk.Tk):
             command=self._open_change_password
         )
         
+        # Voce Recupera Password
+        self.help_menu.add_command(
+            label=self.lang.get('menu_recover_password', 'Recupera Password'),
+            command=self._open_password_recovery
+        )
+        
         self.help_menu.add_separator()
         about_menu_label = f"{self.lang.get('menu_about')} {APP_VERSION}"
         self.help_menu.add_command(label=about_menu_label, command=self._show_about)
+
 
     def _update_main_menubar(self):
         """Aggiorna le etichette della barra dei menu principale"""
@@ -13648,7 +13655,27 @@ class App(tk.Tk):
         logger.info("Chiamata _execute_simple_login...")
         self._execute_simple_login(action_callback=lambda user_name: action(user_name))
 
+    def _open_password_recovery(self):
+        """Apre la finestra di recupero password (SENZA login)"""
+        logger.info("_open_password_recovery chiamata")
+        
+        try:
+            import password_recovery
+            password_recovery.PasswordRecoveryWindow(
+                self,
+                self.db,
+                self.lang
+            )
+        except Exception as e:
+            logger.error(f"Errore apertura finestra recupero password: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire la finestra di recupero password: {str(e)}",
+                parent=self
+            )
+
     def _change_language(self, lang_code):
+
         """Cambia la lingua, aggiorna la UI, salva l'impostazione e mostra una notifica."""
         self.lang.set_language(lang_code)
         self.update_texts()
