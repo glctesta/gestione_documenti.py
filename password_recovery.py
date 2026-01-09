@@ -279,11 +279,11 @@ class PasswordRecoveryWindow(tk.Toplevel):
             )
 
             # Mostra messaggio di conferma
-            success_msg = self.lang.get(
+            success_msg_template = self.lang.get(
                 'password_recovery_email_sent',
-                'Le credenziali sono state inviate all\'indirizzo email: {0}',
-                work_email
+                'Le credenziali sono state inviate all\'indirizzo email: {0}'
             )
+            success_msg = success_msg_template.format(work_email)
             messagebox.showinfo(
                 self.lang.get('success', 'Successo'),
                 success_msg
