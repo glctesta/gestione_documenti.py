@@ -188,7 +188,8 @@ class PasswordRecoveryWindow(tk.Toplevel):
                 DECLARE @CNP nvarchar(13) = ?
 
                 SELECT 
-                    U.nomeuser, 
+                    U.nomeuser,
+                    U.Pass, 
                     a.WorkEmail, 
                     e.EmployeeSurname + ' ' + e.EmployeeName AS EmployeeName, 
                     b.NoBadge, 
@@ -227,6 +228,7 @@ class PasswordRecoveryWindow(tk.Toplevel):
 
             # Estrai i dati
             username = result.nomeuser
+            password = result.Pass
             work_email = result.WorkEmail
             employee_name = result.EmployeeName
             badge_no = result.NoBadge
@@ -246,7 +248,7 @@ class PasswordRecoveryWindow(tk.Toplevel):
                 return
 
             # Invia email con le credenziali
-            self._send_recovery_email(username, work_email, employee_name, badge_no, cnp_code)
+            self._send_recovery_email(username, password, work_email, employee_name, badge_no, cnp_code)
 
         except Exception as e:
             logger.error(f"Errore nel recupero password: {e}", exc_info=True)
@@ -255,7 +257,7 @@ class PasswordRecoveryWindow(tk.Toplevel):
                 f"{self.lang.get('recovery_error', 'Errore durante il recupero')}: {e}"
             )
 
-    def _send_recovery_email(self, username, work_email, employee_name, badge_no, cnp_code):
+    def _send_recovery_email(self, username, password, work_email, employee_name, badge_no, cnp_code):
         """Invia l'email con le credenziali recuperate"""
         try:
             # Prepara l'oggetto dell'email
@@ -265,7 +267,7 @@ class PasswordRecoveryWindow(tk.Toplevel):
             )
 
             # Prepara il corpo HTML dell'email
-            html_body = self._create_email_html(username, employee_name, badge_no, cnp_code)
+            html_body = self._create_email_html(username, password, employee_name, badge_no, cnp_code)
 
             # Invia l'email
             import utils
@@ -300,7 +302,7 @@ class PasswordRecoveryWindow(tk.Toplevel):
                 f"{error_msg}: {e}"
             )
 
-    def _create_email_html(self, username, employee_name, badge_no, cnp_code):
+    def _create_email_html(self, username, password, employee_name, badge_no, cnp_code):
         """Crea il corpo HTML dell'email con formattazione professionale"""
         
         # Converti il logo in base64 per incorporarlo nell'email
@@ -310,16 +312,12 @@ class PasswordRecoveryWindow(tk.Toplevel):
         greeting = self.lang.get('email_greeting', 'Gentile')
         credentials_header = self.lang.get('email_credentials_header', 'Ecco le tue credenziali di accesso:')
         username_label = self.lang.get('email_username_label', 'Nome utente')
+        password_label = self.lang.get('email_password_label', 'Password')
         badge_label = self.lang.get('email_badge_label', 'Numero Badge')
         cnp_label = self.lang.get('email_cnp_label', 'CNP')
         footer_text = self.lang.get(
             'email_footer_text',
             'Questa è un\'email automatica. Per favore non rispondere a questo messaggio.'
-        )
-        security_note = self.lang.get(
-            'email_security_note',
-            'Per motivi di sicurezza, la password non viene mostrata. '
-            'Se hai dimenticato la password, contatta l\'amministratore di sistema.'
         )
 
         html = f"""
@@ -413,6 +411,10 @@ class PasswordRecoveryWindow(tk.Toplevel):
                 <span class="value">{username}</span>
             </div>
             <div class="credential-item">
+                <span class="label">{password_label}:</span>
+                <span class="value">{password}</span>
+            </div>
+            <div class="credential-item">
                 <span class="label">{badge_label}:</span>
                 <span class="value">{badge_no}</span>
             </div>
@@ -420,11 +422,6 @@ class PasswordRecoveryWindow(tk.Toplevel):
                 <span class="label">{cnp_label}:</span>
                 <span class="value">{cnp_code}</span>
             </div>
-        </div>
-        
-        <div class="security-note">
-            <p style="margin: 0;"><strong>ℹ️ {self.lang.get('note_title', 'Nota')}:</strong></p>
-            <p style="margin: 10px 0 0 0;">{security_note}</p>
         </div>
     </div>
     

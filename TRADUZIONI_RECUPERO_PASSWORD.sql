@@ -767,8 +767,37 @@ IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'sv' A
     INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
     VALUES ('sv', 'email_send_error', 'Fel vid skickande av e-post');
 
+
+GO
+
+-- Label password nell'email
+-- Italiano
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'it' AND TranslationKey = 'email_password_label')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
+    VALUES ('it', 'email_password_label', 'Password');
+
+-- Inglese
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'en' AND TranslationKey = 'email_password_label')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
+    VALUES ('en', 'email_password_label', 'Password');
+
+-- Rumeno
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'ro' AND TranslationKey = 'email_password_label')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
+    VALUES ('ro', 'email_password_label', N'Parolă');
+
+-- Tedesco
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'de' AND TranslationKey = 'email_password_label')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
+    VALUES ('de', 'email_password_label', 'Passwort');
+
+-- Svedese
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'sv' AND TranslationKey = 'email_password_label')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
+    VALUES ('sv', 'email_password_label', 'Lösenord');
+
 GO
 
 PRINT 'Traduzioni per Recupero Password installate con successo!'
-PRINT 'Totale chiavi inserite: 28 x 5 lingue = 140 traduzioni'
+PRINT 'Totale chiavi inserite: 29 x 5 lingue = 145 traduzioni'
 GO
