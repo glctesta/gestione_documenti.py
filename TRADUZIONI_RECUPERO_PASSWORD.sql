@@ -105,27 +105,27 @@ GO
 -- Italiano
 IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'it' AND TranslationKey = 'password_recovery_instructions')
     INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
-    VALUES ('it', 'password_recovery_instructions', 'Inserire almeno uno dei seguenti campi per recuperare le credenziali:');
+    VALUES ('it', 'password_recovery_instructions', 'Inserire il CNP (OBBLIGATORIO) e, opzionalmente, altri campi per recuperare le credenziali:');
 
 -- Inglese
 IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'en' AND TranslationKey = 'password_recovery_instructions')
     INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
-    VALUES ('en', 'password_recovery_instructions', 'Enter at least one of the following fields to recover credentials:');
+    VALUES ('en', 'password_recovery_instructions', 'Enter CNP (REQUIRED) and, optionally, other fields to recover credentials:');
 
 -- Rumeno
 IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'ro' AND TranslationKey = 'password_recovery_instructions')
     INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
-    VALUES ('ro', 'password_recovery_instructions', N'Introduceți cel puțin unul din următoarele câmpuri pentru a recupera credențialele:');
+    VALUES ('ro', 'password_recovery_instructions', N'Introduceți CNP (OBLIGATORIU) și, opțional, alte câmpuri pentru a recupera credențialele:');
 
 -- Tedesco
 IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'de' AND TranslationKey = 'password_recovery_instructions')
     INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
-    VALUES ('de', 'password_recovery_instructions', 'Geben Sie mindestens eines der folgenden Felder ein, um die Anmeldedaten wiederherzustellen:');
+    VALUES ('de', 'password_recovery_instructions', 'Geben Sie CNP (ERFORDERLICH) und optional weitere Felder ein, um die Anmeldedaten wiederherzustellen:');
 
 -- Svedese
 IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'sv' AND TranslationKey = 'password_recovery_instructions')
     INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
-    VALUES ('sv', 'password_recovery_instructions', 'Ange minst ett av följande fält för att återställa inloggningsuppgifter:');
+    VALUES ('sv', 'password_recovery_instructions', 'Ange CNP (OBLIGATORISKT) och, valfritt, andra fält för att återställa inloggningsuppgifter:');
 
 GO
 
@@ -826,6 +826,34 @@ IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'sv' A
 
 GO
 
+-- Messaggio CNP obbligatorio
+-- Italiano
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'it' AND TranslationKey = 'cnp_required')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
+    VALUES ('it', 'cnp_required', 'Il Codice Numerico Personale (CNP) è obbligatorio per il recupero password');
+
+-- Inglese
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'en' AND TranslationKey = 'cnp_required')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
+    VALUES ('en', 'cnp_required', 'Personal Numeric Code (CNP) is required for password recovery');
+
+-- Rumeno
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'ro' AND TranslationKey = 'cnp_required')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
+    VALUES ('ro', 'cnp_required', N'Codul Numeric Personal (CNP) este obligatoriu pentru recuperarea parolei');
+
+-- Tedesco
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'de' AND TranslationKey = 'cnp_required')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
+    VALUES ('de', 'cnp_required', 'Persönliche Nummer (CNP) ist erforderlich für die Passwort-Wiederherstellung');
+
+-- Svedese
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'sv' AND TranslationKey = 'cnp_required')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
+    VALUES ('sv', 'cnp_required', 'Personligt nummer (CNP) krävs för lösenordsåterställning');
+
+GO
+
 PRINT 'Traduzioni per Recupero Password installate con successo!'
-PRINT 'Totale chiavi inserite: 30 x 5 lingue = 150 traduzioni'
+PRINT 'Totale chiavi inserite: 31 x 5 lingue = 155 traduzioni'
 GO

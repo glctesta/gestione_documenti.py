@@ -54,7 +54,7 @@ class PasswordRecoveryWindow(tk.Toplevel):
         # Istruzioni
         instruction_text = self.lang.get(
             'password_recovery_instructions',
-            'Inserire almeno uno dei seguenti campi per recuperare le credenziali:'
+            'Inserire il CNP (OBBLIGATORIO) e, opzionalmente, altri campi per recuperare le credenziali:'
         )
         instruction_label = ttk.Label(
             main_frame,
@@ -181,11 +181,11 @@ class PasswordRecoveryWindow(tk.Toplevel):
         email = self.email_var.get().strip() if self.email_var.get().strip() else None
         cnp = self.cnp_var.get().strip() if self.cnp_var.get().strip() else None
 
-        # Verifica che almeno un campo sia compilato
-        if not any([user_id, badge, name, email, cnp]):
-            messagebox.showwarning(
-                self.lang.get('warning', 'Attenzione'),
-                self.lang.get('password_recovery_empty_fields', 'Inserire almeno un campo per effettuare la ricerca')
+        # Verifica che il CNP sia obbligatoriamente presente
+        if not cnp:
+            self.status_label.config(
+                text=self.lang.get('cnp_required', 'Il Codice Numerico Personale (CNP) è obbligatorio per il recupero password'),
+                foreground="red"
             )
             return
 
