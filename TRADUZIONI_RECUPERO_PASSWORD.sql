@@ -798,6 +798,34 @@ IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'sv' A
 
 GO
 
+-- Messaggio di stato: Preparazione email
+-- Italiano
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'it' AND TranslationKey = 'preparing_email')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
+    VALUES ('it', 'preparing_email', 'Dati trovati! Preparazione email in corso...');
+
+-- Inglese
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'en' AND TranslationKey = 'preparing_email')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
+    VALUES ('en', 'preparing_email', 'Data found! Preparing email...');
+
+-- Rumeno
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'ro' AND TranslationKey = 'preparing_email')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
+    VALUES ('ro', 'preparing_email', N'Date găsite! Pregătirea email-ului în curs...');
+
+-- Tedesco
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'de' AND TranslationKey = 'preparing_email')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
+    VALUES ('de', 'preparing_email', 'Daten gefunden! E-Mail wird vorbereitet...');
+
+-- Svedese
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE LanguageCode = 'sv' AND TranslationKey = 'preparing_email')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue)
+    VALUES ('sv', 'preparing_email', 'Data hittad! Förbereder e-post...');
+
+GO
+
 PRINT 'Traduzioni per Recupero Password installate con successo!'
-PRINT 'Totale chiavi inserite: 29 x 5 lingue = 145 traduzioni'
+PRINT 'Totale chiavi inserite: 30 x 5 lingue = 150 traduzioni'
 GO

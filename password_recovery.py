@@ -131,6 +131,17 @@ class PasswordRecoveryWindow(tk.Toplevel):
         # Configura ridimensionamento colonne
         fields_frame.columnconfigure(1, weight=1)
 
+        # Label di stato
+        self.status_label = ttk.Label(
+            main_frame,
+            text="",
+            foreground="blue",
+            font=("Helvetica", 9, "italic"),
+            wraplength=450,
+            justify=tk.LEFT
+        )
+        self.status_label.pack(fill=tk.X, pady=(10, 10))
+
         # Frame per i bottoni
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(fill=tk.X, pady=(10, 0))
@@ -236,25 +247,32 @@ class PasswordRecoveryWindow(tk.Toplevel):
 
             # Verifica se l'email è presente
             if not work_email or work_email.strip() == '':
-                error_msg = self.lang.get(
-                    'password_recovery_no_email',
-                    'Non è possibile recuperare la password perché nel database dei dipendenti '
-                    'NON è stata registrata una WorkEmail valida per questo utente.'
-                )
-                messagebox.showerror(
-                    self.lang.get('error', 'Errore'),
-                    error_msg
+                self.status_label.config(
+                    text=self.lang.get(
+                        'password_recovery_no_email',
+                        'Non è possibile recuperare la password perché nel database dei dipendenti '
+                        'NON è stata registrata una WorkEmail valida per questo utente.'
+                    ),
+                    foreground="red"
                 )
                 return
+
+            # Mostra messaggio di stato: dati trovati, preparazione email
+            status_msg = self.lang.get(
+                'preparing_email',
+                'Dati trovati! Preparazione email in corso...'
+            )
+            self.status_label.config(text=status_msg, foreground="green")
+            self.update()  # Forza l'aggiornamento della UI
 
             # Invia email con le credenziali
             self._send_recovery_email(username, password, work_email, employee_name, badge_no, cnp_code)
 
         except Exception as e:
             logger.error(f"Errore nel recupero password: {e}", exc_info=True)
-            messagebox.showerror(
-                self.lang.get('error', 'Errore'),
-                f"{self.lang.get('recovery_error', 'Errore durante il recupero')}: {e}"
+            self.status_label.config(
+                text=f"{self.lang.get('recovery_error', 'Errore durante il recupero')}: {e}",
+                foreground="red"
             )
 
     def _send_recovery_email(self, username, password, work_email, employee_name, badge_no, cnp_code):
@@ -291,15 +309,15 @@ class PasswordRecoveryWindow(tk.Toplevel):
 
             logger.info(f"Email di recupero password inviata a {work_email} per utente {username}")
             
-            # Chiudi la finestra
+            # Chiudi la finestra dopo la conferma
             self.destroy()
 
         except Exception as e:
             logger.error(f"Errore nell'invio dell'email di recupero: {e}", exc_info=True)
             error_msg = self.lang.get('email_send_error', 'Errore durante l\'invio dell\'email')
-            messagebox.showerror(
-                self.lang.get('error', 'Errore'),
-                f"{error_msg}: {e}"
+            self.status_label.config(
+                text=f"{error_msg}: {e}",
+                foreground="red"
             )
 
     def _create_email_html(self, username, password, employee_name, badge_no, cnp_code):
