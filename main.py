@@ -263,7 +263,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.2.8.5'  # Versione aggiornata
+APP_VERSION = '2.2.8.7'  # Versione aggiornata
 APP_DEVELOPER = 'Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -7286,8 +7286,12 @@ Accedi al sistema per visualizzare i dettagli completi.
         query = "SELECT Version, MainPath, ISNULL(Must, 0) as Must FROM traceability_rs.dbo.SwVersions WHERE NameProgram = ? AND dateout IS NULL"
         with self._lock:
             try:
+                logger.info(f"fetch_latest_version_info: Esecuzione query per software_name='{software_name}'")
                 self.cursor.execute(query, software_name)
-                return self.cursor.fetchone()
+                logger.info(f"fetch_latest_version_info: Query eseguita, recupero risultati...")
+                result = self.cursor.fetchone()
+                logger.info(f"fetch_latest_version_info: Risultato: {result}")
+                return result
             except pyodbc.Error as e:
                 logger.error(f"Errore durante il recupero della versione del software: {e}")
                 return None
@@ -10053,8 +10057,21 @@ class App(tk.Tk):
             self._product_check_thread.start()
             logger.info("Background task per controllo prodotti avviato")
 
+    def _is_working_hours(self):
+        """Verifica se l'ora corrente è nell'orario lavorativo (08:00 - 22:00)"""
+        current_hour = datetime.now().hour
+        return 8 <= current_hour <= 22
+
     def _product_check_worker(self):
-        """Worker thread che esegue periodicamente la SP InsertProductToCheck"""
+        """
+        Worker thread che esegue periodicamente la SP InsertProductToCheck.
+        
+        REGOLE OPERATIVE:
+        - Orario: 08:00 - 22:00
+        - Giorni: Solo giorni lavorativi (esclusi weekend e festività)
+        - Festività gestite: Natale, Capodanno, Epifania, Ferragosto, 
+          Ognissanti, Pasqua (calcolata dinamicamente), ecc.
+        """
         while not self._product_check_stop_event.is_set():
             try:
                 # 1. Leggi l'intervallo in minuti dal database
@@ -10076,14 +10093,28 @@ class App(tk.Tk):
                 if self._product_check_stop_event.is_set():
                     break
 
-                # 3. Esegui la stored procedure
+                # 3. Verifica orario lavorativo (08:00 - 22:00)
+                if not self._is_working_hours():
+                    logger.debug("Fuori orario lavorativo (08:00-22:00), skip controllo prodotti")
+                    continue
+
+                # 4. Verifica giorni lavorativi (esclusi weekend e festività italiane)
+                # Il metodo should_send_notification() controlla:
+                # - Weekend (Sabato, Domenica)
+                # - Festività fisse (Natale, Capodanno, Ferragosto, ecc.)
+                # - Pasqua e Lunedì dell'Angelo (calcolati con algoritmo di Gauss)
+                if not should_send_notification():
+                    logger.debug("Giorno non lavorativo (weekend o festività), skip controllo prodotti")
+                    continue
+
+                # 5. Esegui la stored procedure
                 logger.info("Esecuzione SP InsertProductToCheck...")
                 success = self.db.execute_product_check_sp()
 
                 if success:
                     logger.info("✓ SP InsertProductToCheck eseguita con successo")
 
-                    # 4. (Opzionale) Verifica se ci sono nuovi prodotti da controllare
+                    # 6. (Opzionale) Verifica se ci sono nuovi prodotti da controllare
                     # e mostra una notifica all'utente
                     self._check_and_notify_pending_verifications()
                 else:
@@ -11847,7 +11878,10 @@ class App(tk.Tk):
         """
         try:
             app_name = os.path.basename(sys.executable)
+            logger.info(f"check_version: Inizio controllo versione per: {app_name}")
+            logger.info(f"check_version: Chiamata a fetch_latest_version_info...")
             version_info = self.db.fetch_latest_version_info(app_name)
+            logger.info(f"check_version: fetch_latest_version_info completata. Result: {version_info}")
 
             if not version_info or not version_info.Version or not version_info.MainPath:
                 logger.info("Informazioni di versione non trovate o incomplete nel DB. Controllo saltato.")
