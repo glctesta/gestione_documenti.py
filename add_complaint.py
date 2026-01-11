@@ -517,6 +517,14 @@ class AddComplaintWindow(tk.Toplevel):
             state=tk.DISABLED
         )
         self.btn_remove_row.pack(side=tk.LEFT, padx=5)
+        
+        self.btn_edit_row = ttk.Button(
+            self.details_buttons_frame,
+            text=self.lang.get('btn_edit_detail_row', 'Modifica Riga'),
+            command=self._edit_detail_row,
+            state=tk.DISABLED
+        )
+        self.btn_edit_row.pack(side=tk.LEFT, padx=5)
 
         ttk.Frame(self.details_buttons_frame).pack(side=tk.LEFT, expand=True)
 
@@ -564,6 +572,9 @@ class AddComplaintWindow(tk.Toplevel):
 
         self.tree_details.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Binding doppio-click per modificare riga
+        self.tree_details.bind('<Double-1>', self._on_detail_double_click)
 
     # =========================================================================
     # LOGICA DI VALIDAZIONE E SALVATAGGIO
@@ -728,6 +739,7 @@ class AddComplaintWindow(tk.Toplevel):
 
         self.btn_add_row.config(state=tk.NORMAL)
         self.btn_remove_row.config(state=tk.NORMAL)
+        self.btn_edit_row.config(state=tk.NORMAL)  # Abilita anche Edit
         self.btn_save_final.config(state=tk.NORMAL)
         self.btn_upload_doc.config(state=tk.NORMAL)  # Enable document upload
         self.combo_doc_type.config(state='readonly')  # Enable document type selection
@@ -866,9 +878,88 @@ class AddComplaintWindow(tk.Toplevel):
             for item in selection:
                 self.tree_details.delete(item)
 
+    def _edit_detail_row(self):
+        """Modifica la riga di dettaglio selezionata"""
+        selection = self.tree_details.selection()
+        if not selection:
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('msg_select_row', 'Selezionare una riga'),
+                parent=self
+            )
+            return
+        
+        # Prendi il primo elemento selezionato
+        selected_item = selection[0]
+        item_values = self.tree_details.item(selected_item, 'values')
+        
+        # Recupera i dati dal tree (row_idx è il numero progressivo - 1)
+        row_idx = int(item_values[0]) - 1
+        
+        # Crea un dict con i dati attuali per popolare l'editor
+        detail_data = {
+            'LabelCod': item_values[1],
+            'ClaimDefectId': self.combo_data['defects_map'].get(item_values[2]),
+            'FirstInspectionResultId': self.combo_data['inspection_map'].get(item_values[3]),
+            'RootCause': item_values[4],
+            'SummaryCorrectiveAction': item_values[5],
+            'SummaryPreventiveAction': item_values[6],
+            'ClaimStatusId': self.combo_data['status_map'].get(item_values[7])
+        }
+        
+        logger.info(f"[EDIT_ROW] Dati TreeView: {item_values}")
+        logger.info(f"[EDIT_ROW] Detail_data: {detail_data}")
+        
+        # Se è già stato salvato nel DB, passa anche il detail_id
+        # Per ora assumiamo che i dettagli salvati abbbiado un tag 'detail_id'
+        detail_id = None
+        tags = self.tree_details.item(selected_item, 'tags')
+        if tags and len(tags) > 0:
+            try:
+                detail_id = int(tags[0])
+            except:
+                pass
+        
+        # Apri l'editor con i dati esistenti
+        DetailEditorWindow(
+            self, self.db, self.lang, self.combo_data, row_idx,
+            lambda data: self._update_row_in_tree(selected_item, data),
+            detail_id=detail_id,
+            detail_data=detail_data
+        )
+    
+    def _on_detail_double_click(self, event):
+        """Gestisce il doppio click su una riga per modificarla"""
+        # Simula il click sul pulsante Edit
+        self._edit_detail_row()
+
     def _open_detail_editor(self, row_idx: Optional[int] = None):
         """Apre la finestra di editing per una riga di dettaglio"""
         DetailEditorWindow(self, self.db, self.lang, self.combo_data, row_idx, self._add_row_to_tree)
+
+    def _update_row_in_tree(self, item_id, row_data: Dict):
+        """Aggiorna una riga esistente nella treeview"""
+        # Mantieni il numero progressivo esistente
+        current_values = self.tree_details.item(item_id, 'values')
+        num = current_values[0]  # Numero progressivo
+        
+        values = (
+            num,
+            row_data.get('label', ''),
+            row_data.get('defect', ''),
+            row_data.get('inspection', ''),
+            row_data.get('root_cause', ''),
+            row_data.get('corrective', ''),
+            row_data.get('preventive', ''),
+            row_data.get('status', '')
+        )
+        
+        # Aggiorna i valori
+        self.tree_details.item(item_id, values=values)
+        
+        # Se c'è un detail_id (UPDATE su DB), mantieni il tag
+        if 'detail_id' in row_data:
+            self.tree_details.item(item_id, tags=(str(row_data['detail_id']),))
 
     def _add_row_to_tree(self, row_data: Dict):
         """Aggiunge una riga alla treeview"""
@@ -1037,9 +1128,10 @@ class AddComplaintWindow(tk.Toplevel):
                 logger.error("[ADD_COMPLAINT] parent.traceability_manager non trovato")
         except Exception as e:
             logger.exception(f"[ADD_COMPLAINT] Errore apertura gestione prodotti: {e}")
+            err_msg = self.lang.get('err_opening_products', 'Errore nell\'apertura della gestione prodotti')
             messagebox.showerror(
                 self.lang.get('err_error', 'Errore'),
-                f"{self.lang.get('err_opening_products', 'Errore nell\'apertura della gestione prodotti')}: {str(e)}",
+                f"{err_msg}: {str(e)}",
                 parent=self
             )
     
@@ -1092,7 +1184,7 @@ class AddComplaintWindow(tk.Toplevel):
 class DetailEditorWindow(tk.Toplevel):
     """Finestra per editing dettagli reclamo"""
 
-    def __init__(self, parent, db, lang, combo_data, row_idx, callback):
+    def __init__(self, parent, db, lang, combo_data, row_idx, callback, detail_id=None, detail_data=None):
         super().__init__(parent)
 
         self.parent = parent
@@ -1101,12 +1193,26 @@ class DetailEditorWindow(tk.Toplevel):
         self.combo_data = combo_data
         self.row_idx = row_idx
         self.callback = callback
+        self.labelcode_verified = False
+        self.query_results = None
+        
+        # Modalità modifica o creazione
+        self.detail_id = detail_id  # Se valorizzato, la riga è già nel DB
+        self.detail_data = detail_data  # Dati esistenti da modificare
+        # Modalità modifica se ci sono dati da popolare (anche se non ancora salvati nel DB)
+        self.is_edit_mode = detail_data is not None
 
-        self.title(lang.get('title_detail_editor', 'Modifica Dettaglio'))
+        title = lang.get('title_edit_detail', 'Modifica Dettaglio') if self.is_edit_mode else lang.get('title_add_detail', 'Aggiungi Dettaglio')
+        self.title(title)
         self.geometry('600x500')
         self.resizable(False, False)
 
         self._create_widgets()
+        
+        # Se siamo in modalità modifica, popola i campi
+        if self.is_edit_mode:
+            logger.info(f"[DETAIL_EDITOR] Chiamando _populate_fields() - is_edit_mode: {self.is_edit_mode}")
+            self._populate_fields()
 
         self.transient(parent)
         self.grab_set()
@@ -1116,10 +1222,25 @@ class DetailEditorWindow(tk.Toplevel):
         main_frame = ttk.Frame(self, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Label Code
-        ttk.Label(main_frame, text=self.lang.get('lbl_label_cod', 'Label Cod') + " *:").pack(anchor=tk.W)
+        # Label Code with confirmation button
+        label_frame = ttk.Frame(main_frame)
+        label_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(label_frame, text=self.lang.get('lbl_label_cod', 'Label Cod') + " *:").pack(anchor=tk.W)
+        
+        entry_frame = ttk.Frame(label_frame)
+        entry_frame.pack(fill=tk.X, pady=(5, 0))
+        
         self.var_label = tk.StringVar()
-        ttk.Entry(main_frame, textvariable=self.var_label).pack(fill=tk.X, pady=(0, 10))
+        self.entry_label = ttk.Entry(entry_frame, textvariable=self.var_label)
+        self.entry_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        
+        self.btn_confirm_label = ttk.Button(
+            entry_frame, 
+            text=self.lang.get('btn_confirm', 'Conferma'),
+            command=self._verify_labelcode
+        )
+        self.btn_confirm_label.pack(side=tk.LEFT)
 
         # Defect
         ttk.Label(main_frame, text=self.lang.get('lbl_defect', 'Difetto') + " *:").pack(anchor=tk.W)
@@ -1159,6 +1280,76 @@ class DetailEditorWindow(tk.Toplevel):
         status_values = [s[1] for s in self.combo_data.get('claim_status', [])]
         self.combo_status['values'] = status_values
         self.combo_status.pack(fill=tk.X, pady=(0, 10))
+        
+        # Frame for query results (initially hidden)
+        self.results_container = ttk.Frame(main_frame)
+        # Don't pack it yet - it will be packed when labelcode is verified
+        
+        # Phases results
+        self.phases_frame = ttk.LabelFrame(
+            self.results_container, 
+            text=self.lang.get('lbl_phases', 'Fasi'), 
+            padding=5
+        )
+        self.phases_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
+        
+        # Create Treeview for phases
+        phases_cols = ('OrderNumber', 'PhasePosition', 'PhaseName', 'BoardState', 'ScanResult', 'ScanTimeFinish')
+        self.tree_phases = ttk.Treeview(
+            self.phases_frame,
+            columns=phases_cols,
+            height=5,
+            show='headings'
+        )
+        
+        self.tree_phases.heading('OrderNumber', text=self.lang.get('col_order', 'Ordine'))
+        self.tree_phases.heading('PhasePosition', text=self.lang.get('col_phase_pos', 'Pos'))
+        self.tree_phases.heading('PhaseName', text=self.lang.get('col_phase', 'Fase'))
+        self.tree_phases.heading('BoardState', text=self.lang.get('col_board_state', 'Stato Board'))
+        self.tree_phases.heading('ScanResult', text=self.lang.get('col_scan_result', 'Risultato'))
+        self.tree_phases.heading('ScanTimeFinish', text=self.lang.get('col_scan_time', 'Data'))
+        
+        self.tree_phases.column('OrderNumber', width=100)
+        self.tree_phases.column('PhasePosition', width=50)
+        self.tree_phases.column('PhaseName', width=150)
+        self.tree_phases.column('BoardState', width=100)
+        self.tree_phases.column('ScanResult', width=80)
+        self.tree_phases.column('ScanTimeFinish', width=150)
+        
+        phases_scrollbar = ttk.Scrollbar(self.phases_frame, orient=tk.VERTICAL, command=self.tree_phases.yview)
+        self.tree_phases['yscroll'] = phases_scrollbar.set
+        self.tree_phases.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        phases_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Repairs results
+        self.repairs_frame = ttk.LabelFrame(
+            self.results_container, 
+            text=self.lang.get('lbl_repairs', 'Riparazioni'), 
+            padding=5
+        )
+        self.repairs_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Create Treeview for repairs
+        repairs_cols = ('RepairDate', 'DefectName', 'DefectArea')
+        self.tree_repairs = ttk.Treeview(
+            self.repairs_frame,
+            columns=repairs_cols,
+            height=3,
+            show='headings'
+        )
+        
+        self.tree_repairs.heading('RepairDate', text=self.lang.get('col_repair_date', 'Data Riparazione'))
+        self.tree_repairs.heading('DefectName', text=self.lang.get('col_defect', 'Difetto'))
+        self.tree_repairs.heading('DefectArea', text=self.lang.get('col_area', 'Area'))
+        
+        self.tree_repairs.column('RepairDate', width=150)
+        self.tree_repairs.column('DefectName', width=200)
+        self.tree_repairs.column('DefectArea', width=150)
+        
+        repairs_scrollbar = ttk.Scrollbar(self.repairs_frame, orient=tk.VERTICAL, command=self.tree_repairs.yview)
+        self.tree_repairs['yscroll'] = repairs_scrollbar.set
+        self.tree_repairs.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        repairs_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         # Buttons
         btn_frame = ttk.Frame(main_frame)
@@ -1166,6 +1357,239 @@ class DetailEditorWindow(tk.Toplevel):
 
         ttk.Button(btn_frame, text=self.lang.get('btn_save', 'Salva'), command=self._save).pack(side=tk.RIGHT, padx=5)
         ttk.Button(btn_frame, text=self.lang.get('btn_cancel', 'Annulla'), command=self.destroy).pack(side=tk.RIGHT)
+
+    def _populate_fields(self):
+        """Popola i campi con i dati esistenti (modalità modifica)"""
+        if not self.detail_data:
+            logger.warning("[DETAIL_EDITOR] detail_data è None o vuoto")
+            return
+        
+        logger.info(f"[DETAIL_EDITOR] Inizio popolamento con: {self.detail_data}")
+        
+        # Popola i campi
+        label_cod = self.detail_data.get('LabelCod', '')
+        self.var_label.set(label_cod)
+        logger.info(f"[DETAIL_EDITOR] Label impostato: '{label_cod}'")
+        
+        # Defect
+        defect_id = self.detail_data.get('ClaimDefectId')
+        if defect_id:
+            for defect in self.combo_data.get('defects', []):
+                if defect[0] == defect_id:
+                    self.var_defect.set(defect[1])
+                    break
+        
+        # Inspection
+        inspection_id = self.detail_data.get('FirstInspectionResultId')
+        if inspection_id:
+            for inspection in self.combo_data.get('inspection_results', []):
+                if inspection[0] == inspection_id:
+                    self.var_inspection.set(inspection[1])
+                    break
+        
+        # Status
+        status_id = self.detail_data.get('ClaimStatusId')
+        if status_id:
+            for status in self.combo_data.get('claim_status', []):
+                if status[0] == status_id:
+                    self.var_status.set(status[1])
+                    break
+        
+        self.var_root_cause.set(self.detail_data.get('RootCause', ''))
+        self.var_corrective.set(self.detail_data.get('SummaryCorrectiveAction', ''))
+        self.var_preventive.set(self.detail_data.get('SummaryPreventiveAction', ''))
+        
+        # In modalità modifica, il label code è già verificato
+        self.labelcode_verified = True
+        self.entry_label.config(state='readonly')
+        self.btn_confirm_label.config(state=tk.DISABLED)
+
+    def _verify_labelcode(self):
+        """Verifica il labelcode eseguendo la query e confrontando l'IDProduct"""
+        labelcode = self.var_label.get().strip()
+        
+        if not labelcode:
+            messagebox.showerror(
+                self.lang.get('err_error', 'Errore'),
+                self.lang.get('err_labelcode_required', 'Inserire un codice label'),
+                parent=self
+            )
+            self.entry_label.focus()
+            return
+        
+        try:
+            # Query SQL fornita dall'utente
+            query = """
+            select distinct pr.IDProduct,
+            pr.ProductCode,
+            o.OrderNumber, l.LabelCod, dbo.BoardState(b.BoardState) as BoardState,
+            p.IDPhase, p.PhaseName, op.PhasePosition,
+            iif (s.IsPass=0,'FAIL', 'PASS') as ScanResult, s.ScanTimeFinish,  
+            iif (sd.IsPass=0,'FAIL', 'PASS') as RepairResult, sd.StopTime as RepairDate,  
+            d.DefectNameRO, a.AreaName as DefectArea
+            from Scannings s
+            inner join LabelCodes l on s.IDBoard = l.IDBoard
+            inner join Boards b on b.IDBoard = s.IDBoard
+            inner join OrderPhases op on s.IDOrderPhase =op.IDOrderPhase
+            inner join Orders o on o.IDOrder = op.IDOrder
+            inner join Phases p on p.IDPhase = op.IDPhase
+            left join ScanDefects sd on  sd.IDScan = s.IDScan
+            left join ScanDefectDetails sdd on sd.IDScanDefect = sdd.IDScanDefect
+            left join Defects d on d.IDDefect = sdd.IDDefect
+            left join Areas a on a.IDArea = sdd.IDArea
+            inner join Products Pr on pr.IDProduct=o.IDProduct
+            cross apply 
+            (select top 1 PhasePosition from 
+            OrderPhases 
+            where OrderPhases.IDOrder= o.IDOrder 
+            and OrderPhases.IDPhase= op.IDPhase
+            order by OrderPhases.PhasePosition ) pp
+            where l.LabelCod = ?
+            and op.PhasePosition>= pp.PhasePosition
+            order by op.PhasePosition, s.ScanTimeFinish
+            """
+            
+            logger.info(f"[LABELCODE_VERIFY] Verifica labelcode: {labelcode}")
+            results = self.db.fetch_all(query, (labelcode,))
+            
+            if not results or len(results) == 0:
+                messagebox.showerror(
+                    self.lang.get('err_error', 'Errore'),
+                    self.lang.get('err_labelcode_not_found', 'LabelCode non trovato nel database'),
+                    parent=self
+                )
+                self.entry_label.focus()
+                return
+            
+            # Verifica IDProduct - prende il primo risultato per il confronto
+            found_product_id = results[0][0]  # IDProduct è la prima colonna
+            
+            # Ottieni l'IDProduct dalla testata del reclamo (parent window)
+            if hasattr(self.parent, 'claim_header') and self.parent.claim_header:
+                expected_product_id = self.parent.claim_header.IdProduct
+            else:
+                messagebox.showerror(
+                    self.lang.get('err_error', 'Errore'),
+                    'Impossibile recuperare il prodotto dalla testata del reclamo',
+                    parent=self
+                )
+                return
+            
+            logger.info(f"[LABELCODE_VERIFY] IDProduct trovato: {found_product_id}, atteso: {expected_product_id}")
+            
+            # Confronta gli IDProduct
+            if found_product_id != expected_product_id:
+                messagebox.showerror(
+                    self.lang.get('err_error', 'Errore'),
+                    self.lang.get('err_labelcode_wrong_product', 
+                                  'ATTENZIONE!\n\n'
+                                  'Il LabelCode inserito NON appartiene al prodotto\n'
+                                  'per cui si sta inserendo il reclamo.\n\n'
+                                  'Verificare il codice e riprovare.'),
+                    parent=self
+                )
+                self.entry_label.focus()
+                self.entry_label.selection_range(0, tk.END)
+                return
+            
+            # IDProduct corretto - salva i risultati e mostra la form allargata
+            self.query_results = results
+            self.labelcode_verified = True
+            
+            # Disabilita il campo label e il bottone conferma
+            self.entry_label.config(state='disabled')
+            self.btn_confirm_label.config(state=tk.DISABLED)
+            
+            # Allarga la finestra
+            self.geometry('1200x700')
+            
+            # Mostra il container dei risultati
+            self.results_container.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+            
+            # Popola le treeview con i dati
+            self._populate_results(results)
+            
+            logger.info("[LABELCODE_VERIFY] Labelcode verificato con successo")
+            
+        except Exception as e:
+            logger.exception(f"[LABELCODE_VERIFY] Errore durante la verifica: {e}")
+            messagebox.showerror(
+                self.lang.get('err_error', 'Errore'),
+                f"Errore durante la verifica del labelcode:\n{str(e)}",
+                parent=self
+            )
+    
+    def _populate_results(self, results):
+        """Popola le treeview con i risultati della query"""
+        # Pulisci le treeview
+        for item in self.tree_phases.get_children():
+            self.tree_phases.delete(item)
+        for item in self.tree_repairs.get_children():
+            self.tree_repairs.delete(item)
+        
+        # Separa i dati delle fasi e delle riparazioni
+        phases_data = []
+        repairs_data = []
+        
+        for row in results:
+            # row structure:
+            # 0: IDProduct, 1: ProductCode, 2: OrderNumber, 3: LabelCod, 4: BoardState,
+            # 5: IDPhase, 6: PhaseName, 7: PhasePosition, 8: ScanResult, 9: ScanTimeFinish,
+            # 10: RepairResult, 11: RepairDate, 12: DefectNameRO, 13: DefectArea
+            
+            # Dati delle fasi (sempre presenti)
+            phase_data = {
+                'OrderNumber': row[2],
+                'PhasePosition': row[7],
+                'PhaseName': row[6],
+                'BoardState': row[4],
+                'ScanResult': row[8],
+                'ScanTimeFinish': row[9]
+            }
+            
+            # Evita duplicati nelle fasi
+            if phase_data not in phases_data:
+                phases_data.append(phase_data)
+            
+            # Dati delle riparazioni (solo se presenti)
+            # RepairResult (row[10]) è 'PASS' se non ci sono riparazioni effettive
+            # Controlliamo se ci sono dati di riparazione (DefectNameRO, DefectArea, RepairDate)
+            if row[12] or row[13] or row[11]:  # Se c'è almeno un dato di riparazione
+                repair_data = {
+                    'RepairDate': row[11] if row[11] else '',
+                    'DefectName': row[12] if row[12] else '',
+                    'DefectArea': row[13] if row[13] else ''
+                }
+                # Evita duplicati nelle riparazioni
+                if repair_data not in repairs_data:
+                    repairs_data.append(repair_data)
+        
+        # Popola la treeview delle fasi
+        for phase in phases_data:
+            self.tree_phases.insert('', 'end', values=(
+                phase['OrderNumber'],
+                phase['PhasePosition'],
+                phase['PhaseName'],
+                phase['BoardState'],
+                phase['ScanResult'],
+                phase['ScanTimeFinish']
+            ))
+        
+        # Popola la treeview delle riparazioni (se presenti)
+        if repairs_data:
+            for repair in repairs_data:
+                self.tree_repairs.insert('', 'end', values=(
+                    repair['RepairDate'],
+                    repair['DefectName'],
+                    repair['DefectArea']
+                ))
+        else:
+            # Se non ci sono riparazioni, aggiungi una riga che dice "Nessuna riparazione"
+            self.tree_repairs.insert('', 'end', values=(
+                self.lang.get('no_repairs', 'Nessuna riparazione'),
+                '',
+                ''
+            ))
 
     def _save(self):
         """Salva i dati del dettaglio"""
@@ -1194,6 +1618,10 @@ class DetailEditorWindow(tk.Toplevel):
             'preventive': self.var_preventive.get(),
             'status': self.var_status.get()
         }
+        
+        # Se siamo in modalità modifica, aggiungi l'ID del dettaglio
+        if self.is_edit_mode:
+            row_data['detail_id'] = self.detail_id
 
         self.callback(row_data)
         self.destroy()

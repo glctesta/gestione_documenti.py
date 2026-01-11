@@ -4553,6 +4553,54 @@ class Database:
             logger.exception(f"[DATABASE] Errore inserimento dettagli reclamo: {e}")
             return False
 
+    def update_claim_detail(self, detail_id: int, detail_data: Dict) -> bool:
+        """
+        Aggiorna un dettaglio specifico di un reclamo
+
+        Args:
+            detail_id: ID del dettaglio (ClaimLogDataId)
+            detail_data: Dizionario con i dati da aggiornare
+
+        Returns:
+            bool: True se successo, False altrimenti
+        """
+        try:
+            query = """
+                    UPDATE [Traceability_RS].[clm].[ClaimDataLogs]
+                    SET [FirstInspectionResultId] = ?,
+                        [LabelCod] = ?,
+                        [RootCause] = ?,
+                        [SummaryCorrectiveAction] = ?,
+                        [SummaryPreventiveAction] = ?,
+                        [ClaimStatusId] = ?,
+                        [ClaimDefectId] = ?
+                    WHERE [ClaimLogDataId] = ? \
+                    """
+
+            params = (
+                detail_data.get('FirstInspectionResultId'),
+                detail_data.get('LabelCod'),
+                detail_data.get('RootCause', ''),
+                detail_data.get('SummaryCorrectiveAction', ''),
+                detail_data.get('SummaryPreventiveAction', ''),
+                detail_data.get('ClaimStatusId'),
+                detail_data.get('ClaimDefectId'),
+                detail_id
+            )
+
+            success = self.execute_query(query, params)
+            
+            if success:
+                logger.info(f"[DATABASE] Dettaglio reclamo aggiornato: ClaimLogDataId={detail_id}")
+            else:
+                logger.error(f"[DATABASE] Errore aggiornamento dettaglio reclamo: ClaimLogDataId={detail_id}")
+            
+            return success
+
+        except Exception as e:
+            logger.exception(f"[DATABASE] Errore aggiornamento dettaglio reclamo: {e}")
+            return False
+
     def get_claim_by_id(self, claim_log_id: int) -> Optional[Dict]:
         """
         Recupera una testata di reclamo dal database
