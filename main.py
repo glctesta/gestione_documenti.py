@@ -263,7 +263,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.2.8.7'  # Versione aggiornata
+APP_VERSION = '2.2.8.8'  # Versione aggiornata
 APP_DEVELOPER = 'Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -11632,6 +11632,13 @@ class App(tk.Tk):
                                                                                          user_name)
         )
 
+    def open_assign_responsibles_with_login(self):
+        """Richiede il login con autorizzazione e apre la finestra per assegnare responsabili ai programmi di manutenzione."""
+        self._execute_authorized_action(
+            menu_translation_key='submenu_assign_responsibles',
+            action_callback=lambda: maintenance_gui.open_assign_responsibles(self, self.db, self.lang)
+        )
+
     def open_manage_permissions_with_login(self):
         self._execute_authorized_action(
             menu_translation_key='submenu_permissions',  # Chiave per accedere alla gestione
@@ -12870,6 +12877,8 @@ class App(tk.Tk):
             label=self.lang.get('submenu_maintenance_tasks_header', 'Task di Manutenzione'), menu=tasks_submenu)
         tasks_submenu.add_command(label=self.lang.get('submenu_manage_maint_task', "Gestione Task di Manutenzione"),
                                   command=self.open_add_maintenance_tasks_with_login)
+        tasks_submenu.add_command(label=self.lang.get('submenu_assign_responsibles', "Assegna Responsabili"),
+                                  command=self.open_assign_responsibles_with_login)
 
         # Voci principali
         self.maintenance_menu.add_command(label=self.lang.get('submenu_fill_templates'),

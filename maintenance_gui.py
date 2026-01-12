@@ -695,10 +695,15 @@ class FillTemplateWindow(tk.Toplevel):
         self.plan_var = tk.StringVar()
         self.phase_var = tk.StringVar()  # NUOVO: per area selezionata
         self.only_with_plan_var = tk.BooleanVar(value=False)
+        
+        # Variabili per il controllo del livello funzionale
+        self.user_function_code = None
+        self.user_function_name = None
 
         self._create_widgets()
         self._load_phases()  # NUOVO: carica le aree
         self._load_equipments()
+        self._load_user_function_code()  # Carica il FunctionCode dell'utente
 
     def _create_widgets(self):
         frame = ttk.Frame(self, padding="15")
@@ -733,6 +738,10 @@ class FillTemplateWindow(tk.Toplevel):
         self.plan_combo = ttk.Combobox(selection_frame, textvariable=self.plan_var, state='disabled', width=40)
         self.plan_combo.pack(side=tk.LEFT, padx=5)
         self.plan_combo.bind("<<ComboboxSelected>>", self._on_plan_select)
+        
+        # Label per mostrare il responsabile del piano
+        self.responsible_label = ttk.Label(selection_frame, text="", font=("Helvetica", 9, "bold"), foreground="blue")
+        self.responsible_label.pack(side=tk.LEFT, padx=10)
 
         # --- Sezione Compiti (Center) ---
         tasks_frame = ttk.LabelFrame(frame, text=self.lang.get('maintenance_tasks_label', "Compiti da Eseguire"), padding="10")
@@ -798,6 +807,35 @@ class FillTemplateWindow(tk.Toplevel):
         except Exception as e:
             print(f"Errore caricamento aree: {e}")
 
+    def _load_user_function_code(self):
+        """Recupera il FunctionCode dell'utente loggato."""
+        if not self.user_name:
+            return
+        
+        try:
+            query = """
+            SELECT f.FunctionCode, f.FunctionDescription
+            FROM employee.dbo.employees e 
+            INNER JOIN employee.dbo.employeehirehistory h ON e.EmployeeId=h.EmployeeId 
+                AND h.EndWorkDate IS NULL AND h.employeerid = 2
+            INNER JOIN employee.dbo.EmployeeCdcStories c ON h.EmployeeHireHistoryId=c.EmployeeHireHistoryId 
+                AND c.dateout IS NULL
+            INNER JOIN employee.dbo.functions f ON c.FunctionId=f.FunctionId
+            INNER JOIN resetservices.dbo.tbuserkey k ON k.idanga = e.employeeid
+            WHERE k.nomeuser = ?
+            """
+            result = self.db.fetch_one(query, (self.user_name,))
+            
+            if result:
+                self.user_function_code = result[0]
+                self.user_function_name = result[1]
+                print(f"User {self.user_name} - FunctionCode: {self.user_function_code}, Function: {self.user_function_name}")
+            else:
+                print(f"Warning: Could not find FunctionCode for user {self.user_name}")
+        except Exception as e:
+            print(f"Errore recupero FunctionCode utente: {e}")
+
+
     def _load_equipments(self):
         """Carica le attrezzature filtrate per area e piano attivo."""
         # Ottieni filtri
@@ -838,6 +876,9 @@ class FillTemplateWindow(tk.Toplevel):
         if self.plan_combo:
             self.plan_combo.config(state='disabled', values=[])
         self.plans_data = {}
+        # Reset della label del responsabile
+        if hasattr(self, 'responsible_label'):
+            self.responsible_label.config(text="")
         self._reset_tasks()
 
     def _reset_tasks(self):
@@ -871,12 +912,66 @@ class FillTemplateWindow(tk.Toplevel):
 
     def _on_plan_select(self, event=None):
         self._reset_tasks()
+        # Reset della label del responsabile
+        self.responsible_label.config(text="")
+        
         plan_selection = self.plan_var.get()
         equipment_selection = self.equipment_var.get()
         equipment_id = self.equipments_data.get(equipment_selection)
 
         if plan_selection and equipment_id and plan_selection in self.plans_data:
             _, programmed_intervention_id = self.plans_data[plan_selection]
+            
+            # Recupera il responsabile del piano e il FunctionCode richiesto
+            try:
+                query = """
+                SELECT ISNULL([BelongTo],'NOT ASSIGNED') as BelongTo
+                FROM [Traceability_RS].[eqp].[ProgrammedInterventions] 
+                WHERE ProgrammedInterventionId = ?
+                """
+                result = self.db.fetch_one(query, (programmed_intervention_id,))
+                if result:
+                    responsible = result[0]
+                    responsible_text = self.lang.get('responsible_label', 'Responsabile') + f": {responsible}"
+                    self.responsible_label.config(text=responsible_text)
+                    
+                    # Se c'è un responsabile assegnato, controlla il FunctionCode
+                    if responsible != 'NOT ASSIGNED' and self.user_function_code is not None:
+                        # Recupera il FunctionCode richiesto dal piano
+                        function_query = """
+                        SELECT f.FunctionCode, f.FunctionDescription
+                        FROM [Employee].[dbo].[Functions] f
+                        WHERE f.FunctionDescription = ?
+                        """
+                        function_result = self.db.fetch_one(function_query, (responsible,))
+                        
+                        if function_result:
+                            required_function_code = function_result[0]
+                            required_function_name = function_result[1]
+                            
+                            # Confronta i FunctionCode: l'utente NON può avere un FunctionCode inferiore
+                            if self.user_function_code < required_function_code:
+                                # L'utente ha un FunctionCode inferiore, mostra errore
+                                error_msg = self.lang.get(
+                                    'function_level_error',
+                                    "L'operazione di manutenzione è stata assegnata a una funzione superiore [{0}]. Questa attività non può essere eseguita dal tuo livello funzionale."
+                                )
+                                error_msg = error_msg.format(required_function_name)
+                                
+                                messagebox.showerror(
+                                    self.lang.get('error_title', "Errore"),
+                                    error_msg,
+                                    parent=self
+                                )
+                                
+                                # Reset della selezione del piano
+                                self.plan_var.set("")
+                                self.responsible_label.config(text="")
+                                return  # Esce senza caricare i task
+                                
+            except Exception as e:
+                print(f"Errore recupero responsabile o controllo funzione: {e}")
+            
             self.start_time = datetime.now()
             tasks = self.db.fetch_maintenance_tasks(programmed_intervention_id, equipment_id)
             if tasks:
@@ -1761,3 +1856,7 @@ def generate_missing_action_report(parent, db, lang):
                              parent=parent)
 
 
+def open_assign_responsibles(parent, db, lang):
+    """Launcher function to create and show the AssignResponsiblesWindow."""
+    import assign_responsibles_maintenance
+    assign_responsibles_maintenance.open_assign_responsibles(parent, db, lang)
