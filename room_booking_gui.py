@@ -206,12 +206,14 @@ class BookingManagerWindow(tk.Toplevel):
         ttk.Entry(left_frame, textvariable=self.organizer_var, width=40).grid(
             row=2, column=1, padx=5, pady=5, sticky='ew')
 
-        # Data
-        ttk.Label(left_frame, text=self.lang.get('date', 'Data') + ' *').grid(
+        # Data inizio
+        ttk.Label(left_frame, text=self.lang.get('start_date', 'Data Inizio') + ' *').grid(
             row=3, column=0, sticky='w', padx=5, pady=5)
-        self.date_var = tk.StringVar(value=datetime.now().strftime('%Y-%m-%d'))
-        ttk.Entry(left_frame, textvariable=self.date_var, width=40).grid(
-            row=3, column=1, padx=5, pady=5, sticky='ew')
+        self.start_date_var = tk.StringVar(value=datetime.now().strftime('%Y-%m-%d'))
+        start_date_entry = ttk.Entry(left_frame, textvariable=self.start_date_var, width=40)
+        start_date_entry.grid(row=3, column=1, padx=5, pady=5, sticky='ew')
+        # Binding per aggiornare automaticamente la data fine quando cambia la data inizio
+        start_date_entry.bind('<FocusOut>', self._on_start_date_change)
 
         # Ora inizio
         ttk.Label(left_frame, text=self.lang.get('start_time', 'Ora Inizio') + ' *').grid(
@@ -220,16 +222,23 @@ class BookingManagerWindow(tk.Toplevel):
         ttk.Entry(left_frame, textvariable=self.start_time_var, width=40).grid(
             row=4, column=1, padx=5, pady=5, sticky='ew')
 
+        # Data fine
+        ttk.Label(left_frame, text=self.lang.get('end_date', 'Data Fine') + ' *').grid(
+            row=5, column=0, sticky='w', padx=5, pady=5)
+        self.end_date_var = tk.StringVar(value=datetime.now().strftime('%Y-%m-%d'))
+        ttk.Entry(left_frame, textvariable=self.end_date_var, width=40).grid(
+            row=5, column=1, padx=5, pady=5, sticky='ew')
+
         # Ora fine
         ttk.Label(left_frame, text=self.lang.get('end_time', 'Ora Fine') + ' *').grid(
-            row=5, column=0, sticky='w', padx=5, pady=5)
+            row=6, column=0, sticky='w', padx=5, pady=5)
         self.end_time_var = tk.StringVar(value='10:00')
         ttk.Entry(left_frame, textvariable=self.end_time_var, width=40).grid(
-            row=5, column=1, padx=5, pady=5, sticky='ew')
+            row=6, column=1, padx=5, pady=5, sticky='ew')
 
         # Pulsanti
         btn_frame = ttk.Frame(left_frame)
-        btn_frame.grid(row=6, column=0, columnspan=2, pady=20)
+        btn_frame.grid(row=7, column=0, columnspan=2, pady=20)
         ttk.Button(btn_frame, text=self.lang.get('btn_new', 'Nuovo'),
                   command=self._on_new).pack(side='left', padx=2)
         ttk.Button(btn_frame, text=self.lang.get('btn_save', 'Salva'),
@@ -316,11 +325,12 @@ class BookingManagerWindow(tk.Toplevel):
         # Parse start/end times
         if values[4]:
             start_dt = datetime.strptime(values[4], '%Y-%m-%d %H:%M')
-            self.date_var.set(start_dt.strftime('%Y-%m-%d'))
+            self.start_date_var.set(start_dt.strftime('%Y-%m-%d'))
             self.start_time_var.set(start_dt.strftime('%H:%M'))
 
         if values[5]:
             end_dt = datetime.strptime(values[5], '%Y-%m-%d %H:%M')
+            self.end_date_var.set(end_dt.strftime('%Y-%m-%d'))
             self.end_time_var.set(end_dt.strftime('%H:%M'))
 
     def _on_new(self):
@@ -329,9 +339,24 @@ class BookingManagerWindow(tk.Toplevel):
         self.room_var.set('')
         self.title_var.set('')
         self.organizer_var.set(self.user_name)
-        self.date_var.set(datetime.now().strftime('%Y-%m-%d'))
+        default_date = datetime.now().strftime('%Y-%m-%d')
+        self.start_date_var.set(default_date)
+        self.end_date_var.set(default_date)
         self.start_time_var.set('09:00')
         self.end_time_var.set('10:00')
+
+    def _on_start_date_change(self, event):
+        """Aggiorna automaticamente la data fine quando cambia la data inizio"""
+        # Se la data fine è vuota o uguale alla vecchia data inizio,
+        # aggiorna con la nuova data inizio
+        try:
+            start_date = self.start_date_var.get()
+            end_date = self.end_date_var.get()
+            # Se la data fine è vuota o non valida, imposta uguale alla data inizio
+            if not end_date or end_date == '':
+                self.end_date_var.set(start_date)
+        except Exception:
+            pass
 
     def _on_save(self):
         """Salva o aggiorna"""
@@ -347,21 +372,22 @@ class BookingManagerWindow(tk.Toplevel):
             return
 
         try:
-            date_str = self.date_var.get()
+            start_date_str = self.start_date_var.get()
+            end_date_str = self.end_date_var.get()
             start_time_str = self.start_time_var.get()
             end_time_str = self.end_time_var.get()
 
-            start_dt = datetime.strptime(f"{date_str} {start_time_str}", '%Y-%m-%d %H:%M')
-            end_dt = datetime.strptime(f"{date_str} {end_time_str}", '%Y-%m-%d %H:%M')
+            start_dt = datetime.strptime(f"{start_date_str} {start_time_str}", '%Y-%m-%d %H:%M')
+            end_dt = datetime.strptime(f"{end_date_str} {end_time_str}", '%Y-%m-%d %H:%M')
 
             if end_dt <= start_dt:
                 messagebox.showwarning(self.lang.get('warning', 'Attenzione'),
-                                     self.lang.get('invalid_time_range', 'L\'ora di fine deve essere successiva all\'ora di inizio'))
+                                     self.lang.get('invalid_time_range', 'La data/ora di fine deve essere successiva alla data/ora di inizio'))
                 return
 
         except ValueError:
             messagebox.showwarning(self.lang.get('warning', 'Attenzione'),
-                                 self.lang.get('invalid_datetime', 'Formato data/ora non valido'))
+                                 self.lang.get('invalid_datetime', 'Formato data/ora non valido (usare YYYY-MM-DD per la data e HH:MM per l\'ora)'))
             return
 
         room_name = self.room_var.get()
