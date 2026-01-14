@@ -88,7 +88,7 @@ class ProjectWindow(tk.Toplevel):
         }
         self.status_map_db = {v: k for k, v in self.status_map_display.items()}
 
-        self.geometry("1400x1200")
+        self.geometry("1500x900")
         self.title(self.lang.get('project_window_title', 'Gestione Progetto NPI'))
         self.transient(master)
         self.grab_set()
@@ -135,19 +135,39 @@ class ProjectWindow(tk.Toplevel):
         dates_frame = ttk.LabelFrame(header_frame, text=self.lang.get('project_dates_title', 'Date Progetto'))
         dates_frame.pack(side=tk.RIGHT, padx=10)
         
-        ttk.Label(dates_frame, text=self.lang.get('start_date', 'Inizio:')).pack(side=tk.LEFT, padx=5)
-        self.project_start_date_entry = DateEntry(dates_frame, width=12, background='darkblue', foreground='white', borderwidth=2, date_pattern='dd/mm/yyyy')
+        # Prima riga: Date
+        dates_row1 = ttk.Frame(dates_frame)
+        dates_row1.pack(fill=tk.X, padx=2, pady=2)
+        
+        ttk.Label(dates_row1, text=self.lang.get('start_date', 'Inizio:')).pack(side=tk.LEFT, padx=5)
+        self.project_start_date_entry = DateEntry(dates_row1, width=12, background='darkblue', foreground='white', borderwidth=2, date_pattern='dd/mm/yyyy')
         self.project_start_date_entry.pack(side=tk.LEFT, padx=5)
         
-        ttk.Label(dates_frame, text=self.lang.get('due_date', 'Scadenza:')).pack(side=tk.LEFT, padx=5)
-        self.project_due_date_entry = DateEntry(dates_frame, width=12, background='darkblue', foreground='white', borderwidth=2, date_pattern='dd/mm/yyyy')
+        ttk.Label(dates_row1, text=self.lang.get('due_date', 'Scadenza:')).pack(side=tk.LEFT, padx=5)
+        self.project_due_date_entry = DateEntry(dates_row1, width=12, background='darkblue', foreground='white', borderwidth=2, date_pattern='dd/mm/yyyy')
         self.project_due_date_entry.pack(side=tk.LEFT, padx=5)
         
-        ttk.Label(dates_frame, text=self.lang.get('label_version', 'Versione:')).pack(side=tk.LEFT, padx=5)
-        self.project_version_entry = ttk.Entry(dates_frame, width=10)
+        # Seconda riga: Versione e Salva
+        dates_row2 = ttk.Frame(dates_frame)
+        dates_row2.pack(fill=tk.X, padx=2, pady=2)
+        
+        ttk.Label(dates_row2, text=self.lang.get('label_version', 'Versione:')).pack(side=tk.LEFT, padx=5)
+        self.project_version_entry = ttk.Entry(dates_row2, width=10)
         self.project_version_entry.pack(side=tk.LEFT, padx=5)
         
-        ttk.Button(dates_frame, text=self.lang.get('save_dates', 'Salva Date'), command=self._save_project_dates).pack(side=tk.LEFT, padx=5)
+        ttk.Button(dates_row2, text=self.lang.get('save_dates', 'Salva Date'), command=self._save_project_dates).pack(side=tk.LEFT, padx=5)
+        
+        # Terza riga: Avviso Milestone
+        dates_row3 = ttk.Frame(dates_frame)
+        dates_row3.pack(fill=tk.X, padx=2, pady=(2, 0))
+        
+        self.milestone_warning_label = ttk.Label(
+            dates_row3,
+            text="",
+            foreground="orange",
+            font=('Helvetica', 9, 'bold')  # Cambiato da italic a bold
+        )
+        self.milestone_warning_label.pack(side=tk.LEFT, padx=5)
 
         # Content Split
         paned = ttk.PanedWindow(main_frame, orient=tk.HORIZONTAL)
@@ -157,20 +177,20 @@ class ProjectWindow(tk.Toplevel):
         left_frame = ttk.Frame(paned)
         paned.add(left_frame, weight=1)
 
-        columns = ('Category', 'ItemID', 'Name', 'Owner', 'Status', 'DueDate')
+        columns = ('Category', 'Name', 'Owner', 'Status', 'StartDate', 'DueDate')
         self.tree = ttk.Treeview(left_frame, columns=columns, show='headings')
         self.tree.heading('Category', text=self.lang.get('col_category', 'Categoria'))
-        self.tree.heading('ItemID', text=self.lang.get('col_item_id', 'Codice'))
         self.tree.heading('Name', text=self.lang.get('col_task', 'Task'))
         self.tree.heading('Owner', text=self.lang.get('col_owner', 'Assegnato a'))
         self.tree.heading('Status', text=self.lang.get('col_status', 'Stato'))
+        self.tree.heading('StartDate', text=self.lang.get('col_start_date', 'Inizio'))
         self.tree.heading('DueDate', text=self.lang.get('col_due_date', 'Scadenza'))
         
         self.tree.column('Category', width=120)
-        self.tree.column('ItemID', width=80)
         self.tree.column('Name', width=200)
         self.tree.column('Owner', width=100)
         self.tree.column('Status', width=100)
+        self.tree.column('StartDate', width=80)
         self.tree.column('DueDate', width=80)
         
         self.tree.tag_configure('special_task', foreground='red')
@@ -218,6 +238,9 @@ class ProjectWindow(tk.Toplevel):
             ttk.Label(grid_frame, text=label_text).grid(row=r, column=0, sticky=tk.W, pady=2)
             if widget_type == 'combo':
                 w = ttk.Combobox(grid_frame, state='readonly')
+                # Aggiungi binding per il campo Stato per gestire DataCompletamento
+                if field_name == 'Stato':
+                    w.bind('<<ComboboxSelected>>', self._on_status_change)
             elif widget_type == 'date':
                 w = DateEntry(grid_frame, width=12, background='darkblue', foreground='white', borderwidth=2, date_pattern='dd/mm/yyyy')
             self.fields[field_name] = w
@@ -248,7 +271,12 @@ class ProjectWindow(tk.Toplevel):
                                          command=self._launch_task_dependencies_window)
         self.btn_manage_deps.pack(pady=5)
 
-        ttk.Button(details_frame, text=self.lang.get('btn_save', 'Salva Modifiche'), command=self._save_task_details).pack(pady=5)
+        # Bottoni di azione
+        action_buttons_frame = ttk.Frame(details_frame)
+        action_buttons_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Button(action_buttons_frame, text=self.lang.get('btn_save', 'Salva Modifiche'), command=self._save_task_details).pack(side=tk.LEFT, padx=5)
+        ttk.Button(action_buttons_frame, text=self.lang.get('btn_delete_task', 'Elimina Task'), command=self._delete_task_prodotto).pack(side=tk.LEFT, padx=5)
 
         # Documents Section
         doc_frame = ttk.LabelFrame(right_frame, text=self.lang.get('documents_title', 'Documenti'))
@@ -374,6 +402,9 @@ class ProjectWindow(tk.Toplevel):
                 self.project_version_entry.insert(0, self.progetto.Version)
 
             self._populate_treeview()
+            
+            # Controlla se esiste un task milestone finale
+            self._check_milestone_status()
 
             if openpyxl: self.export_button.config(state=tk.NORMAL)
 
@@ -384,6 +415,9 @@ class ProjectWindow(tk.Toplevel):
 
         self._disable_form()
         self._disable_doc_form()
+        
+        # Abilita bottone visualizzazione documenti
+        self.view_docs_button.config(state=tk.NORMAL)
 
     def _export_cost_report(self):
         if not self.progetto:
@@ -520,17 +554,27 @@ class ProjectWindow(tk.Toplevel):
         if selected_category and selected_category != all_categories_label:
             filter_category_id = self.category_map.get(selected_category)
 
-        for task in sorted(wave.tasks, key=lambda t: t.task_catalogo.ItemID if t.task_catalogo else ''):
-
-            if self.show_assigned_var.get() != (task.OwnerID is not None): continue
-
+        # Filtra i task
+        filtered_tasks = []
+        for task in wave.tasks:
+            if self.show_assigned_var.get() != (task.OwnerID is not None): 
+                continue
+            
             # Applica filtro categoria se selezionato
             if filter_category_id is not None:
                 task_category_id = task.task_catalogo.CategoryId if task.task_catalogo else None
                 if task_category_id != filter_category_id:
                     continue
-
+            
+            filtered_tasks.append(task)
+        
+        # Ordina i task con ordinamento topologico rispettando le dipendenze
+        sorted_tasks = self._topological_sort_tasks(filtered_tasks)
+        
+        # Visualizza i task ordinati
+        for task in sorted_tasks:
             owner = task.owner.Nome if task.owner else ""
+            start_date = task.DataInizio.strftime('%d/%m/%Y') if task.DataInizio else ""
             due_date = task.DataScadenza.strftime('%d/%m/%Y') if task.DataScadenza else ""
 
             # Se la lista dei documenti del task non è vuota, aggiungi un asterisco.
@@ -544,10 +588,114 @@ class ProjectWindow(tk.Toplevel):
                 tags.append('bold_task')
             
             cat = task.task_catalogo.categoria.Category if task.task_catalogo and task.task_catalogo.categoria else ""
-            item_id = task.task_catalogo.ItemID if task.task_catalogo else ""
             name = task.task_catalogo.NomeTask if task.task_catalogo else "Catalogo non trovato"
-            self.tree.insert('', tk.END, text=task.TaskProdottoID, values=(cat, item_id, name, owner, status, due_date),
+            self.tree.insert('', tk.END, text=task.TaskProdottoID, values=(cat, name, owner, status, start_date, due_date),
                              tags=tuple(tags))
+    
+    def _check_milestone_status(self):
+        """Controlla se esiste un task definito come milestone finale e mostra avviso se mancante."""
+        try:
+            if not self.progetto or not self.progetto.waves:
+                return
+            
+            wave = self.progetto.waves[0]
+            
+            # Cerca task con IsPostFinalMilestone = True
+            has_milestone = any(task.IsPostFinalMilestone for task in wave.tasks)
+            
+            if has_milestone:
+                # Milestone definita, nascondi warning
+                self.milestone_warning_label.config(text="")
+            else:
+                # Nessuna milestone definita, mostra warning
+                warning_text = self.lang.get(
+                    'warning_no_milestone_defined',
+                    '⚠ Nessun task definito come milestone finale'
+                )
+                self.milestone_warning_label.config(text=warning_text)
+                
+        except Exception as e:
+            logger.error(f"Errore controllo milestone: {e}", exc_info=True)
+    
+    def _topological_sort_tasks(self, tasks):
+        """Ordina i task rispettando le dipendenze con ordinamento topologico.
+        
+        I task senza dipendenze sono ordinati per data di inizio.
+        I task con dipendenze appaiono sempre dopo i loro predecessori.
+        """
+        from collections import defaultdict, deque
+        
+        # Crea una mappa task_id -> task per accesso rapido
+        task_map = {t.TaskProdottoID: t for t in tasks}
+        task_ids = set(task_map.keys())
+        
+        # Costruisci il grafo delle dipendenze
+        # graph[task_id] = lista di task che dipendono da task_id
+        graph = defaultdict(list)
+        # in_degree[task_id] = numero di dipendenze (predecessori)
+        in_degree = defaultdict(int)
+        
+        # Inizializza tutti i task con in_degree 0
+        for task_id in task_ids:
+            in_degree[task_id] = 0
+        
+        # Popola il grafo e calcola gli in_degree
+        for task in tasks:
+            dependencies = self.npi_manager.get_task_dependencies(task.TaskProdottoID)
+            for dep in dependencies:
+                predecessor_id = dep.DependsOnTaskProdottoID
+                # Considera solo dipendenze tra task nel set corrente
+                if predecessor_id in task_ids:
+                    graph[predecessor_id].append(task.TaskProdottoID)
+                    in_degree[task.TaskProdottoID] += 1
+        
+        # Ottieni tutti i task senza dipendenze (in_degree == 0)
+        # e ordinali per data di inizio
+        queue = []
+        for task_id in task_ids:
+            if in_degree[task_id] == 0:
+                task = task_map[task_id]
+                # Usa la data di inizio per l'ordinamento, o una data molto lontana se None
+                start_date = task.DataInizio if task.DataInizio else datetime(2099, 12, 31)
+                queue.append((start_date, task_id))
+        
+        # Ordina i task iniziali per data di inizio
+        queue.sort(key=lambda x: x[0])
+        queue = deque([task_id for _, task_id in queue])
+        
+        # Algoritmo di Kahn per ordinamento topologico
+        result = []
+        
+        while queue:
+            # Prendi il prossimo task dalla coda
+            current_id = queue.popleft()
+            result.append(task_map[current_id])
+            
+            # Per ogni task che dipende dal task corrente
+            successors_to_add = []
+            for successor_id in graph[current_id]:
+                in_degree[successor_id] -= 1
+                
+                # Se tutte le dipendenze del successor sono state soddisfatte
+                if in_degree[successor_id] == 0:
+                    task = task_map[successor_id]
+                    start_date = task.DataInizio if task.DataInizio else datetime(2099, 12, 31)
+                    successors_to_add.append((start_date, successor_id))
+            
+            # Ordina i successori per data di inizio prima di aggiungerli alla coda
+            successors_to_add.sort(key=lambda x: x[0])
+            for _, successor_id in successors_to_add:
+                queue.append(successor_id)
+        
+        # Verifica che tutti i task siano stati processati (no cicli)
+        if len(result) != len(tasks):
+            logger.warning("Rilevato ciclo nelle dipendenze dei task. Alcuni task potrebbero non essere visualizzati correttamente.")
+            # Aggiungi i task rimanenti alla fine (fallback)
+            processed_ids = {t.TaskProdottoID for t in result}
+            remaining = [t for t in tasks if t.TaskProdottoID not in processed_ids]
+            result.extend(remaining)
+        
+        return result
 
     def _on_target_npi_change(self):
         """Gestisce il cambio immediato del flag Target NPI."""
@@ -684,11 +832,39 @@ class ProjectWindow(tk.Toplevel):
         self.fields['Stato'].set(stato_display)
         self.fields['Note'].delete('1.0', tk.END);
         self.fields['Note'].insert('1.0', task.Note or "")
-        self.fields['DataScadenza'].set_date(task.DataScadenza);
-        self.fields['DataInizio'].set_date(task.DataInizio)
-        self.fields['DataCompletamento'].set_date(task.DataCompletamento)
+        
+        # Gestisci le date in modo sicuro - se None, usa una data default
+        from datetime import date
+        if task.DataScadenza:
+            self.fields['DataScadenza'].set_date(task.DataScadenza);
+        else:
+            self.fields['DataScadenza'].set_date(date.today())
+            
+        if task.DataInizio:
+            self.fields['DataInizio'].set_date(task.DataInizio)
+        else:
+            self.fields['DataInizio'].set_date(date.today())
+            
+        if task.DataCompletamento:
+            self.fields['DataCompletamento'].set_date(task.DataCompletamento)
+        else:
+            self.fields['DataCompletamento'].set_date(None)  # Può rimanere None
+            
         if 'IsPostFinalMilestone' in self.fields:
              self.fields['IsPostFinalMilestone'].var.set(task.IsPostFinalMilestone or False)
+
+    def _on_status_change(self, event=None):
+        """Gestisce il cambio di stato per abilitare/disabilitare il campo DataCompletamento."""
+        stato_display = self.fields['Stato'].get()
+        stato_db = self.status_map_db.get(stato_display, 'Da Fare')
+        
+        # Abilita DataCompletamento solo se lo stato è "Completato"
+        if stato_db == 'Completato':
+            self.fields['DataCompletamento'].config(state='readonly')
+        else:
+            self.fields['DataCompletamento'].config(state='disabled')
+            # Resetta la data se non è completato
+            self.fields['DataCompletamento'].set_date(None)
 
     def _disable_form(self):
         self.current_task_id = None
@@ -697,8 +873,15 @@ class ProjectWindow(tk.Toplevel):
     def _enable_form(self):
         for name, child in self.fields.items():
             if name in ['task_name', 'task_category']: continue
-            state = 'readonly' if isinstance(child, (DateEntry, ttk.Combobox)) else 'normal'
-            child.config(state=state)
+            # DataCompletamento viene gestito separatamente in base allo stato
+            if name == 'DataCompletamento':
+                # Lascia disabilitato, verrà abilitato da _on_status_change se necessario
+                child.config(state='disabled')
+            else:
+                state = 'readonly' if isinstance(child, (DateEntry, ttk.Combobox)) else 'normal'
+                child.config(state=state)
+        # Aggiorna lo stato del campo DataCompletamento in base allo stato corrente
+        self._on_status_change()
 
     def _disable_doc_form(self):
         for name, widget in self.doc_widgets.items():
@@ -838,6 +1021,93 @@ class ProjectWindow(tk.Toplevel):
         nuovo_stato_display = self.fields['Stato'].get()
         nuovo_stato_db = self.status_map_db.get(nuovo_stato_display, 'Da Fare')
 
+        # ===== VALIDAZIONE DATE =====
+        try:
+            data_inizio_str = self.fields['DataInizio'].get()
+            data_scadenza_str = self.fields['DataScadenza'].get()
+            
+            if data_inizio_str and data_scadenza_str:
+                data_inizio = datetime.strptime(data_inizio_str, '%d/%m/%Y')
+                data_scadenza = datetime.strptime(data_scadenza_str, '%d/%m/%Y')
+                
+                # Validazione 1: Data scadenza >= Data inizio
+                if data_scadenza < data_inizio:
+                    messagebox.showwarning(
+                        self.lang.get('validation_error_title', 'Errore Validazione'),
+                        self.lang.get('error_due_date_before_start', 'La data di scadenza non può essere precedente alla data di inizio.'),
+                        parent=self
+                    )
+                    # Sposta il focus sul campo DataScadenza per permettere la correzione
+                    self.fields['DataScadenza'].focus()
+                    return
+                
+                # Validazione 2: Verifica date rispetto alla data fine progetto
+                if self.progetto and self.progetto.ScadenzaProgetto:
+                    data_fine_progetto = self.progetto.ScadenzaProgetto
+                    if isinstance(data_fine_progetto, str):
+                        data_fine_progetto = datetime.strptime(data_fine_progetto, '%d/%m/%Y')
+                    
+                    if data_inizio.date() > data_fine_progetto.date():
+                        messagebox.showwarning(
+                            self.lang.get('validation_error_title', 'Errore Validazione'),
+                            self.lang.get('error_start_after_project_end', 'La data di inizio non può essere successiva alla data fine progetto.'),
+                            parent=self
+                        )
+                        self.fields['DataInizio'].focus()
+                        return
+                    
+                    if data_scadenza.date() > data_fine_progetto.date():
+                        messagebox.showwarning(
+                            self.lang.get('validation_error_title', 'Errore Validazione'),
+                            self.lang.get('error_due_after_project_end', 'La data di scadenza non può essere successiva alla data fine progetto.'),
+                            parent=self
+                        )
+                        self.fields['DataScadenza'].focus()
+                        return
+                
+                # Validazione 3: Verifica dipendenze
+                dependencies = self.npi_manager.get_task_dependencies(self.current_task_id)
+                if dependencies:
+                    # Il task ha dipendenze - verifica le date dei task predecessori
+                    for dep in dependencies:
+                        pred_task = dep.depends_on_task
+                        if pred_task and pred_task.DataScadenza:
+                            pred_due_date = pred_task.DataScadenza
+                            if isinstance(pred_due_date, str):
+                                pred_due_date = datetime.strptime(pred_due_date, '%d/%m/%Y')
+                            
+                            pred_task_name = pred_task.task_catalogo.NomeTask if pred_task.task_catalogo else "Task"
+                            
+                            # Data inizio task corrente >= Data fine task predecessore
+                            if data_inizio.date() < pred_due_date.date():
+                                messagebox.showwarning(
+                                    self.lang.get('validation_error_title', 'Errore Validazione'),
+                                    self.lang.get('error_start_before_dependency', 
+                                                 f'La data di inizio non può essere precedente alla data fine del task "{pred_task_name}" ({pred_due_date.strftime("%d/%m/%Y")}).'),
+                                    parent=self
+                                )
+                                self.fields['DataInizio'].focus()
+                                return
+                            
+                            # Data fine task corrente >= Data fine task predecessore
+                            if data_scadenza.date() < pred_due_date.date():
+                                messagebox.showwarning(
+                                    self.lang.get('validation_error_title', 'Errore Validazione'),
+                                    self.lang.get('error_due_before_dependency', 
+                                                 f'La data di scadenza non può essere precedente alla data fine del task "{pred_task_name}" ({pred_due_date.strftime("%d/%m/%Y")}).'),
+                                    parent=self
+                                )
+                                self.fields['DataScadenza'].focus()
+                                return
+                
+        except ValueError as e:
+            messagebox.showerror(
+                self.lang.get('validation_error_title', 'Errore Validazione'),
+                f"Errore nel formato delle date: {e}",
+                parent=self
+            )
+            return
+
         # ===== VALIDAZIONE DIPENDENZE E MILESTONE FINALE =====
         # Se il nuovo stato è 'Completato', verifica prima le dipendenze poi la milestone
         if nuovo_stato_db == 'Completato':
@@ -910,6 +1180,99 @@ class ProjectWindow(tk.Toplevel):
                 parent=self
             )
     
+    def _delete_task_prodotto(self):
+        """Elimina un task dal progetto se non ha task dipendenti."""
+        if not self.current_task_id:
+            messagebox.showwarning(
+                self.lang.get('warning_title', 'Attenzione'),
+                self.lang.get('warning_no_task_selected', 'Seleziona un task da eliminare.'),
+                parent=self
+            )
+            return
+        
+        # Ottieni il task corrente
+        task = self._get_task_by_id(self.current_task_id)
+        if not task:
+            return
+        
+        task_name = task.task_catalogo.NomeTask if task.task_catalogo else "Task"
+        
+        # Verifica se ci sono task che dipendono da questo
+        try:
+            # Controlla se ci sono dipendenze inverse (altri task che dipendono da questo)
+            from sqlalchemy import select
+            from ..models import TaskProductDependency
+            
+            with self.npi_manager.session_scope() as session:
+                # Cerca task che hanno questo task come dipendenza
+                stmt = select(TaskProductDependency).where(
+                    TaskProductDependency.DependsOnTaskID == self.current_task_id
+                )
+                dependent_tasks = session.execute(stmt).scalars().all()
+                
+                if dependent_tasks:
+                    # Ci sono task che dipendono da questo - non può essere eliminato
+                    dependent_names = []
+                    for dep in dependent_tasks:
+                        dep_task = session.get(self.npi_manager.TaskProdotto, dep.TaskProdottoID)
+                        if dep_task and dep_task.task_catalogo:
+                            dependent_names.append(dep_task.task_catalogo.NomeTask)
+                    
+                    messagebox.showwarning(
+                        self.lang.get('warning_title', 'Attenzione'),
+                        self.lang.get('error_cannot_delete_task_has_dependents', 
+                                     f'Impossibile eliminare il task "{task_name}".\n\n'
+                                     f'I seguenti task dipendono da esso:\n' +
+                                     '\n'.join(f'• {name}' for name in dependent_names)),
+                        parent=self
+                    )
+                    return
+        
+        except Exception as e:
+            logger.error(f"Errore verifica dipendenze: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error_title', 'Errore'),
+                f"Errore durante la verifica delle dipendenze:\\n{e}",
+                parent=self
+            )
+            return
+        
+        # Conferma eliminazione
+        if not messagebox.askyesno(
+                self.lang.get('confirm_delete_title', 'Conferma Eliminazione'),
+                self.lang.get('confirm_delete_task', 
+                             f'Sei sicuro di voler eliminare il task "{task_name}" dal progetto?\\n\\n'
+                             f'Questa operazione non può essere annullata.'),
+                parent=self
+        ):
+            return
+        
+        try:
+            # Elimina il task dal progetto
+            with self.npi_manager.session_scope() as session:
+                task_to_delete = session.get(self.npi_manager.TaskProdotto, self.current_task_id)
+                if task_to_delete:
+                    session.delete(task_to_delete)
+            
+            messagebox.showinfo(
+                self.lang.get('success_title', 'Successo'),
+                self.lang.get('success_task_deleted', 'Task eliminato con successo.'),
+                parent=self
+            )
+            
+            # Ricarica la UI
+            self._load_data_and_populate_ui()
+            self._disable_form()
+            self._disable_doc_form()
+            
+        except Exception as e:
+            logger.error(f"Errore eliminazione task: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error_title', 'Errore'),
+                f"Impossibile eliminare il task:\\n{e}",
+                parent=self
+            )
+    
     def _sync_catalog_tasks(self):
         """Sincronizza i task del catalogo con il progetto corrente."""
         try:
@@ -972,3 +1335,16 @@ class ProjectWindow(tk.Toplevel):
                 f"Errore durante la sincronizzazione:\n{e}",
                 parent=self
             )
+    
+    def _launch_view_documents_window(self):
+        """Lancia la finestra per visualizzare tutti i documenti del progetto."""
+        try:
+            from .project_documents_window import ProjectDocumentsWindow
+            
+            project_name = self.progetto.prodotto.NomeProdotto if self.progetto and self.progetto.prodotto else "Progetto"
+            
+            ProjectDocumentsWindow(self, self.npi_manager, self.lang, self.project_id, project_name)
+            
+        except Exception as e:
+            logger.error(f"Errore apertura finestra documenti: {e}", exc_info=True)
+            messagebox.showerror('Errore', f"Impossibile aprire la finestra documenti:\n{e}", parent=self)

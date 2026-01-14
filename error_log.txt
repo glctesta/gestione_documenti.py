@@ -1,0 +1,39 @@
+﻿2026-01-03 13:33:06 | INFO | TraceabilityRS | Logging avviato. File: C:\Users\gtesta\AppData\Local\TraceabilityRS\logs\traceability_rs.log
+2026-01-03 13:33:08 | WARNING | logger | logging.conf not found. Using basicConfig (level=INFO).
+python : Traceback (most 
+recent call last):
+At line:1 char:1
++ python main.py 2>&1 | 
+Out-File -FilePath 
+error_log.txt -Encoding utf8
++ ~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo           
+   : NotSpecified: (Traceba  
+  ck (most recent call las   
+ t)::String) [], RemoteEx    
+ception
+    + FullyQualifiedErrorId  
+   : NativeCommandError
+ 
+  File "C:\Users\gtesta\Pytho
+nProjetcs\Python\PrductionDoc
+umentation\main.py", line 
+174, in <module>
+    from add_complaint 
+import AddComplaintWindow
+  File "C:\Users\gtesta\Pytho
+nProjetcs\Python\PrductionDoc
+umentation\add_complaint.py",
+ line 1042
+    f"{self.lang.get('err_ope
+ning_products', 'Errore 
+nell\'apertura della 
+gestione prodotti')}: 
+{str(e)}",
+                             
+                             
+                             
+                  ^
+SyntaxError: f-string 
+expression part cannot 
+include a backslash

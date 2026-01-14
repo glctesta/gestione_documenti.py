@@ -1,0 +1,4 @@
+
+
+# Import del modulo trasferimento paste
+from paste_transfer import open_paste_to_production

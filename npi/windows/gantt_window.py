@@ -283,13 +283,13 @@ class NpiGanttWindow(tk.Toplevel):
             df['Finish'] = pd.to_datetime(df['Finish'])
             
             # Ordinamento per Categoria e poi Data Inizio (molto importante per il raggruppamento visuale)
+            # I task sono mostrati dal più vecchio al più nuovo (ordine cronologico)
             df = df.sort_values(by=['Category', 'Start'], ascending=[True, True])
             
             # Etichetta asse Y: Categoria + Nome Task + ID per unicità
             df['Label'] = df.apply(lambda r: f"<b>[{r['Category'].upper()}]</b><br>{r['Task']} (ID:{r['TaskProdottoID']})", axis=1)
             
-            # Inverti ordine per Plotly (dall'alto in basso)
-            df = df.iloc[::-1].reset_index(drop=True)
+            # Crea mapping ID -> Label per le dipendenze
             id_to_label = {row['TaskProdottoID']: row['Label'] for _, row in df.iterrows()}
 
             fig = go.Figure()
@@ -1050,8 +1050,12 @@ Task in Ritardo: {stats['late_tasks']}
 
         # Prepara dati
         df = self.df.copy()
-        # Ordinamento per Categoria e poi Data Inizio
+        # Ordinamento per Categoria e poi Data Inizio (dal più vecchio al più nuovo)
         df = df.sort_values(by=['Category', 'Start'], ascending=[True, True])
+        
+        # Inverti l'ordine per matplotlib (matplotlib mette indice 0 in basso, indici alti in alto)
+        # Così i task più vecchi (che erano all'inizio) finiscono con indici alti e appaiono in alto
+        df = df.iloc[::-1].reset_index(drop=True)
         
         # Mappa ID -> Indice per tracciare dipendenze nell'asse Y
         id_to_idx = {row['TaskProdottoID']: i for i, (_, row) in enumerate(df.iterrows())}
@@ -1111,7 +1115,6 @@ Task in Ritardo: {stats['late_tasks']}
 
         # Griglia
         ax.grid(True, axis='x', alpha=0.3, zorder=0)
-        ax.invert_yaxis()
 
         # Legenda
         handles, labels = ax.get_legend_handles_labels()

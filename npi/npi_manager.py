@@ -915,6 +915,33 @@ class GestoreNPI:
             if not progetto:
                 raise ValueError(f"Progetto con ID {project_id} non trovato.")
 
+            # 1.1 VALIDAZIONE: Data fine progetto >= ultima data task
+            if due_date:
+                # Trova l'ultima data di scadenza tra tutti i task del progetto
+                max_task_due_date = session.scalar(
+                    select(func.max(TaskProdotto.DataScadenza))
+                    .join(WaveNPI, TaskProdotto.WaveID == WaveNPI.WaveID)
+                    .where(
+                        and_(
+                            WaveNPI.ProgettoID == project_id,
+                            TaskProdotto.DataScadenza.isnot(None)
+                        )
+                    )
+                )
+                
+                if max_task_due_date:
+                    # Converti in date se necessario
+                    max_date = max_task_due_date.date() if hasattr(max_task_due_date, 'date') else max_task_due_date
+                    due_date_check = due_date.date() if hasattr(due_date, 'date') else due_date
+                    
+                    if due_date_check < max_date:
+                        error_msg = lang.get(
+                            'error_project_end_before_tasks',
+                            f'La data fine progetto ({due_date_check.strftime("%d/%m/%Y")}) non può essere precedente '
+                            f'all\'ultima data di scadenza dei task ({max_date.strftime("%d/%m/%Y")}).'
+                        )
+                        raise ValueError(error_msg)
+
             # 2. CERCA IL TASK SPECIALE (con IsFinalMilestone=True)
             # --- MODIFICA LOGICA QUI ---
             # Query per trovare il TaskProdotto con IsPostFinalMilestone=True
@@ -1524,9 +1551,9 @@ class GestoreNPI:
             <style>
                 body {{ font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; }}
                 .container {{ max-width: 800px; margin: 0 auto; padding: 20px; background-color: #f9f9f9; }}
-                .header {{ background: linear-gradient(135deg, #0078d4 0%, #005a9e 100%); color: white; padding: 30px 20px; border-radius: 8px 8px 0 0; text-align: center; }}
-                .header h1 {{ margin: 0; font-size: 28px; }}
-                .header p {{ margin: 5px 0 0 0; font-size: 14px; opacity: 0.9; }}
+                .header {{ background: linear-gradient(135deg, #0078d4 0%, #005a9e 100%); color: #1a3a52; padding: 30px 20px; border-radius: 8px 8px 0 0; text-align: center; }}
+                .header h1 {{ margin: 0; font-size: 28px; color: #1a3a52; }}
+                .header p {{ margin: 5px 0 0 0; font-size: 14px; opacity: 0.9; color: #1a3a52; }}
                 .content {{ background: white; padding: 30px; border-radius: 0 0 8px 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
                 .section {{ margin: 25px 0; padding: 20px; background: white; border-left: 4px solid #0078d4; border-radius: 4px; }}
                 .section h2 {{ color: #0078d4; margin: 0 0 15px 0; font-size: 20px; border-bottom: 2px solid #0078d4; padding-bottom: 10px; }}
@@ -1580,31 +1607,38 @@ class GestoreNPI:
             if not progetto or not progetto.waves:
                 return None, None
 
-            df_data = []
+            # Filtra i task validi (con owner e date)
+            valid_tasks = []
             for task in progetto.waves[0].tasks:
-                # Filtra solo i task che hanno un proprietario assegnato E date valide
                 if (task.OwnerID is not None and
                         task.DataInizio and
                         task.DataScadenza):
+                    valid_tasks.append(task)
+            
+            # Applica ordinamento topologico
+            sorted_tasks = self._topological_sort_tasks(valid_tasks)
+            
+            # Crea i dati per il Gantt usando i task ordinati
+            df_data = []
+            for task in sorted_tasks:
+                # Assicurati che la data di fine sia >= alla data di inizio
+                data_inizio = min(task.DataInizio, task.DataScadenza)
+                data_fine = max(task.DataInizio, task.DataScadenza)
 
-                    # Assicurati che la data di fine sia >= alla data di inizio
-                    data_inizio = min(task.DataInizio, task.DataScadenza)
-                    data_fine = max(task.DataInizio, task.DataScadenza)
+                # Recupera le dipendenze
+                deps = [d.DependsOnTaskProdottoID for d in task.dependencies]
 
-                    # Recupera le dipendenze
-                    deps = [d.DependsOnTaskProdottoID for d in task.dependencies]
-
-                    df_data.append({
-                        'Task': task.task_catalogo.NomeTask if task.task_catalogo else "Task non definito",
-                        'Category': task.task_catalogo.categoria.Category if (task.task_catalogo and task.task_catalogo.categoria) else "Nessuna Categoria",
-                        'Start': data_inizio,
-                        'Finish': data_fine,
-                        'Owner': task.owner.Nome if task.owner else 'Non Assegnato',
-                        'Status': task.Stato,
-                        'TaskProdottoID': task.TaskProdottoID,
-                        'Dependencies': deps,
-                        'Completion': task.PercentualeCompletamento if task.PercentualeCompletamento is not None else 0
-                    })
+                df_data.append({
+                    'Task': task.task_catalogo.NomeTask if task.task_catalogo else "Task non definito",
+                    'Category': task.task_catalogo.categoria.Category if (task.task_catalogo and task.task_catalogo.categoria) else "Nessuna Categoria",
+                    'Start': data_inizio,
+                    'Finish': data_fine,
+                    'Owner': task.owner.Nome if task.owner else 'Non Assegnato',
+                    'Status': task.Stato,
+                    'TaskProdottoID': task.TaskProdottoID,
+                    'Dependencies': deps,
+                    'Completion': task.PercentualeCompletamento if task.PercentualeCompletamento is not None else 0
+                })
 
             logger.debug(f"Totale task nel progetto: {len(progetto.waves[0].tasks)}")
             logger.debug(f"Task mostrati nel Gantt: {len(df_data)}")
@@ -1616,6 +1650,94 @@ class GestoreNPI:
             raise
         finally:
             session.close()
+    
+    def _topological_sort_tasks(self, tasks):
+        """Ordina i task rispettando le dipendenze con ordinamento topologico.
+        
+        I task senza dipendenze sono ordinati per data di inizio.
+        I task con dipendenze appaiono sempre dopo i loro predecessori.
+        Metodo condiviso tra project_window e generazione Gantt.
+        """
+        from collections import defaultdict, deque
+        from datetime import datetime
+        
+        # Crea una mappa task_id -> task per accesso rapido
+        task_map = {t.TaskProdottoID: t for t in tasks}
+        task_ids = set(task_map.keys())
+        
+        # Costruisci il grafo delle dipendenze
+        # graph[task_id] = lista di task che dipendono da task_id
+        graph = defaultdict(list)
+        # in_degree[task_id] = numero di dipendenze (predecessori)
+        in_degree = defaultdict(int)
+        
+        # Inizializza tutti i task con in_degree 0
+        for task_id in task_ids:
+            in_degree[task_id] = 0
+        
+        # Popola il grafo e calcola gli in_degree
+        for task in tasks:
+            # Usa get_task_dependencies se disponibile, altrimenti usa dependencies
+            if hasattr(task, 'dependencies'):
+                dependencies = task.dependencies
+            else:
+                dependencies = self.get_task_dependencies(task.TaskProdottoID)
+            
+            for dep in dependencies:
+                # L'attributo corretto è sempre DependsOnTaskProdottoID
+                predecessor_id = dep.DependsOnTaskProdottoID
+                # Considera solo dipendenze tra task nel set corrente
+                if predecessor_id in task_ids:
+                    graph[predecessor_id].append(task.TaskProdottoID)
+                    in_degree[task.TaskProdottoID] += 1
+        
+        # Ottieni tutti i task senza dipendenze (in_degree == 0)
+        # e ordinali per data di inizio
+        queue = []
+        for task_id in task_ids:
+            if in_degree[task_id] == 0:
+                task = task_map[task_id]
+                # Usa la data di inizio per l'ordinamento, o una data molto lontana se None
+                start_date = task.DataInizio if task.DataInizio else datetime(2099, 12, 31)
+                queue.append((start_date, task_id))
+        
+        # Ordina i task iniziali per data di inizio
+        queue.sort(key=lambda x: x[0])
+        queue = deque([task_id for _, task_id in queue])
+        
+        # Algoritmo di Kahn per ordinamento topologico
+        result = []
+        
+        while queue:
+            # Prendi il prossimo task dalla coda
+            current_id = queue.popleft()
+            result.append(task_map[current_id])
+            
+            # Per ogni task che dipende dal task corrente
+            successors_to_add = []
+            for successor_id in graph[current_id]:
+                in_degree[successor_id] -= 1
+                
+                # Se tutte le dipendenze del successor sono state soddisfatte
+                if in_degree[successor_id] == 0:
+                    task = task_map[successor_id]
+                    start_date = task.DataInizio if task.DataInizio else datetime(2099, 12, 31)
+                    successors_to_add.append((start_date, successor_id))
+            
+            # Ordina i successori per data di inizio prima di aggiungerli alla coda
+            successors_to_add.sort(key=lambda x: x[0])
+            for _, successor_id in successors_to_add:
+                queue.append(successor_id)
+        
+        # Verifica che tutti i task siano stati processati (no cicli)
+        if len(result) != len(tasks):
+            logger.warning("Rilevato ciclo nelle dipendenze dei task. Alcuni task potrebbero non essere visualizzati correttamente.")
+            # Aggiungi i task rimanenti alla fine (fallback)
+            processed_ids = {t.TaskProdottoID for t in result}
+            remaining = [t for t in tasks if t.TaskProdottoID not in processed_ids]
+            result.extend(remaining)
+        
+        return result
 
     def aggiorna_date_task_from_gantt(self, task_prodotto_id: int, nuova_data_inizio: datetime,
                                       nuova_data_scadenza: datetime, user: str):
@@ -1649,26 +1771,19 @@ class GestoreNPI:
     def get_dashboard_projects(self):
         """
         Recupera i dati dei progetti per la dashboard principale.
-        Mostra TUTTI i progetti, con la data della milestone finale se esiste.
+        Mostra TUTTI i progetti con la data fine progetto.
         """
         session = self._get_session()
         try:
-            # Query modificata per mostrare TUTTI i progetti
-            # Usa LEFT JOIN per includere progetti senza milestone finale
+            # Query modificata per restituire la ScadenzaProgetto
             stmt = select(
                 ProgettoNPI.ProgettoId,
                 func.coalesce(ProgettoNPI.NomeProgetto, Prodotto.NomeProdotto).label("NomeProgetto"),
                 Prodotto.CodiceProdotto,
                 Prodotto.Cliente,
-                TaskProdotto.DataScadenza.label("ScadenzaMilestoneFinale")
+                ProgettoNPI.ScadenzaProgetto.label("ScadenzaProgetto")
             ).join(
                 Prodotto, ProgettoNPI.ProdottoID == Prodotto.ProdottoID
-            ).outerjoin(
-                WaveNPI, ProgettoNPI.ProgettoId == WaveNPI.ProgettoID
-            ).outerjoin(
-                TaskProdotto, 
-                (WaveNPI.WaveID == TaskProdotto.WaveID) & 
-                (TaskProdotto.IsPostFinalMilestone == True)
             ).order_by(
                 ProgettoNPI.DataInizio.desc()
             )
@@ -2220,6 +2335,70 @@ class GestoreNPI:
         except Exception as e:
             logger.error(f"Errore eliminazione documento: {e}")
             session.rollback()
+            raise
+        finally:
+            session.close()
+    
+    def get_all_project_documents(self, project_id):
+        """
+        Recupera tutti i documenti di un progetto NPI (documenti task).
+        Restituisce una lista di dizionari con informazioni complete.
+        """
+        session = self._get_session()
+        try:
+            from .data_models import NpiDocument, TaskProdotto, WaveNPI, TaskCatalogo, NpiDocumentType
+            
+            # Query per ottenere tutti i documenti dei task del progetto
+            task_documents = session.scalars(
+                select(NpiDocument)
+                .join(TaskProdotto, NpiDocument.TaskProdottoId == TaskProdotto.TaskProdottoID)
+                .join(WaveNPI, TaskProdotto.WaveID == WaveNPI.WaveID)
+                .where(WaveNPI.ProgettoID == project_id)
+                .options(
+                    joinedload(NpiDocument.task_prodotto).joinedload(TaskProdotto.task_catalogo),
+                    joinedload(NpiDocument.document_type)
+                )
+                .order_by(NpiDocument.DateIn.desc())
+            ).all()
+            
+            # Formatta i risultati
+            documents = []
+            for doc in task_documents:
+                task_name = doc.task_prodotto.task_catalogo.NomeTask if doc.task_prodotto and doc.task_prodotto.task_catalogo else "N/A"
+                doc_type = doc.document_type.NpiDocumentDescription if doc.document_type else "N/A"
+                
+                documents.append({
+                    'doc_id': doc.NpiDocumentId,
+                    'task_name': task_name,
+                    'doc_type': doc_type,
+                    'doc_title': doc.DocumentTitle or "",
+                    'date_in': doc.DateIn,
+                    'date_in_formatted': doc.DateIn.strftime('%d/%m/%Y %H:%M') if doc.DateIn else "N/A",
+                    'user': doc.User or "N/A",
+                    'version': doc.VersionNumber or 0,
+                    'value': doc.ValueInEur,
+                    'note': doc.Note
+                })
+            
+            return documents
+            
+        except Exception as e:
+            logger.error(f"Errore recupero documenti progetto {project_id}: {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+    
+    def get_npi_document(self, document_id):
+        """Recupera un singolo documento NPI con il suo contenuto."""
+        session = self._get_session()
+        try:
+            from .data_models import NpiDocument
+            
+            documento = session.get(NpiDocument, document_id)
+            return documento
+            
+        except Exception as e:
+            logger.error(f"Errore recupero documento {document_id}: {e}", exc_info=True)
             raise
         finally:
             session.close()

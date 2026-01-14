@@ -358,11 +358,15 @@ class AddComplaintWindow(tk.Toplevel):
         self.combo_product = ttk.Combobox(
             center_col,
             textvariable=self.var_product,
-            state='readonly',
+            state='normal',  # Cambiato da readonly a normal per permettere editing
             width=30
         )
-        product_values = [f"{p[1]} - {p[2]}" for p in self.combo_data.get('products', [])]
+        # Salva la lista completa dei prodotti per il filtro
+        self.all_products = [f"{p[1]} - {p[2]}" for p in self.combo_data.get('products', [])]
+        product_values = self.all_products
         self.combo_product['values'] = product_values
+        # Aggiungi binding per filtrare mentre l'utente digita
+        self.combo_product.bind('<KeyRelease>', self._filter_products)
         self.combo_product.pack(fill=tk.X, pady=(0, 10))
 
         # Date Claim
@@ -467,18 +471,29 @@ class AddComplaintWindow(tk.Toplevel):
 
         ttk.Frame(buttons_frame).pack(side=tk.LEFT, expand=True)
 
+        # Bottone Annulla (prima a destra, meno prominente)
+        ttk.Button(
+            buttons_frame,
+            text=self.lang.get('btn_cancel', 'Annulla'),
+            command=self.destroy
+        ).pack(side=tk.RIGHT, padx=(5, 0))
+
+        # Pulsante per modificare la testata (inizialmente nascosto)
+        self.btn_edit_header = ttk.Button(
+            buttons_frame,
+            text=self.lang.get('btn_edit_header', 'Modifica Testata'),
+            command=self._edit_header
+        )
+        # Il pulsante viene mostrato solo dopo il salvataggio
+        # Non fare pack qui, lo faremo in _enable_details_section
+        
+        # Bottone Salva Testata (più a destra, più prominente)
         self.btn_save_header = ttk.Button(
             buttons_frame,
             text=self.lang.get('btn_save', 'Salva Testata'),
             command=self._save_header
         )
-        self.btn_save_header.pack(side=tk.RIGHT, padx=(0, 5))
-
-        ttk.Button(
-            buttons_frame,
-            text=self.lang.get('btn_cancel', 'Annulla'),
-            command=self.destroy
-        ).pack(side=tk.RIGHT, padx=(0, 5))
+        self.btn_save_header.pack(side=tk.RIGHT, padx=(5, 0))
 
     def _create_claim_details_frame(self, parent):
         """Crea il frame per le righe di dettaglio del reclamo"""
@@ -496,12 +511,39 @@ class AddComplaintWindow(tk.Toplevel):
         )
         self.info_label.pack(pady=20)
 
+        # Frame per il filtro LabelCode
+        filter_frame = ttk.Frame(self.details_frame)
+        filter_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        ttk.Label(
+            filter_frame, 
+            text=self.lang.get('lbl_filter_labelcode', 'Filtra per Label Code:')
+        ).pack(side=tk.LEFT, padx=5)
+        
+        self.var_labelcode_filter = tk.StringVar()
+        self.entry_labelcode_filter = ttk.Entry(
+            filter_frame,
+            textvariable=self.var_labelcode_filter,
+            width=30
+        )
+        self.entry_labelcode_filter.pack(side=tk.LEFT, padx=5)
+        self.entry_labelcode_filter.bind('<KeyRelease>', self._filter_label_codes)
+        
+        # Bottone per pulire il filtro
+        ttk.Button(
+            filter_frame,
+            text=self.lang.get('btn_clear_filter', 'X'),
+            command=self._clear_labelcode_filter,
+            width=3
+        ).pack(side=tk.LEFT, padx=2)
+
         self.tree_details = None
         self._create_details_treeview()
 
         self.details_buttons_frame = ttk.Frame(self.details_frame)
         self.details_buttons_frame.pack(fill=tk.X, pady=(10, 0))
 
+        # Bottoni azioni righe in ordine logico: Aggiungi → Modifica → Rimuovi
         self.btn_add_row = ttk.Button(
             self.details_buttons_frame,
             text=self.lang.get('btn_add_detail_row', 'Aggiungi Riga'),
@@ -509,14 +551,6 @@ class AddComplaintWindow(tk.Toplevel):
             state=tk.DISABLED
         )
         self.btn_add_row.pack(side=tk.LEFT, padx=5)
-
-        self.btn_remove_row = ttk.Button(
-            self.details_buttons_frame,
-            text=self.lang.get('btn_remove_detail_row', 'Rimuovi Riga'),
-            command=self._remove_detail_row,
-            state=tk.DISABLED
-        )
-        self.btn_remove_row.pack(side=tk.LEFT, padx=5)
         
         self.btn_edit_row = ttk.Button(
             self.details_buttons_frame,
@@ -525,6 +559,14 @@ class AddComplaintWindow(tk.Toplevel):
             state=tk.DISABLED
         )
         self.btn_edit_row.pack(side=tk.LEFT, padx=5)
+
+        self.btn_remove_row = ttk.Button(
+            self.details_buttons_frame,
+            text=self.lang.get('btn_remove_detail_row', 'Rimuovi Riga'),
+            command=self._remove_detail_row,
+            state=tk.DISABLED
+        )
+        self.btn_remove_row.pack(side=tk.LEFT, padx=5)
 
         ttk.Frame(self.details_buttons_frame).pack(side=tk.LEFT, expand=True)
 
@@ -575,6 +617,130 @@ class AddComplaintWindow(tk.Toplevel):
         
         # Binding doppio-click per modificare riga
         self.tree_details.bind('<Double-1>', self._on_detail_double_click)
+
+    # =========================================================================
+    # FILTRI E HELPER UI
+    # =========================================================================
+
+    def _filter_products(self, event=None):
+        """Filtra i prodotti in base al testo digitato nel combo."""
+        typed_text = self.var_product.get().lower()
+        
+        if not typed_text:
+            # Se il campo è vuoto, mostra tutti i prodotti
+            self.combo_product['values'] = self.all_products
+        else:
+            # Filtra i prodotti che contengono il testo digitato
+            filtered = [p for p in self.all_products if typed_text in p.lower()]
+            self.combo_product['values'] = filtered
+
+    def _on_client_selected(self, event=None):
+        """Gestisce la selezione del cliente (placeholder per future implementazioni)."""
+        pass
+
+    def _filter_label_codes(self, event=None):
+        """Filtra le righe dei dettagli in base al LabelCode digitato."""
+        if not self.tree_details:
+            return
+            
+        filter_text = self.var_labelcode_filter.get().lower().strip()
+        
+        # Ottieni tutte le righe
+        all_items = self.tree_details.get_children()
+        
+        if not filter_text:
+            # Se il filtro è vuoto, mostra tutte le righe
+            for item in all_items:
+                self.tree_details.reattach(item, '', 'end')
+        else:
+            # Nascondi le righe che non corrispondono al filtro
+            for item in all_items:
+                values = self.tree_details.item(item, 'values')
+                # values[1] è il LabelCode (seconda colonna dopo Num)
+                if len(values) > 1:
+                    label_code = str(values[1]).lower()
+                    if filter_text in label_code:
+                        # Mostra la riga
+                        self.tree_details.reattach(item, '', 'end')
+                    else:
+                        # Nascondi la riga
+                        self.tree_details.detach(item)
+
+    def _clear_labelcode_filter(self):
+        """Pulisce il filtro LabelCode e mostra tutte le righe."""
+        self.var_labelcode_filter.set('')
+        self._filter_label_codes()
+
+    def _edit_header(self):
+        """Permette la modifica della testata già salvata."""
+        # Riabilita i campi della testata
+        self.combo_client.config(state='readonly')
+        self.combo_claim_type.config(state='readonly')
+        self.combo_product.config(state='normal')
+        
+        # Cambia il pulsante in "Aggiorna Testata"
+        self.btn_save_header.config(text=self.lang.get('btn_update_header', 'Aggiorna Testata'))
+        
+        # Nascondi "Modifica Testata" e mostra "Aggiorna Testata"
+        self.btn_edit_header.pack_forget()
+        self.btn_save_header.pack(side=tk.RIGHT, padx=(0, 5))
+
+    def _update_header(self):
+        """Aggiorna la testata del reclamo già salvata."""
+        if not self.claim_log_id:
+            messagebox.showerror(
+                self.lang.get('err_error', 'Errore'),
+                'Nessuna testata da aggiornare',
+                parent=self
+            )
+            return
+            
+        is_valid, error_msg = self._validate_header()
+        if not is_valid:
+            messagebox.showerror(
+                self.lang.get('err_validation', 'Errore Validazione'),
+                error_msg,
+                parent=self
+            )
+            return
+
+        try:
+            claim_header = self._prepare_header_data()
+            if claim_header is None:
+                return
+
+            # Aggiorna la testata nel database
+            success = self.db.update_claim_header(self.claim_log_id, claim_header)
+            
+            if success:
+                self.claim_header = claim_header
+                messagebox.showinfo(
+                    self.lang.get('success', 'Successo'),
+                    self.lang.get('msg_header_updated', 'Testata aggiornata con successo'),
+                    parent=self
+                )
+                
+                # Ritorna alla modalità visualizzazione
+                self._enable_details_section()
+            else:
+                error_msg = self.lang.get('err_update_failed', "Errore nell'aggiornamento della testata")
+                messagebox.showerror(
+                    self.lang.get('err_error', 'Errore'),
+                    error_msg,
+                    parent=self
+                )
+                
+        except Exception as e:
+            logger.exception(f"[ADD_COMPLAINT] Errore aggiornamento testata: {e}")
+            error_msg = self.lang.get('err_update_error', "Errore durante l'aggiornamento")
+            messagebox.showerror(
+                self.lang.get('err_error', 'Errore'),
+                f"{error_msg}: {str(e)}",
+                parent=self
+            )
+
+
+
 
     # =========================================================================
     # LOGICA DI VALIDAZIONE E SALVATAGGIO
@@ -675,6 +841,11 @@ class AddComplaintWindow(tk.Toplevel):
         """Salva la testata del reclamo"""
         logger.info("[ADD_COMPLAINT] === INIZIO _save_header ===")
 
+        # Se la testata è già stata salvata, chiama _update_header
+        if self.header_saved:
+            self._update_header()
+            return
+
         is_valid, error_msg = self._validate_header()
         if not is_valid:
             logger.error(f"[ADD_COMPLAINT] Validazione fallita: {error_msg}")
@@ -744,7 +915,11 @@ class AddComplaintWindow(tk.Toplevel):
         self.btn_upload_doc.config(state=tk.NORMAL)  # Enable document upload
         self.combo_doc_type.config(state='readonly')  # Enable document type selection
 
-        self.btn_save_header.config(state=tk.DISABLED)
+        # Nascondi "Salva Testata" e mostra "Modifica Testata"
+        self.btn_save_header.pack_forget()
+        self.btn_edit_header.pack(side=tk.RIGHT, padx=(0, 5))
+        
+        # Disabilita i campi della testata
         self.combo_client.config(state='disabled')
         self.combo_claim_type.config(state='disabled')
         self.combo_product.config(state='disabled')

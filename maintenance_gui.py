@@ -1363,6 +1363,9 @@ class BrandManagerWindow(tk.Toplevel):
                                                                                             padx=5, pady=5)
         self.supplier_combo = ttk.Combobox(form_frame, textvariable=self.supplier_var, state="readonly")
         self.supplier_combo.grid(row=0, column=1, sticky="ew", padx=5)
+        
+        # Pulsante refresh per ricaricare i fornitori
+        ttk.Button(form_frame, text="🔄", width=3, command=self._refresh_suppliers).grid(row=0, column=2, padx=2)
 
         ttk.Label(form_frame, text=self.lang.get('brand_name_label', "Nome Brand (*):")).grid(row=1, column=0,
                                                                                               sticky="w", padx=5,
@@ -1396,6 +1399,16 @@ class BrandManagerWindow(tk.Toplevel):
             self.suppliers_data = {s.SiteName: s.IDSite for s in suppliers}
             print("Suppliers data:", self.suppliers_data)
             self.supplier_combo['values'] = sorted(list(self.suppliers_data.keys()))
+
+    def _refresh_suppliers(self):
+        """Ricarica l'elenco dei fornitori mantenendo la selezione corrente se possibile."""
+        current_selection = self.supplier_var.get()
+        self._load_suppliers()
+        # Ripristina la selezione se il fornitore esiste ancora
+        if current_selection and current_selection in self.suppliers_data:
+            self.supplier_var.set(current_selection)
+        else:
+            self.supplier_var.set("")
 
     def _load_brands(self):
         self.tree.delete(*self.tree.get_children())

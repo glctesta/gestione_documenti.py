@@ -26,15 +26,20 @@ class PasteConfigurationWindow(tk.Toplevel):
         self.user_id = user_id
 
         self.title(self.lang.get('paste_config_title', 'Configurazione Paste'))
-        self.geometry('1000x850')
+        self.geometry('1450x550')
         self.transient(parent)
 
         self._current_pasta_id = None
         self._doc_data = None
         self._doc_filename = None
         
+        # Gestione prodotti associati
+        self.selected_products = {}  # {IdProduct: {'code': ..., 'name': ..., 'no_reuse': bool}}
+        self.products_dict = {}      # {display_name: {'id': ..., 'code': ..., 'name': ...}}
+        
         self._build_ui()
         self._load_producers()
+        self._load_products()
         self._load_pastas()
 
     def _build_ui(self):
@@ -54,11 +59,11 @@ class PasteConfigurationWindow(tk.Toplevel):
         left_frame.pack(side='left', fill='both', expand=True, padx=(0, 5))
 
         # Produttore
-        ttk.Label(left_frame, text=self.lang.get('producer', 'Produttore') + ' *').grid(
+        ttk.Label(left_frame, text=self.lang.get('producers', 'Produttore') + ' *').grid(
             row=0, column=0, sticky='w', padx=5, pady=5)
         self.producer_var = tk.StringVar()
         self.producer_combo = ttk.Combobox(left_frame, textvariable=self.producer_var, 
-                                          state='readonly', width=40)
+                                          width=40)
         self.producer_combo.grid(row=0, column=1, padx=5, pady=5, sticky='ew')
 
         # Codice Pasta
@@ -100,9 +105,54 @@ class PasteConfigurationWindow(tk.Toplevel):
         self.doc_label = ttk.Label(doc_frame, text='', foreground='blue')
         self.doc_label.pack(side='left', padx=5)
 
-        # Pulsanti azione
+        # --- SEZIONE PRODOTTI ASSOCIATI ---
+        product_main_frame = ttk.LabelFrame(left_frame, text="Prodotti Associati (opzionale)")
+        product_main_frame.grid(row=6, column=0, columnspan=2, sticky='ew', padx=5, pady=5)
+
+        # Combo aggiunta prodotto
+        add_frame = ttk.Frame(product_main_frame)
+        add_frame.pack(fill='x', padx=5, pady=5)
+
+        ttk.Label(add_frame, text="Aggiungi:").pack(side='left', padx=5)
+
+        self.product_var = tk.StringVar()
+        self.product_combo = ttk.Combobox(add_frame, textvariable=self.product_var, width=30)
+        self.product_combo.pack(side='left', padx=5)
+        self.product_combo.bind('<KeyRelease>', self._filter_products)
+
+        ttk.Button(add_frame, text="➕", command=self._add_product, width=3).pack(side='left', padx=2)
+        ttk.Button(add_frame, text="Re-use? ☐/☑", command=self._toggle_no_reuse).pack(side='left', padx=2)
+        ttk.Button(add_frame, text="❌", command=self._remove_product, width=3).pack(side='left', padx=2)
+        ttk.Button(add_frame, text="🗑️ Elimina", command=self._delete_selected_products).pack(side='left', padx=5)
+
+        # TreeView prodotti
+        tree_frame = ttk.Frame(product_main_frame)
+        tree_frame.pack(fill='both', expand=True, padx=5, pady=5)
+
+        prod_columns = ('id', 'code', 'name', 'no_reuse')
+        self.products_tree = ttk.Treeview(tree_frame, columns=prod_columns, 
+                                         show='headings', height=4)
+
+        self.products_tree.heading('id', text='ID')
+        self.products_tree.heading('code', text='Codice')
+        self.products_tree.heading('name', text='Nome Prodotto')
+        self.products_tree.heading('no_reuse', text='Cannot Reuse')
+
+        self.products_tree.column('id', width=0, stretch=False)  # Nascosto
+        self.products_tree.column('code', width=120)
+        self.products_tree.column('name', width=250)
+        self.products_tree.column('no_reuse', width=100)
+
+        prod_scrollbar = ttk.Scrollbar(tree_frame, orient='vertical', 
+                                      command=self.products_tree.yview)
+        self.products_tree.configure(yscrollcommand=prod_scrollbar.set)
+
+        self.products_tree.pack(side='left', fill='both', expand=True)
+        prod_scrollbar.pack(side='right', fill='y')
+
+        # Pulsanti azione (spostati a row=7)
         btn_frame = ttk.Frame(left_frame)
-        btn_frame.grid(row=6, column=0, columnspan=2, pady=20)
+        btn_frame.grid(row=7, column=0, columnspan=2, pady=20)
         ttk.Button(btn_frame, text=self.lang.get('btn_new', 'Nuovo'), 
                   command=self._on_new).pack(side='left', padx=2)
         ttk.Button(btn_frame, text=self.lang.get('btn_save', 'Salva'), 
@@ -117,18 +167,20 @@ class PasteConfigurationWindow(tk.Toplevel):
         right_frame.pack(side='right', fill='both', expand=True, padx=(5, 0))
 
         # Treeview
-        columns = ('id', 'pasta_code', 'producer', 'created_by', 'created_at', 'has_doc')
+        columns = ('id', 'pasta_code', 'producers', 'products', 'created_by', 'created_at', 'has_doc')
         self.tree = ttk.Treeview(right_frame, columns=columns, show='headings', height=20)
         self.tree.heading('id', text='ID')
         self.tree.heading('pasta_code', text=self.lang.get('pasta_code', 'Codice'))
-        self.tree.heading('producer', text=self.lang.get('producer', 'Produttore'))
+        self.tree.heading('producers', text=self.lang.get('producers', 'Produttore'))
+        self.tree.heading('products', text='Prodotti')
         self.tree.heading('created_by', text=self.lang.get('created_by', 'Creato da'))
         self.tree.heading('created_at', text=self.lang.get('created_at', 'Data Creazione'))
         self.tree.heading('has_doc', text=self.lang.get('doc', 'Doc'))
 
         self.tree.column('id', width=50)
         self.tree.column('pasta_code', width=120)
-        self.tree.column('producer', width=150)
+        self.tree.column('producers', width=120)
+        self.tree.column('products', width=200)
         self.tree.column('created_by', width=100)
         self.tree.column('created_at', width=120)
         self.tree.column('has_doc', width=50)
@@ -145,8 +197,157 @@ class PasteConfigurationWindow(tk.Toplevel):
     def _load_producers(self):
         """Carica la lista produttori nel combo"""
         producers = self.db.fetch_paste_producers()
-        self.producers_dict = {p.SiteName: p.IDSite for p in producers}
+        self.producers_dict = {p.Producers: p.ProducerId for p in producers}
         self.producer_combo['values'] = list(self.producers_dict.keys())
+
+    def _load_products(self):
+        """Carica prodotti disponibili"""
+        try:
+            query = """
+                SELECT IdProduct, ProductCode, ProductName 
+                FROM [Traceability_RS].[dbo].[Products] 
+                ORDER BY ProductCode
+            """
+            cursor = self.db.conn.cursor()
+            cursor.execute(query)
+            
+            self.products_dict = {}
+            for row in cursor.fetchall():
+                display = f"{row.ProductCode} - {row.ProductName}"
+                self.products_dict[display] = {
+                    'id': row.IdProduct,
+                    'code': row.ProductCode,
+                    'name': row.ProductName
+                }
+            
+            if hasattr(self, 'product_combo'):
+                self.product_combo['values'] = list(self.products_dict.keys())
+            
+            cursor.close()
+            logger.info(f"[PASTE] Caricati {len(self.products_dict)} prodotti")
+            
+        except Exception as e:
+            logger.error(f"Errore caricamento prodotti: {e}")
+            messagebox.showerror('Errore', f"Errore caricamento prodotti: {str(e)}")
+
+    def _add_product(self):
+        """Aggiunge prodotto alla selezione"""
+        selected = self.product_var.get()
+        if not selected:
+            messagebox.showwarning('Attenzione', 'Selezionare un prodotto')
+            return
+        
+        product_info = self.products_dict[selected]
+        product_id = product_info['id']
+        
+        if product_id in self.selected_products:
+            messagebox.showwarning('Attenzione', 'Prodotto già aggiunto')
+            return
+        
+        # Aggiungi alla lista
+        self.selected_products[product_id] = {
+            'code': product_info['code'],
+            'name': product_info['name'],
+            'no_reuse': False
+        }
+        
+        # Aggiungi alla TreeView
+        self.products_tree.insert('', 'end', iid=str(product_id), values=(
+            product_id,
+            product_info['code'],
+            product_info['name'],
+            '☐'
+        ))
+        
+        self.product_var.set('')
+        logger.info(f"[PASTE] Aggiunto prodotto ID={product_id}")
+
+    def _toggle_no_reuse(self):
+        """Toggle flag Cannot Reuse"""
+        selection = self.products_tree.selection()
+        if not selection:
+            messagebox.showwarning('Attenzione', 'Selezionare un prodotto dalla lista')
+            return
+        
+        product_id = int(selection[0])
+        
+        # Toggle
+        current = self.selected_products[product_id]['no_reuse']
+        self.selected_products[product_id]['no_reuse'] = not current
+        
+        # Aggiorna TreeView
+        values = list(self.products_tree.item(selection[0])['values'])
+        values[3] = '☑' if not current else '☐'
+        self.products_tree.item(selection[0], values=values)
+        
+        logger.info(f"[PASTE] Toggle NotRecicle per Product={product_id}: {not current}")
+
+    def _remove_product(self):
+        """Rimuove prodotto dalla selezione"""
+        selection = self.products_tree.selection()
+        if not selection:
+            messagebox.showwarning('Attenzione', 'Selezionare un prodotto da rimuovere')
+            return
+        
+        product_id = int(selection[0])
+        del self.selected_products[product_id]
+        self.products_tree.delete(selection[0])
+        
+        logger.info(f"[PASTE] Rimosso prodotto ID={product_id}")
+
+    def _filter_products(self, event=None):
+        """Filtra prodotti nel combo in base al testo digitato"""
+        typed = self.product_var.get().lower()
+        
+        if typed == '':
+            # Se vuoto, mostra tutti
+            self.product_combo['values'] = list(self.products_dict.keys())
+        else:
+            # Filtra prodotti che contengono il testo digitato
+            filtered = [p for p in self.products_dict.keys() if typed in p.lower()]
+            self.product_combo['values'] = filtered
+
+    def _delete_selected_products(self):
+        """Elimina permanentemente prodotti selezionati marcando DateOut"""
+        selection = self.products_tree.selection()
+        if not selection:
+            messagebox.showwarning('Attenzione', 'Selezionare uno o più prodotti da eliminare')
+            return
+        
+        if not messagebox.askyesno('Conferma', 
+                                   f'Eliminare definitivamente {len(selection)} prodotto/i?\n'
+                                   'Questa operazione markerà DateOut in PastaProducts.'):
+            return
+        
+        try:
+            cursor = self.db.conn.cursor()
+            
+            for item_id in selection:
+                product_id = int(item_id)
+                
+                # Marca DateOut in PastaProducts
+                cursor.execute("""
+                    UPDATE [Traceability_RS].[pst].[PastaProducts]
+                    SET DateOut = GETDATE()
+                    WHERE IdProduct = ? AND DateOut IS NULL
+                """, (product_id,))
+                
+                # Rimuovi dalla vista locale
+                if product_id in self.selected_products:
+                    del self.selected_products[product_id]
+                self.products_tree.delete(item_id)
+                
+                logger.info(f"[PASTE] Prodotto ID={product_id} eliminato definitivamente (DateOut marcato)")
+            
+            self.db.conn.commit()
+            cursor.close()
+            
+            messagebox.showinfo('Successo', f'{len(selection)} prodotto/i eliminato/i')
+            
+        except Exception as e:
+            self.db.conn.rollback()
+            logger.error(f"Errore eliminazione prodotti: {e}")
+            messagebox.showerror('Errore', f"Errore durante l'eliminazione: {str(e)}")
 
     def _load_pastas(self):
         """Carica le paste configurate"""
@@ -154,16 +355,58 @@ class PasteConfigurationWindow(tk.Toplevel):
             self.tree.delete(item)
 
         pastas = self.db.fetch_all_pastas()
+        logger.info(f"[PASTE] Caricamento paste: {len(pastas)} record trovati")
+        
         for pasta in pastas:
             created_at = pasta.CreatedAt.strftime('%d/%m/%Y %H:%M') if pasta.CreatedAt else ''
+            
+            # Usa getattr per gestire il caso in cui l'attributo non esista
+            producer_name = getattr(pasta, 'Producers', None) or getattr(pasta, 'ProducerName', None) or ''
+            
+            logger.info(f"[PASTE DEBUG] Pasta ID={pasta.Pastaid}, producer_name='{producer_name}'")
+            
+            if not producer_name:
+                logger.warning(f"[PASTE] Produttore vuoto per Pasta ID={pasta.Pastaid}")
+            
+            # Carica prodotti associati
+            products_text = ''
+            try:
+                cursor = self.db.conn.cursor()
+                cursor.execute("""
+                    SELECT p.ProductCode, pp.NotRecicle
+                    FROM [Traceability_RS].[pst].[PastaProducts] pp
+                    INNER JOIN [Traceability_RS].[dbo].[Products] p 
+                        ON pp.IdProduct = p.IdProduct
+                    WHERE pp.PastaId = ? AND pp.DateOut IS NULL
+                """, (pasta.Pastaid,))
+                
+                
+                products_list = []
+                for row in cursor.fetchall():
+                    product_code = row.ProductCode
+                    not_recicle = row.NotRecicle if row.NotRecicle else 0
+                    recicle_mark = '❌' if not_recicle else '✔️'
+                    products_list.append(f"{product_code} {recicle_mark}")
+                
+                products_text = ', '.join(products_list) if products_list else '-'
+                cursor.close()
+            except Exception as e:
+                logger.error(f"Errore caricamento prodotti per Pasta={pasta.Pastaid}: {e}")
+                products_text = '?'
+            
             self.tree.insert('', 'end', values=(
                 pasta.Pastaid,
                 pasta.PastaCode,
-                pasta.SiteName or '',
+                producer_name,
+                products_text,
                 pasta.CreatedBy or '',
                 created_at,
                 '✓' if pasta.PastaDataSheet else ''
             ))
+        
+        # Forza aggiornamento visivo della TreeView
+        self.tree.update()
+        logger.debug(f"[PASTE] TreeView aggiornata con {len(self.tree.get_children())} elementi")
 
     def _upload_doc(self):
         """Carica un documento"""
@@ -238,9 +481,15 @@ class PasteConfigurationWindow(tk.Toplevel):
         # Carica i dettagli della pasta
         pasta = self.db.fetch_pasta_by_id(self._current_pasta_id)
         if pasta:
-            # Trova il produttore nel combo
-            if pasta.SiteName in self.producers_dict:
-                self.producer_var.set(pasta.SiteName)
+            # Trova il produttore nel combo - gestisce nomi campo variabili
+            producer_name = getattr(pasta, 'Producers', None) or getattr(pasta, 'ProducerName', None) or getattr(pasta, 'producers', None)
+            
+            logger.info(f"[PASTE DEBUG SELECT] producer_name='{producer_name}', in dict={producer_name in self.producers_dict if producer_name else False}")
+            
+            if producer_name and producer_name in self.producers_dict:
+                self.producer_var.set(producer_name)
+            else:
+                logger.warning(f"[PASTE] Produttore '{producer_name}' non trovato in producers_dict")
             
             self.pasta_code_var.set(pasta.PastaCode or '')
             
@@ -263,6 +512,53 @@ class PasteConfigurationWindow(tk.Toplevel):
             else:
                 self.doc_label.config(text='')
                 self._doc_filename = None
+        
+        # Carica prodotti associati
+        self._load_associated_products(self._current_pasta_id)
+
+    def _load_associated_products(self, pasta_id):
+        """Carica prodotti associati alla pasta"""
+        try:
+            cursor = self.db.conn.cursor()
+            
+            # Carica tutti i prodotti con DateOut NULL per questa pasta
+            cursor.execute("""
+                SELECT pp.PastaProductId, pp.IdProduct, pp.NotRecicle,
+                       p.ProductCode, p.ProductName
+                FROM [Traceability_RS].[pst].[PastaProducts] pp
+                INNER JOIN [Traceability_RS].[dbo].[Products] p 
+                    ON pp.IdProduct = p.IdProduct
+                WHERE pp.PastaId = ? AND pp.DateOut IS NULL
+            """, (pasta_id,)) 
+            
+            # Pulisci selezione corrente
+            self.selected_products = {}
+            for item in self.products_tree.get_children():
+                self.products_tree.delete(item)
+            
+            # Aggiungi prodotti trovati
+            for row in cursor.fetchall():
+                product_id = row.IdProduct
+                not_recicle = row.NotRecicle if row.NotRecicle is not None else 0
+                
+                self.selected_products[product_id] = {
+                    'code': row.ProductCode,
+                    'name': row.ProductName,
+                    'no_reuse': bool(not_recicle)
+                }
+                
+                self.products_tree.insert('', 'end', iid=str(product_id), values=(
+                    product_id,
+                    row.ProductCode,
+                    row.ProductName,
+                    '☑' if not_recicle else '☐'
+                ))
+            
+            cursor.close()
+            logger.info(f"[PASTE] Caricati {len(self.selected_products)} prodotti per Pasta={pasta_id}")
+            
+        except Exception as e:
+            logger.error(f"Errore caricamento prodotti associati: {e}")
 
     def _on_double_click(self, event):
         """Apre il documento se presente"""
@@ -288,6 +584,12 @@ class PasteConfigurationWindow(tk.Toplevel):
         self._doc_data = None
         self._doc_filename = None
         self.doc_label.config(text='')
+        
+        # Pulisci prodotti
+        self.selected_products = {}
+        self.product_var.set('')
+        for item in self.products_tree.get_children():
+            self.products_tree.delete(item)
 
     def _on_save(self):
         """Salva o aggiorna una pasta"""
@@ -335,7 +637,24 @@ class PasteConfigurationWindow(tk.Toplevel):
                                  self.lang.get('temp_range_error', 'La temperatura minima deve essere inferiore alla massima'))
             return
 
-        producer_id = self.producers_dict[self.producer_var.get()]
+        # Verifica se il produttore esiste
+        producer_name = self.producer_var.get().strip()
+        if producer_name not in self.producers_dict:
+            # Produttore non esiste - chiedi all'utente se vuole aggiungerlo
+            response = messagebox.askyesno(
+                self.lang.get('producer_not_found', 'Produttore Non Trovato'),
+                f"Il produttore '{producer_name}' non esiste nel sistema.\\n\\n"
+                f"Vuoi aprire la gestione produttori per aggiungerlo?"
+            )
+            
+            if response:
+                # Apri la form di gestione produttori
+                self._open_producers_management()
+                return  # Ferma il salvataggio corrente
+            else:
+                return  # Annulla l'operazione
+        
+        producer_id = self.producers_dict[producer_name]
         pasta_code = self.pasta_code_var.get().strip()
 
         if self._current_pasta_id:
@@ -385,6 +704,52 @@ class PasteConfigurationWindow(tk.Toplevel):
                         messagebox.showwarning(self.lang.get('warning', 'Attenzione'),
                                              f"Pasta creata ma errore configurazione: {config_message}")
 
+        # GESTIONE PRODOTTI ASSOCIATI
+        # Salva prodotti solo se la pasta è stata salvata con successo
+        if success and self.selected_products:
+            try:
+                cursor = self.db.conn.cursor()
+                
+                # Determina PastaId (da update o da insert)
+                if self._current_pasta_id:
+                    pasta_id = self._current_pasta_id
+                else:
+                    # Trova l'ID della pasta appena creata
+                    pastas = self.db.fetch_all_pastas()
+                    pasta_id = None
+                    for p in pastas:
+                        if p.PastaCode == pasta_code and p.ProducerId == producer_id:
+                            pasta_id = p.Pastaid
+                            break
+                
+                if pasta_id:
+                    # Per ogni prodotto selezionato
+                    for product_id, product_info in self.selected_products.items():
+                        not_recicle = 1 if product_info['no_reuse'] else 0
+                        
+                        # INSERT in PastaProducts con PastaId
+                        cursor.execute("""
+                            INSERT INTO [Traceability_RS].[pst].[PastaProducts]
+                            (PastaId, IdProduct, DateIN, DateOut, NotRecicle)
+                            VALUES (?, ?, GETDATE(), NULL, ?)
+                        """, (pasta_id, product_id, not_recicle))
+                        
+                        # Ottieni PastaProductId appena creato
+                        cursor.execute("SELECT @@IDENTITY")
+                        pasta_product_id = int(cursor.fetchone()[0])
+                        
+                        logger.info(f"[PASTE] Salvato PastaProductId={pasta_product_id}, "
+                                   f"PastaId={pasta_id}, Product={product_id}, NotRecicle={not_recicle}")
+                    
+                    self.db.conn.commit()
+                    cursor.close()
+                    logger.info(f"[PASTE] Salvati {len(self.selected_products)} prodotti per Pasta={pasta_id}")
+                    
+            except Exception as e:
+                logger.error(f"Errore salvataggio prodotti: {e}")
+                messagebox.showwarning('Attenzione', 
+                                      f"Pasta salvata ma errore prodotti: {str(e)}")
+
         if success:
             messagebox.showinfo(self.lang.get('success', 'Successo'), message)
             self._load_pastas()
@@ -401,6 +766,21 @@ class PasteConfigurationWindow(tk.Toplevel):
 
         if messagebox.askyesno(self.lang.get('confirm', 'Conferma'),
                               self.lang.get('confirm_delete_pasta', 'Eliminare la pasta selezionata?')):
+            try:
+                # Prima marca DateOut in PastaProducts
+                cursor = self.db.conn.cursor()
+                cursor.execute("""
+                    UPDATE [Traceability_RS].[pst].[PastaProducts]
+                    SET DateOut = GETDATE()
+                    WHERE DateOut IS NULL
+                """)
+                self.db.conn.commit()
+                cursor.close()
+                logger.info(f"[PASTE] Marcati DateOut prodotti per Pasta={self._current_pasta_id}")
+            except Exception as e:
+                logger.error(f"Errore marcatura DateOut prodotti: {e}")
+            
+            # Poi elimina la pasta
             success, message = self.db.delete_pasta(self._current_pasta_id)
             if success:
                 messagebox.showinfo(self.lang.get('success', 'Successo'), message)
@@ -408,6 +788,63 @@ class PasteConfigurationWindow(tk.Toplevel):
                 self._on_new()
             else:
                 messagebox.showerror(self.lang.get('error', 'Errore'), message)
+
+    def _open_producers_management(self):
+        """Apre la gestione produttori e ricarica il combo al ritorno"""
+        try:
+            # Salva il nome del produttore che l'utente ha digitato
+            producer_name_to_find = self.producer_var.get().strip()
+            
+            # Importa e apri la finestra di gestione produttori
+            from paste_manager import ProducersWindow
+            producers_window = ProducersWindow(self, self.db, self.lang, initial_name=producer_name_to_find)
+            
+            # Aspetta che la finestra venga chiusa
+            self.wait_window(producers_window)
+            
+            # Ricarica il combo dei produttori
+            self._load_producers()
+            
+            # Log di debug
+            logger.info(f"[PASTE] Combo ricaricato: {len(self.producers_dict)} produttori disponibili")
+            logger.debug(f"[PASTE] Produttori caricati: {list(self.producers_dict.keys())}")
+            
+            # Forza aggiornamento del widget combo
+            self.producer_combo['values'] = list(self.producers_dict.keys())
+            self.producer_combo.update()
+            
+            # Cerca il produttore (case-insensitive)
+            found_producer = None
+            for producer_name in self.producers_dict.keys():
+                if producer_name.lower() == producer_name_to_find.lower():
+                    found_producer = producer_name
+                    break
+            
+            # Se il produttore ora esiste, preselezionalo
+            if found_producer:
+                self.producer_var.set(found_producer)
+                messagebox.showinfo(
+                    self.lang.get('success', 'Successo'),
+                    f"Produttore '{found_producer}' è ora disponibile.\n\nPuoi procedere con il salvataggio."
+                )
+            else:
+                # Mostra i primi 5 produttori disponibili per aiutare l'utente
+                available = list(self.producers_dict.keys())[:5]
+                available_str = "\n- ".join(available)
+                messagebox.showinfo(
+                    self.lang.get('info', 'Informazione'),
+                    f"Gestione produttori chiusa.\n\n"
+                    f"Produttori disponibili:\n- {available_str}\n{'...' if len(self.producers_dict) > 5 else ''}\n\n"
+                    f"Seleziona o inserisci un produttore per continuare."
+                )
+                
+        except Exception as e:
+            logger.error(f"Errore apertura gestione produttori: {e}")
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Errore nell'apertura della gestione produttori: {str(e)}"
+            )
+
 
 
 def open_paste_configuration(parent, db_handler, lang_manager, user_id):
@@ -837,7 +1274,7 @@ class PasteReceptionWindow(tk.Toplevel):
         self.user_name = user_name
 
         self.title(self.lang.get('paste_reception_title', 'Ricevimento Paste'))
-        self.geometry('1200x650')
+        self.geometry('1450x650')
         self.transient(parent)
 
         self._current_log_id = None
@@ -925,11 +1362,11 @@ class PasteReceptionWindow(tk.Toplevel):
         right_frame.pack(side='right', fill='both', expand=True, padx=(5, 0))
 
         # TreeView
-        columns = ('id', 'pasta', 'producer', 'label', 'date', 'user', 'doc')
+        columns = ('id', 'pasta', 'producers', 'label', 'date', 'user', 'doc')
         self.tree = ttk.Treeview(right_frame, columns=columns, show='headings', height=20)
         self.tree.heading('id', text='ID')
         self.tree.heading('pasta', text=self.lang.get('pasta_code', 'Codice'))
-        self.tree.heading('producer', text=self.lang.get('producer', 'Produttore'))
+        self.tree.heading('producers', text=self.lang.get('producers', 'Produttore'))
         self.tree.heading('label', text=self.lang.get('label', 'Etichetta'))
         self.tree.heading('date', text=self.lang.get('reception_date', 'Data'))
         self.tree.heading('user', text=self.lang.get('user', 'Utente'))
@@ -937,7 +1374,7 @@ class PasteReceptionWindow(tk.Toplevel):
 
         self.tree.column('id', width=40)
         self.tree.column('pasta', width=100)
-        self.tree.column('producer', width=120)
+        self.tree.column('producers', width=120)
         self.tree.column('label', width=130)
         self.tree.column('date', width=130)
         self.tree.column('user', width=80)
@@ -962,7 +1399,7 @@ class PasteReceptionWindow(tk.Toplevel):
         """Carica solo le locazioni warehouse nel combo"""
         try:
             query = """
-                SELECT PastaStoreFrigiderLocationId, PastaStoreFrigiderLocationName
+                SELECT PastaStoreFrigiderLocationId, PastaStoreFrigiderLocationName, PastaStoreFrigiderId
                 FROM [Traceability_RS].[pst].[PastaStoreFrigiderLocations]
                 WHERE LOWER(PastaStoreFrigiderLocationName) LIKE '%warehouse%'
                 ORDER BY PastaStoreFrigiderLocationName
@@ -971,11 +1408,17 @@ class PasteReceptionWindow(tk.Toplevel):
             cursor.execute(query)
             
             self.locations_dict = {}
+            self.locations_fridge_dict = {}  # Nuovo dizionario: location_name → fridge_id
+            
             for row in cursor.fetchall():
-                self.locations_dict[row.PastaStoreFrigiderLocationName] = row.PastaStoreFrigiderLocationId
+                location_name = row.PastaStoreFrigiderLocationName
+                self.locations_dict[location_name] = row.PastaStoreFrigiderLocationId
+                self.locations_fridge_dict[location_name] = row.PastaStoreFrigiderId
             
             self.location_combo['values'] = list(self.locations_dict.keys())
             cursor.close()
+            
+            logger.info(f"[RECEPTION] Caricate {len(self.locations_dict)} locations warehouse")
         except Exception as e:
             logger.error(f"Errore caricamento locazioni warehouse: {e}")
             messagebox.showerror(
@@ -1220,7 +1663,7 @@ class PasteReceptionWindow(tk.Toplevel):
         try:
             query = """
                 SELECT TOP 1 PrinterIP, PrinterPort
-                FROM [Traceability_RS].[pst].[PrinterConfig]
+                FROM [Traceability_RS].[pst].[PrinterConfigs]
                 WHERE IsActive = 1
             """
             cursor = self.db.conn.cursor()
@@ -1272,25 +1715,79 @@ class PasteReceptionWindow(tk.Toplevel):
             # Ottieni l'ID della locazione selezionata
             location_id = self.locations_dict[self.location_var.get()]
             
+            # Crea o recupera l'ID del codice etichetta
+            label_code = self.label_var.get()
+            cursor = self.db.conn.cursor()
+            
+            # Prima verifica se il codice etichetta esiste già
+            cursor.execute("""
+                SELECT LabelCodeId FROM [Traceability_RS].[pst].[PastaLabelCodes]
+                WHERE LabelCode = ?
+            """, (label_code,))
+            
+            label_row = cursor.fetchone()
+            if label_row:
+                label_code_id = label_row.LabelCodeId
+            else:
+                # Crea nuovo codice etichetta
+                cursor.execute("""
+                    INSERT INTO [Traceability_RS].[pst].[PastaLabelCodes] (LabelCode, LabeCreationDate)
+                    VALUES (?, GETDATE())
+                """, (label_code,))
+                self.db.conn.commit()
+                
+                # Recupera l'ID appena creato
+                cursor.execute("SELECT @@IDENTITY")
+                label_code_id = int(cursor.fetchone()[0])
+                logger.info(f"Creato nuovo LabelCodeId: {label_code_id} per {label_code}")
+            
+            # Recupera il frigorifero associato alla location
+            # Ora il PastaStoreFrigiderId è direttamente nella tabella locations
+            location_name = self.location_var.get()
+            fridge_id = self.locations_fridge_dict.get(location_name)
+            
+            if not fridge_id:
+                cursor.close()
+                logger.error(f"Nessun frigorifero associato alla location '{location_name}'")
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Nessun frigorifero associato alla location:\n'{location_name}'\n\n"
+                    f"Configura un frigorifero per questa location nella gestione locations."
+                )
+                return
+            
+            logger.info(f"Frigorifero trovato: ID={fridge_id} per location '{location_name}'")
+            
             # Inserisci il log di ricevimento
             query = """
                 INSERT INTO [Traceability_RS].[pst].[PastaLogs]
-                (Pastaid, LabelCode, GetIn, [User], PastaStoreFrigiderLocationId, IncomingDocument)
+                (PastaId, LabeCodeId, GetIn, [User], PastaStoreFrigiderId, IncomingDoc)
                 VALUES (?, ?, GETDATE(), ?, ?, ?)
             """
-            cursor = self.db.conn.cursor()
             cursor.execute(query, (
                 pasta_id,
-                self.label_var.get(),
+                label_code_id,
                 self.user_name,
-                location_id,
+                fridge_id,
                 self._doc_data if self._doc_data else None
             ))
             self.db.conn.commit()
             
             # Ottieni l'ID del log appena inserito
             cursor.execute("SELECT @@IDENTITY")
-            log_id = cursor.fetchone()[0]
+            log_id = int(cursor.fetchone()[0])
+            
+            # Inserisci anche in PastaInUseLogs per tracciare l'uso
+            query_in_use = """
+                INSERT INTO [Traceability_RS].[pst].[PastaInUseLogs]
+                (PastaLogid, PastaStoreFrigiderLocationId, IsNew, DateIn)
+                VALUES (?, ?, 1, GETDATE())
+            """
+            cursor.execute(query_in_use, (log_id, location_id))
+            self.db.conn.commit()
+            
+            logger.info(f"PastaInUseLog creato per PastaLogId={log_id}, LocationId={location_id}")
+            
             cursor.close()
             
             # Marca l'etichetta come utilizzata
@@ -1301,7 +1798,7 @@ class PasteReceptionWindow(tk.Toplevel):
                 self.lang.get('reception_saved', 'Ricevimento registrato con successo')
             )
             
-            logger.info(f"Ricevimento registrato: PastaLogId={log_id}, Label={self.label_var.get()}")
+            logger.info(f"Ricevimento registrato: PastaLogId={log_id}, LabelCodeId={label_code_id}, Label={label_code}")
             
             # Reset form e ricarica
             self.pasta_var.set('')
@@ -1336,7 +1833,7 @@ class PasteReceptionWindow(tk.Toplevel):
                 SELECT pl.LabelCode, p.PastaCode, pr.ProducerName, pl.GetIn
                 FROM [Traceability_RS].[pst].[PastaLogs] pl
                 INNER JOIN [Traceability_RS].[pst].[Pastas] p ON pl.Pastaid = p.Pastaid
-                LEFT JOIN [Traceability_RS].[pst].[Producers] pr ON p.ProducerId = pr.ProducerId
+                LEFT JOIN [Traceability_RS].[dbo].[Producers] pr ON p.ProducerId = pr.ProducerId
                 WHERE pl.PastaLogId = ?
             """
             cursor = self.db.conn.cursor()
@@ -1416,10 +1913,11 @@ class PasteReceptionWindow(tk.Toplevel):
 class ProducersWindow(tk.Toplevel):
     """Finestra per la gestione dei produttori di paste"""
     
-    def __init__(self, parent, db_handler, lang_manager):
+    def __init__(self, parent, db_handler, lang_manager, initial_name=None):
         super().__init__(parent)
         self.db = db_handler
         self.lang = lang_manager
+        self.initial_name = initial_name
         
         self.title(self.lang.get('producers_management', 'Gestione Produttori'))
         self.geometry("800x600")
@@ -1428,6 +1926,10 @@ class ProducersWindow(tk.Toplevel):
         self._selected_id = None
         self._build_ui()
         self._load_producers()
+        
+        # Pre-compila il campo nome se fornito
+        if self.initial_name:
+            self.name_var.set(self.initial_name)
     
     def _build_ui(self):
         """Costruisce l'interfaccia"""

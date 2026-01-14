@@ -81,7 +81,7 @@ class NpiDashboardWindow(tk.Toplevel):
         list_frame.pack(fill=tk.BOTH, expand=True)
 
         # --- **MODIFICA QUI: NUOVE COLONNE E TAG** ---
-        cols = ('status_icon', 'project_name', 'product_code', 'customer', 'milestone_due_date')
+        cols = ('status_icon', 'project_name', 'product_code', 'customer', 'project_end_date')
         self.project_tree = ttk.Treeview(list_frame, columns=cols, show='headings', selectmode='browse')
 
         # Colonna per l'icona di stato 'X' (senza header)
@@ -95,9 +95,9 @@ class NpiDashboardWindow(tk.Toplevel):
         self.project_tree.column('product_code', width=150)
         self.project_tree.heading('customer', text=self.lang.get('col_customer', 'Cliente'))
         self.project_tree.column('customer', width=180)
-        self.project_tree.heading('milestone_due_date',
-                                  text=self.lang.get('col_milestone_due_date', 'Scadenza Milestone Finale'))
-        self.project_tree.column('milestone_due_date', width=200, anchor=tk.CENTER)
+        self.project_tree.heading('project_end_date',
+                                  text=self.lang.get('col_project_end_date', 'Data Fine Progetto'))
+        self.project_tree.column('project_end_date', width=200, anchor=tk.CENTER)
 
         # Definizione del tag per i progetti in ritardo
         self.project_tree.tag_configure('overdue', foreground='red', font=('Helvetica', 9, 'bold'))
@@ -170,12 +170,21 @@ class NpiDashboardWindow(tk.Toplevel):
                 return
 
             for proj in progetti:
-                due_date = proj.ScadenzaMilestoneFinale
-                display_date = due_date.strftime('%d/%m/%Y') if due_date else "N/D"
+                # Recupera la data fine progetto dall'oggetto progetto
+                # Nota: get_dashboard_projects ora deve restituire anche ScadenzaProgetto
+                project_end_date = getattr(proj, 'ScadenzaProgetto', None)
+                display_date = project_end_date.strftime('%d/%m/%Y') if project_end_date else "N/D"
                 status_icon = ''
                 row_tags = ()
 
-                is_overdue = due_date and due_date.date() < datetime.now().date()
+                # Gestisce sia datetime.date che datetime.datetime
+                if project_end_date:
+                    # Converti in date se necessario
+                    end_date = project_end_date.date() if hasattr(project_end_date, 'date') else project_end_date
+                    is_overdue = end_date < datetime.now().date()
+                else:
+                    is_overdue = False
+                    
                 if is_overdue:
                     status_icon = 'X'
                     row_tags = ('overdue',)
