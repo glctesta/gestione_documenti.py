@@ -189,6 +189,50 @@ class ProjectWindow(tk.Toplevel):
             font=('Helvetica', 9, 'bold')  # Cambiato da italic a bold
         )
         self.milestone_warning_label.pack(side=tk.LEFT, padx=5)
+        
+        # 🆕 GERARCHIA PROGETTI (Parent-Child)
+        hierarchy_frame = ttk.LabelFrame(header_frame, text="🔗 Gerarchia Progetti")
+        hierarchy_frame.pack(side=tk.RIGHT, padx=10)
+        
+        # Riga 1: Progetto Padre
+        hierarchy_row1 = ttk.Frame(hierarchy_frame)
+        hierarchy_row1.pack(fill=tk.X, padx=2, pady=2)
+        
+        ttk.Label(hierarchy_row1, text="Progetto Padre:").pack(side=tk.LEFT, padx=5)
+        self.parent_project_combo = ttk.Combobox(hierarchy_row1, state='readonly', width=25)
+        self.parent_project_combo.pack(side=tk.LEFT, padx=5)
+        self.parent_project_combo.bind('<<ComboboxSelected>>', self._on_parent_project_selected)
+        
+        # Riga 2: Info progetto padre corrente
+        hierarchy_row2 = ttk.Frame(hierarchy_frame)
+        hierarchy_row2.pack(fill=tk.X, padx=2, pady=2)
+        
+        self.current_parent_label = ttk.Label(
+            hierarchy_row2,
+            text="",
+            foreground="blue",
+            font=('Helvetica', 9)
+        )
+        self.current_parent_label.pack(side=tk.LEFT, padx=5)
+        
+        # Riga 3: Progetti figli count
+        hierarchy_row3 = ttk.Frame(hierarchy_frame)
+        hierarchy_row3.pack(fill=tk.X, padx=2, pady=2)
+        
+        self.children_projects_label = ttk.Label(
+            hierarchy_row3,
+            text="",
+            foreground="green",
+            font=('Helvetica', 9)
+        )
+        self.children_projects_label.pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(
+            hierarchy_row3,
+            text="📋 Mostra Figli",
+            command=self._show_child_projects_dialog
+        ).pack(side=tk.LEFT, padx=5)
+
 
         # Content Split
         paned = ttk.PanedWindow(main_frame, orient=tk.HORIZONTAL)
@@ -472,6 +516,9 @@ class ProjectWindow(tk.Toplevel):
             
             # Controlla se esiste un task milestone finale
             self._check_milestone_status()
+            
+            # 🆕 Popola gerarchia progetti
+            self._populate_project_hierarchy()
 
             if openpyxl: self.export_button.config(state=tk.NORMAL)
 
@@ -1459,3 +1506,255 @@ class ProjectWindow(tk.Toplevel):
         except Exception as e:
             logger.error(f"Errore apertura finestra documenti: {e}", exc_info=True)
             messagebox.showerror('Errore', f"Impossibile aprire la finestra documenti:\n{e}", parent=self)
+    
+    # ========================================
+    # ðŸ†• FUNZIONI GERARCHIA PROGETTI
+    # ========================================
+    
+    def _populate_project_hierarchy(self):
+        """Popola i widget della gerarchia progetti."""
+        try:
+            # Carica tutti i progetti disponibili come possibili padri
+            all_projects = self.npi_manager.get_progetti_npi()
+            
+            # Escludi il progetto corrente dalla lista dei padri possibili
+            available_parents = [
+                p for p in all_projects 
+                if p.ProgettoId != self.project_id
+            ]
+            
+            # ðŸ›¡ï¸ Validazione: Escludi anche i discendenti (evita cicli)
+            # Un progetto non puÃ² avere come padre uno dei suoi discendenti
+            child_ids = self._get_all_descendant_ids(self.project_id)
+            available_parents = [
+                p for p in available_parents
+                if p.ProgettoId not in child_ids
+            ]
+            
+            # Popola combo con "(Nessuno)" + lista progetti
+            parent_names = ["(Nessuno - Progetto Root)"]
+            self.parent_projects_map = {}
+            
+            for p in available_parents:
+                display_name = f"{p.NomeProgetto} (ID: {p.ProgettoId})"
+                parent_names.append(display_name)
+                self.parent_projects_map[display_name] = p.ProgettoId
+            
+            self.parent_project_combo['values'] = parent_names
+            
+            # Imposta il valore corrente
+            if self.progetto.ParentProjectID:
+                parent = self.npi_manager.get_parent_project(self.project_id)
+                if parent:
+                    display_name = f"{parent.NomeProgetto} (ID: {parent.ProgettoId})"
+                    if display_name in parent_names:
+                        self.parent_project_combo.set(display_name)
+                        self.current_parent_label.config(
+                            text=f"ðŸ“¦ Progetto Padre: {parent.NomeProgetto}",
+                            foreground="blue"
+                        )
+                    else:
+                        self.parent_project_combo.set(parent_names[0])
+                        self.current_parent_label.config(text="âœ… Progetto Root (nessun padre)")
+                else:
+                    self.parent_project_combo.set(parent_names[0])
+                    self.current_parent_label.config(text="âœ… Progetto Root (nessun padre)")
+            else:
+                self.parent_project_combo.set(parent_names[0])
+                self.current_parent_label.config(text="âœ… Progetto Root (nessun padre)")
+            
+            # Conta e mostra progetti figli
+            children = self.npi_manager.get_child_projects(self.project_id)
+            if children:
+                completed_count = sum(1 for c in children if c.StatoProgetto == 'Completato')
+                self.children_projects_label.config(
+                    text=f"ðŸ“„ {len(children)} progetti figli ({completed_count} completati)",
+                    foreground="green" if completed_count == len(children) else "orange"
+                )
+            else:
+                self.children_projects_label.config(
+                    text="Nessun progetto figlio",
+                    foreground="gray"
+                )
+                
+        except Exception as e:
+            logger.error(f"Errore popolamento gerarchia: {e}", exc_info=True)
+            messagebox.showerror("Errore", f"Errore caricamento gerarchia:\\n{e}", parent=self)
+    
+    def _get_all_descendant_ids(self, project_id, visited=None):
+        """
+        Recupera ricorsivamente tutti gli ID dei progetti discendenti.
+        Utilizzato per evitare cicli nella selezione del padre.
+        """
+        if visited is None:
+            visited = set()
+        
+        if project_id in visited:
+            return visited
+        
+        visited.add(project_id)
+        
+        try:
+            children = self.npi_manager.get_child_projects(project_id)
+            for child in children:
+                self._get_all_descendant_ids(child.ProgettoId, visited)
+        except Exception as e:
+            logger.warning(f"Errore recupero discendenti per {project_id}: {e}")
+        
+        return visited
+    
+    def _on_parent_project_selected(self, event=None):
+        """Gestisce la selezione di un nuovo progetto padre."""
+        selected = self.parent_project_combo.get()
+        
+        if selected == "(Nessuno - Progetto Root)":
+            new_parent_id = None
+        else:
+            new_parent_id = self.parent_projects_map.get(selected)
+        
+        # Conferma cambio
+        if new_parent_id == self.progetto.ParentProjectID:
+            return  # Nessun cambio
+        
+        parent_name = selected if selected != "(Nessuno - Progetto Root)" else "nessun padre"
+        response = messagebox.askyesno(
+            "Conferma Modifica",
+            f"Vuoi modificare il progetto padre a:\\n{parent_name}?",
+            parent=self
+        )
+        
+        if not response:
+            # Ripristina valore originale
+            self._populate_project_hierarchy()
+            return
+        
+        # Valida contro cicli
+        if new_parent_id:
+            is_valid, msg = self.npi_manager.validate_no_circular_dependency(
+                self.project_id,
+                new_parent_id
+            )
+            
+            if not is_valid:
+                messagebox.showerror("Errore Validazione", msg, parent=self)
+                self._populate_project_hierarchy()
+                return
+        
+        # Salva modifica
+        try:
+            self.progetto.ParentProjectID = new_parent_id
+            
+            # Aggiorna anche ProjectType
+            if new_parent_id:
+                self.progetto.ProjectType = 'Child'
+            else:
+                # Verifica se ha figli per determinare se Ã¨ Parent o Standard
+                children = self.npi_manager.get_child_projects(self.project_id)
+                self.progetto.ProjectType = 'Parent' if children else 'Standard'
+            
+            # Salva nel database
+            self.npi_manager.update_progetto_npi(self.project_id, {
+                'ParentProjectID': new_parent_id,
+                'ProjectType': self.progetto.ProjectType
+            })
+            
+            # Aggiorna i livelli gerarchici
+            if new_parent_id:
+                self.npi_manager.update_hierarchy_levels(new_parent_id)
+            else:
+                self.npi_manager.update_hierarchy_levels(self.project_id)
+            
+            messagebox.showinfo("Successo", "Gerarchia progetti aggiornata con successo!", parent=self)
+            
+            # Ricarica i dati
+            self._populate_project_hierarchy()
+            
+        except Exception as e:
+            logger.error(f"Errore salvataggio padre: {e}", exc_info=True)
+            messagebox.showerror("Errore", f"Impossibile salvare:\\n{e}", parent=self)
+            self._populate_project_hierarchy()
+    
+    def _show_child_projects_dialog(self):
+        """Mostra un dialog con la lista dei progetti figli e i loro stati."""
+        try:
+            children = self.npi_manager.get_child_projects(self.project_id)
+            
+            if not children:
+                messagebox.showinfo("Progetti Figli", "Questo progetto non ha progetti figli.", parent=self)
+                return
+            
+            # Crea dialog
+            dialog = tk.Toplevel(self)
+            dialog.title("Progetti Figli")
+            dialog.geometry("600x400")
+            dialog.transient(self)
+            dialog.grab_set()
+            
+            # Titolo
+            ttk.Label(
+                dialog,
+                text=f"Progetti Figli di: {self.progetto.NomeProgetto}",
+                font=('Helvetica', 12, 'bold')
+            ).pack(pady=10)
+            
+            # Treeview
+            tree_frame = ttk.Frame(dialog)
+            tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            
+            tree = ttk.Treeview(
+                tree_frame,
+                columns=('Nome', 'Stato', 'Livello', 'Tipo'),
+                show='tree headings'
+            )
+            
+            tree.heading('#0', text='ID')
+            tree.heading('Nome', text='Nome Progetto')
+            tree.heading('Stato', text='Stato')
+            tree.heading('Livello', text='Livello')
+            tree.heading('Tipo', text='Tipo')
+            
+            tree.column('#0', width=60)
+            tree.column('Nome', width=300)
+            tree.column('Stato', width=100)
+            tree.column('Livello', width=60)
+            tree.column('Tipo', width=80)
+            
+            # Scrollbar
+            scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=tree.yview)
+            tree.configure(yscrollcommand=scrollbar.set)
+            
+            tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            # Popola
+            for child in children:
+                tags = []
+                if child.StatoProgetto == 'Completato':
+                    tags.append('completed')
+                elif child.StatoProgetto == 'In Lavorazione':
+                    tags.append('in_progress')
+                
+                tree.insert('', tk.END,
+                    text=str(child.ProgettoId),
+                    values=(
+                        child.NomeProgetto,
+                        child.StatoProgetto,
+                        child.HierarchyLevel or 0,
+                        child.ProjectType or 'Standard'
+                    ),
+                    tags=tags
+                )
+            
+            # Tag styling
+            tree.tag_configure('completed', foreground='green')
+            tree.tag_configure('in_progress', foreground='orange')
+            
+            # Pulsanti
+            button_frame = ttk.Frame(dialog)
+            button_frame.pack(pady=10)
+            
+            ttk.Button(button_frame, text="Chiudi", command=dialog.destroy).pack()
+            
+        except Exception as e:
+            logger.error(f"Errore visualizzazione figli: {e}", exc_info=True)
+            messagebox.showerror("Errore", f"Impossibile visualizzare i progetti figli:\\n{e}", parent=self)
