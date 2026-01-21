@@ -1673,12 +1673,12 @@ class GestoreNPI:
                 
                 # Normalizza lo stato per il confronto (rimuove spazi e rende case-insensitive)
                 stato_normalized = task.Stato.strip() if task.Stato else ""
-                logger.debug(f"Task {task.TaskProdottoID} ({task.task_catalogo.NomeTask if task.task_catalogo else 'N/A'}): Stato raw='{task.Stato}', normalized='{stato_normalized}'")
+                logger.info(f"🔍 Task {task.TaskProdottoID} ({task.task_catalogo.NomeTask if task.task_catalogo else 'N/A'}): Stato raw='{task.Stato}', normalized='{stato_normalized}'")
                 
                 if stato_normalized == 'Completato':
                     # Task completato = 100%
                     completion_percentage = 100
-                    logger.debug(f"Task {task.TaskProdottoID}: Completato -> 100%")
+                    logger.info(f"✅ Task {task.TaskProdottoID}: Completato -> 100%")
                 elif stato_normalized == 'In Lavorazione':
                     # Task in lavorazione = calcola in base alle date
                     try:
@@ -1686,33 +1686,38 @@ class GestoreNPI:
                         start_date = data_inizio.date() if hasattr(data_inizio, 'date') else data_inizio
                         end_date = data_fine.date() if hasattr(data_fine, 'date') else data_fine
                         
-                        if today <= start_date:
-                            # Non ancora iniziato (anche se dichiarato in lavorazione)
+                        logger.info(f"📅 Task {task.TaskProdottoID}: Oggi={today}, Inizio={start_date}, Fine={end_date}")
+                        
+                        if today < start_date:
+                            # Non ancora iniziato (data futura)
                             completion_percentage = 0
-                            logger.debug(f"Task {task.TaskProdottoID}: In Lavorazione ma non iniziato -> 0%")
-                        elif today >= end_date:
+                            logger.info(f"⏸️ Task {task.TaskProdottoID}: In Lavorazione ma non iniziato (futuro) -> 0%")
+                        elif today > end_date:
                             # Scadenza superata
                             completion_percentage = 100
-                            logger.debug(f"Task {task.TaskProdottoID}: In Lavorazione scaduto -> 100%")
+                            logger.info(f"⏰ Task {task.TaskProdottoID}: In Lavorazione scaduto -> 100%")
                         else:
-                            # Calcola percentuale in base al progresso temporale
+                            # Task in corso: oggi è tra start_date e end_date (inclusi)
                             total_duration = (end_date - start_date).days
-                            elapsed_duration = (today - start_date).days
                             
-                            if total_duration > 0:
-                                completion_percentage = int((elapsed_duration / total_duration) * 100)
-                                logger.debug(f"Task {task.TaskProdottoID}: In Lavorazione {elapsed_duration}/{total_duration} giorni -> {completion_percentage}%")
-                            else:
-                                # Task con durata 0 giorni
+                            if total_duration == 0:
+                                # Task con durata 0 giorni (inizio == fine == oggi)
                                 completion_percentage = 50
-                                logger.debug(f"Task {task.TaskProdottoID}: In Lavorazione durata 0 giorni -> 50%")
+                                logger.info(f"⚡ Task {task.TaskProdottoID}: In Lavorazione stesso giorno (inizio=fine=oggi) -> 50%")
+                            else:
+                                # Calcola percentuale in base al progresso temporale
+                                elapsed_duration = (today - start_date).days
+                                completion_percentage = int((elapsed_duration / total_duration) * 100)
+                                # Assicura che sia almeno 1% se è iniziato
+                                completion_percentage = max(1, completion_percentage)
+                                logger.info(f"📊 Task {task.TaskProdottoID}: In Lavorazione {elapsed_duration}/{total_duration} giorni -> {completion_percentage}%")
                     except Exception as e:
-                        logger.warning(f"Errore calcolo percentuale per task {task.TaskProdottoID}: {e}")
+                        logger.warning(f"❌ Errore calcolo percentuale per task {task.TaskProdottoID}: {e}")
                         completion_percentage = 0
                 else:
                     # Task in altri stati (Da Fare, Bloccato, ecc.) = 0%
                     completion_percentage = 0
-                    logger.debug(f"Task {task.TaskProdottoID}: Stato '{stato_normalized}' -> 0%")
+                    logger.info(f"🔴 Task {task.TaskProdottoID}: Stato '{stato_normalized}' -> 0%")
 
                 df_data.append({
                     'Task': task.task_catalogo.NomeTask if task.task_catalogo else "Task non definito",
