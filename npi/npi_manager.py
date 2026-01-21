@@ -1671,10 +1671,15 @@ class GestoreNPI:
                 # 🆕 Calcolo dinamico percentuale di completamento
                 completion_percentage = 0
                 
-                if task.Stato == 'Completato':
+                # Normalizza lo stato per il confronto (rimuove spazi e rende case-insensitive)
+                stato_normalized = task.Stato.strip() if task.Stato else ""
+                logger.debug(f"Task {task.TaskProdottoID} ({task.task_catalogo.NomeTask if task.task_catalogo else 'N/A'}): Stato raw='{task.Stato}', normalized='{stato_normalized}'")
+                
+                if stato_normalized == 'Completato':
                     # Task completato = 100%
                     completion_percentage = 100
-                elif task.Stato == 'In Lavorazione':
+                    logger.debug(f"Task {task.TaskProdottoID}: Completato -> 100%")
+                elif stato_normalized == 'In Lavorazione':
                     # Task in lavorazione = calcola in base alle date
                     try:
                         today = datetime.now().date()
@@ -1684,9 +1689,11 @@ class GestoreNPI:
                         if today <= start_date:
                             # Non ancora iniziato (anche se dichiarato in lavorazione)
                             completion_percentage = 0
+                            logger.debug(f"Task {task.TaskProdottoID}: In Lavorazione ma non iniziato -> 0%")
                         elif today >= end_date:
                             # Scadenza superata
                             completion_percentage = 100
+                            logger.debug(f"Task {task.TaskProdottoID}: In Lavorazione scaduto -> 100%")
                         else:
                             # Calcola percentuale in base al progresso temporale
                             total_duration = (end_date - start_date).days
@@ -1694,15 +1701,18 @@ class GestoreNPI:
                             
                             if total_duration > 0:
                                 completion_percentage = int((elapsed_duration / total_duration) * 100)
+                                logger.debug(f"Task {task.TaskProdottoID}: In Lavorazione {elapsed_duration}/{total_duration} giorni -> {completion_percentage}%")
                             else:
                                 # Task con durata 0 giorni
                                 completion_percentage = 50
+                                logger.debug(f"Task {task.TaskProdottoID}: In Lavorazione durata 0 giorni -> 50%")
                     except Exception as e:
                         logger.warning(f"Errore calcolo percentuale per task {task.TaskProdottoID}: {e}")
                         completion_percentage = 0
                 else:
                     # Task in altri stati (Da Fare, Bloccato, ecc.) = 0%
                     completion_percentage = 0
+                    logger.debug(f"Task {task.TaskProdottoID}: Stato '{stato_normalized}' -> 0%")
 
                 df_data.append({
                     'Task': task.task_catalogo.NomeTask if task.task_catalogo else "Task non definito",
