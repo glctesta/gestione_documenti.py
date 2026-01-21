@@ -190,20 +190,20 @@ class ProjectWindow(tk.Toplevel):
         )
         self.milestone_warning_label.pack(side=tk.LEFT, padx=5)
         
-        # 🆕 GERARCHIA PROGETTI (Parent-Child)
-        hierarchy_frame = ttk.LabelFrame(header_frame, text="🔗 Gerarchia Progetti")
-        hierarchy_frame.pack(side=tk.RIGHT, padx=10)
+        # 🆕 GERARCHIA PROGETTI (Parent-Child) - SPOSTATO A SINISTRA
+        hierarchy_frame = ttk.LabelFrame(header_frame, text="🔗 Gerarchia")
+        hierarchy_frame.pack(side=tk.LEFT, padx=10, after=toolbar_row2)
         
-        # Riga 1: Progetto Padre
+        # Riga 1: Progetto Padre + Stato
         hierarchy_row1 = ttk.Frame(hierarchy_frame)
         hierarchy_row1.pack(fill=tk.X, padx=2, pady=2)
         
-        ttk.Label(hierarchy_row1, text="Progetto Padre:").pack(side=tk.LEFT, padx=5)
-        self.parent_project_combo = ttk.Combobox(hierarchy_row1, state='readonly', width=25)
-        self.parent_project_combo.pack(side=tk.LEFT, padx=5)
+        ttk.Label(hierarchy_row1, text="Padre:").pack(side=tk.LEFT, padx=(5,2))
+        self.parent_project_combo = ttk.Combobox(hierarchy_row1, width=40)  # 🆕 Editabile e più largo
+        self.parent_project_combo.pack(side=tk.LEFT, padx=2)
         self.parent_project_combo.bind('<<ComboboxSelected>>', self._on_parent_project_selected)
         
-        # Riga 2: Info progetto padre corrente
+        # Riga 2: Info padre + Figli (compatto)
         hierarchy_row2 = ttk.Frame(hierarchy_frame)
         hierarchy_row2.pack(fill=tk.X, padx=2, pady=2)
         
@@ -211,27 +211,24 @@ class ProjectWindow(tk.Toplevel):
             hierarchy_row2,
             text="",
             foreground="blue",
-            font=('Helvetica', 9)
+            font=('Helvetica', 8)
         )
         self.current_parent_label.pack(side=tk.LEFT, padx=5)
         
-        # Riga 3: Progetti figli count
-        hierarchy_row3 = ttk.Frame(hierarchy_frame)
-        hierarchy_row3.pack(fill=tk.X, padx=2, pady=2)
-        
         self.children_projects_label = ttk.Label(
-            hierarchy_row3,
+            hierarchy_row2,
             text="",
             foreground="green",
-            font=('Helvetica', 9)
+            font=('Helvetica', 8)
         )
-        self.children_projects_label.pack(side=tk.LEFT, padx=5)
+        self.children_projects_label.pack(side=tk.LEFT, padx=10)
         
         ttk.Button(
-            hierarchy_row3,
-            text="📋 Mostra Figli",
-            command=self._show_child_projects_dialog
-        ).pack(side=tk.LEFT, padx=5)
+            hierarchy_row2,
+            text="📋 Figli",
+            command=self._show_child_projects_dialog,
+            width=8
+        ).pack(side=tk.LEFT, padx=2)
 
 
         # Content Split
@@ -1517,22 +1514,35 @@ class ProjectWindow(tk.Toplevel):
             # Carica tutti i progetti disponibili come possibili padri
             # Usa query diretta perché non esiste get_progetti_npi()
             from npi.data_models import ProgettoNPI
+            from sqlalchemy.orm import joinedload
             session = self.npi_manager._get_session()
             try:
                 all_projects = session.query(ProgettoNPI)\
+                    .options(joinedload(ProgettoNPI.prodotto))\
                     .order_by(ProgettoNPI.NomeProgetto)\
                     .all()
             finally:
                 session.close()
             
-            # Escludi il progetto corrente dalla lista dei padri possibili
-            available_parents = [
-                p for p in all_projects 
-                if p.ProgettoId != self.project_id
-            ]
+            # 🆕 Filtra per cliente del progetto corrente
+            current_cliente = self.progetto.prodotto.Cliente if self.progetto and self.progetto.prodotto else None
             
-            # ðŸ›¡ï¸ Validazione: Escludi anche i discendenti (evita cicli)
-            # Un progetto non puÃ² avere come padre uno dei suoi discendenti
+            if current_cliente:
+                available_parents = [
+                    p for p in all_projects 
+                    if p.ProgettoId != self.project_id
+                    and p.prodotto 
+                    and p.prodotto.Cliente == current_cliente
+                ]
+            else:
+                # Se non c'è un cliente, mostra tutti (fallback)
+                available_parents = [
+                    p for p in all_projects 
+                    if p.ProgettoId != self.project_id
+                ]
+            
+            # 🛡️ Validazione: Escludi anche i discendenti (evita cicli)
+            # Un progetto non può avere come padre uno dei suoi discendenti
             child_ids = self._get_all_descendant_ids(self.project_id)
             available_parents = [
                 p for p in available_parents
@@ -1544,7 +1554,8 @@ class ProjectWindow(tk.Toplevel):
             self.parent_projects_map = {}
             
             for p in available_parents:
-                display_name = f"{p.NomeProgetto} (ID: {p.ProgettoId})"
+                # 🆕 Usa il NomeProgetto invece di None
+                display_name = f"{p.NomeProgetto}"
                 parent_names.append(display_name)
                 self.parent_projects_map[display_name] = p.ProgettoId
             
@@ -1554,40 +1565,40 @@ class ProjectWindow(tk.Toplevel):
             if self.progetto.ParentProjectID:
                 parent = self.npi_manager.get_parent_project(self.project_id)
                 if parent:
-                    display_name = f"{parent.NomeProgetto} (ID: {parent.ProgettoId})"
+                    display_name = f"{parent.NomeProgetto}"
                     if display_name in parent_names:
                         self.parent_project_combo.set(display_name)
                         self.current_parent_label.config(
-                            text=f"ðŸ“¦ Progetto Padre: {parent.NomeProgetto}",
+                            text=f"📦 Padre: {parent.NomeProgetto}",
                             foreground="blue"
                         )
                     else:
                         self.parent_project_combo.set(parent_names[0])
-                        self.current_parent_label.config(text="âœ… Progetto Root (nessun padre)")
+                        self.current_parent_label.config(text="✅ Progetto Root")
                 else:
                     self.parent_project_combo.set(parent_names[0])
-                    self.current_parent_label.config(text="âœ… Progetto Root (nessun padre)")
+                    self.current_parent_label.config(text="✅ Progetto Root")
             else:
                 self.parent_project_combo.set(parent_names[0])
-                self.current_parent_label.config(text="âœ… Progetto Root (nessun padre)")
+                self.current_parent_label.config(text="✅ Progetto Root")
             
             # Conta e mostra progetti figli
             children = self.npi_manager.get_child_projects(self.project_id)
             if children:
                 completed_count = sum(1 for c in children if c.StatoProgetto == 'Completato')
                 self.children_projects_label.config(
-                    text=f"ðŸ“„ {len(children)} progetti figli ({completed_count} completati)",
+                    text=f"📄 {len(children)} figli ({completed_count} ok)",
                     foreground="green" if completed_count == len(children) else "orange"
                 )
             else:
                 self.children_projects_label.config(
-                    text="Nessun progetto figlio",
+                    text="Nessun figlio",
                     foreground="gray"
                 )
                 
         except Exception as e:
             logger.error(f"Errore popolamento gerarchia: {e}", exc_info=True)
-            messagebox.showerror("Errore", f"Errore caricamento gerarchia:\\n{e}", parent=self)
+            messagebox.showerror("Errore", f"Errore caricamento gerarchia:\n{e}", parent=self)
     
     def _get_all_descendant_ids(self, project_id, visited=None):
         """
