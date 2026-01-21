@@ -199,7 +199,7 @@ class ProjectWindow(tk.Toplevel):
         hierarchy_row1.pack(fill=tk.X, padx=2, pady=2)
         
         ttk.Label(hierarchy_row1, text="Padre:").pack(side=tk.LEFT, padx=(5,2))
-        self.parent_project_combo = ttk.Combobox(hierarchy_row1, width=40)  # 🆕 Editabile e più largo
+        self.parent_project_combo = ttk.Combobox(hierarchy_row1, width=60)  # 🆕 Allargato a 60 caratteri
         self.parent_project_combo.pack(side=tk.LEFT, padx=2)
         self.parent_project_combo.bind('<<ComboboxSelected>>', self._on_parent_project_selected)
         
