@@ -82,8 +82,13 @@ class ProgettoNPI(Base):
     Version = Column(String(50), nullable=True)  # Campo versione prodotto
     OwnerID = Column(Integer, ForeignKey('dbo.vw_Soggetti.SoggettoId'), nullable=True)  # Owner del progetto
     Descrizione = Column(Text, nullable=True)  # Descrizione del progetto
+    
+    # 🆕 CAMPI PER GERARCHIA PROGETTI (Parent-Child)
+    ParentProjectID = Column('ParentProjectID', Integer, ForeignKey('dbo.ProgettiNPI.ProgettoID'), nullable=True)
+    HierarchyLevel = Column(Integer, default=0, nullable=True)
+    ProjectType = Column(String(50), default='Standard', nullable=True)  # 'Standard', 'Parent', 'Child'
 
-    # Relationships
+    # Relationships esistenti
     prodotto = relationship("Prodotto", back_populates="progetti_npi")
     waves = relationship("WaveNPI", back_populates="progetto", cascade="all, delete-orphan")
     documenti = relationship("ProgettoDocumento", back_populates="progetto", cascade="all, delete-orphan")
@@ -92,6 +97,16 @@ class ProgettoNPI(Base):
         primaryjoin="foreign(ProgettoNPI.OwnerID) == Soggetto.SoggettoId",
         viewonly=True,
         uselist=False
+    )
+    
+    # 🆕 RELAZIONI PER GERARCHIA PROGETTI
+    # Relazione verso il progetto padre (un solo padre)
+    parent_project = relationship(
+        "ProgettoNPI",
+        remote_side=[ProgettoId],  # Indica che la FK è sul lato "child"
+        backref="child_projects",   # Crea automaticamente la lista dei figli sul padre
+        foreign_keys=[ParentProjectID],
+        post_update=True  # Evita problemi con cicli di dipendenze
     )
 
     def __repr__(self):

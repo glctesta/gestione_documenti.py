@@ -2494,3 +2494,279 @@ class GestoreNPI:
             raise
         finally:
             session.close()
+    # ========================================
+    # ðŸ†• GESTIONE GERARCHIA PROGETTI NPI
+    # ========================================
+    
+    def get_child_projects(self, project_id):
+        """
+        Recupera tutti i progetti figli di un progetto.
+        
+        Args:
+            project_id: ID del progetto padre
+            
+        Returns:
+            Lista di ProgettoNPI figli ordinati per HierarchyLevel e NomeProgetto
+        """
+        session = self._get_session()
+        try:
+            children = session.query(ProgettoNPI)\
+                .filter(ProgettoNPI.ParentProjectID == project_id)\
+                .order_by(ProgettoNPI.HierarchyLevel, ProgettoNPI.NomeProgetto)\
+                .all()
+            
+            # Detach per usare fuori dalla sessione
+            result = [self._detach_object(session, child) for child in children]
+            return result
+            
+        except Exception as e:
+            logger.error(f"Errore recupero progetti figli per {project_id}: {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+    
+    def get_parent_project(self, project_id):
+        """
+        Recupera il progetto padre di un progetto.
+        
+        Args:
+            project_id: ID del progetto figlio
+            
+        Returns:
+            ProgettoNPI padre o None se non ha padre
+        """
+        session = self._get_session()
+        try:
+            progetto = session.query(ProgettoNPI)\
+                .filter(ProgettoNPI.ProgettoId == project_id)\
+                .first()
+            
+            if progetto and progetto.ParentProjectID:
+                parent = session.query(ProgettoNPI)\
+                    .filter(ProgettoNPI.ProgettoId == progetto.ParentProjectID)\
+                    .first()
+                
+                if parent:
+                    return self._detach_object(session, parent)
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Errore recupero progetto padre per {project_id}: {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+    
+    def get_project_hierarchy(self, root_project_id, max_depth=10):
+        """
+        Recupera l'intera gerarchia di un progetto (padre e tutti i figli ricorsivamente).
+        
+        Args:
+            root_project_id: ID del progetto root
+            max_depth: ProfonditÃ  massima della ricorsione (default 10)
+            
+        Returns:
+            Dizionario con struttura gerarchica:
+            {
+                'project': ProgettoNPI,
+                'children': [
+                    {'project': ProgettoNPI, 'children': [...]},
+                    ...
+                ]
+            }
+        """
+        session = self._get_session()
+        try:
+            def build_tree(project_id, current_depth=0):
+                if current_depth >= max_depth:
+                    logger.warning(f"ProfonditÃ  massima ({max_depth}) raggiunta per progetto {project_id}")
+                    return None
+                
+                project = session.query(ProgettoNPI)\
+                    .filter(ProgettoNPI.ProgettoId == project_id)\
+                    .first()
+                
+                if not project:
+                    return None
+                
+                children = session.query(ProgettoNPI)\
+                    .filter(ProgettoNPI.ParentProjectID == project_id)\
+                    .order_by(ProgettoNPI.HierarchyLevel, ProgettoNPI.NomeProgetto)\
+                    .all()
+                
+                tree = {
+                    'project': self._detach_object(session, project),
+                    'children': []
+                }
+                
+                for child in children:
+                    child_tree = build_tree(child.ProgettoId, current_depth + 1)
+                    if child_tree:
+                        tree['children'].append(child_tree)
+                
+                return tree
+            
+            return build_tree(root_project_id)
+            
+        except Exception as e:
+            logger.error(f"Errore recupero gerarchia per progetto {root_project_id}: {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+    
+    def can_complete_project(self, project_id):
+        """
+        Verifica se un progetto puÃ² essere completato.
+        Un progetto puÃ² essere completato solo se tutti i suoi progetti figli sono completati.
+        
+        Args:
+            project_id: ID del progetto da verificare
+            
+        Returns:
+            Tupla (can_complete: bool, message: str, incomplete_children: list)
+        """
+        session = self._get_session()
+        try:
+            children = session.query(ProgettoNPI)\
+                .filter(ProgettoNPI.ParentProjectID == project_id)\
+                .all()
+            
+            if not children:
+                return True, "Il progetto puÃ² essere completato (nessun progetto figlio)", []
+            
+            incomplete = [
+                self._detach_object(session, child) 
+                for child in children 
+                if child.StatoProgetto != 'Completato'
+            ]
+            
+            if not incomplete:
+                return True, f"Il progetto puÃ² essere completato (tutti i {len(children)} progetti figli sono completati)", []
+            else:
+                message = f"Il progetto NON puÃ² essere completato: {len(incomplete)} progetti figli su {len(children)} non sono ancora completati"
+                return False, message, incomplete
+            
+        except Exception as e:
+            logger.error(f"Errore verifica completamento progetto {project_id}: {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+    
+    def update_hierarchy_levels(self, project_id=None):
+        """
+        Aggiorna il campo HierarchyLevel per un progetto e tutti i suoi discendenti.
+        Se project_id Ã¨ None, aggiorna tutti i progetti.
+        
+        Args:
+            project_id: ID del progetto root (opzionale)
+        """
+        session = self._get_session()
+        try:
+            def update_tree(proj_id, level=0):
+                project = session.query(ProgettoNPI)\
+                    .filter(ProgettoNPI.ProgettoId == proj_id)\
+                    .first()
+                
+                if project:
+                    project.HierarchyLevel = level
+                    
+                    children = session.query(ProgettoNPI)\
+                        .filter(ProgettoNPI.ParentProjectID == proj_id)\
+                        .all()
+                    
+                    for child in children:
+                        update_tree(child.ProgettoId, level + 1)
+            
+            if project_id:
+                # Aggiorna solo la gerarchia specificata
+                update_tree(project_id)
+            else:
+                # Aggiorna tutte le gerarchie (progetti root)
+                root_projects = session.query(ProgettoNPI)\
+                    .filter(ProgettoNPI.ParentProjectID.is_(None))\
+                    .all()
+                
+                for root in root_projects:
+                    update_tree(root.ProgettoId)
+            
+            session.commit()
+            logger.info(f"HierarchyLevel aggiornati per progetto {project_id if project_id else 'tutti'}")
+            
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Errore aggiornamento HierarchyLevel: {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+    
+    def validate_no_circular_dependency(self, child_id, new_parent_id):
+        """
+        Verifica che l'assegnazione di un progetto padre non crei un ciclo.
+        
+        Args:
+            child_id: ID del progetto che diventerÃ  figlio
+            new_parent_id: ID del nuovo progetto padre
+            
+        Returns:
+            Tupla (is_valid: bool, message: str)
+        """
+        if child_id == new_parent_id:
+            return False, "Un progetto non puÃ² essere padre di se stesso"
+        
+        session = self._get_session()
+        try:
+            # Verifica se new_parent_id Ã¨ giÃ  un discendente di child_id
+            def is_descendant(ancestor_id, descendant_id, visited=None):
+                if visited is None:
+                    visited = set()
+                
+                if descendant_id in visited:
+                    return False  # GiÃ  visitato, evita loop infiniti
+                
+                visited.add(descendant_id)
+                
+                children = session.query(ProgettoNPI.ProgettoId)\
+                    .filter(ProgettoNPI.ParentProjectID == descendant_id)\
+                    .all()
+                
+                for (child_proj_id,) in children:
+                    if child_proj_id == ancestor_id:
+                        return True
+                    if is_descendant(ancestor_id, child_proj_id, visited):
+                        return True
+                
+                return False
+            
+            if is_descendant(child_id, new_parent_id):
+                return False, "Operazione non permessa: creerebbe un ciclo di dipendenze (il nuovo padre Ã¨ giÃ  un discendente di questo progetto)"
+            
+            return True, "Validazione OK: nessun ciclo rilevato"
+            
+        except Exception as e:
+            logger.error(f"Errore validazione dipendenze circolari: {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+    
+    def get_root_projects(self):
+        """
+        Recupera tutti i progetti root (senza padre).
+        
+        Returns:
+            Lista di ProgettoNPI ordinati per NomeProgetto
+        """
+        session = self._get_session()
+        try:
+            projects = session.query(ProgettoNPI)\
+                .filter(ProgettoNPI.ParentProjectID.is_(None))\
+                .order_by(ProgettoNPI.NomeProgetto)\
+                .all()
+            
+            result = [self._detach_object(session, p) for p in projects]
+            return result
+            
+        except Exception as e:
+            logger.error(f"Errore recupero progetti root: {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
