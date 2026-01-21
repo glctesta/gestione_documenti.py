@@ -622,16 +622,56 @@ class GestoreNPI:
             session.close()
 
     def get_progetti_attivi(self):
-        """Restituisce una lista di tutti i progetti NPI con stato 'Attivo'."""
+        """
+        Restituisce una lista di tutti i progetti NPI con stato 'Attivo'.
+        Utilizza una query SQL custom per formattare i dati nel formato richiesto:
+        Cliente -> CodiceProdotto (Version: X) NomeProdotto [Status]
+        Include il conteggio dei task assegnati.
+        """
         session = self._get_session()
         try:
-            progetti = session.scalars(
-                select(ProgettoNPI)
-                .options(joinedload(ProgettoNPI.prodotto))
-                .where(ProgettoNPI.StatoProgetto == 'Attivo')
-                .order_by(ProgettoNPI.ProgettoId.desc())
-            ).all()
-            return self._detach_list(session, progetti)
+            # Query SQL personalizzata con conteggio task
+            sql_query = """
+                SELECT n.[ProgettoID],
+                       p.Cliente + ' -> ' + p.CodiceProdotto + ' (Version: ' + ISNULL(n.[version],'#N/D') + ') ' + p.NomeProdotto
+                       + ' [' + IIF(COUNT(t.[TaskProdottoID])=0, 'Not Started', 'Assigned task #' + CAST(COUNT(t.[TaskProdottoID]) AS NVARCHAR)) + ']' AS ActiveNpi,
+                       p.Cliente,
+                       p.CodiceProdotto,
+                       p.NomeProdotto,
+                       n.[Version],
+                       n.ProdottoID
+                FROM [Traceability_RS].[dbo].[ProgettiNPI] n 
+                INNER JOIN Prodotti p ON p.ProdottoID = n.ProdottoID
+                INNER JOIN WaveNPI w ON w.ProgettoID = n.ProgettoID
+                LEFT JOIN [Traceability_RS].[dbo].[TaskProdotto] t ON w.WaveID = t.WaveID AND t.[stato] IS NOT NULL
+                WHERE StatoProgetto = 'Attivo'
+                GROUP BY n.[ProgettoID], 
+                         p.Cliente + ' -> ' + p.CodiceProdotto + ' (Version: ' + ISNULL(n.[version],'#N/D') + ') ' + p.NomeProdotto,
+                         p.Cliente,
+                         p.CodiceProdotto,
+                         p.NomeProdotto,
+                         n.[Version],
+                         n.ProdottoID
+                ORDER BY p.Cliente + ' -> ' + p.CodiceProdotto + ' (Version: ' + ISNULL(n.[version],'#N/D') + ') ' + p.NomeProdotto, n.[Version]
+            """
+            
+            # Esegui la query raw
+            result = session.execute(text(sql_query))
+            
+            # Converti i risultati in una lista di dizionari
+            progetti = []
+            for row in result:
+                progetti.append({
+                    'ProgettoId': row[0],
+                    'ActiveNpi': row[1],
+                    'Cliente': row[2],
+                    'CodiceProdotto': row[3],
+                    'NomeProdotto': row[4],
+                    'Version': row[5],
+                    'ProdottoID': row[6]
+                })
+            
+            return progetti
         except Exception as e:
             logger.error(f"Errore in get_progetti_attivi: {e}")
             session.rollback()
@@ -1628,6 +1668,42 @@ class GestoreNPI:
                 # Recupera le dipendenze
                 deps = [d.DependsOnTaskProdottoID for d in task.dependencies]
 
+                # 🆕 Calcolo dinamico percentuale di completamento
+                completion_percentage = 0
+                
+                if task.Stato == 'Completato':
+                    # Task completato = 100%
+                    completion_percentage = 100
+                elif task.Stato == 'In Lavorazione':
+                    # Task in lavorazione = calcola in base alle date
+                    try:
+                        today = datetime.now().date()
+                        start_date = data_inizio.date() if hasattr(data_inizio, 'date') else data_inizio
+                        end_date = data_fine.date() if hasattr(data_fine, 'date') else data_fine
+                        
+                        if today <= start_date:
+                            # Non ancora iniziato (anche se dichiarato in lavorazione)
+                            completion_percentage = 0
+                        elif today >= end_date:
+                            # Scadenza superata
+                            completion_percentage = 100
+                        else:
+                            # Calcola percentuale in base al progresso temporale
+                            total_duration = (end_date - start_date).days
+                            elapsed_duration = (today - start_date).days
+                            
+                            if total_duration > 0:
+                                completion_percentage = int((elapsed_duration / total_duration) * 100)
+                            else:
+                                # Task con durata 0 giorni
+                                completion_percentage = 50
+                    except Exception as e:
+                        logger.warning(f"Errore calcolo percentuale per task {task.TaskProdottoID}: {e}")
+                        completion_percentage = 0
+                else:
+                    # Task in altri stati (Da Fare, Bloccato, ecc.) = 0%
+                    completion_percentage = 0
+
                 df_data.append({
                     'Task': task.task_catalogo.NomeTask if task.task_catalogo else "Task non definito",
                     'Category': task.task_catalogo.categoria.Category if (task.task_catalogo and task.task_catalogo.categoria) else "Nessuna Categoria",
@@ -1637,7 +1713,7 @@ class GestoreNPI:
                     'Status': task.Stato,
                     'TaskProdottoID': task.TaskProdottoID,
                     'Dependencies': deps,
-                    'Completion': task.PercentualeCompletamento if task.PercentualeCompletamento is not None else 0
+                    'Completion': completion_percentage  # 🆕 Percentuale calcolata dinamicamente
                 })
 
             logger.debug(f"Totale task nel progetto: {len(progetto.waves[0].tasks)}")
