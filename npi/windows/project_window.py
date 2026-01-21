@@ -95,8 +95,11 @@ class ProjectWindow(tk.Toplevel):
 
         self.show_assigned_var = tk.BooleanVar(value=True)
         self.category_filter_var = tk.StringVar(value='')  # Filtro categoria
+        self.owner_filter_var = tk.StringVar(value='')     # Filtro persone assegnate
         self.dep_category_var = tk.StringVar(value='')     # Filtro categoria dipendenze
         self.category_map = {}  # Mappa nome categoria -> ID
+        self.owner_filter_map = {}  # Mappa nome persona -> SoggettoId per filtro
+        self.is_project_owner = False  # Flag per verificare se l'utente loggato è l'owner del progetto
         self.all_available_tasks = [] # Cache per task disponibili (dipendenze)
         self._create_widgets()
 
@@ -109,27 +112,45 @@ class ProjectWindow(tk.Toplevel):
         header_frame = ttk.Frame(main_frame)
         header_frame.pack(fill=tk.X, pady=(0, 10))
         
-        self.header_label = ttk.Label(header_frame, text="", font=('Segoe UI', 16, 'bold'))
-        self.header_label.pack(side=tk.LEFT)
+        # Frame per il titolo del progetto con supporto multi-riga
+        title_frame = ttk.Frame(header_frame)
+        title_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False)
+        
+        self.header_label = ttk.Label(title_frame, text="", font=('Segoe UI', 16, 'bold'), 
+                                       wraplength=600, justify=tk.LEFT, anchor='nw')
+        self.header_label.pack(side=tk.LEFT, anchor='nw')
 
-        # Buttons in Header (Moved here as requested)
-        self.import_button = ttk.Button(header_frame, text=self.lang.get('btn_import_tasks', 'Importa Task'), command=self._launch_import_tasks_window)
-        self.import_button.pack(side=tk.LEFT, padx=10)
+        # Buttons in Header - PRIMA RIGA
+        toolbar_row1 = ttk.Frame(header_frame)
+        toolbar_row1.pack(side=tk.TOP, fill=tk.X, pady=(0, 5))
+        
+        self.import_button = ttk.Button(toolbar_row1, text=self.lang.get('btn_import_tasks', 'Importa Task'), command=self._launch_import_tasks_window)
+        self.import_button.pack(side=tk.LEFT, padx=(0, 5))
         
         # Bottone per sincronizzare task dal catalogo
-        self.sync_button = ttk.Button(header_frame, text=self.lang.get('btn_sync_catalog', 'Sincronizza Catalogo'), command=self._sync_catalog_tasks)
+        self.sync_button = ttk.Button(toolbar_row1, text=self.lang.get('btn_sync_catalog', 'Sincronizza Catalogo'), command=self._sync_catalog_tasks)
         self.sync_button.pack(side=tk.LEFT, padx=5)
         
-        self.export_button = ttk.Button(header_frame, text=self.lang.get('btn_export_excel', 'Export Excel'), command=self._export_cost_report, state=tk.DISABLED)
+        self.export_button = ttk.Button(toolbar_row1, text=self.lang.get('btn_export_excel', 'Export Excel'), command=self._export_cost_report, state=tk.DISABLED)
         self.export_button.pack(side=tk.LEFT, padx=5)
+
+        # SECONDA RIGA - Filtri e checkbox
+        toolbar_row2 = ttk.Frame(header_frame)
+        toolbar_row2.pack(side=tk.TOP, fill=tk.X)
         
-        ttk.Checkbutton(header_frame, text=self.lang.get('show_assigned', 'Mostra Assegnati'), variable=self.show_assigned_var, command=self._populate_treeview).pack(side=tk.LEFT, padx=5)
+        ttk.Checkbutton(toolbar_row2, text=self.lang.get('show_assigned', 'Mostra Assegnati'), variable=self.show_assigned_var, command=self._populate_treeview).pack(side=tk.LEFT, padx=(0, 10))
 
         # Filtro per categoria
-        ttk.Label(header_frame, text=self.lang.get('filter_category', 'Categoria:')).pack(side=tk.LEFT, padx=(10, 5))
-        self.category_filter_combo = ttk.Combobox(header_frame, textvariable=self.category_filter_var, state='readonly', width=20)
+        ttk.Label(toolbar_row2, text=self.lang.get('filter_category', 'Categoria:')).pack(side=tk.LEFT, padx=(0, 5))
+        self.category_filter_combo = ttk.Combobox(toolbar_row2, textvariable=self.category_filter_var, state='readonly', width=20)
         self.category_filter_combo.pack(side=tk.LEFT, padx=5)
         self.category_filter_combo.bind('<<ComboboxSelected>>', lambda e: self._populate_treeview())
+        
+        # Filtro per persona assegnata
+        ttk.Label(toolbar_row2, text=self.lang.get('filter_owner', 'Assegnato a:')).pack(side=tk.LEFT, padx=(10, 5))
+        self.owner_filter_combo = ttk.Combobox(toolbar_row2, textvariable=self.owner_filter_var, state='readonly', width=20)
+        self.owner_filter_combo.pack(side=tk.LEFT, padx=5)
+        self.owner_filter_combo.bind('<<ComboboxSelected>>', lambda e: self._populate_treeview())
 
         # Project Dates
         dates_frame = ttk.LabelFrame(header_frame, text=self.lang.get('project_dates_title', 'Date Progetto'))
@@ -190,8 +211,8 @@ class ProjectWindow(tk.Toplevel):
         self.tree.column('Name', width=200)
         self.tree.column('Owner', width=100)
         self.tree.column('Status', width=100)
-        self.tree.column('StartDate', width=80)
-        self.tree.column('DueDate', width=80)
+        self.tree.column('StartDate', width=100)
+        self.tree.column('DueDate', width=100)
         
         self.tree.tag_configure('special_task', foreground='red')
         self.tree.tag_configure('bold_task', font=('Segoe UI', 9, 'bold'))
@@ -296,7 +317,7 @@ class ProjectWindow(tk.Toplevel):
         self.doc_widgets['title'].grid(row=1, column=1, columnspan=2, sticky=tk.EW)
 
         ttk.Label(df, text=self.lang.get('final_client', 'Cliente Finale:')).grid(row=2, column=0, sticky=tk.W)
-        self.doc_widgets['final_client'] = ttk.Combobox(df, values=[fc[0] for fc in self.final_customers])
+        self.doc_widgets['final_client'] = ttk.Combobox(df, values=[fc[1] for fc in self.final_customers])
         self.doc_widgets['final_client'].grid(row=2, column=1, columnspan=2, sticky=tk.EW)
 
         # Dynamic fields
@@ -400,6 +421,51 @@ class ProjectWindow(tk.Toplevel):
             if self.progetto.Version:
                 self.project_version_entry.delete(0, tk.END)
                 self.project_version_entry.insert(0, self.progetto.Version)
+
+            # --- LOGICA FILTRO PERSONE ---
+            # Determina se l'utente loggato è l'owner del progetto
+            project_owner_id = self.progetto.OwnerID if self.progetto else None
+            project_owner_name = None
+            
+            if project_owner_id and project_owner_id in self.soggetti_map_rev:
+                project_owner_name = self.soggetti_map_rev[project_owner_id]
+                self.is_project_owner = (project_owner_name == self.logged_in_user)
+            else:
+                # Nessun owner assegnato al progetto, l'utente ha accesso completo
+                self.is_project_owner = True
+            
+            # Raccoglie tutte le persone che hanno task assegnati
+            assigned_owners = set()
+            if self.progetto and self.progetto.waves:
+                for wave in self.progetto.waves:
+                    for task in wave.tasks:
+                        if task.OwnerID and task.OwnerID in self.soggetti_map_rev:
+                            assigned_owners.add(self.soggetti_map_rev[task.OwnerID])
+            
+            # Popola il filtro persone solo con le persone che hanno task assegnati
+            all_owners_label = self.lang.get('all_owners', 'Tutte le persone')
+            self.owner_filter_map = {nome: self.soggetti_map[nome] for nome in assigned_owners if nome in self.soggetti_map}
+            owner_values = [all_owners_label] + sorted(list(self.owner_filter_map.keys()))
+            self.owner_filter_combo['values'] = owner_values
+            
+            # Applica la logica di auto-selezione e blocco
+            if not self.is_project_owner:
+                # L'utente NON è l'owner del progetto
+                if self.logged_in_user in self.owner_filter_map:
+                    # L'utente loggato ha task assegnati, imposta il filtro su di lui
+                    self.owner_filter_var.set(self.logged_in_user)
+                    self.owner_filter_combo.config(state='disabled')
+                    logger.info(f"Filtro persone impostato su '{self.logged_in_user}' e bloccato (non è l'owner del progetto)")
+                else:
+                    # L'utente loggato non ha task assegnati, mostra tutti ma blocca il combo
+                    self.owner_filter_var.set(all_owners_label)
+                    self.owner_filter_combo.config(state='disabled')
+                    logger.info(f"Utente '{self.logged_in_user}' non ha task assegnati. Filtro bloccato su 'Tutte le persone'")
+            else:
+                # L'utente È l'owner del progetto, combo abilitato
+                self.owner_filter_var.set(all_owners_label)
+                self.owner_filter_combo.config(state='readonly')
+                logger.info(f"Utente '{self.logged_in_user}' è l'owner del progetto. Filtro persone abilitato")
 
             self._populate_treeview()
             
@@ -554,6 +620,14 @@ class ProjectWindow(tk.Toplevel):
         if selected_category and selected_category != all_categories_label:
             filter_category_id = self.category_map.get(selected_category)
 
+        # Ottieni la persona selezionata per il filtro
+        selected_owner = self.owner_filter_var.get()
+        all_owners_label = self.lang.get('all_owners', 'Tutte le persone')
+        filter_owner_id = None
+        
+        if selected_owner and selected_owner != all_owners_label:
+            filter_owner_id = self.owner_filter_map.get(selected_owner)
+
         # Filtra i task
         filtered_tasks = []
         for task in wave.tasks:
@@ -564,6 +638,11 @@ class ProjectWindow(tk.Toplevel):
             if filter_category_id is not None:
                 task_category_id = task.task_catalogo.CategoryId if task.task_catalogo else None
                 if task_category_id != filter_category_id:
+                    continue
+            
+            # Applica filtro persona se selezionato
+            if filter_owner_id is not None:
+                if task.OwnerID != filter_owner_id:
                     continue
             
             filtered_tasks.append(task)
@@ -1047,7 +1126,13 @@ class ProjectWindow(tk.Toplevel):
                     if isinstance(data_fine_progetto, str):
                         data_fine_progetto = datetime.strptime(data_fine_progetto, '%d/%m/%Y')
                     
-                    if data_inizio.date() > data_fine_progetto.date():
+                    # Converti a date object se è datetime, altrimenti usa così com'è
+                    if hasattr(data_fine_progetto, 'date'):
+                        data_fine_progetto_date = data_fine_progetto.date()
+                    else:
+                        data_fine_progetto_date = data_fine_progetto
+                    
+                    if data_inizio.date() > data_fine_progetto_date:
                         messagebox.showwarning(
                             self.lang.get('validation_error_title', 'Errore Validazione'),
                             self.lang.get('error_start_after_project_end', 'La data di inizio non può essere successiva alla data fine progetto.'),
@@ -1056,7 +1141,7 @@ class ProjectWindow(tk.Toplevel):
                         self.fields['DataInizio'].focus()
                         return
                     
-                    if data_scadenza.date() > data_fine_progetto.date():
+                    if data_scadenza.date() > data_fine_progetto_date:
                         messagebox.showwarning(
                             self.lang.get('validation_error_title', 'Errore Validazione'),
                             self.lang.get('error_due_after_project_end', 'La data di scadenza non può essere successiva alla data fine progetto.'),
@@ -1076,25 +1161,31 @@ class ProjectWindow(tk.Toplevel):
                             if isinstance(pred_due_date, str):
                                 pred_due_date = datetime.strptime(pred_due_date, '%d/%m/%Y')
                             
+                            # Converti a date object se è datetime, altrimenti usa così com'è
+                            if hasattr(pred_due_date, 'date'):
+                                pred_due_date_date = pred_due_date.date()
+                            else:
+                                pred_due_date_date = pred_due_date
+                            
                             pred_task_name = pred_task.task_catalogo.NomeTask if pred_task.task_catalogo else "Task"
                             
                             # Data inizio task corrente >= Data fine task predecessore
-                            if data_inizio.date() < pred_due_date.date():
+                            if data_inizio.date() < pred_due_date_date:
                                 messagebox.showwarning(
                                     self.lang.get('validation_error_title', 'Errore Validazione'),
                                     self.lang.get('error_start_before_dependency', 
-                                                 f'La data di inizio non può essere precedente alla data fine del task "{pred_task_name}" ({pred_due_date.strftime("%d/%m/%Y")}).'),
+                                                 f'La data di inizio non può essere precedente alla data fine del task "{pred_task_name}" ({pred_due_date.strftime("%d/%m/%Y") if hasattr(pred_due_date, "strftime") else str(pred_due_date)}).'),
                                     parent=self
                                 )
                                 self.fields['DataInizio'].focus()
                                 return
                             
                             # Data fine task corrente >= Data fine task predecessore
-                            if data_scadenza.date() < pred_due_date.date():
+                            if data_scadenza.date() < pred_due_date_date:
                                 messagebox.showwarning(
                                     self.lang.get('validation_error_title', 'Errore Validazione'),
                                     self.lang.get('error_due_before_dependency', 
-                                                 f'La data di scadenza non può essere precedente alla data fine del task "{pred_task_name}" ({pred_due_date.strftime("%d/%m/%Y")}).'),
+                                                 f'La data di scadenza non può essere precedente alla data fine del task "{pred_task_name}" ({pred_due_date.strftime("%d/%m/%Y") if hasattr(pred_due_date, "strftime") else str(pred_due_date)}).'),
                                     parent=self
                                 )
                                 self.fields['DataScadenza'].focus()
