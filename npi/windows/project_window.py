@@ -669,7 +669,13 @@ class ProjectWindow(tk.Toplevel):
             # Verifica se in ritardo (data scadenza passata e non completato)
             from datetime import datetime
             today = datetime.now().date()
-            is_late = (task.DataScadenza and task.DataScadenza < today and task.Stato != 'Completato')
+            
+            # Converti DataScadenza a date per il confronto
+            if task.DataScadenza:
+                task_due_date = task.DataScadenza.date() if hasattr(task.DataScadenza, 'date') else task.DataScadenza
+                is_late = (task_due_date < today and task.Stato != 'Completato')
+            else:
+                is_late = False
             
             if task.IsPostFinalMilestone:
                 # Task Target NPI = BLU (anche se in ritardo)
