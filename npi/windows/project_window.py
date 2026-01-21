@@ -214,7 +214,8 @@ class ProjectWindow(tk.Toplevel):
         self.tree.column('StartDate', width=100)
         self.tree.column('DueDate', width=100)
         
-        self.tree.tag_configure('special_task', foreground='red')
+        self.tree.tag_configure('special_task', foreground='#0078d4')  # BLU per Target NPI
+        self.tree.tag_configure('late_task', foreground='red')  # ROSSO per task in ritardo
         self.tree.tag_configure('bold_task', font=('Segoe UI', 9, 'bold'))
         self.tree.bind('<<TreeviewSelect>>', self._on_task_select)
         
@@ -661,9 +662,22 @@ class ProjectWindow(tk.Toplevel):
                 due_date+= " *"
 
             status = self.status_map_display.get(task.Stato, task.Stato)
+            
+            # 🆕 Logica tag con priorità: Target NPI > Task in Ritardo
             tags = []
+            
+            # Verifica se in ritardo (data scadenza passata e non completato)
+            from datetime import datetime
+            today = datetime.now().date()
+            is_late = (task.DataScadenza and task.DataScadenza < today and task.Stato != 'Completato')
+            
             if task.IsPostFinalMilestone:
+                # Task Target NPI = BLU (anche se in ritardo)
                 tags.append('special_task')
+                tags.append('bold_task')
+            elif is_late:
+                # Task in ritardo = ROSSO
+                tags.append('late_task')
                 tags.append('bold_task')
             
             cat = task.task_catalogo.categoria.Category if task.task_catalogo and task.task_catalogo.categoria else ""

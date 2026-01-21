@@ -301,11 +301,24 @@ class NpiGanttWindow(tk.Toplevel):
                 duration_ms = diff.total_seconds() * 1000
                 is_milestone = duration_ms <= 0
                 
-                # Colori Stato
-                color = "#3498db"
-                if row['Status'] == 'Completato': color = "#2ecc71"
-                elif row['Status'] == 'In Corso': color = "#f1c40f"
-                elif row['Status'] == 'In Ritardo': color = "#e74c3c"
+                # 🆕 Logica Colori con Task in Ritardo e Target NPI
+                today = pd.Timestamp.now()
+                is_late = (row['Finish'] < today) and (row['Status'] != 'Completato')
+                is_target_npi = row.get('IsTargetNPI', False)
+                
+                # Priorità: Target NPI > In Ritardo > Stato normale
+                if is_target_npi:
+                    # Task Target NPI = BLU (anche se in ritardo)
+                    color = "#0078d4"  # Blu Microsoft
+                elif is_late:
+                    # Task in ritardo = ROSSO
+                    color = "#e74c3c"  # Rosso
+                elif row['Status'] == 'Completato':
+                    color = "#2ecc71"  # Verde
+                elif row['Status'] == 'In Lavorazione':
+                    color = "#f1c40f"  # Giallo
+                else:
+                    color = "#3498db"  # Blu chiaro (default)
 
                 status_text = row.get('Status', 'N/A')
                 completion_val = row.get('Completion', 0)

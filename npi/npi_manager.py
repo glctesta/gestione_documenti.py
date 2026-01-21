@@ -1728,7 +1728,8 @@ class GestoreNPI:
                     'Status': task.Stato,
                     'TaskProdottoID': task.TaskProdottoID,
                     'Dependencies': deps,
-                    'Completion': completion_percentage  # 🆕 Percentuale calcolata dinamicamente
+                    'Completion': completion_percentage,  # 🆕 Percentuale calcolata dinamicamente
+                    'IsTargetNPI': task.IsPostFinalMilestone if task.IsPostFinalMilestone is not None else False  # 🆕 Flag Target NPI
                 })
 
             logger.debug(f"Totale task nel progetto: {len(progetto.waves[0].tasks)}")
