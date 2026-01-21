@@ -1554,8 +1554,16 @@ class ProjectWindow(tk.Toplevel):
             self.parent_projects_map = {}
             
             for p in available_parents:
-                # 🆕 Usa il NomeProgetto invece di None
-                display_name = f"{p.NomeProgetto}"
+                # 🆕 Gestisci fallback se NomeProgetto è None
+                if p.NomeProgetto:
+                    display_name = p.NomeProgetto
+                elif p.prodotto and p.prodotto.NomeProdotto:
+                    # Usa nome prodotto se non c'è nome progetto
+                    display_name = f"{p.prodotto.NomeProdotto} (Prog.{p.ProgettoId})"
+                else:
+                    # Fallback: mostra solo ID
+                    display_name = f"Progetto ID {p.ProgettoId}"
+                
                 parent_names.append(display_name)
                 self.parent_projects_map[display_name] = p.ProgettoId
             
@@ -1565,11 +1573,21 @@ class ProjectWindow(tk.Toplevel):
             if self.progetto.ParentProjectID:
                 parent = self.npi_manager.get_parent_project(self.project_id)
                 if parent:
-                    display_name = f"{parent.NomeProgetto}"
+                    # Usa stessa logica di costruzione nome
+                    if parent.NomeProgetto:
+                        display_name = parent.NomeProgetto
+                        label_text = f"📦 Padre: {parent.NomeProgetto}"
+                    elif hasattr(parent, 'prodotto') and parent.prodotto and parent.prodotto.NomeProdotto:
+                        display_name = f"{parent.prodotto.NomeProdotto} (Prog.{parent.ProgettoId})"
+                        label_text = f"📦 Padre: {display_name}"
+                    else:
+                        display_name = f"Progetto ID {parent.ProgettoId}"
+                        label_text = f"📦 Padre: {display_name}"
+                    
                     if display_name in parent_names:
                         self.parent_project_combo.set(display_name)
                         self.current_parent_label.config(
-                            text=f"📦 Padre: {parent.NomeProgetto}",
+                            text=label_text,
                             foreground="blue"
                         )
                     else:
