@@ -1515,7 +1515,15 @@ class ProjectWindow(tk.Toplevel):
         """Popola i widget della gerarchia progetti."""
         try:
             # Carica tutti i progetti disponibili come possibili padri
-            all_projects = self.npi_manager.get_progetti_npi()
+            # Usa query diretta perché non esiste get_progetti_npi()
+            from npi.data_models import ProgettoNPI
+            session = self.npi_manager._get_session()
+            try:
+                all_projects = session.query(ProgettoNPI)\
+                    .order_by(ProgettoNPI.NomeProgetto)\
+                    .all()
+            finally:
+                session.close()
             
             # Escludi il progetto corrente dalla lista dei padri possibili
             available_parents = [
