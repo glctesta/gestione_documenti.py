@@ -2597,6 +2597,7 @@ class GestoreNPI:
                     return None
                 
                 project = session.query(ProgettoNPI)\
+                    .options(joinedload(ProgettoNPI.prodotto))\
                     .filter(ProgettoNPI.ProgettoId == project_id)\
                     .first()
                 
@@ -2604,6 +2605,7 @@ class GestoreNPI:
                     return None
                 
                 children = session.query(ProgettoNPI)\
+                    .options(joinedload(ProgettoNPI.prodotto))\
                     .filter(ProgettoNPI.ParentProjectID == project_id)\
                     .order_by(ProgettoNPI.HierarchyLevel, ProgettoNPI.NomeProgetto)\
                     .all()
