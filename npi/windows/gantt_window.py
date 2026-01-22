@@ -682,7 +682,14 @@ class NpiGanttWindow(tk.Toplevel):
 
             # 5. Export
             temp_file = os.path.join(tempfile.gettempdir(), f"Gantt_NPI_{self.progetto_id}.html")
-            fig.write_html(temp_file, auto_open=False)
+            
+            # 🆕 Config per rimuovere logo Plotly
+            config = {
+                'displaylogo': False,  # Rimuove logo Plotly
+                'displayModeBar': False  # Nasconde completamente la barra strumenti
+            }
+            
+            fig.write_html(temp_file, auto_open=False, config=config)
             webbrowser.open(f'file://{temp_file}')
             
             self.log_status("✅ Gantt grafico rigenerato con successo!")
