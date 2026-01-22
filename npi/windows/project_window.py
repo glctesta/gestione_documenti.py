@@ -138,17 +138,17 @@ class ProjectWindow(tk.Toplevel):
                 self.logo_photo = ImageTk.PhotoImage(logo_image)
                 
                 logo_label = ttk.Label(title_frame, image=self.logo_photo)
-                logo_label.pack(side=tk.LEFT, padx=(0, 15), pady=5)
+                logo_label.pack(side=tk.TOP, anchor='w', pady=(0, 5))  # 🆕 TOP invece di LEFT
                 logger.info(f"Logo caricato da: {logo_path}")
             else:
                 logger.warning("Logo.png non trovato - continua senza logo")
         except Exception as e:
             logger.warning(f"Errore caricamento logo: {e}")
         
-        # Nome progetto (dopo il logo)
+        # Nome progetto (sotto il logo)
         self.header_label = ttk.Label(title_frame, text="", font=('Segoe UI', 16, 'bold'), 
                                        wraplength=600, justify=tk.LEFT, anchor='nw')
-        self.header_label.pack(side=tk.LEFT, anchor='nw')
+        self.header_label.pack(side=tk.TOP, anchor='nw')  # 🆕 TOP invece di LEFT
 
         # Buttons in Header - PRIMA RIGA
         toolbar_row1 = ttk.Frame(header_frame)

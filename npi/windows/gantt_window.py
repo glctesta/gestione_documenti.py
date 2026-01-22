@@ -532,8 +532,21 @@ class NpiGanttWindow(tk.Toplevel):
             # I task sono mostrati dal più vecchio al più nuovo (ordine cronologico)
             df = df.sort_values(by=['Category', 'Start'], ascending=[True, True])
             
-            # Etichetta asse Y: Categoria + Nome Task + ID per unicità
-            df['Label'] = df.apply(lambda r: f"<b>[{r['Category'].upper()}]</b><br>{r['Task']} (ID:{r['TaskProdottoID']})", axis=1)
+            # 🆕 Etichetta asse Y con indicatore ritardo
+            def create_label_with_delay(row):
+                base_label = f"<b>[{row['Category'].upper()}]</b><br>{row['Task']} (ID:{row['TaskProdottoID']})"
+                
+                # Calcola ritardo se task scaduto e non completato
+                if row['Status'] != 'Completato':
+                    today = pd.Timestamp.now()
+                    if row['Finish'] < today:
+                        days_late = (today - row['Finish']).days
+                        delay_text = f"<br><span style='color:red;font-weight:bold'>⚠️ In ritardo di {days_late} giorni</span>"
+                        return base_label + delay_text
+                
+                return base_label
+            
+            df['Label'] = df.apply(create_label_with_delay, axis=1)
             
             # Crea mapping ID -> Label per le dipendenze
             id_to_label = {row['TaskProdottoID']: row['Label'] for _, row in df.iterrows()}
@@ -657,18 +670,28 @@ class NpiGanttWindow(tk.Toplevel):
                 barmode='overlay'
             )
 
+            # if logo_base64:
+            #     fig.add_layout_image(
+            #         dict(
+            #             source=logo_base64,
+            #             xref="paper", yref="paper",
+            #             x=-0.05, y=1.0,
+            #             sizex=0.18, sizey=0.18,
+            #             xanchor="left", yanchor="top",
+            #             layer="above"
+            #         )
+            #     )
             if logo_base64:
                 fig.add_layout_image(
                     dict(
                         source=logo_base64,
                         xref="paper", yref="paper",
-                        x=0, y=1.15,
-                        sizex=0.18, sizey=0.18,
+                        x=0, y=1.0, #0
+                        sizex=0.15, sizey=0.15,
                         xanchor="left", yanchor="top",
                         layer="above"
                     )
                 )
-
             # Oggi
             today = datetime.now()
             fig.add_shape(
