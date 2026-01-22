@@ -116,6 +116,36 @@ class ProjectWindow(tk.Toplevel):
         title_frame = ttk.Frame(header_frame)
         title_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False)
         
+        # 🆕 LOGO IN ALTO A SINISTRA (prima del nome progetto)
+        try:
+            logo_path = None
+            possible_paths = [
+                os.path.join(os.getcwd(), "Logo.png"),
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "Logo.png"),
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "Logo.png")
+            ]
+            
+            for p in possible_paths:
+                if os.path.exists(p):
+                    logo_path = p
+                    break
+            
+            if logo_path:
+                # Carica e ridimensiona logo
+                from PIL import Image, ImageTk
+                logo_image = Image.open(logo_path)
+                logo_image = logo_image.resize((60, 60), Image.Resampling.LANCZOS)  # Logo piccolo
+                self.logo_photo = ImageTk.PhotoImage(logo_image)
+                
+                logo_label = ttk.Label(title_frame, image=self.logo_photo)
+                logo_label.pack(side=tk.LEFT, padx=(0, 15), pady=5)
+                logger.info(f"Logo caricato da: {logo_path}")
+            else:
+                logger.warning("Logo.png non trovato - continua senza logo")
+        except Exception as e:
+            logger.warning(f"Errore caricamento logo: {e}")
+        
+        # Nome progetto (dopo il logo)
         self.header_label = ttk.Label(title_frame, text="", font=('Segoe UI', 16, 'bold'), 
                                        wraplength=600, justify=tk.LEFT, anchor='nw')
         self.header_label.pack(side=tk.LEFT, anchor='nw')
