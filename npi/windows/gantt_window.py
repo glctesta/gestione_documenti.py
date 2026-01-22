@@ -186,6 +186,32 @@ class NpiGanttWindow(tk.Toplevel):
         """Genera il diagramma di Gantt."""
         try:
             self.log_status("=== INIZIO GENERAZIONE GANTT ===")
+            
+            # 🆕 Gestisci diverse modalità di visualizzazione
+            if self.current_gantt_mode == 'current':
+                # Modalità normale (progetto corrente)
+                self._generate_standard_gantt()
+            elif self.current_gantt_mode == 'consolidated':
+                # Modalità consolidata (gerarchia completa)
+                self._generate_consolidated_gantt()
+            elif self.current_gantt_mode.startswith('child_'):
+                # Modalità singolo progetto figlio
+                child_project_id = int(self.current_gantt_mode.split('_')[1])
+                self._generate_child_gantt(child_project_id)
+            else:
+                self.log_status(f"⚠️ Modalità sconosciuta: {self.current_gantt_mode}")
+                self._generate_standard_gantt()  # Fallback
+
+        except Exception as e:
+            error_msg = f"❌ Errore: {str(e)}"
+            self.log_status(error_msg)
+            logger.error(f"Errore Gantt: {e}", exc_info=True)
+            messagebox.showerror("Errore", f"Impossibile generare il Gantt:\n{str(e)}", parent=self)
+    
+    def _generate_standard_gantt(self):
+        """Genera Gantt standard per il progetto corrente (comportamento originale)."""
+        try:
+            self.log_status("📋 Modalità: Progetto Corrente")
 
             # Recupera i dati
             self.log_status("Recupero dati dal database...")
@@ -220,12 +246,135 @@ class NpiGanttWindow(tk.Toplevel):
 
             # Crea grafico
             self.create_chart(df, product_name)
-
+            
         except Exception as e:
-            error_msg = f"❌ Errore: {str(e)}"
-            self.log_status(error_msg)
-            logger.error(f"Errore Gantt: {e}", exc_info=True)
-            messagebox.showerror("Errore", f"Impossibile generare il Gantt:\n{str(e)}", parent=self)
+            raise  # Rilancia per gestione in generate_gantt()
+    
+    def _generate_consolidated_gantt(self):
+        """Genera Gantt consolidato con gerarchia progetti (Step 2)."""
+        try:
+            self.log_status("🔗 Modalità: Vista Consolidata")
+            
+            if not self.hierarchy_data:
+                self.log_status("❌ Nessun dato gerarchia disponibile")
+                messagebox.showwarning("Avviso", "Dati gerarchia non disponibili", parent=self)
+                return
+            
+            projects = self.hierarchy_data.get('projects', [])
+            if not projects:
+                self.log_status("❌ Nessun progetto nella gerarchia")
+                return
+            
+            self.log_status(f"📊 Processa {len(projects)} progetti nella gerarchia...")
+            
+            # Costruisci lista di task consolidata
+            consolidated_tasks = []
+            
+            for proj_data in projects:
+                project_name = proj_data['project_name']
+                level = proj_data['level']
+                is_root = proj_data['is_root']
+                
+                # Indentazione visuale basata sul livello
+                indent = "  " * level
+                prefix = "📦" if is_root else "📄"
+                
+                self.log_status(f"{indent}{prefix} {project_name} (Level {level})")
+                
+                # Per ogni task del progetto
+                tasks = proj_data.get('tasks', [])
+                for task in tasks:
+                    # Aggiungi indicatore livello al nome task
+                    task_modified = task.copy()
+                    task_modified['Task'] = f"{indent}  └─ {task['Task']}"
+                    task_modified['_project_name'] = project_name
+                    task_modified['_level'] = level
+                    consolidated_tasks.append(task_modified)
+            
+            if not consolidated_tasks:
+                self.log_status("❌ Nessun task trovato nella gerarchia")
+                messagebox.showinfo("Info", "Nessun task disponibile", parent=self)
+                return
+            
+            self.log_status(f"✅ Totale {len(consolidated_tasks)} task consolidati")
+            
+            # Salva dati raw
+            self.gantt_data_raw = consolidated_tasks
+            
+            # Crea DataFrame
+            df = pd.DataFrame(consolidated_tasks)
+            
+            # Converti date
+            df['Start'] = pd.to_datetime(df['Start'])
+            df['Finish'] = pd.to_datetime(df['Finish'])
+            
+            # Aggiusta durate
+            df = self.adjust_durations(df)
+            
+            # Calcola statistiche
+            self.calculate_statistics(df)
+            
+            # Salva per export
+            self.df = df.copy()
+            self.product_name = f"Consolidato: {self.hierarchy_data.get('root_project_name', 'Progetti')}"
+            
+            # Crea grafico
+            self.create_chart(df, self.product_name)
+            
+        except Exception as e:
+            raise  # Rilancia per gestione in generate_gantt()
+    
+    def _generate_child_gantt(self, child_project_id):
+        """Genera Gantt per un singolo progetto figlio."""
+        try:
+            self.log_status(f"📄 Modalità: Progetto Figlio (ID: {child_project_id})")
+            
+            # Trova i dati del progetto figlio
+            child_data = None
+            for proj in self.hierarchy_data.get('projects', []):
+                if proj['project_id'] == child_project_id:
+                    child_data = proj
+                    break
+            
+            if not child_data:
+                self.log_status(f"❌ Progetto {child_project_id} non trovato")
+                return
+            
+            project_name = child_data['project_name']
+            tasks = child_data.get('tasks', [])
+            
+            if not tasks:
+                self.log_status(f"❌ Nessun task per progetto {project_name}")
+                messagebox.showinfo("Info", f"Nessun task per {project_name}", parent=self)
+                return
+            
+            self.log_status(f"✅ Ricevuti {len(tasks)} task per {project_name}")
+            
+            # Salva dati raw
+            self.gantt_data_raw = tasks
+            
+            # Crea DataFrame
+            df = pd.DataFrame(tasks)
+            
+            # Converti date
+            df['Start'] = pd.to_datetime(df['Start'])
+            df['Finish'] = pd.to_datetime(df['Finish'])
+            
+            # Aggiusta durate
+            df = self.adjust_durations(df)
+            
+            # Calcola statistiche
+            self.calculate_statistics(df)
+            
+            # Salva per export
+            self.df = df.copy()
+            self.product_name = project_name
+            
+            # Crea grafico
+            self.create_chart(df, project_name)
+            
+        except Exception as e:
+            raise  # Rilancia per gestione in generate_gantt()
 
     def adjust_durations(self, df):
         """Aggiusta le durate dei task."""
