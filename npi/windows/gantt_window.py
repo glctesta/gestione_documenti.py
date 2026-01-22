@@ -681,20 +681,17 @@ class NpiGanttWindow(tk.Toplevel):
             #             layer="above"
             #         )
             #     )
-            # Logo come annotazione per posizionamento assoluto
+            # Logo forzato a sinistra con coordinate negative
             if logo_base64:
-                fig.add_annotation(
-                    x=0,  # Estrema sinistra
-                    y=1,  # Estremo alto
-                    xref="paper",
-                    yref="paper",
-                    xanchor="left",
-                    yanchor="top",
-                    showarrow=False,
-                    text=f'<img src="{logo_base64}" width="80" height="80">',
-                    align="left",
-                    xshift=5,  # Piccolo margine dal bordo
-                    yshift=-5
+                fig.add_layout_image(
+                    dict(
+                        source=logo_base64,
+                        xref="paper", yref="paper",
+                        x=-0.08, y=1.05,  # Coordinate negative per forzare fuori plot area
+                        sizex=0.12, sizey=0.12,  # Dimensioni visibili
+                        xanchor="left", yanchor="top",
+                        layer="above"
+                    )
                 )
             # Oggi
             today = datetime.now()
