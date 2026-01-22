@@ -2770,3 +2770,95 @@ class GestoreNPI:
             raise
         finally:
             session.close()
+    
+    def get_gantt_hierarchy_data(self, root_project_id):
+        """
+        Recupera dati Gantt per un progetto e tutti i suoi discendenti (gerarchia completa).
+        
+        Args:
+            root_project_id: ID del progetto root da cui partire
+            
+        Returns:
+            {
+                'root_project_id': int,
+                'root_project_name': str,
+                'has_hierarchy': bool,
+                'projects': [
+                    {
+                        'project_id': int,
+                        'project_name': str,
+                        'is_root': bool,
+                        'is_parent': bool,  # Ha figli?
+                        'level': int,  # 0=root, 1=figlio diretto, etc.
+                        'parent_id': int or None,
+                        'tasks': [...]  # Dati Gantt standard
+                    },
+                    ...
+                ]
+            }
+        """
+        try:
+            # Recupera la gerarchia completa
+            hierarchy = self.get_project_hierarchy(root_project_id)
+            
+            if not hierarchy:
+                # Nessun progetto trovato
+                return {
+                    'root_project_id': root_project_id,
+                    'root_project_name': 'Unknown',
+                    'has_hierarchy': False,
+                    'projects': []
+                }
+            
+            # Costruisci lista piatta di progetti con livelli
+            projects_data = []
+            
+            def process_node(node, level=0, parent_id=None):
+                """Processa ricorsivamente i nodi della gerarchia."""
+                project = node['project']
+                children = node.get('children', [])
+                
+                # Recupera i dati Gantt per questo progetto
+                gantt_data = self.get_gantt_data(project.ProgettoId)
+                
+                project_info = {
+                    'project_id': project.ProgettoId,
+                    'project_name': project.NomeProgetto or f"Progetto {project.ProgettoId}",
+                    'is_root': (level == 0),
+                    'is_parent': len(children) > 0,
+                    'level': level,
+                    'parent_id': parent_id,
+                    'tasks': gantt_data,
+                    'product_name': project.prodotto.NomeProdotto if project.prodotto else None,
+                    'status': project.StatoProgetto
+                }
+                
+                projects_data.append(project_info)
+                
+                # Processa ricorsivamente i figli
+                for child_node in children:
+                    process_node(child_node, level + 1, project.ProgettoId)
+            
+            # Avvia processamento dalla root
+            process_node(hierarchy)
+            
+            # Determina se c'Ã¨ una vera gerarchia (piÃ¹ di un progetto)
+            has_hierarchy = len(projects_data) > 1
+            
+            root_project = hierarchy['project']
+            
+            return {
+                'root_project_id': root_project_id,
+                'root_project_name': root_project.NomeProgetto or f"Progetto {root_project_id}",
+                'has_hierarchy': has_hierarchy,
+                'projects': projects_data
+            }
+            
+        except Exception as e:
+            logger.error(f"Errore recupero gerarchia Gantt per progetto {root_project_id}: {e}", exc_info=True)
+            return {
+                'root_project_id': root_project_id,
+                'root_project_name': 'Error',
+                'has_hierarchy': False,
+                'projects': []
+            }
