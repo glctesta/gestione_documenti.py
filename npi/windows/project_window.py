@@ -108,15 +108,12 @@ class ProjectWindow(tk.Toplevel):
         main_frame = ttk.Frame(self)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
+
         # Header
         header_frame = ttk.Frame(main_frame)
         header_frame.pack(fill=tk.X, pady=(0, 10))
         
-        # Frame per il titolo del progetto con supporto multi-riga
-        title_frame = ttk.Frame(header_frame)
-        title_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False)
-        
-        # 🆕 LOGO IN ALTO A SINISTRA (prima del nome progetto)
+        # 🆕 LOGO IN ALTO A SINISTRA - PRIMA DI TUTTO
         try:
             logo_path = None
             possible_paths = [
@@ -134,21 +131,26 @@ class ProjectWindow(tk.Toplevel):
                 # Carica e ridimensiona logo
                 from PIL import Image, ImageTk
                 logo_image = Image.open(logo_path)
-                logo_image = logo_image.resize((60, 60), Image.Resampling.LANCZOS)  # Logo piccolo
+                logo_image = logo_image.resize((60, 60), Image.Resampling.LANCZOS)
                 self.logo_photo = ImageTk.PhotoImage(logo_image)
                 
-                logo_label = ttk.Label(title_frame, image=self.logo_photo)
-                logo_label.pack(side=tk.TOP, anchor='w', pady=(0, 5))  # 🆕 TOP invece di LEFT
+                # Logo direttamente nell'header, non nel title_frame
+                logo_label = ttk.Label(header_frame, image=self.logo_photo)
+                logo_label.pack(side=tk.LEFT, padx=(0, 15), pady=5)
                 logger.info(f"Logo caricato da: {logo_path}")
             else:
                 logger.warning("Logo.png non trovato - continua senza logo")
         except Exception as e:
             logger.warning(f"Errore caricamento logo: {e}")
         
-        # Nome progetto (sotto il logo)
+        # Frame per il titolo del progetto (dopo il logo)
+        title_frame = ttk.Frame(header_frame)
+        title_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False)
+        
+        # Nome progetto
         self.header_label = ttk.Label(title_frame, text="", font=('Segoe UI', 16, 'bold'), 
                                        wraplength=600, justify=tk.LEFT, anchor='nw')
-        self.header_label.pack(side=tk.TOP, anchor='nw')  # 🆕 TOP invece di LEFT
+        self.header_label.pack(side=tk.TOP, anchor='nw')
 
         # Buttons in Header - PRIMA RIGA
         toolbar_row1 = ttk.Frame(header_frame)
