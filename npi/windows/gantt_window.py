@@ -685,11 +685,11 @@ class NpiGanttWindow(tk.Toplevel):
                 fig.add_layout_image(
                     dict(
                         source=logo_base64,
-                        xref="paper", yref="paper",
-                        x=0.02, y=1.0,  # 🆕 Spostato leggermente a destra per margine
-                        sizex=0.10, sizey=0.10,  # 🆕 Ridotto per non sovrapporsi
+                        xref="paper", yref="paper",  # Coordinate relative all'intera pagina
+                        x=0.01, y=0.98,  # Angolo alto sinistra assoluto
+                        sizex=0.08, sizey=0.08,  # Piccolo per non coprire contenuto
                         xanchor="left", yanchor="top",
-                        layer="above"
+                        layer="above"  # Sopra tutto
                     )
                 )
             # Oggi
