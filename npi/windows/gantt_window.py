@@ -267,28 +267,61 @@ class NpiGanttWindow(tk.Toplevel):
             
             self.log_status(f"📊 Processa {len(projects)} progetti nella gerarchia...")
             
-            # Costruisci lista di task consolidata
+            # 🆕 Step 3: Costruisci lista consolidata con BARRE PROGETTO + TASK
             consolidated_tasks = []
             
             for proj_data in projects:
                 project_name = proj_data['project_name']
                 level = proj_data['level']
                 is_root = proj_data['is_root']
+                tasks = proj_data.get('tasks', [])
                 
                 # Indentazione visuale basata sul livello
                 indent = "  " * level
                 prefix = "📦" if is_root else "📄"
                 
-                self.log_status(f"{indent}{prefix} {project_name} (Level {level})")
+                self.log_status(f"{indent}{prefix} {project_name} (Level {level}) - {len(tasks)} task")
                 
-                # Per ogni task del progetto
-                tasks = proj_data.get('tasks', [])
+                # 🆕 BARRA PROGETTO (se ha task)
+                if tasks:
+                    # Calcola date min/max per la barra progetto
+                    task_starts = [pd.to_datetime(t['Start']) for t in tasks if t.get('Start')]
+                    task_finishes = [pd.to_datetime(t['Finish']) for t in tasks if t.get('Finish')]
+                    
+                    if task_starts and task_finishes:
+                        project_start = min(task_starts)
+                        project_finish = max(task_finishes)
+                        
+                        # Calcola completamento progetto (media task)
+                        completions = [t.get('Completion', 0) for t in tasks]
+                        project_completion = int(sum(completions) / len(completions)) if completions else 0
+                        
+                        # Aggiungi barra progetto
+                        project_bar = {
+                            'Task': f"{indent}{prefix} {project_name}",
+                            'Category': '🔗 Progetti',  # Categoria speciale
+                            'Start': project_start,
+                            'Finish': project_finish,
+                            'Owner': proj_data.get('status', 'N/A'),  # Mostra stato progetto
+                            'Status': '_PROJECT_BAR_',  # Status speciale per identificare barre progetto
+                            'TaskProdottoID': -proj_data['project_id'],  # ID negativo per progetti
+                            'Dependencies': [],
+                            'Completion': project_completion,
+                            'IsTargetNPI': False,
+                            '_is_project_bar': True,  # Flag per identificazione
+                            '_project_name': project_name,
+                            '_level': level
+                        }
+                        consolidated_tasks.append(project_bar)
+                
+                # Task del progetto (indentati)
                 for task in tasks:
                     # Aggiungi indicatore livello al nome task
                     task_modified = task.copy()
                     task_modified['Task'] = f"{indent}  └─ {task['Task']}"
                     task_modified['_project_name'] = project_name
                     task_modified['_level'] = level
+                    task_modified['_is_project_bar'] = False
                     consolidated_tasks.append(task_modified)
             
             if not consolidated_tasks:
@@ -514,24 +547,34 @@ class NpiGanttWindow(tk.Toplevel):
                 duration_ms = diff.total_seconds() * 1000
                 is_milestone = duration_ms <= 0
                 
-                # 🆕 Logica Colori con Task in Ritardo e Target NPI
+                # 🆕 Logica Colori con Task in Ritardo, Target NPI e BARRE PROGETTO
                 today = pd.Timestamp.now()
                 is_late = (row['Finish'] < today) and (row['Status'] != 'Completato')
                 is_target_npi = row.get('IsTargetNPI', False)
+                is_project_bar = row.get('Status') == '_PROJECT_BAR_'  # 🆕 Flag barra progetto
                 
-                # Priorità: Target NPI > In Ritardo > Stato normale
-                if is_target_npi:
+                # Priorità: Barra Progetto > Target NPI > In Ritardo > Stato normale
+                if is_project_bar:
+                    # 🆕 Barra progetto = BLU SCURO (distinguibile)
+                    color = "#1565C0"  # Blu scuro Material Design
+                    bar_height = 0.6  # Più spessa
+                elif is_target_npi:
                     # Task Target NPI = BLU (anche se in ritardo)
                     color = "#0078d4"  # Blu Microsoft
+                    bar_height = 0.4  # Normale
                 elif is_late:
                     # Task in ritardo = ROSSO
                     color = "#e74c3c"  # Rosso
+                    bar_height = 0.4
                 elif row['Status'] == 'Completato':
                     color = "#2ecc71"  # Verde
+                    bar_height = 0.4
                 elif row['Status'] == 'In Lavorazione':
                     color = "#f1c40f"  # Giallo
+                    bar_height = 0.4
                 else:
                     color = "#3498db"  # Blu chiaro (default)
+                    bar_height = 0.4
 
                 status_text = row.get('Status', 'N/A')
                 completion_val = row.get('Completion', 0)
@@ -546,13 +589,14 @@ class NpiGanttWindow(tk.Toplevel):
                         hoverinfo='text', showlegend=False
                     ))
                 else:
-                    # Barra Task
+                    # Barra Task o Progetto
                     fig.add_trace(go.Bar(
                         base=[row['Start']],
                         x=[duration_ms],
                         y=[row['Label']],
                         orientation='h',
                         marker=dict(color=color, line=dict(color='black', width=0.5)),
+                        width=bar_height,  # 🆕 Altezza barra variabile
                         hovertext=f"<b>{row['Task']}</b><br>Responsabile: {row['Owner']}<br>Fine prevista: {row['Finish'].strftime('%d/%m/%Y')}<br>Completamento: {completion_val}%",
                         hoverinfo='text',
                         text=f" {completion_val}% ",
