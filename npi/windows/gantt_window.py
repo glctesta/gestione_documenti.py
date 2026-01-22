@@ -686,8 +686,8 @@ class NpiGanttWindow(tk.Toplevel):
                     dict(
                         source=logo_base64,
                         xref="paper", yref="paper",
-                        x=0, y=1.0, #0
-                        sizex=0.15, sizey=0.15,
+                        x=0.02, y=1.0,  # 🆕 Spostato leggermente a destra per margine
+                        sizex=0.10, sizey=0.10,  # 🆕 Ridotto per non sovrapporsi
                         xanchor="left", yanchor="top",
                         layer="above"
                     )
