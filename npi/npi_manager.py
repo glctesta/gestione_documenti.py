@@ -1693,9 +1693,9 @@ class GestoreNPI:
                             completion_percentage = 0
                             logger.info(f"⏸️ Task {task.TaskProdottoID}: In Lavorazione ma non iniziato (futuro) -> 0%")
                         elif today > end_date:
-                            # Scadenza superata
-                            completion_percentage = 100
-                            logger.info(f"⏰ Task {task.TaskProdottoID}: In Lavorazione scaduto -> 100%")
+                            # 🆕 Scadenza superata ma NON completato = 50% (default sconosciuto)
+                            completion_percentage = 50
+                            logger.info(f"⏰ Task {task.TaskProdottoID}: In Lavorazione scaduto -> 50% (default ritardo)")
                         else:
                             # Task in corso: oggi è tra start_date e end_date (inclusi)
                             total_duration = (end_date - start_date).days
@@ -1715,9 +1715,23 @@ class GestoreNPI:
                         logger.warning(f"❌ Errore calcolo percentuale per task {task.TaskProdottoID}: {e}")
                         completion_percentage = 0
                 else:
-                    # Task in altri stati (Da Fare, Bloccato, ecc.) = 0%
-                    completion_percentage = 0
-                    logger.info(f"🔴 Task {task.TaskProdottoID}: Stato '{stato_normalized}' -> 0%")
+                    # 🆕 Task in altri stati (Da Fare, Bloccato, ecc.)
+                    # Se la scadenza è superata, 50% default, altrimenti 0%
+                    try:
+                        today = datetime.now().date()
+                        end_date = data_fine.date() if hasattr(data_fine, 'date') else data_fine
+                        
+                        if today > end_date:
+                            # Scadenza superata ma non completato
+                            completion_percentage = 50
+                            logger.info(f"🔴 Task {task.TaskProdottoID}: Stato '{stato_normalized}' scaduto -> 50% (default ritardo)")
+                        else:
+                            # Non ancora scaduto
+                            completion_percentage = 0
+                            logger.info(f"🔴 Task {task.TaskProdottoID}: Stato '{stato_normalized}' -> 0%")
+                    except Exception as e:
+                        logger.warning(f"❌ Errore verifica scadenza per task {task.TaskProdottoID}: {e}")
+                        completion_percentage = 0
 
                 df_data.append({
                     'Task': task.task_catalogo.NomeTask if task.task_catalogo else "Task non definito",
