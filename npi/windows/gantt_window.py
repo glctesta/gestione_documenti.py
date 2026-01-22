@@ -88,6 +88,70 @@ class NpiGanttWindow(tk.Toplevel):
 
         # Separator
         ttk.Separator(main_frame, orient='horizontal').pack(fill='x', pady=10)
+        
+        # 🆕 TABS PER GERARCHIA PROGETTI
+        # Controlla se il progetto ha una gerarchia (padre o figli)
+        try:
+            self.hierarchy_data = self.npi_manager.get_gantt_hierarchy_data(self.progetto_id)
+            self.has_hierarchy = self.hierarchy_data.get('has_hierarchy', False)
+        except Exception as e:
+            logger.warning(f"Errore recupero gerarchia Gantt: {e}")
+            self.hierarchy_data = None
+            self.has_hierarchy = False
+        
+        if self.has_hierarchy:
+            # Crea Notebook con tabs
+            tabs_frame = ttk.LabelFrame(main_frame, text="🗂️ Viste Gantt", padding="10")
+            tabs_frame.pack(fill='x', pady=10)
+            
+            self.gantt_notebook = ttk.Notebook(tabs_frame)
+            self.gantt_notebook.pack(fill='both', expand=True)
+            
+            # Tab 1: Progetto Corrente (sempre presente)
+            tab_current = ttk.Frame(self.gantt_notebook)
+            self.gantt_notebook.add(tab_current, text="📋 Progetto Corrente")
+            
+            current_label = ttk.Label(
+                tab_current, 
+                text=f"Genera Gantt per: {self.hierarchy_data.get('root_project_name', 'Progetto')}",
+                font=("Calibri", 10)
+            )
+            current_label.pack(pady=10)
+            
+            # Tab 2: Vista Consolidata (se ha gerarchia)
+            tab_consolidated = ttk.Frame(self.gantt_notebook)
+            self.gantt_notebook.add(tab_consolidated, text="🔗 Vista Consolidata")
+            
+            consolidated_label = ttk.Label(
+                tab_consolidated,
+                text=f"Genera Gantt Consolidato con tutti i {len(self.hierarchy_data['projects'])} progetti",
+                font=("Calibri", 10)
+            )
+            consolidated_label.pack(pady=10)
+            
+            # Tab 3+: Un tab per ogni progetto figlio
+            for proj_data in self.hierarchy_data['projects']:
+                if not proj_data['is_root']:  # Solo figli, non il root
+                    tab_child = ttk.Frame(self.gantt_notebook)
+                    tab_name = proj_data['project_name'][:30]  # Limita lunghezza
+                    self.gantt_notebook.add(tab_child, text=f"📄 {tab_name}")
+                    
+                    child_label = ttk.Label(
+                        tab_child,
+                        text=f"Genera Gantt per: {proj_data['project_name']}",
+                        font=("Calibri", 10)
+                    )
+                    child_label.pack(pady=10)
+            
+            # Bind evento cambio tab
+            self.gantt_notebook.bind('<<NotebookTabChanged>>', self._on_tab_changed)
+            
+            # Variabile per tracciare tab selezionato
+            self.current_gantt_mode = 'current'  # 'current', 'consolidated', 'child_X'
+        else:
+            # Nessuna gerarchia - comportamento normale (retrocompatibile)
+            self.gantt_notebook = None
+            self.current_gantt_mode = 'current'
 
         # Frame statistiche
         stats_frame = ttk.LabelFrame(main_frame, text="📈 Statistiche Progetto", padding="10")
@@ -1187,3 +1251,29 @@ Task in Ritardo: {stats['late_tasks']}
 
         pdf.savefig(fig, bbox_inches='tight')
         plt.close()
+    
+    def _on_tab_changed(self, event=None):
+        """Gestisce il cambio di tab nel Gantt gerarchico."""
+        if not self.gantt_notebook:
+            return
+        
+        # Determina quale tab è selezionato
+        current_tab_index = self.gantt_notebook.index(self.gantt_notebook.select())
+        
+        if current_tab_index == 0:
+            # Tab "Progetto Corrente"
+            self.current_gantt_mode = 'current'
+            self.log_status("📋 Selezionato: Progetto Corrente")
+        elif current_tab_index == 1:
+            # Tab "Vista Consolidata"
+            self.current_gantt_mode = 'consolidated'
+            self.log_status("🔗 Selezionato: Vista Consolidata")
+        else:
+            # Tab di un progetto figlio
+            child_index = current_tab_index - 2  # Sottrai i primi 2 tabs
+           # Trova il progetto figlio corrispondente
+            children = [p for p in self.hierarchy_data['projects'] if not p['is_root']]
+            if child_index < len(children):
+                selected_child = children[child_index]
+                self.current_gantt_mode = f"child_{selected_child['project_id']}"
+                self.log_status(f"📄 Selezionato: {selected_child['project_name']}")
