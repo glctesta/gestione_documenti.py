@@ -687,8 +687,8 @@ class NpiGanttWindow(tk.Toplevel):
                     dict(
                         source=logo_base64,
                         xref="paper", yref="paper",
-                        x=-0.08, y=1.05,  # Coordinate negative per forzare fuori plot area
-                        sizex=0.12, sizey=0.12,  # Dimensioni visibili
+                        x=-0.12, y=1.15,  # Più in alto e più a sinistra
+                        sizex=0.12, sizey=0.12,
                         xanchor="left", yanchor="top",
                         layer="above"
                     )
