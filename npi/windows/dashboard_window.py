@@ -69,11 +69,70 @@ class NpiDashboardWindow(tk.Toplevel):
         customer_frame = ttk.Frame(stats_frame)
         customer_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        ttk.Label(customer_frame, text="Dettaglio per Cliente:", font=('Helvetica', 9, 'underline')).pack(anchor='w', pady=(0, 5))
-
-        # Container scrollabile per i clienti
-        self.customer_stats_inner_frame = ttk.Frame(customer_frame)
-        self.customer_stats_inner_frame.pack(fill=tk.BOTH, expand=True)
+        # Header con filtro anno
+        header_frame = ttk.Frame(customer_frame)
+        header_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        ttk.Label(header_frame, text="Dettaglio per Cliente:", font=('Helvetica', 9, 'underline')).pack(side=tk.LEFT)
+        
+        # Filtro Anno
+        ttk.Label(header_frame, text="Anno:", font=('Helvetica', 8)).pack(side=tk.LEFT, padx=(20, 5))
+        self.year_filter_var = tk.StringVar()
+        self.year_combo = ttk.Combobox(header_frame, textvariable=self.year_filter_var, 
+                                       state="readonly", width=12)
+        self.year_combo.pack(side=tk.LEFT)
+        self.year_combo.bind('<<ComboboxSelected>>', lambda e: self.load_npi_projects())
+        
+        # Popola anni disponibili (anno corrente e precedenti)
+        current_year = datetime.now().year
+        years = ["Tutti gli anni"] + [str(year) for year in range(current_year, current_year - 10, -1)]
+        self.year_combo['values'] = years
+        self.year_combo.set(str(current_year))  # Default: anno corrente
+        
+        # Filtro Cliente
+        ttk.Label(header_frame, text="Cliente:", font=('Helvetica', 8)).pack(side=tk.LEFT, padx=(20, 5))
+        self.client_filter_var = tk.StringVar()
+        self.client_combo = ttk.Combobox(header_frame, textvariable=self.client_filter_var,
+                                        state="readonly", width=20)
+        self.client_combo.pack(side=tk.LEFT)
+        self.client_combo.bind('<<ComboboxSelected>>', lambda e: self.load_npi_projects())
+        
+        # Popola clienti disponibili
+        try:
+            clients = self.npi_manager.get_all_clients()
+            client_values = ["Tutti i clienti"] + clients
+            self.client_combo['values'] = client_values
+            self.client_combo.set("Tutti i clienti")  # Default: tutti i clienti
+        except Exception as e:
+            logger.error(f"Errore nel caricamento clienti: {e}")
+            self.client_combo['values'] = ["Tutti i clienti"]
+            self.client_combo.set("Tutti i clienti")
+        
+        # Canvas scrollabile orizzontalmente per le statistiche clienti
+        canvas_frame = ttk.Frame(customer_frame)
+        canvas_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Scrollbar orizzontale
+        h_scrollbar = ttk.Scrollbar(canvas_frame, orient=tk.HORIZONTAL)
+        h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # Canvas
+        self.customer_canvas = tk.Canvas(canvas_frame, height=100, 
+                                         xscrollcommand=h_scrollbar.set)
+        self.customer_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        h_scrollbar.config(command=self.customer_canvas.xview)
+        
+        # Frame interno per i clienti
+        self.customer_stats_inner_frame = ttk.Frame(self.customer_canvas)
+        self.customer_canvas_window = self.customer_canvas.create_window((0, 0), 
+                                                                          window=self.customer_stats_inner_frame, 
+                                                                          anchor='nw')
+        
+        # Aggiorna scroll region quando il frame cambia dimensione
+        def on_frame_configure(event):
+            self.customer_canvas.configure(scrollregion=self.customer_canvas.bbox("all"))
+        
+        self.customer_stats_inner_frame.bind('<Configure>', on_frame_configure)
         # --- FINE SEZIONE STATISTICHE ---
 
         list_frame = ttk.LabelFrame(main_frame, text=self.lang.get('active_npi_projects', "Progetti NPI Attivi"),
@@ -81,7 +140,8 @@ class NpiDashboardWindow(tk.Toplevel):
         list_frame.pack(fill=tk.BOTH, expand=True)
 
         # --- **MODIFICA QUI: NUOVE COLONNE E TAG** ---
-        cols = ('status_icon', 'project_name', 'product_code', 'customer', 'project_end_date')
+        cols = ('status_icon', 'project_name', 'product_code', 'customer', 'project_end_date',
+                'total_tasks', 'completed_on_time', 'completed_late', 'pending_late', 'completion_pct')
         self.project_tree = ttk.Treeview(list_frame, columns=cols, show='headings', selectmode='browse')
 
         # Colonna per l'icona di stato 'X' (senza header)
@@ -90,17 +150,33 @@ class NpiDashboardWindow(tk.Toplevel):
 
         # Configurazioni colonne esistenti
         self.project_tree.heading('project_name', text=self.lang.get('col_project_name', 'Nome Progetto'))
-        self.project_tree.column('project_name', width=300)
+        self.project_tree.column('project_name', width=250)
         self.project_tree.heading('product_code', text=self.lang.get('col_product_code', 'Codice Prodotto'))
-        self.project_tree.column('product_code', width=150)
+        self.project_tree.column('product_code', width=120)
         self.project_tree.heading('customer', text=self.lang.get('col_customer', 'Cliente'))
-        self.project_tree.column('customer', width=180)
+        self.project_tree.column('customer', width=150)
         self.project_tree.heading('project_end_date',
                                   text=self.lang.get('col_project_end_date', 'Data Fine Progetto'))
-        self.project_tree.column('project_end_date', width=200, anchor=tk.CENTER)
+        self.project_tree.column('project_end_date', width=120, anchor=tk.CENTER)
+        
+        # Nuove colonne per statistiche task
+        self.project_tree.heading('total_tasks', text='Tot Task')
+        self.project_tree.column('total_tasks', width=70, anchor=tk.CENTER)
+        self.project_tree.heading('completed_on_time', text='✅ In Tempo')
+        self.project_tree.column('completed_on_time', width=80, anchor=tk.CENTER)
+        self.project_tree.heading('completed_late', text='⏰ In Ritardo')
+        self.project_tree.column('completed_late', width=90, anchor=tk.CENTER)
+        self.project_tree.heading('pending_late', text='⚠️ Da Fare (Ritardo)')
+        self.project_tree.column('pending_late', width=120, anchor=tk.CENTER)
+        self.project_tree.heading('completion_pct', text='% Completamento')
+        self.project_tree.column('completion_pct', width=110, anchor=tk.CENTER)
 
-        # Definizione del tag per i progetti in ritardo
+        # Definizione dei tag
         self.project_tree.tag_configure('overdue', foreground='red', font=('Helvetica', 9, 'bold'))
+        self.project_tree.tag_configure('selected_client', background='#E3F2FD')  # Light blue per cliente selezionato
+        self.project_tree.tag_configure('high_completion', foreground='green', font=('Helvetica', 9, 'bold'))
+        self.project_tree.tag_configure('medium_completion', foreground='orange', font=('Helvetica', 9, 'bold'))
+        self.project_tree.tag_configure('low_completion', foreground='red', font=('Helvetica', 9, 'bold'))
         # --- **FINE MODIFICA** ---
 
         self.project_tree.pack(fill=tk.BOTH, expand=True)
@@ -120,12 +196,26 @@ class NpiDashboardWindow(tk.Toplevel):
         self.export_pdf_button.pack(side=tk.LEFT, padx=5)
         if not REPORTLAB_AVAILABLE:
             self.export_pdf_button.config(state=tk.DISABLED)
+        
+        # Bottone Export Excel
+        self.export_excel_button = ttk.Button(button_frame, text=self.lang.get('btn_export_excel', 'Export Excel a C:\\Temp'),
+                                              command=self._export_to_excel_new)
+        self.export_excel_button.pack(side=tk.LEFT, padx=5)
+        
         ttk.Button(button_frame, text=self.lang.get('btn_close', 'Chiudi'), command=self.destroy).pack(side=tk.RIGHT)
 
     def _update_statistics(self):
         """Aggiorna la sezione delle statistiche."""
         try:
-            stats = self.npi_manager.get_npi_statistics()
+            # Ottieni anno selezionato
+            year_str = self.year_filter_var.get()
+            year_filter = None if year_str == "Tutti gli anni" else int(year_str)
+            
+            # Ottieni cliente selezionato
+            client_str = self.client_filter_var.get()
+            client_filter = None if client_str == "Tutti i clienti" else client_str
+            
+            stats = self.npi_manager.get_npi_statistics(year_filter=year_filter, client_filter=client_filter)
             if not stats:
                 return
 
@@ -138,21 +228,25 @@ class NpiDashboardWindow(tk.Toplevel):
             for widget in self.customer_stats_inner_frame.winfo_children():
                 widget.destroy()
 
-            # Intestazione tabella clienti
-            ttk.Label(self.customer_stats_inner_frame, text="Cliente", font=('Helvetica', 8, 'bold')).grid(row=0, column=0, sticky='w', padx=10)
-            ttk.Label(self.customer_stats_inner_frame, text="N°", font=('Helvetica', 8, 'bold')).grid(row=0, column=1, sticky='e', padx=10)
-            ttk.Label(self.customer_stats_inner_frame, text="%", font=('Helvetica', 8, 'bold')).grid(row=0, column=2, sticky='e', padx=10)
+            # Disponi i clienti ORIZZONTALMENTE (senza limite)
+            # Header
+            ttk.Label(self.customer_stats_inner_frame, text="Cliente", 
+                     font=('Helvetica', 8, 'bold')).grid(row=0, column=0, sticky='w', padx=5, pady=2)
+            ttk.Label(self.customer_stats_inner_frame, text="N°", 
+                     font=('Helvetica', 8, 'bold')).grid(row=1, column=0, sticky='w', padx=5, pady=2)
+            ttk.Label(self.customer_stats_inner_frame, text="%", 
+                     font=('Helvetica', 8, 'bold')).grid(row=2, column=0, sticky='w', padx=5, pady=2)
 
-            # Limita a visualizzare i primi 4-5 clienti per non intasare
+            # Dati clienti (disposti in colonne)
             for i, item in enumerate(stats['customer_stats']):
-                if i > 5: 
-                     ttk.Label(self.customer_stats_inner_frame, text="...").grid(row=i+1, column=0, sticky='w', padx=10)
-                     break
-                
-                row = i + 1
-                ttk.Label(self.customer_stats_inner_frame, text=item['client']).grid(row=row, column=0, sticky='w', padx=10)
-                ttk.Label(self.customer_stats_inner_frame, text=str(item['count'])).grid(row=row, column=1, sticky='e', padx=10)
-                ttk.Label(self.customer_stats_inner_frame, text=f"{item['percentage']}%").grid(row=row, column=2, sticky='e', padx=10)
+                col = i + 1
+                ttk.Label(self.customer_stats_inner_frame, text=item['client']).grid(
+                    row=0, column=col, sticky='w', padx=10, pady=2)
+                ttk.Label(self.customer_stats_inner_frame, text=str(item['count'])).grid(
+                    row=1, column=col, sticky='e', padx=10, pady=2)
+                ttk.Label(self.customer_stats_inner_frame, text=f"{item['percentage']}%").grid(
+                    row=2, column=col, sticky='e', padx=10, pady=2)
+                    
         except Exception as e:
             logger.error(f"Errore aggiornamento statistiche: {e}")
 
@@ -162,7 +256,15 @@ class NpiDashboardWindow(tk.Toplevel):
             self.project_tree.delete(i)
 
         try:
-            progetti = self.npi_manager.get_dashboard_projects()
+            # Ottieni anno selezionato
+            year_str = self.year_filter_var.get()
+            year_filter = None if year_str == "Tutti gli anni" else int(year_str)
+            
+            # Ottieni cliente selezionato
+            client_str = self.client_filter_var.get()
+            client_filter = None if client_str == "Tutti i clienti" else client_str
+            
+            progetti = self.npi_manager.get_dashboard_projects(year_filter=year_filter, client_filter=client_filter)
             if not progetti:
                 self.project_tree.insert('', tk.END, text="-1", values=('', self.lang.get('no_active_projects',
                                                                                           "Nessun progetto attivo trovato."),
@@ -171,11 +273,10 @@ class NpiDashboardWindow(tk.Toplevel):
 
             for proj in progetti:
                 # Recupera la data fine progetto dall'oggetto progetto
-                # Nota: get_dashboard_projects ora deve restituire anche ScadenzaProgetto
                 project_end_date = getattr(proj, 'ScadenzaProgetto', None)
                 display_date = project_end_date.strftime('%d/%m/%Y') if project_end_date else "N/D"
                 status_icon = ''
-                row_tags = ()
+                row_tags = []
 
                 # Gestisce sia datetime.date che datetime.datetime
                 if project_end_date:
@@ -187,7 +288,29 @@ class NpiDashboardWindow(tk.Toplevel):
                     
                 if is_overdue:
                     status_icon = 'X'
-                    row_tags = ('overdue',)
+                    row_tags.append('overdue')
+                
+                # Recupera statistiche task per il progetto
+                try:
+                    stats = self.npi_manager.get_project_task_statistics(proj.ProgettoId)
+                except Exception as e:
+                    logger.error(f"Errore nel recupero statistiche task per progetto {proj.ProgettoId}: {e}")
+                    stats = {
+                        'total_tasks': 0,
+                        'completed_on_time': 0,
+                        'completed_late': 0,
+                        'pending_late': 0,
+                        'completion_percentage': 0
+                    }
+                
+                # Evidenzia cliente selezionato
+                if client_filter and proj.Cliente == client_filter:
+                    row_tags.append('selected_client')
+                
+                # Tag per percentuale completamento (solo se non in ritardo)
+                if not is_overdue:
+                    pct = stats['completion_percentage']
+                    # Non aggiungiamo tag colore qui, lo gestiamo con item configuration
 
                 self.project_tree.insert(
                     '', tk.END,
@@ -197,9 +320,14 @@ class NpiDashboardWindow(tk.Toplevel):
                         proj.NomeProgetto,
                         proj.CodiceProdotto or "",
                         proj.Cliente or "",
-                        display_date
+                        display_date,
+                        stats['total_tasks'],
+                        stats['completed_on_time'],
+                        stats['completed_late'],
+                        stats['pending_late'],
+                        f"{stats['completion_percentage']}%"
                     ),
-                    tags=row_tags
+                    tags=tuple(row_tags)
                 )
         except Exception as e:
             logger.error(f"Errore nel caricamento progetti dashboard: {e}", exc_info=True)
@@ -277,6 +405,204 @@ class NpiDashboardWindow(tk.Toplevel):
         if project_id is None: return
 
         NpiGanttWindow(self, self.npi_manager, self.lang, project_id)
+
+    def _export_to_excel_new(self):
+        """Esporta i progetti NPI in un file Excel completo con statistiche task e tab per cliente."""
+        self.export_excel_button.config(state=tk.DISABLED)
+        self.update_idletasks()
+        
+        try:
+            # Ottieni filtri correnti
+            year_str = self.year_filter_var.get()
+            year_filter = None if year_str == "Tutti gli anni" else int(year_str)
+            
+            client_str = self.client_filter_var.get()
+            client_filter = None if client_str == "Tutti i clienti" else client_str
+            
+            # Chiama il nuovo metodo di export completo
+            file_path = self.npi_manager.export_npi_to_excel_comprehensive(
+                year_filter=year_filter,
+                client_filter=client_filter
+            )
+            
+            if messagebox.askyesno("Successo", 
+                                  f"Report Excel salvato con successo in:\n{file_path}\n\nVuoi aprirlo ora?",
+                                  parent=self):
+                os.startfile(file_path)
+                
+        except ImportError as e:
+            messagebox.showerror("Libreria Mancante",
+                               f"{str(e)}",
+                               parent=self)
+        except ValueError as e:
+            messagebox.showinfo("Info", str(e), parent=self)
+        except Exception as e:
+            logger.error(f"Errore durante l'export Excel: {e}", exc_info=True)
+            messagebox.showerror("Errore Export", f"Impossibile generare il file Excel:\n{e}", parent=self)
+        finally:
+            self.export_excel_button.config(state=tk.NORMAL)
+
+    def _export_to_excel(self):
+        """Esporta i progetti NPI in un file Excel formattato con logo."""
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+            from openpyxl.drawing.image import Image as XLImage
+        except ImportError:
+            messagebox.showerror("Libreria Mancante",
+                               "La libreria 'openpyxl' è necessaria per l'export Excel.\nInstallala con: pip install openpyxl",
+                               parent=self)
+            return
+        
+        self.export_excel_button.config(state=tk.DISABLED)
+        self.update_idletasks()
+        
+        try:
+            # Ottieni anno selezionato
+            year_str = self.year_filter_var.get()
+            year_filter = None if year_str == "Tutti gli anni" else int(year_str)
+            year_label = year_str if year_str != "Tutti gli anni" else "All Years"
+            
+            # Recupera progetti
+            progetti = self.npi_manager.get_dashboard_projects(year_filter=year_filter)
+            if not progetti:
+                messagebox.showinfo("Info", "Nessun progetto da esportare.", parent=self)
+                return
+            
+            # Crea directory C:\Temp se non esiste
+            temp_dir = "C:\\Temp"
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            # Crea workbook
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "NPI Projects Report"
+            
+            # Stili
+            header_fill = PatternFill(start_color="0078D4", end_color="0078D4", fill_type="solid")
+            header_font = Font(bold=True, color="FFFFFF", size=11)
+            title_font = Font(bold=True, size=16, color="0078D4")
+            subtitle_font = Font(size=10, color="666666")
+            border = Border(
+                left=Side(style='thin'),
+                right=Side(style='thin'),
+                top=Side(style='thin'),
+                bottom=Side(style='thin')
+            )
+            
+            current_row = 1
+            
+            # Logo (se esiste)
+            logo_path = os.path.join(os.path.dirname(__file__), "..", "..", "logo.png")
+            if os.path.exists(logo_path):
+                try:
+                    img = XLImage(logo_path)
+                    img.width = 120
+                    img.height = 40
+                    ws.add_image(img, 'A1')
+                    current_row = 4
+                except Exception as e:
+                    logger.warning(f"Impossibile caricare logo: {e}")
+            
+            # Titolo
+            ws.merge_cells(f'A{current_row}:H{current_row}')
+            title_cell = ws[f'A{current_row}']
+            title_cell.value = "NPI Projects Report - Active and Closed Projects"
+            title_cell.font = title_font
+            title_cell.alignment = Alignment(horizontal='center', vertical='center')
+            current_row += 1
+            
+            # Sottotitolo
+            ws.merge_cells(f'A{current_row}:H{current_row}')
+            subtitle_cell = ws[f'A{current_row}']
+            subtitle_cell.value = f"Year: {year_label} | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            subtitle_cell.font = subtitle_font
+            subtitle_cell.alignment = Alignment(horizontal='center')
+            current_row += 2
+            
+            # Header tabella
+            headers = ["Project ID", "Project Name", "Product Code", "Customer", "Status", 
+                      "Start Date", "End Date (Deadline)", "Days Overdue"]
+            for col_idx, header in enumerate(headers, start=1):
+                cell = ws.cell(row=current_row, column=col_idx)
+                cell.value = header
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                cell.border = border
+            
+            current_row += 1
+            
+            # Dati progetti
+            today = datetime.now().date()
+            for proj in progetti:
+                # Status
+                status = "Closed" if proj.StatoProgetto == "Chiuso" else "Active"
+                
+                # Date
+                start_date = proj.DataInizio.strftime('%Y-%m-%d') if proj.DataInizio else "N/A"
+                end_date = proj.ScadenzaProgetto.strftime('%Y-%m-%d') if proj.ScadenzaProgetto else "N/A"
+                
+                # Days overdue
+                days_overdue = ""
+                if status == "Active" and proj.ScadenzaProgetto:
+                    deadline = proj.ScadenzaProgetto.date() if hasattr(proj.ScadenzaProgetto, 'date') else proj.ScadenzaProgetto
+                    if deadline < today:
+                        days_overdue = (today - deadline).days
+                
+                # Scrivi riga
+                row_data = [
+                    proj.ProgettoId,
+                    proj.NomeProgetto,
+                    proj.CodiceProdotto or "",
+                    proj.Cliente or "",
+                    status,
+                    start_date,
+                    end_date,
+                    days_overdue
+                ]
+                
+                for col_idx, value in enumerate(row_data, start=1):
+                    cell = ws.cell(row=current_row, column=col_idx)
+                    cell.value = value
+                    cell.border = border
+                    cell.alignment = Alignment(horizontal='left' if col_idx <= 4 else 'center')
+                    
+                    # Formattazione condizionale
+                    if status == "Closed":
+                        cell.fill = PatternFill(start_color="D4EDDA", end_color="D4EDDA", fill_type="solid")
+                    elif days_overdue:
+                        cell.font = Font(color="FF0000", bold=True)
+                
+                current_row += 1
+            
+            # Auto-width colonne
+            for col in ws.columns:
+                max_length = 0
+                column = col[0].column_letter
+                for cell in col:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = min(max_length + 2, 50)
+                ws.column_dimensions[column].width = adjusted_width
+            
+            # Salva file
+            file_path = os.path.join(temp_dir, f"NPI_Projects_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
+            wb.save(file_path)
+            
+            if messagebox.askyesno("Successo", 
+                                  f"Report Excel salvato con successo in:\n{file_path}\n\nVuoi aprirlo ora?",
+                                  parent=self):
+                os.startfile(file_path)
+                
+        except Exception as e:
+            logger.error(f"Errore durante l'export Excel: {e}", exc_info=True)
+            messagebox.showerror("Errore Export", f"Impossibile generare il file Excel:\n{e}", parent=self)
+        finally:
+            self.export_excel_button.config(state=tk.NORMAL)
 
     def _export_summary_pdf(self):
         if not REPORTLAB_AVAILABLE:

@@ -1,9 +1,10 @@
 # File: npi/npi_manager.py
 import logging
+import os
 from datetime import datetime
 from sqlalchemy.orm import sessionmaker, joinedload, subqueryload, selectinload, scoped_session
 from sqlalchemy.engine import Engine
-from sqlalchemy import select, update, delete, func, and_, event, text
+from sqlalchemy import select, update, delete, func, and_, or_, event, text
 from sqlalchemy.pool import QueuePool
 from npi.data_models import (ProgettoNPI, Base, Prodotto, Soggetto, TaskCatalogo,
                              Categoria, WaveNPI, TaskProdotto, NpiDocument, NpiDocumentType, TaskDependency)
@@ -1074,10 +1075,11 @@ class GestoreNPI:
         """
         Restituisce i task disponibili come predecessori per un dato task.
         Esclude il task stesso e i task che creerebbero dipendenze circolari.
+        Mostra solo i task già assegnati (con OwnerID non null).
         """
         session = self._get_session()
         try:
-            # Ottieni tutti i task della stessa wave
+            # Ottieni tutti i task della stessa wave che sono già assegnati
             all_tasks = session.scalars(
                 select(TaskProdotto)
                 .options(
@@ -1085,6 +1087,7 @@ class GestoreNPI:
                 )
                 .where(TaskProdotto.WaveID == wave_id)
                 .where(TaskProdotto.TaskProdottoID != task_id)
+                .where(TaskProdotto.OwnerID.isnot(None))  # Solo task assegnati
             ).all()
             
             # Filtra i task che creerebbero dipendenze circolari
@@ -1874,38 +1877,70 @@ class GestoreNPI:
         finally:
             session.close()
 
-    def get_dashboard_projects(self):
+    def get_dashboard_projects(self, year_filter=None, client_filter=None):
         """
         Recupera i dati dei progetti per la dashboard principale.
-        Mostra TUTTI i progetti con la data fine progetto.
+        
+        Args:
+            year_filter: Anno per filtrare i progetti (None = tutti gli anni)
+            client_filter: Nome cliente per filtrare i progetti (None = tutti i clienti)
+        
+        Logica di filtraggio:
+        - Progetti attivi (StatoProgetto != 'Chiuso'): sempre inclusi
+        - Progetti chiusi: solo se DataInizio nell'anno selezionato
+        - Se client_filter specificato: solo progetti del cliente selezionato
         """
         session = self._get_session()
         try:
-            # Query modificata per restituire la ScadenzaProgetto
+            # Query base
             stmt = select(
                 ProgettoNPI.ProgettoId,
                 func.coalesce(ProgettoNPI.NomeProgetto, Prodotto.NomeProdotto).label("NomeProgetto"),
                 Prodotto.CodiceProdotto,
                 Prodotto.Cliente,
-                ProgettoNPI.ScadenzaProgetto.label("ScadenzaProgetto")
+                ProgettoNPI.ScadenzaProgetto.label("ScadenzaProgetto"),
+                ProgettoNPI.StatoProgetto,
+                ProgettoNPI.DataInizio
             ).join(
                 Prodotto, ProgettoNPI.ProdottoID == Prodotto.ProdottoID
-            ).order_by(
-                ProgettoNPI.DataInizio.desc()
             )
+            
+            # Applica filtro anno se specificato
+            if year_filter:
+                stmt = stmt.where(
+                    or_(
+                        # Progetti attivi: sempre inclusi
+                        ProgettoNPI.StatoProgetto != 'Chiuso',
+                        # Progetti chiusi: solo se DataInizio nell'anno selezionato
+                        and_(
+                            ProgettoNPI.StatoProgetto == 'Chiuso',
+                            func.year(ProgettoNPI.DataInizio) == year_filter
+                        )
+                    )
+                )
+            
+            # Applica filtro cliente se specificato
+            if client_filter:
+                stmt = stmt.where(Prodotto.Cliente == client_filter)
+            
+            stmt = stmt.order_by(ProgettoNPI.DataInizio.desc())
 
             result = session.execute(stmt).all()
             return result
         finally:
             session.close()
 
-    def get_npi_statistics(self):
+    def get_npi_statistics(self, year_filter=None, client_filter=None):
         """
         Calcola le statistiche per la dashboard:
         - Totale progetti NPI
         - Progetti completati (Stato = 'Chiuso')
         - Progetti in ritardo (Stato != 'Chiuso' e ScadenzaProgetto < Oggi)
         - Statistiche per cliente
+        
+        Args:
+            year_filter: Anno per filtrare i progetti (None = tutti gli anni)
+            client_filter: Nome cliente per filtrare i progetti (None = tutti i clienti)
         """
         session = self._get_session()
         try:
@@ -1915,28 +1950,54 @@ class GestoreNPI:
                 'delayed_projects': 0,
                 'customer_stats': []
             }
-
-            # 1. Totale Progetti
-            stats['total_projects'] = session.scalar(
-                select(func.count(ProgettoNPI.ProgettoId))
-            )
-
-            # 2. Progetti Completati
-            stats['completed_projects'] = session.scalar(
-                select(func.count(ProgettoNPI.ProgettoId))
-                .where(ProgettoNPI.StatoProgetto == 'Chiuso')
-            )
-
-            # 3. Progetti in Ritardo
-            stats['delayed_projects'] = session.scalar(
-                select(func.count(ProgettoNPI.ProgettoId))
-                .where(
+            
+            # Crea la condizione di filtro anno (riutilizzabile)
+            year_condition = None
+            if year_filter:
+                year_condition = or_(
+                    # Progetti attivi: sempre inclusi
+                    ProgettoNPI.StatoProgetto != 'Chiuso',
+                    # Progetti chiusi: solo se DataInizio nell'anno selezionato
                     and_(
-                        ProgettoNPI.StatoProgetto != 'Chiuso',
-                        ProgettoNPI.ScadenzaProgetto < datetime.now()
+                        ProgettoNPI.StatoProgetto == 'Chiuso',
+                        func.year(ProgettoNPI.DataInizio) == year_filter
                     )
                 )
+
+            # 1. Totale Progetti
+            query = select(func.count(ProgettoNPI.ProgettoId)).join(
+                Prodotto, ProgettoNPI.ProdottoID == Prodotto.ProdottoID
             )
+            if year_condition is not None:
+                query = query.where(year_condition)
+            if client_filter:
+                query = query.where(Prodotto.Cliente == client_filter)
+            stats['total_projects'] = session.scalar(query)
+
+            # 2. Progetti Completati
+            query = select(func.count(ProgettoNPI.ProgettoId)).join(
+                Prodotto, ProgettoNPI.ProdottoID == Prodotto.ProdottoID
+            ).where(ProgettoNPI.StatoProgetto == 'Chiuso')
+            if year_filter:
+                # Per progetti chiusi, aggiungi filtro anno (solo DataInizio)
+                query = query.where(func.year(ProgettoNPI.DataInizio) == year_filter)
+            if client_filter:
+                query = query.where(Prodotto.Cliente == client_filter)
+            stats['completed_projects'] = session.scalar(query)
+
+            # 3. Progetti in Ritardo
+            query = select(func.count(ProgettoNPI.ProgettoId)).join(
+                Prodotto, ProgettoNPI.ProdottoID == Prodotto.ProdottoID
+            ).where(
+                and_(
+                    ProgettoNPI.StatoProgetto != 'Chiuso',
+                    ProgettoNPI.ScadenzaProgetto < datetime.now()
+                )
+            )
+            if client_filter:
+                query = query.where(Prodotto.Cliente == client_filter)
+            # Progetti in ritardo sono sempre attivi, quindi nessun filtro anno aggiuntivo necessario
+            stats['delayed_projects'] = session.scalar(query)
 
             # 4. Statistiche per Cliente
             customer_query = (
@@ -1945,9 +2006,15 @@ class GestoreNPI:
                     func.count(ProgettoNPI.ProgettoId).label('count')
                 )
                 .join(Prodotto, ProgettoNPI.ProdottoID == Prodotto.ProdottoID)
-                .group_by(Prodotto.Cliente)
-                .order_by(func.count(ProgettoNPI.ProgettoId).desc())
             )
+            
+            if year_condition is not None:
+                customer_query = customer_query.where(year_condition)
+            
+            if client_filter:
+                customer_query = customer_query.where(Prodotto.Cliente == client_filter)
+            
+            customer_query = customer_query.group_by(Prodotto.Cliente).order_by(func.count(ProgettoNPI.ProgettoId).desc())
             
             customer_results = session.execute(customer_query).all()
             
@@ -2120,6 +2187,391 @@ class GestoreNPI:
             return progetti
         finally:
             session.close()
+
+    def get_all_clients(self):
+        """
+        Recupera tutti i nomi dei clienti unici dal database.
+        
+        Returns:
+            Lista di nomi clienti ordinati alfabeticamente (esclude NULL/vuoti)
+        """
+        session = self._get_session()
+        try:
+            clients = session.scalars(
+                select(Prodotto.Cliente)
+                .distinct()
+                .where(Prodotto.Cliente.isnot(None))
+                .where(Prodotto.Cliente != '')
+                .order_by(Prodotto.Cliente)
+            ).all()
+            return list(clients)
+        except Exception as e:
+            logger.error(f"Errore nel recupero clienti: {e}", exc_info=True)
+            return []
+        finally:
+            session.close()
+
+    def get_project_task_statistics(self, project_id: int):
+        """
+        Calcola le statistiche dei task per un progetto specifico.
+        
+        Args:
+            project_id: ID del progetto NPI
+            
+        Returns:
+            Dizionario con:
+            - total_tasks: numero totale di task
+            - completed_on_time: task completati entro la scadenza
+            - completed_late: task completati dopo la scadenza
+            - pending_late: task non completati con scadenza superata
+            - completion_percentage: percentuale di completamento (0-100)
+        """
+        session = self._get_session()
+        try:
+            today = datetime.now().date()
+            
+            # Recupera tutti i task del progetto
+            tasks = session.scalars(
+                select(TaskProdotto)
+                .join(WaveNPI)
+                .where(WaveNPI.ProgettoID == project_id)
+            ).all()
+            
+            if not tasks:
+                return {
+                    'total_tasks': 0,
+                    'completed_on_time': 0,
+                    'completed_late': 0,
+                    'pending_late': 0,
+                    'completion_percentage': 0
+                }
+            
+            total_tasks = len(tasks)
+            completed_on_time = 0
+            completed_late = 0
+            pending_late = 0
+            
+            for task in tasks:
+                # Task completati
+                if task.Stato == 'Completato':
+                    if task.DataCompletamento and task.DataScadenza:
+                        # Normalizza le date
+                        completion_date = task.DataCompletamento.date() if hasattr(task.DataCompletamento, 'date') else task.DataCompletamento
+                        due_date = task.DataScadenza.date() if hasattr(task.DataScadenza, 'date') else task.DataScadenza
+                        
+                        if completion_date <= due_date:
+                            completed_on_time += 1
+                        else:
+                            completed_late += 1
+                    else:
+                        # Se non ha date, consideriamo completato in tempo
+                        completed_on_time += 1
+                # Task non completati con scadenza superata
+                elif task.DataScadenza:
+                    due_date = task.DataScadenza.date() if hasattr(task.DataScadenza, 'date') else task.DataScadenza
+                    if due_date < today:
+                        pending_late += 1
+            
+            # Calcola percentuale di completamento
+            completed_total = completed_on_time + completed_late
+            completion_percentage = int((completed_total / total_tasks) * 100) if total_tasks > 0 else 0
+            
+            return {
+                'total_tasks': total_tasks,
+                'completed_on_time': completed_on_time,
+                'completed_late': completed_late,
+                'pending_late': pending_late,
+                'completion_percentage': completion_percentage
+            }
+            
+        except Exception as e:
+            logger.error(f"Errore nel calcolo statistiche task per progetto {project_id}: {e}", exc_info=True)
+            return {
+                'total_tasks': 0,
+                'completed_on_time': 0,
+                'completed_late': 0,
+                'pending_late': 0,
+                'completion_percentage': 0
+            }
+        finally:
+            session.close()
+
+    def export_npi_to_excel_comprehensive(self, year_filter=None, client_filter=None):
+        """
+        Genera un file Excel professionale con statistiche NPI complete.
+        
+        Args:
+            year_filter: Anno per filtrare i progetti (None = tutti gli anni)
+            client_filter: Nome cliente per filtrare i progetti (None = tutti i clienti)
+            
+        Returns:
+            Path del file Excel generato
+            
+        Struttura del file:
+        - Tab "Overview": Tutti i progetti con statistiche task aggregate
+        - Tab per ogni cliente: Progetti del cliente con dettaglio task
+        """
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+            from openpyxl.drawing.image import Image as XLImage
+        except ImportError:
+            raise ImportError("La libreria 'openpyxl' è necessaria per l'export Excel. Installala con: pip install openpyxl")
+        
+        try:
+            # Crea directory C:\Temp se non esiste
+            temp_dir = "C:\\Temp"
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            # Recupera progetti
+            progetti = self.get_dashboard_projects(year_filter=year_filter, client_filter=client_filter)
+            if not progetti:
+                raise ValueError("Nessun progetto da esportare.")
+            
+            # Crea workbook
+            wb = openpyxl.Workbook()
+            wb.remove(wb.active)  # Rimuovi il foglio di default
+            
+            # Stili comuni
+            header_fill = PatternFill(start_color="0078D4", end_color="0078D4", fill_type="solid")
+            header_font = Font(bold=True, color="FFFFFF", size=11)
+            title_font = Font(bold=True, size=16, color="0078D4")
+            subtitle_font = Font(size=10, color="666666")
+            border = Border(
+                left=Side(style='thin'),
+                right=Side(style='thin'),
+                top=Side(style='thin'),
+                bottom=Side(style='thin')
+            )
+            
+            # Logo path
+            logo_path = os.path.join(os.path.dirname(__file__), "..", "logo.png")
+            
+            # ===== TAB OVERVIEW =====
+            ws_overview = wb.create_sheet("Overview")
+            current_row = 1
+            
+            # Logo
+            if os.path.exists(logo_path):
+                try:
+                    img = XLImage(logo_path)
+                    img.width = 120
+                    img.height = 40
+                    ws_overview.add_image(img, 'A1')
+                    current_row = 4
+                except Exception as e:
+                    logger.warning(f"Impossibile caricare logo: {e}")
+            
+            # Titolo
+            ws_overview.merge_cells(f'A{current_row}:K{current_row}')
+            title_cell = ws_overview[f'A{current_row}']
+            title_cell.value = "NPI Projects - Overview Report"
+            title_cell.font = title_font
+            title_cell.alignment = Alignment(horizontal='center', vertical='center')
+            current_row += 1
+            
+            # Sottotitolo
+            ws_overview.merge_cells(f'A{current_row}:K{current_row}')
+            subtitle_cell = ws_overview[f'A{current_row}']
+            year_label = str(year_filter) if year_filter else "All Years"
+            client_label = client_filter if client_filter else "All Clients"
+            subtitle_cell.value = f"Year: {year_label} | Client: {client_label} | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            subtitle_cell.font = subtitle_font
+            subtitle_cell.alignment = Alignment(horizontal='center')
+            current_row += 2
+            
+            # Header tabella Overview
+            headers = ["Project ID", "Project Name", "Product Code", "Customer", "Status", 
+                      "End Date", "Total Tasks", "✅ On Time", "⏰ Late", "⚠️ Pending Late", "% Complete"]
+            for col_idx, header in enumerate(headers, start=1):
+                cell = ws_overview.cell(row=current_row, column=col_idx)
+                cell.value = header
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                cell.border = border
+            
+            current_row += 1
+            
+            # Dati progetti con statistiche
+            today = datetime.now().date()
+            for proj in progetti:
+                # Recupera statistiche task
+                stats = self.get_project_task_statistics(proj.ProgettoId)
+                
+                # Status
+                status = "Closed" if proj.StatoProgetto == "Chiuso" else "Active"
+                
+                # Date
+                end_date = proj.ScadenzaProgetto.strftime('%Y-%m-%d') if proj.ScadenzaProgetto else "N/A"
+                
+                # Scrivi riga
+                row_data = [
+                    proj.ProgettoId,
+                    proj.NomeProgetto,
+                    proj.CodiceProdotto or "",
+                    proj.Cliente or "",
+                    status,
+                    end_date,
+                    stats['total_tasks'],
+                    stats['completed_on_time'],
+                    stats['completed_late'],
+                    stats['pending_late'],
+                    f"{stats['completion_percentage']}%"
+                ]
+                
+                for col_idx, value in enumerate(row_data, start=1):
+                    cell = ws_overview.cell(row=current_row, column=col_idx)
+                    cell.value = value
+                    cell.border = border
+                    cell.alignment = Alignment(horizontal='left' if col_idx <= 4 else 'center')
+                    
+                    # Formattazione condizionale
+                    if status == "Closed":
+                        cell.fill = PatternFill(start_color="D4EDDA", end_color="D4EDDA", fill_type="solid")
+                    elif col_idx == 11:  # Colonna percentuale
+                        pct = stats['completion_percentage']
+                        if pct >= 80:
+                            cell.font = Font(color="008000", bold=True)  # Verde
+                        elif pct >= 50:
+                            cell.font = Font(color="FF8C00", bold=True)  # Arancione
+                        else:
+                            cell.font = Font(color="FF0000", bold=True)  # Rosso
+                
+                current_row += 1
+            
+            # Auto-width colonne Overview
+            for column_cells in ws_overview.columns:
+                max_length = 0
+                column_letter = None
+                for cell in column_cells:
+                    # Skip merged cells
+                    if isinstance(cell, openpyxl.cell.cell.MergedCell):
+                        continue
+                    if column_letter is None:
+                        column_letter = cell.column_letter
+                    try:
+                        if cell.value and len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                if column_letter:
+                    adjusted_width = min(max_length + 2, 50)
+                    ws_overview.column_dimensions[column_letter].width = adjusted_width
+            
+            # Freeze panes
+            ws_overview.freeze_panes = 'A7' if os.path.exists(logo_path) else 'A4'
+            
+            # ===== TAB PER CLIENTE =====
+            # Raggruppa progetti per cliente
+            projects_by_client = {}
+            for proj in progetti:
+                client_name = proj.Cliente or "N/A"
+                if client_name not in projects_by_client:
+                    projects_by_client[client_name] = []
+                projects_by_client[client_name].append(proj)
+            
+            # Crea un tab per ogni cliente
+            for client_name, client_projects in sorted(projects_by_client.items()):
+                # Sanitizza nome tab (max 31 caratteri, no caratteri speciali)
+                safe_sheet_name = client_name[:31].replace('/', '-').replace('\\', '-').replace('*', '').replace('[', '').replace(']', '').replace(':', '').replace('?', '')
+                ws_client = wb.create_sheet(safe_sheet_name)
+                
+                current_row = 1
+                
+                # Titolo cliente
+                ws_client.merge_cells(f'A{current_row}:J{current_row}')
+                title_cell = ws_client[f'A{current_row}']
+                title_cell.value = f"Client: {client_name}"
+                title_cell.font = Font(bold=True, size=14, color="0078D4")
+                title_cell.alignment = Alignment(horizontal='center')
+                current_row += 2
+                
+                # Header
+                client_headers = ["Project ID", "Project Name", "Product Code", "Status", 
+                                "End Date", "Total Tasks", "✅ On Time", "⏰ Late", "⚠️ Pending Late", "% Complete"]
+                for col_idx, header in enumerate(client_headers, start=1):
+                    cell = ws_client.cell(row=current_row, column=col_idx)
+                    cell.value = header
+                    cell.font = header_font
+                    cell.fill = header_fill
+                    cell.alignment = Alignment(horizontal='center', vertical='center')
+                    cell.border = border
+                
+                current_row += 1
+                
+                # Dati progetti del cliente
+                for proj in client_projects:
+                    stats = self.get_project_task_statistics(proj.ProgettoId)
+                    status = "Closed" if proj.StatoProgetto == "Chiuso" else "Active"
+                    end_date = proj.ScadenzaProgetto.strftime('%Y-%m-%d') if proj.ScadenzaProgetto else "N/A"
+                    
+                    row_data = [
+                        proj.ProgettoId,
+                        proj.NomeProgetto,
+                        proj.CodiceProdotto or "",
+                        status,
+                        end_date,
+                        stats['total_tasks'],
+                        stats['completed_on_time'],
+                        stats['completed_late'],
+                        stats['pending_late'],
+                        f"{stats['completion_percentage']}%"
+                    ]
+                    
+                    for col_idx, value in enumerate(row_data, start=1):
+                        cell = ws_client.cell(row=current_row, column=col_idx)
+                        cell.value = value
+                        cell.border = border
+                        cell.alignment = Alignment(horizontal='left' if col_idx <= 3 else 'center')
+                        
+                        # Formattazione condizionale
+                        if status == "Closed":
+                            cell.fill = PatternFill(start_color="D4EDDA", end_color="D4EDDA", fill_type="solid")
+                        elif col_idx == 10:  # Colonna percentuale
+                            pct = stats['completion_percentage']
+                            if pct >= 80:
+                                cell.font = Font(color="008000", bold=True)
+                            elif pct >= 50:
+                                cell.font = Font(color="FF8C00", bold=True)
+                            else:
+                                cell.font = Font(color="FF0000", bold=True)
+                    
+                    current_row += 1
+                
+                # Auto-width colonne
+                for column_cells in ws_client.columns:
+                    max_length = 0
+                    column_letter = None
+                    for cell in column_cells:
+                        # Skip merged cells
+                        if isinstance(cell, openpyxl.cell.cell.MergedCell):
+                            continue
+                        if column_letter is None:
+                            column_letter = cell.column_letter
+                        try:
+                            if cell.value and len(str(cell.value)) > max_length:
+                                max_length = len(str(cell.value))
+                        except:
+                            pass
+                    if column_letter:
+                        adjusted_width = min(max_length + 2, 50)
+                        ws_client.column_dimensions[column_letter].width = adjusted_width
+                
+                # Freeze panes
+                ws_client.freeze_panes = 'A4'
+            
+            # Salva file
+            file_path = os.path.join(temp_dir, f"NPI_Comprehensive_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
+            wb.save(file_path)
+            
+            logger.info(f"Report Excel completo salvato in: {file_path}")
+            return file_path
+            
+        except Exception as e:
+            logger.error(f"Errore durante l'export Excel completo: {e}", exc_info=True)
+            raise
+
 
     def copy_tasks_from_project(self, source_project_id: int, target_project_id: int):
         """
@@ -2524,7 +2976,10 @@ class GestoreNPI:
         """
         session = self._get_session()
         try:
+            from sqlalchemy.orm import joinedload
+            
             children = session.query(ProgettoNPI)\
+                .options(joinedload(ProgettoNPI.prodotto))\
                 .filter(ProgettoNPI.ParentProjectID == project_id)\
                 .order_by(ProgettoNPI.HierarchyLevel, ProgettoNPI.NomeProgetto)\
                 .all()
@@ -2549,6 +3004,8 @@ class GestoreNPI:
         Returns:
             ProgettoNPI padre o None se non ha padre
         """
+        from sqlalchemy.orm import joinedload
+        
         session = self._get_session()
         try:
             progetto = session.query(ProgettoNPI)\
@@ -2557,6 +3014,7 @@ class GestoreNPI:
             
             if progetto and progetto.ParentProjectID:
                 parent = session.query(ProgettoNPI)\
+                    .options(joinedload(ProgettoNPI.prodotto))\
                     .filter(ProgettoNPI.ProgettoId == progetto.ParentProjectID)\
                     .first()
                 
@@ -2567,6 +3025,186 @@ class GestoreNPI:
             
         except Exception as e:
             logger.error(f"Errore recupero progetto padre per {project_id}: {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+    
+    def get_available_child_projects(self, parent_project_id, parent_client):
+        """
+        Recupera progetti che possono diventare figli del progetto specificato.
+        
+        Criteri:
+        - Stesso cliente del padre
+        - Non il padre stesso
+        - Non progetti che sono già padri di altri progetti
+        - Non già figli di questo padre (ma OK se non hanno padre)
+        
+        Args:
+            parent_project_id: ID del progetto padre
+            parent_client: Cliente del progetto padre
+            
+        Returns:
+            Lista di ProgettoNPI disponibili come figli
+        """
+        session = self._get_session()
+        try:
+            from sqlalchemy import and_, or_
+            
+            # 🐛 DEBUG: Log parametri
+            logger.info(f"🔍 get_available_child_projects: parent_id={parent_project_id}, client='{parent_client}'")
+            
+            # Subquery per trovare progetti che sono già padri
+            is_parent_subq = session.query(ProgettoNPI.ParentProjectID)\
+                .filter(ProgettoNPI.ParentProjectID.isnot(None))\
+                .distinct()\
+                .subquery()
+            
+            
+            # Query principale
+            from sqlalchemy.orm import joinedload
+            
+            available = session.query(ProgettoNPI)\
+                .join(Prodotto, ProgettoNPI.ProdottoID == Prodotto.ProdottoID)\
+                .options(joinedload(ProgettoNPI.prodotto))\
+                .filter(
+                    and_(
+                        # Stesso cliente
+                        Prodotto.Cliente == parent_client,
+                        # Non il padre stesso
+                        ProgettoNPI.ProgettoId != parent_project_id,
+                        # Non già figlio di questo padre (ma OK se ParentProjectID è NULL)
+                        or_(
+                            ProgettoNPI.ParentProjectID.is_(None),
+                            ProgettoNPI.ParentProjectID != parent_project_id
+                        ),
+                        # Non già padre di altri progetti
+                        ~ProgettoNPI.ProgettoId.in_(is_parent_subq)
+                    )
+                )\
+                .order_by(ProgettoNPI.DataInizio.desc())\
+                .all()
+            
+            # 🐛 DEBUG: Log risultati
+            logger.info(f"🔍 Trovati {len(available)} progetti disponibili")
+            if len(available) > 0:
+                logger.info(f"🔍 Primi 3 progetti: {[(p.ProgettoId, p.NomeProgetto) for p in available[:3]]}")
+            else:
+                # Verifica quanti progetti totali ci sono per questo cliente
+                total_for_client = session.query(ProgettoNPI)\
+                    .join(Prodotto, ProgettoNPI.ProdottoID == Prodotto.ProdottoID)\
+                    .filter(Prodotto.Cliente == parent_client)\
+                    .count()
+                logger.warning(f"⚠️ Nessun progetto disponibile, ma ci sono {total_for_client} progetti totali per cliente '{parent_client}'")
+            
+            # Detach per usare fuori dalla sessione
+            result = [self._detach_object(session, proj) for proj in available]
+            return result
+            
+        except Exception as e:
+            logger.error(f"Errore recupero progetti disponibili come figli: {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+    
+    def assign_child_project(self, parent_project_id, child_project_id):
+        """
+        Assegna un progetto come figlio di un altro progetto.
+        
+        Args:
+            parent_project_id: ID del progetto padre
+            child_project_id: ID del progetto da assegnare come figlio
+        """
+        session = self._get_session()
+        try:
+            # Verifica che il figlio non sia già padre di altri
+            existing_children = session.query(ProgettoNPI)\
+                .filter(ProgettoNPI.ParentProjectID == child_project_id)\
+                .count()
+            
+            if existing_children > 0:
+                raise ValueError(f"Il progetto {child_project_id} è già padre di altri progetti e non può diventare figlio.")
+            
+            # Recupera il progetto figlio
+            child = session.query(ProgettoNPI)\
+                .filter(ProgettoNPI.ProgettoId == child_project_id)\
+                .first()
+            
+            if not child:
+                raise ValueError(f"Progetto {child_project_id} non trovato.")
+            
+            # Recupera il progetto padre per determinare il livello
+            parent = session.query(ProgettoNPI)\
+                .filter(ProgettoNPI.ProgettoId == parent_project_id)\
+                .first()
+            
+            if not parent:
+                raise ValueError(f"Progetto padre {parent_project_id} non trovato.")
+            
+            # Assegna il padre e aggiorna i metadati
+            child.ParentProjectID = parent_project_id
+            child.HierarchyLevel = (parent.HierarchyLevel or 0) + 1
+            child.ProjectType = 'Child'
+            
+            # Aggiorna il padre come 'Parent' se non lo è già
+            if parent.ProjectType != 'Parent':
+                parent.ProjectType = 'Parent'
+            
+            session.commit()
+            logger.info(f"Progetto {child_project_id} assegnato come figlio di {parent_project_id}")
+            
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Errore assegnazione figlio {child_project_id} a {parent_project_id}: {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+    
+    def remove_child_project(self, child_project_id):
+        """
+        Rimuove un progetto dalla gerarchia (setta ParentProjectID = NULL).
+        
+        Args:
+            child_project_id: ID del progetto figlio da rimuovere
+        """
+        session = self._get_session()
+        try:
+            child = session.query(ProgettoNPI)\
+                .filter(ProgettoNPI.ProgettoId == child_project_id)\
+                .first()
+            
+            if not child:
+                raise ValueError(f"Progetto {child_project_id} non trovato.")
+            
+            # Salva l'ID del padre per verificare dopo
+            old_parent_id = child.ParentProjectID
+            
+            # Rimuovi dalla gerarchia
+            child.ParentProjectID = None
+            child.HierarchyLevel = 0
+            child.ProjectType = 'Standard'
+            
+            session.commit()
+            
+            # Verifica se il padre ha ancora altri figli
+            if old_parent_id:
+                remaining_children = session.query(ProgettoNPI)\
+                    .filter(ProgettoNPI.ParentProjectID == old_parent_id)\
+                    .count()
+                
+                # Se non ha più figli, riporta il padre a 'Standard'
+                if remaining_children == 0:
+                    parent = session.query(ProgettoNPI)\
+                        .filter(ProgettoNPI.ProgettoId == old_parent_id)\
+                        .first()
+                    if parent:
+                        parent.ProjectType = 'Standard'
+                        session.commit()
+            
+            logger.info(f"Progetto {child_project_id} rimosso dalla gerarchia")
+            
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Errore rimozione figlio {child_project_id}: {e}", exc_info=True)
             raise
         finally:
             session.close()
