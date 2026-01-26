@@ -3472,8 +3472,12 @@ class GestoreNPI:
                 project = node['project']
                 children = node.get('children', [])
                 
+                logger.info(f"🔍 Processando progetto {project.ProgettoId} - {project.NomeProgetto} (Level {level}, {len(children)} figli)")
+                
                 # Recupera i dati Gantt per questo progetto
-                gantt_data = self.get_gantt_data(project.ProgettoId)
+                gantt_data, product_name = self.get_gantt_data(project.ProgettoId)
+                
+                logger.info(f"🔍 Progetto {project.ProgettoId}: {len(gantt_data) if gantt_data else 0} task trovati")
                 
                 project_info = {
                     'project_id': project.ProgettoId,
@@ -3482,8 +3486,8 @@ class GestoreNPI:
                     'is_parent': len(children) > 0,
                     'level': level,
                     'parent_id': parent_id,
-                    'tasks': gantt_data,
-                    'product_name': project.prodotto.NomeProdotto if project.prodotto else None,
+                    'tasks': gantt_data if gantt_data else [],
+                    'product_name': product_name or (project.prodotto.NomeProdotto if project.prodotto else None),
                     'status': project.StatoProgetto
                 }
                 
