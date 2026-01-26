@@ -440,6 +440,8 @@ class GuestRegistrationWindow(tk.Toplevel):
             start_date = self.start_date.get_date()
             end_date = self.end_date.get_date()
             
+            logger.info(f"Apertura finestra prenotazione sale - Date: {start_date} - {end_date}")
+            
             # Crea la finestra di prenotazione
             booking_window = BookingManagerWindow(self, self.db, self.lang, self.user_name)
             
@@ -451,17 +453,22 @@ class GuestRegistrationWindow(tk.Toplevel):
             booking_window.start_time_var.set('09:00')
             booking_window.end_time_var.set('17:00')
             
-            # Chiudi la finestra ospiti dopo aver aperto quella di prenotazione
-            self.destroy()
+            logger.info("Finestra prenotazione sale aperta con successo")
+            
+            # Chiudi la finestra ospiti DOPO un breve delay per permettere alla finestra booking di aprirsi
+            self.after(100, self.destroy)
             
         except Exception as e:
             logger.error(f"Errore apertura finestra prenotazione sale: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             messagebox.showerror(
                 self.lang.get('error', 'Errore'),
                 f"Errore durante l'apertura della prenotazione sale: {str(e)}"
             )
             # In caso di errore, chiudi comunque la finestra
             self.destroy()
+
 
     def _on_closing(self):
         """Gestisce la chiusura della finestra stampando la lista giornaliera"""
