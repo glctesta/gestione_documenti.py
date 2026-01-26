@@ -43,7 +43,11 @@ class NpiGanttWindow(tk.Toplevel):
         self.geometry("900x650")
 
         self.create_widgets()
-        self.generate_gantt()
+        # 🆕 NON generare automaticamente il Gantt se c'è una gerarchia
+        # L'utente deve scegliere quale vista vuole (tramite tab o pulsante)
+        if not self.has_hierarchy:
+            # Se non c'è gerarchia, genera automaticamente (comportamento originale)
+            self.generate_gantt()
 
     def create_widgets(self):
         """Crea i widget della finestra."""
@@ -118,8 +122,10 @@ class NpiGanttWindow(tk.Toplevel):
             
             current_label = ttk.Label(
                 tab_current, 
-                text=f"Genera Gantt per: {self.hierarchy_data.get('root_project_name', 'Progetto')}",
-                font=("Calibri", 10)
+                text=f"Vista: {self.hierarchy_data.get('root_project_name', 'Progetto')} (solo progetto principale)\n\n"
+                     f"Clicca '🔄 Rigenera Gantt' per visualizzare questa vista.",
+                font=("Calibri", 10),
+                justify=tk.LEFT
             )
             current_label.pack(pady=10)
             
@@ -129,8 +135,10 @@ class NpiGanttWindow(tk.Toplevel):
             
             consolidated_label = ttk.Label(
                 tab_consolidated,
-                text=f"Genera Gantt Consolidato con tutti i {len(self.hierarchy_data['projects'])} progetti",
-                font=("Calibri", 10)
+                text=f"Vista: Gantt Consolidato con tutti i {len(self.hierarchy_data['projects'])} progetti e relativi task\n\n"
+                     f"Clicca '🔄 Rigenera Gantt' per visualizzare questa vista.",
+                font=("Calibri", 10),
+                justify=tk.LEFT
             )
             consolidated_label.pack(pady=10)
             
@@ -143,8 +151,10 @@ class NpiGanttWindow(tk.Toplevel):
                     
                     child_label = ttk.Label(
                         tab_child,
-                        text=f"Genera Gantt per: {proj_data['project_name']}",
-                        font=("Calibri", 10)
+                        text=f"Vista: {proj_data['project_name']} (progetto figlio)\n\n"
+                             f"Clicca '🔄 Rigenera Gantt' per visualizzare questa vista.",
+                        font=("Calibri", 10),
+                        justify=tk.LEFT
                     )
                     child_label.pack(pady=10)
             
