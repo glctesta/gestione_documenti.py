@@ -181,6 +181,50 @@ class NpiGanttWindow(tk.Toplevel):
         self.status_text.insert(tk.END, f"[{timestamp}] {message}\n")
         self.status_text.see(tk.END)
         self.update_idletasks()
+    
+    def _on_tab_changed(self, event):
+        """Gestisce il cambio di tab per rigenerare il Gantt appropriato."""
+        if not self.gantt_notebook:
+            return
+        
+        try:
+            # Ottieni l'indice del tab selezionato
+            selected_tab_index = self.gantt_notebook.index(self.gantt_notebook.select())
+            
+            self.log_status(f"📑 Cambio tab rilevato: indice {selected_tab_index}")
+            
+            # Determina la modalità in base all'indice del tab
+            if selected_tab_index == 0:
+                # Tab 1: Progetto Corrente
+                self.current_gantt_mode = 'current'
+                self.log_status("📋 Modalità: Progetto Corrente")
+            elif selected_tab_index == 1:
+                # Tab 2: Vista Consolidata
+                self.current_gantt_mode = 'consolidated'
+                self.log_status("🔗 Modalità: Vista Consolidata")
+            else:
+                # Tab 3+: Progetti figli
+                # L'indice 2 corrisponde al primo figlio, 3 al secondo, ecc.
+                child_index = selected_tab_index - 2
+                
+                # Trova il progetto figlio corrispondente
+                child_projects = [p for p in self.hierarchy_data.get('projects', []) if not p['is_root']]
+                
+                if child_index < len(child_projects):
+                    child_project = child_projects[child_index]
+                    child_project_id = child_project['project_id']
+                    self.current_gantt_mode = f'child_{child_project_id}'
+                    self.log_status(f"📄 Modalità: Progetto Figlio - {child_project['project_name']}")
+                else:
+                    self.log_status(f"⚠️ Indice figlio {child_index} fuori range")
+                    return
+            
+            # Rigenera il Gantt con la nuova modalità
+            self.generate_gantt()
+            
+        except Exception as e:
+            logger.error(f"Errore cambio tab: {e}", exc_info=True)
+            self.log_status(f"❌ Errore cambio tab: {str(e)}")
 
     def generate_gantt(self):
         """Genera il diagramma di Gantt."""
