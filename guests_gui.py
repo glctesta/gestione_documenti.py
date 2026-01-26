@@ -442,8 +442,9 @@ class GuestRegistrationWindow(tk.Toplevel):
             
             logger.info(f"Apertura finestra prenotazione sale - Date: {start_date} - {end_date}")
             
-            # Crea la finestra di prenotazione
-            booking_window = BookingManagerWindow(self, self.db, self.lang, self.user_name)
+            # Crea la finestra di prenotazione usando self.master come parent
+            # (non self, altrimenti si chiude quando chiudiamo questa finestra)
+            booking_window = BookingManagerWindow(self.master, self.db, self.lang, self.user_name)
             
             # Preimposta i campi con i dati degli ospiti
             booking_window.start_date_var.set(start_date.strftime('%Y-%m-%d'))
