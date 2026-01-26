@@ -12969,9 +12969,36 @@ class App(tk.Tk):
                 ttk.Label(selection_window, text="Seleziona il progetto da gestire:", 
                          font=('Helvetica', 10, 'bold')).pack(pady=10)
 
-                # Frame per il combobox
+                # 🆕 Frame filtri
+                filter_frame = ttk.LabelFrame(selection_window, text=self.lang.get('filters', 'Filtri'), padding=10)
+                filter_frame.pack(pady=10, padx=20, fill=tk.X)
+
+                # Filtro Cliente
+                client_frame = ttk.Frame(filter_frame)
+                client_frame.pack(fill=tk.X, pady=5)
+                ttk.Label(client_frame, text=self.lang.get('npi_client_filter', 'Cliente:'), width=12).pack(side=tk.LEFT)
+                
+                client_var = tk.StringVar()
+                client_combo = ttk.Combobox(client_frame, textvariable=client_var, width=50, state='readonly')
+                
+                # Estrai clienti unici dai progetti attivi
+                clienti_set = set()
+                for proj in progetti:
+                    cliente = proj.get('Cliente', '').strip()
+                    if cliente:
+                        clienti_set.add(cliente)
+                
+                clienti_unici = sorted(clienti_set)
+                client_values = [self.lang.get('npi_all_clients', 'Tutti i Clienti')] + clienti_unici
+                client_combo['values'] = client_values
+                client_combo.current(0)
+                client_combo.pack(side=tk.LEFT, padx=(5, 0), fill=tk.X, expand=True)
+
+                # Frame per il combobox progetti
                 combo_frame = ttk.Frame(selection_window)
                 combo_frame.pack(pady=10, padx=20, fill=tk.X)
+                
+                ttk.Label(combo_frame, text=self.lang.get('npi_project_label', 'Progetto:'), width=12).pack(side=tk.LEFT)
 
                 # Combobox editabile con i progetti - usa il campo ActiveNpi formattato
                 combo_var = tk.StringVar()
@@ -12980,28 +13007,51 @@ class App(tk.Tk):
                 # Prepara lista completa dei progetti con formato ActiveNpi
                 all_projects_list = [p['ActiveNpi'] for p in progetti]
                 progetti_map = {p['ActiveNpi']: p['ProgettoId'] for p in progetti}
+                # 🆕 Mappa inversa per accedere ai dati completi del progetto
+                progetti_map_reverse = {p['ActiveNpi']: p for p in progetti}
                 
                 combo['values'] = all_projects_list
                 combo.pack(fill=tk.X, expand=True)
 
-                # Funzione per filtrare il combobox mentre l'utente digita
+                # 🆕 Funzione per filtrare il combobox mentre l'utente digita (con filtro cliente)
                 def on_keyrelease(event):
                     typed_text = combo_var.get().lower()
+                    selected_client = client_var.get()
+                    all_clients_label = self.lang.get('npi_all_clients', 'Tutti i Clienti')
                     
+                    # Filtra prima per cliente
+                    if selected_client == all_clients_label:
+                        filtered_by_client = all_projects_list
+                    else:
+                        filtered_by_client = [
+                            p for p in all_projects_list 
+                            if progetti_map_reverse[p].get('Cliente', '').strip() == selected_client
+                        ]
+                    
+                    # Poi filtra per testo digitato
                     if typed_text == '':
-                        # Se il campo è vuoto, mostra tutti i progetti
-                        combo['values'] = all_projects_list
+                        # Se il campo è vuoto, mostra tutti i progetti (filtrati per cliente)
+                        combo['values'] = filtered_by_client
                     else:
                         # Filtra i progetti che contengono il testo digitato
-                        filtered = [p for p in all_projects_list if typed_text in p.lower()]
+                        filtered = [p for p in filtered_by_client if typed_text in p.lower()]
                         combo['values'] = filtered
                     
                     # Riapri il dropdown se ci sono risultati
-                    if filtered or typed_text == '':
+                    if (filtered if typed_text else filtered_by_client):
                         combo.event_generate('<Down>')
 
                 # Bind dell'evento di digitazione
                 combo.bind('<KeyRelease>', on_keyrelease)
+                
+                # 🆕 Funzione per aggiornare la lista progetti quando cambia il cliente
+                def on_client_change(event):
+                    # Reset project combobox
+                    combo_var.set('')
+                    on_keyrelease(None)
+                
+                # Bind cambio cliente
+                client_combo.bind('<<ComboboxSelected>>', on_client_change)
 
                 def open_selected():
                     selected_text = combo_var.get()

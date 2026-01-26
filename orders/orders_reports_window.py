@@ -1,4 +1,4 @@
-# File: orders/orders_reports_window.py
+﻿# File: orders/orders_reports_window.py
 """
 Finestra per la gestione delle spedizioni dinamiche
 """
@@ -34,7 +34,7 @@ class DynamicShippingWindow(tk.Toplevel):
         
         self.current_order_id = None  # IDOrder selezionato
         self.current_production_order_id = None  # DynamicProductionOrderID
-        self.current_remain = 0  # Quantità rimanente
+        self.current_remain = 0  # QuantitÃ  rimanente
         
         self.title(self.lang.get('dynamic_shipping_title', 'Gestione Spedizioni Dinamiche'))
         self.geometry('1600x900')
@@ -101,7 +101,7 @@ class DynamicShippingWindow(tk.Toplevel):
             date_pattern='dd/mm/yyyy',
             locale='it_IT'
         )
-        self.date_from.set_date(datetime.now() - timedelta(days=30))
+        self.date_from.set_date(datetime.now() - timedelta(days=180))
         self.date_from.pack(side=tk.LEFT, padx=(0, 15))
         
         ttk.Label(row2, text=self.lang.get('ship_date_to', 'A:')).pack(side=tk.LEFT, padx=(0, 5))
@@ -129,7 +129,7 @@ class DynamicShippingWindow(tk.Toplevel):
         # Treeview ordini
         columns = ('IDOrder', 'Customer', 'SaleOrder', 'ProductionOrder', 'ItemCode', 'ItemName', 
                   'ShipDate', 'QtyOrder', 'QtyAssigned', 'Associate', 'SMT', 'PTHM', 'ICT', 
-                  'FCT', 'Coating', 'OutOfBox', 'Shipped', 'Remain')
+                  'FCT', 'Coating', 'CoatingBottom', 'OutOfBox', 'Remain')
         
         self.orders_tree = ttk.Treeview(orders_frame, columns=columns, show='headings', selectmode='browse')
         
@@ -145,7 +145,7 @@ class DynamicShippingWindow(tk.Toplevel):
             'ItemCode': (self.lang.get('col_item_code', 'Codice'), 100),
             'ItemName': (self.lang.get('col_item_name', 'Prodotto'), 150),
             'ShipDate': (self.lang.get('col_ship_date', 'Data Sped.'), 90),
-            'QtyOrder': (self.lang.get('col_qty_order', 'Qtà Ord.'), 70),
+            'QtyOrder': (self.lang.get('col_qty_order', 'QtÃ  Ord.'), 70),
             'QtyAssigned': (self.lang.get('col_qty_assigned', 'Assegnata'), 70),
             'Associate': (self.lang.get('col_associate', 'Associate'), 70),
             'SMT': (self.lang.get('col_smt', 'SMT'), 60),
@@ -153,8 +153,8 @@ class DynamicShippingWindow(tk.Toplevel):
             'ICT': (self.lang.get('col_ict', 'ICT'), 60),
             'FCT': (self.lang.get('col_fct', 'FCT'), 60),
             'Coating': (self.lang.get('col_coating', 'Coating'), 60),
+            'CoatingBottom': (self.lang.get('col_coating_bottom', 'Coating Bottom'), 90),
             'OutOfBox': (self.lang.get('col_outofbox', 'OutOfBox'), 70),
-            'Shipped': (self.lang.get('col_shipped', 'Spediti'), 70),
             'Remain': (self.lang.get('col_remain', 'Rimanenti'), 70)
         }
         
@@ -202,12 +202,16 @@ class DynamicShippingWindow(tk.Toplevel):
                                           command=self._delete_shipping_rule, state=tk.DISABLED)
         self.delete_rule_btn.pack(side=tk.LEFT, padx=5)
         
+        # ðŸ†• Bottone esporta Excel
+        ttk.Button(toolbar, text=self.lang.get('btn_export_rules_excel', 'Esporta Regole Excel'), 
+                  command=self._export_rules_to_excel).pack(side=tk.LEFT, padx=5)
+        
         # Label info
         self.rules_info_label = ttk.Label(toolbar, text=self.lang.get('select_order_first', 'Seleziona un ordine sopra'))
         self.rules_info_label.pack(side=tk.LEFT, padx=20)
         
         # Treeview regole
-        columns = ('RuleId', 'QtyToShip', 'DateToShip', 'AddedBy', 'DateAdded')
+        columns = ('RuleId', 'QtyToShip', 'DateToShip', 'TimeToShip', 'ShipTo', 'AddedBy', 'DateAdded')
         
         self.rules_tree = ttk.Treeview(rules_frame, columns=columns, show='headings', selectmode='browse')
         
@@ -215,15 +219,20 @@ class DynamicShippingWindow(tk.Toplevel):
         self.rules_tree.column('RuleId', width=0, stretch=False)
         self.rules_tree.heading('RuleId', text='')
         
-        self.rules_tree.heading('QtyToShip', text=self.lang.get('col_qty_to_ship', 'Qtà da Spedire'))
+        
+        self.rules_tree.heading('QtyToShip', text=self.lang.get('col_qty_to_ship', 'QtÃ  da Spedire'))
         self.rules_tree.heading('DateToShip', text=self.lang.get('col_date_to_ship', 'Data Spedizione'))
+        self.rules_tree.heading('TimeToShip', text=self.lang.get('col_time_to_ship', 'Ora'))
+        self.rules_tree.heading('ShipTo', text=self.lang.get('col_ship_to', 'Destinazione'))
         self.rules_tree.heading('AddedBy', text=self.lang.get('col_added_by', 'Aggiunto Da'))
         self.rules_tree.heading('DateAdded', text=self.lang.get('col_date_added', 'Data Inserimento'))
         
-        self.rules_tree.column('QtyToShip', width=120, anchor=tk.E)
-        self.rules_tree.column('DateToShip', width=120)
-        self.rules_tree.column('AddedBy', width=150)
-        self.rules_tree.column('DateAdded', width=150)
+        self.rules_tree.column('QtyToShip', width=100, anchor=tk.E)
+        self.rules_tree.column('DateToShip', width=100)
+        self.rules_tree.column('TimeToShip', width=60)
+        self.rules_tree.column('ShipTo', width=180)
+        self.rules_tree.column('AddedBy', width=120)
+        self.rules_tree.column('DateAdded', width=140)
         
         scrollbar = ttk.Scrollbar(rules_frame, orient=tk.VERTICAL, command=self.rules_tree.yview)
         self.rules_tree.configure(yscrollcommand=scrollbar.set)
@@ -283,14 +292,20 @@ class DynamicShippingWindow(tk.Toplevel):
         if product and product != self.lang.get('all_products', 'Tutti i Prodotti'):
             filters['product'] = product
         
-        filters['date_from'] = self.date_from.get_date()
-        filters['date_to'] = self.date_to.get_date()
+        # ðŸ†• Date non piÃ¹ incluse automaticamente - solo quando utente applica filtri
+        # filters['date_from'] = self.date_from.get_date()
+        # filters['date_to'] = self.date_to.get_date()
         
         return filters
     
+    
     def _apply_filters(self):
         """Applica i filtri e carica i dati"""
-        self._load_order_data()
+        # ðŸ†• Quando utente clicca "Filtra", includi anche le date
+        filters = self._get_current_filters()
+        filters['date_from'] = self.date_from.get_date()
+        filters['date_to'] = self.date_to.get_date()
+        self._load_order_data_with_filters(filters)
     
     def _reset_filters(self):
         """Reset tutti i filtri"""
@@ -298,16 +313,21 @@ class DynamicShippingWindow(tk.Toplevel):
         self.so_filter.delete(0, tk.END)
         self.po_filter.delete(0, tk.END)
         self.product_filter.current(0)
-        self.date_from.set_date(datetime.now() - timedelta(days=30))
+        self.date_from.set_date(datetime.now() - timedelta(days=180))
         self.date_to.set_date(datetime.now() + timedelta(days=180))
         self._load_order_data()
     
+    
     def _load_order_data(self):
+        """Carica i dati ordini senza filtri (caricamento iniziale)"""
+        self._load_order_data_with_filters({})
+    
+    def _load_order_data_with_filters(self, filters=None):
         """Carica i dati ordini con la query principale"""
         try:
-            filters = self._get_current_filters()
+            if filters is None:
+                filters = self._get_current_filters()
             
-            # Query principale
             query = """
             WITH OrderData AS (
                 SELECT o.IDOrder, 
@@ -318,80 +338,70 @@ class DynamicShippingWindow(tk.Toplevel):
                     d.[ItemName],
                     d.[ShipDateRequest], 
                     d.[QtyOrder], 
-                    ISNULL(SUM(po.Qty), 0) AS QtyAssigned,
-                    sub.OrderQuantity AS Associate,
-                    sub2.OrderQuantity AS SMT,
-                    sub3.OrderQuantity AS PTHM,
-                    sub4.OrderQuantity AS ICT,
-                    sub5.OrderQuantity AS FCT,
-                    sub6.OrderQuantity AS Shipped,
-                    sub7.OrderQuantity AS OutOfBox,
-                    sub8.OrderQuantity As Shipper,
+                    po.Qty AS QtyAssigned,
+                    sub.NoBoards AS Associate,
+                    sub2.NoBoards AS SMT,
+                    sub3.NoBoards AS PTHM,
+                    sub4.NoBoards AS ICT,
+                    sub5.NoBoards AS FCT,
+                    sub6.NoBoards AS Coating,
+                    sub7.NoBoards AS [Coating Bottom],
+                    sub8.NoBoards AS OutOfBox,
                     po.DynamicProductionOrderID
                 FROM 
                     [Traceability_RS].[dyn].[DynamicSaleOrders] d
-                LEFT JOIN 
+                INNER JOIN 
                     [Traceability_RS].[dyn].[DynamicProductionOrders] po ON d.DynamicSaleOrderId = po.DynamicSaleOrderId 
                 INNER JOIN    
                     traceability_rs.dbo.orders o ON po.IdOrder = o.IDOrder 
-                CROSS APPLY 
-                    (SELECT OrderQuantity FROM dbo.GetOrderReportInfo2(o.IDOrder, 1)) sub
-                CROSS APPLY 
-                    (SELECT OrderQuantity FROM dbo.GetOrderReportInfo2(o.IDOrder, 12)) sub2
-                CROSS APPLY 
-                    (SELECT OrderQuantity FROM dbo.GetOrderReportInfo2(o.IDOrder, 4)) sub3
-                CROSS APPLY 
-                    (SELECT OrderQuantity FROM dbo.GetOrderReportInfo2(o.IDOrder, 5)) sub4
-                CROSS APPLY 
-                    (SELECT OrderQuantity FROM dbo.GetOrderReportInfo2(o.IDOrder, 8)) sub5
-                CROSS APPLY 
-                    (SELECT OrderQuantity FROM dbo.GetOrderReportInfo2(o.IDOrder, 10)) sub6
-                CROSS APPLY 
-                    (SELECT OrderQuantity FROM dbo.GetOrderReportInfo2(o.IDOrder, 18)) sub7
-                CROSS APPLY 
-                    (SELECT OrderQuantity FROM dbo.GetOrderReportInfo2(o.IDOrder, 10)) sub8
-                WHERE 
-                    d.ShipDateRequest BETWEEN ? AND ?
+                OUTER APPLY 
+                    (SELECT NoBoards FROM traceability_rs.[dbo].[QuantitaProdottaPerFase](o.IDOrder, 0)) sub
+                OUTER APPLY 
+                    (SELECT NoBoards FROM traceability_rs.[dbo].[QuantitaProdottaPerFase](o.IDOrder, 1)) sub2
+                OUTER APPLY 
+                    (SELECT NoBoards FROM traceability_rs.[dbo].[QuantitaProdottaPerFase](o.IDOrder, 4)) sub3
+                OUTER APPLY 
+                    (SELECT NoBoards FROM traceability_rs.[dbo].[QuantitaProdottaPerFase](o.IDOrder, 102)) sub4
+                OUTER APPLY 
+                    (SELECT NoBoards FROM traceability_rs.[dbo].[QuantitaProdottaPerFase](o.IDOrder, 103)) sub5
+                OUTER APPLY 
+                    (SELECT NoBoards FROM traceability_rs.[dbo].[QuantitaProdottaPerFase](o.IDOrder, 132)) sub6
+                OUTER APPLY 
+                    (SELECT NoBoards FROM traceability_rs.[dbo].[QuantitaProdottaPerFase](o.IDOrder, 135)) sub7
+                OUTER APPLY 
+                    (SELECT NoBoards FROM traceability_rs.[dbo].[QuantitaProdottaPerFase](o.IDOrder, 900)) sub8
             """
             
             # Aggiungi filtri dinamici
-            params = [filters['date_from'], filters['date_to']]
+            params = []
+            where_clauses = []
+            
+            # Filtro data (opzionale)
+            if 'date_from' in filters and 'date_to' in filters:
+                where_clauses.append("d.ShipDateRequest BETWEEN ? AND ?")
+                params.extend([filters['date_from'], filters['date_to']])
             
             if 'customer' in filters:
-                query += " AND d.CustomerName = ?"
+                where_clauses.append("d.CustomerName = ?")
                 params.append(filters['customer'])
             
             if 'so_number' in filters:
-                query += " AND d.SONumber LIKE ?"
+                where_clauses.append("d.SONumber LIKE ?")
                 params.append(f"%{filters['so_number']}%")
             
             if 'production_order' in filters:
-                query += " AND o.ordernumber LIKE ?"
+                where_clauses.append("o.ordernumber LIKE ?")
                 params.append(f"%{filters['production_order']}%")
             
             if 'product' in filters:
-                query += " AND (d.ItemCode + ' - ' + d.ItemName) LIKE ?"
+                where_clauses.append("(d.ItemCode + ' - ' + d.ItemName) LIKE ?")
                 params.append(f"%{filters['product']}%")
             
+            # Aggiungi WHERE solo se ci sono condizioni
+            if where_clauses:
+                query += " WHERE " + " AND ".join(where_clauses)
+            
             query += """
-                GROUP BY 
-                    d.[SONumber], 
-                    o.[OrderNumber],
-                    d.[CustomerName], 
-                    d.[ItemCode], 
-                    d.[ItemName],
-                    d.[ShipDateRequest], 
-                    d.[QtyOrder], 
-                    sub.OrderQuantity,
-                    sub2.OrderQuantity, 
-                    sub3.OrderQuantity,
-                    sub4.OrderQuantity,
-                    sub5.OrderQuantity,
-                    sub6.OrderQuantity,
-                    sub7.OrderQuantity,
-                    sub8.OrderQuantity,
-                    o.IDOrder,
-                    po.DynamicProductionOrderID
             )
             
             SELECT  
@@ -409,10 +419,10 @@ class DynamicShippingWindow(tk.Toplevel):
                 PTHM,
                 ICT,
                 FCT,      
-                ISNULL((SELECT OrderQuantity FROM dbo.GetOrderReportInfo2(IDOrder, 135)), 0) AS Coating,
+                Coating,
+                [Coating Bottom],
                 OutOfBox,
-                Shipped,
-                [QtyOrder] - ISNULL(Shipped, 0) AS Remain,
+                [QtyOrder] - ISNULL(OutOfBox, 0) AS Remain,
                 DynamicProductionOrderID
             FROM 
                 OrderData
@@ -451,8 +461,8 @@ class DynamicShippingWindow(tk.Toplevel):
                     row.ICT,
                     row.FCT,
                     row.Coating,
+                    getattr(row, 'Coating Bottom', 0),  # Handle space in column name
                     row.OutOfBox,
-                    row.Shipped,
                     remain
                 ), tags=(tag,))
             
@@ -480,9 +490,11 @@ class DynamicShippingWindow(tk.Toplevel):
                 self.rules_tree.delete(item)
             return
         
+        
         values = self.orders_tree.item(selection[0], 'values')
         self.current_order_id = values[0]
-        self.current_remain = int(values[17]) if values[17] else 0
+        # ðŸ†• Usa valore assoluto per rimanenti (può essere negativo nella form)
+        self.current_remain = abs(int(values[17])) if values[16] else 0
         
         # Ottieni DynamicProductionOrderID
         try:
@@ -519,7 +531,7 @@ class DynamicShippingWindow(tk.Toplevel):
         
         try:
             query = """
-            SELECT DybamicShippingRuleId, QtyToShip, DateToship, AddBayUser, DateOut
+            SELECT DybamicShippingRuleId, QtyToShip, DateToship, ShipTo, AddBayUser, DateOut
             FROM [Traceability_RS].[dyn].[DynamicShippingRules]
             WHERE DynamicProductionOrderID = ?
             ORDER BY DateToship
@@ -532,15 +544,21 @@ class DynamicShippingWindow(tk.Toplevel):
             for item in self.rules_tree.get_children():
                 self.rules_tree.delete(item)
             
+            
             # Popola treeview
             for row in rows:
+                # ðŸ†• Separa data e ora
                 date_to_ship = row.DateToship.strftime('%d/%m/%Y') if row.DateToship else ''
+                time_to_ship = row.DateToship.strftime('%H:%M') if row.DateToship else ''
                 date_out = row.DateOut.strftime('%d/%m/%Y %H:%M') if row.DateOut else ''
+                ship_to = row.ShipTo or ''
                 
                 self.rules_tree.insert('', tk.END, values=(
                     row.DybamicShippingRuleId,
                     row.QtyToShip,
                     date_to_ship,
+                    time_to_ship,
+                    ship_to,
                     row.AddBayUser or '',
                     date_out
                 ))
@@ -707,6 +725,145 @@ class DynamicShippingWindow(tk.Toplevel):
                 f"Errore esportazione: {e}",
                 parent=self
             )
+    
+    def _export_rules_to_excel(self):
+        "Esporta tutte le regole di spedizione in Excel"
+        try:
+            # Query per ottenere tutte le regole con informazioni ordini
+            query = """
+            SELECT 
+                d.CustomerName,
+                d.SONumber,
+                o.ordernumber AS ProductionOrder,
+                d.ItemCode,
+                d.ItemName,
+                d.QtyOrder,
+                sr.QtyToShip,
+                sr.DateToship,
+                sr.ShipTo,
+                sr.AddBayUser,
+                sr.DateOut
+            FROM 
+                [Traceability_RS].[dyn].[DynamicShippingRules] sr
+            INNER JOIN 
+                [Traceability_RS].[dyn].[DynamicProductionOrders] po ON sr.DynamicProductionOrderID = po.DynamicProductionOrderID
+            INNER JOIN 
+                [Traceability_RS].[dyn].[DynamicSaleOrders] d ON po.DynamicSaleOrderId = d.DynamicSaleOrderId
+            INNER JOIN 
+                traceability_rs.dbo.orders o ON po.IdOrder = o.IDOrder
+            ORDER BY 
+                sr.DateToship, d.SONumber
+            """
+            
+            self.db.cursor.execute(query)
+            rows = self.db.cursor.fetchall()
+            
+            if not rows:
+                messagebox.showinfo(
+                    self.lang.get('info', 'Informazione'),
+                    self.lang.get('no_rules_to_export', 'Nessuna regola di spedizione da esportare'),
+                    parent=self
+                )
+                return
+            
+            # Crea directory se non esiste
+            temp_dir = r'c:\Temp'
+            if not os.path.exists(temp_dir):
+                os.makedirs(temp_dir)
+            
+            # Nome file con timestamp
+            filename = f"ShippingRules_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            filepath = os.path.join(temp_dir, filename)
+            
+            # Crea workbook
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Regole Spedizione"
+            
+            # Stili
+            header_font = Font(bold=True, color="FFFFFF", size=11)
+            header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+            border = Border(
+                left=Side(style='thin'),
+                right=Side(style='thin'),
+                top=Side(style='thin'),
+                bottom=Side(style='thin')
+            )
+            
+            # Intestazioni
+            headers = [
+                'Cliente', 'Ordine Vendita', 'Ordine Produzione', 'Codice', 'Prodotto',
+                'Qtà Ordine', 'Qtà da Spedire', 'Data Spedizione', 'Ora', 'Destinazione',
+                'Aggiunto Da', 'Data Inserimento'
+            ]
+            
+            for col_idx, header in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col_idx)
+                cell.value = header
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                cell.border = border
+            
+            # Dati
+            for row_idx, row in enumerate(rows, 2):
+                date_to_ship = row.DateToship.strftime('%d/%m/%Y') if row.DateToship else ''
+                time_to_ship = row.DateToship.strftime('%H:%M') if row.DateToship else ''
+                date_out = row.DateOut.strftime('%d/%m/%Y %H:%M') if row.DateOut else ''
+                
+                values = [
+                    row.CustomerName,
+                    row.SONumber,
+                    row.ProductionOrder,
+                    row.ItemCode,
+                    row.ItemName,
+                    row.QtyOrder,
+                    row.QtyToShip,
+                    date_to_ship,
+                    time_to_ship,
+                    row.ShipTo or '',
+                    row.AddBayUser or '',
+                    date_out
+                ]
+                
+                for col_idx, value in enumerate(values, 1):
+                    cell = ws.cell(row=row_idx, column=col_idx)
+                    cell.value = value
+                    cell.border = border
+                    cell.alignment = Alignment(horizontal='left', vertical='center')
+            
+            # Auto-size colonne
+            for column in ws.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = min(max_length + 2, 50)
+                ws.column_dimensions[column_letter].width = adjusted_width
+            
+            # Freeze prima riga
+            ws.freeze_panes = 'A2'
+            
+            # Salva
+            wb.save(filepath)
+            
+            messagebox.showinfo(
+                self.lang.get('success', 'Successo'),
+                f"{self.lang.get('file_saved', 'File salvato in')}: {filepath}",
+                parent=self
+            )
+            
+        except Exception as e:
+            logger.error(f"Errore esportazione regole Excel: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Errore esportazione: {e}",
+                parent=self
+            )
 
 
 class ShippingRuleDialog(tk.Toplevel):
@@ -724,7 +881,7 @@ class ShippingRuleDialog(tk.Toplevel):
         
         self.title(self.lang.get('add_rule' if not rule_id else 'edit_rule', 
                                  'Aggiungi Regola' if not rule_id else 'Modifica Regola'))
-        self.geometry('400x200')
+        self.geometry('450x300')
         self.transient(master)
         self.grab_set()
         
@@ -738,8 +895,8 @@ class ShippingRuleDialog(tk.Toplevel):
         main_frame = ttk.Frame(self, padding=20)
         main_frame.pack(fill=tk.BOTH, expand=True)
         
-        # Qtà da spedire
-        ttk.Label(main_frame, text=self.lang.get('qty_to_ship', 'Quantità da Spedire:')).grid(row=0, column=0, sticky=tk.W, pady=5)
+        # QtÃ  da spedire
+        ttk.Label(main_frame, text=self.lang.get('qty_to_ship', 'QuantitÃ  da Spedire:')).grid(row=0, column=0, sticky=tk.W, pady=5)
         self.qty_entry = ttk.Entry(main_frame, width=15)
         self.qty_entry.grid(row=0, column=1, sticky=tk.W, pady=5, padx=(10, 0))
         ttk.Label(main_frame, text=f"(Max: {self.max_qty})", foreground='gray').grid(row=0, column=2, sticky=tk.W, padx=(5, 0))
@@ -757,9 +914,31 @@ class ShippingRuleDialog(tk.Toplevel):
         )
         self.date_entry.grid(row=1, column=1, sticky=tk.W, pady=5, padx=(10, 0))
         
+        # ðŸ†• Ora spedizione
+        ttk.Label(main_frame, text=self.lang.get('time_to_ship', 'Ora:')).grid(row=2, column=0, sticky=tk.W, pady=5)
+        time_frame = ttk.Frame(main_frame)
+        time_frame.grid(row=2, column=1, sticky=tk.W, pady=5, padx=(10, 0))
+        
+        self.hour_spinbox = ttk.Spinbox(time_frame, from_=0, to=23, width=5, format='%02.0f')
+        self.hour_spinbox.set('08')
+        self.hour_spinbox.pack(side=tk.LEFT)
+        
+        ttk.Label(time_frame, text=':').pack(side=tk.LEFT, padx=2)
+        
+        self.minute_spinbox = ttk.Spinbox(time_frame, from_=0, to=59, width=5, format='%02.0f')
+        self.minute_spinbox.set('00')
+        self.minute_spinbox.pack(side=tk.LEFT)
+        
+        # ðŸ†• ShipTo
+        ttk.Label(main_frame, text=self.lang.get('ship_to', 'Destinazione:')).grid(row=3, column=0, sticky=tk.W, pady=5)
+        self.shipto_combo = ttk.Combobox(main_frame, width=25, state='readonly')
+        self.shipto_combo['values'] = ['Normal Shipment', 'Direct to final Customer']
+        self.shipto_combo.current(0)
+        self.shipto_combo.grid(row=3, column=1, sticky=tk.W, pady=5, padx=(10, 0))
+        
         # Bottoni
         btn_frame = ttk.Frame(main_frame)
-        btn_frame.grid(row=2, column=0, columnspan=3, pady=(20, 0))
+        btn_frame.grid(row=4, column=0, columnspan=3, pady=(20, 0))
         
         ttk.Button(btn_frame, text=self.lang.get('btn_save', 'Salva'), command=self._save).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text=self.lang.get('btn_cancel', 'Annulla'), command=self.destroy).pack(side=tk.LEFT, padx=5)
@@ -767,14 +946,23 @@ class ShippingRuleDialog(tk.Toplevel):
     def _load_rule_data(self):
         """Carica i dati della regola esistente"""
         try:
-            query = "SELECT QtyToShip, DateToship FROM [Traceability_RS].[dyn].[DynamicShippingRules] WHERE DybamicShippingRuleId = ?"
+            query = "SELECT QtyToShip, DateToship, ShipTo FROM [Traceability_RS].[dyn].[DynamicShippingRules] WHERE DybamicShippingRuleId = ?"
             self.db.cursor.execute(query, (self.rule_id,))
             row = self.db.cursor.fetchone()
             
             if row:
                 self.qty_entry.insert(0, str(row.QtyToShip))
                 if row.DateToship:
-                    self.date_entry.set_date(row.DateToship)
+                    # ðŸ†• Estrai data e ora
+                    self.date_entry.set_date(row.DateToship.date())
+                    self.hour_spinbox.set(f"{row.DateToship.hour:02d}")
+                    self.minute_spinbox.set(f"{row.DateToship.minute:02d}")
+                # ðŸ†• Carica ShipTo
+                if row.ShipTo:
+                    if row.ShipTo in self.shipto_combo['values']:
+                        self.shipto_combo.set(row.ShipTo)
+                    else:
+                        self.shipto_combo.current(0)
         except Exception as e:
             logger.error(f"Errore caricamento regola: {e}", exc_info=True)
     
@@ -786,7 +974,7 @@ class ShippingRuleDialog(tk.Toplevel):
             if not qty_str:
                 messagebox.showwarning(
                     self.lang.get('warning', 'Attenzione'),
-                    self.lang.get('qty_required', 'Inserire la quantità'),
+                    self.lang.get('qty_required', 'Inserire la quantitÃ '),
                     parent=self
                 )
                 return
@@ -796,7 +984,7 @@ class ShippingRuleDialog(tk.Toplevel):
             except ValueError:
                 messagebox.showwarning(
                     self.lang.get('warning', 'Attenzione'),
-                    self.lang.get('qty_invalid', 'Quantità non valida'),
+                    self.lang.get('qty_invalid', 'QuantitÃ  non valida'),
                     parent=self
                 )
                 return
@@ -804,7 +992,7 @@ class ShippingRuleDialog(tk.Toplevel):
             if qty <= 0:
                 messagebox.showwarning(
                     self.lang.get('warning', 'Attenzione'),
-                    self.lang.get('qty_positive', 'La quantità deve essere maggiore di zero'),
+                    self.lang.get('qty_positive', 'La quantitÃ  deve essere maggiore di zero'),
                     parent=self
                 )
                 return
@@ -812,29 +1000,44 @@ class ShippingRuleDialog(tk.Toplevel):
             if qty > self.max_qty:
                 messagebox.showwarning(
                     self.lang.get('warning', 'Attenzione'),
-                    f"{self.lang.get('qty_exceeds', 'La quantità supera il massimo disponibile')}: {self.max_qty}",
+                    f"{self.lang.get('qty_exceeds', 'La quantitÃ  supera il massimo disponibile')}: {self.max_qty}",
                     parent=self
                 )
                 return
             
+            
+            # ðŸ†• Combina data + ora
             date_to_ship = self.date_entry.get_date()
+            try:
+                hour = int(self.hour_spinbox.get())
+                minute = int(self.minute_spinbox.get())
+            except ValueError:
+                hour = 8
+                minute = 0
+            
+            # Crea datetime combinando data e ora
+            from datetime import datetime, time
+            datetime_to_ship = datetime.combine(date_to_ship, time(hour, minute))
+            
+            # ðŸ†• Ottieni ShipTo
+            ship_to = self.shipto_combo.get()
             
             if self.rule_id:
                 # UPDATE
                 query = """
                 UPDATE [Traceability_RS].[dyn].[DynamicShippingRules]
-                SET QtyToShip = ?, DateToship = ?
+                SET QtyToShip = ?, DateToship = ?, ShipTo = ?
                 WHERE DybamicShippingRuleId = ?
                 """
-                self.db.cursor.execute(query, (qty, date_to_ship, self.rule_id))
+                self.db.cursor.execute(query, (qty, datetime_to_ship, ship_to, self.rule_id))
             else:
                 # INSERT
                 query = """
                 INSERT INTO [Traceability_RS].[dyn].[DynamicShippingRules]
-                (DynamicProductionOrderID, QtyToShip, DateToship, AddBayUser, DateOut)
-                VALUES (?, ?, ?, ?, GETDATE())
+                (DynamicProductionOrderID, QtyToShip, DateToship, ShipTo, AddBayUser, DateOut)
+                VALUES (?, ?, ?, ?, ?, GETDATE())
                 """
-                self.db.cursor.execute(query, (self.production_order_id, qty, date_to_ship, self.user_name))
+                self.db.cursor.execute(query, (self.production_order_id, qty, datetime_to_ship, ship_to, self.user_name))
             
             self.db.conn.commit()
             
@@ -870,3 +1073,144 @@ def open_orders_reports_window(master, db, lang, user_name):
         user_name: Nome utente loggato
     """
     DynamicShippingWindow(master, db, lang, user_name)
+    
+    def _export_rules_to_excel(self):
+        """Esporta tutte le regole di spedizione in Excel"""
+        try:
+            # Query per ottenere tutte le regole con informazioni ordini
+            query = """
+            SELECT 
+                d.CustomerName,
+                d.SONumber,
+                o.ordernumber AS ProductionOrder,
+                d.ItemCode,
+                d.ItemName,
+                d.QtyOrder,
+                sr.QtyToShip,
+                sr.DateToship,
+                sr.ShipTo,
+                sr.AddBayUser,
+                sr.DateOut
+            FROM 
+                [Traceability_RS].[dyn].[DynamicShippingRules] sr
+            INNER JOIN 
+                [Traceability_RS].[dyn].[DynamicProductionOrders] po ON sr.DynamicProductionOrderID = po.DynamicProductionOrderID
+            INNER JOIN 
+                [Traceability_RS].[dyn].[DynamicSaleOrders] d ON po.DynamicSaleOrderId = d.DynamicSaleOrderId
+            INNER JOIN 
+                traceability_rs.dbo.orders o ON po.IdOrder = o.IDOrder
+            ORDER BY 
+                sr.DateToship, d.SONumber
+            """
+            
+            self.db.cursor.execute(query)
+            rows = self.db.cursor.fetchall()
+            
+            if not rows:
+                messagebox.showinfo(
+                    self.lang.get('info', 'Informazione'),
+                    self.lang.get('no_rules_to_export', 'Nessuna regola di spedizione da esportare'),
+                    parent=self
+                )
+                return
+            
+            # Crea directory se non esiste
+            temp_dir = r'c:\Temp'
+            if not os.path.exists(temp_dir):
+                os.makedirs(temp_dir)
+            
+            # Nome file con timestamp
+            filename = f"ShippingRules_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            filepath = os.path.join(temp_dir, filename)
+            
+            # Crea workbook
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Regole Spedizione"
+            
+            # Stili
+            header_font = Font(bold=True, color="FFFFFF", size=11)
+            header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+            border = Border(
+                left=Side(style='thin'),
+                right=Side(style='thin'),
+                top=Side(style='thin'),
+                bottom=Side(style='thin')
+            )
+            
+            # Intestazioni
+            headers = [
+                'Cliente', 'Ordine Vendita', 'Ordine Produzione', 'Codice', 'Prodotto',
+                'QtÃƒÂ  Ordine', 'QtÃƒÂ  da Spedire', 'Data Spedizione', 'Ora', 'Destinazione',
+                'Aggiunto Da', 'Data Inserimento'
+            ]
+            
+            for col_idx, header in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col_idx)
+                cell.value = header
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                cell.border = border
+            
+            # Dati
+            for row_idx, row in enumerate(rows, 2):
+                date_to_ship = row.DateToship.strftime('%d/%m/%Y') if row.DateToship else ''
+                time_to_ship = row.DateToship.strftime('%H:%M') if row.DateToship else ''
+                date_out = row.DateOut.strftime('%d/%m/%Y %H:%M') if row.DateOut else ''
+                
+                values = [
+                    row.CustomerName,
+                    row.SONumber,
+                    row.ProductionOrder,
+                    row.ItemCode,
+                    row.ItemName,
+                    row.QtyOrder,
+                    row.QtyToShip,
+                    date_to_ship,
+                    time_to_ship,
+                    row.ShipTo or '',
+                    row.AddBayUser or '',
+                    date_out
+                ]
+                
+                for col_idx, value in enumerate(values, 1):
+                    cell = ws.cell(row=row_idx, column=col_idx)
+                    cell.value = value
+                    cell.border = border
+                    cell.alignment = Alignment(horizontal='left', vertical='center')
+            
+            # Auto-size colonne
+            for column in ws.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = min(max_length + 2, 50)
+                ws.column_dimensions[column_letter].width = adjusted_width
+            
+            # Freeze prima riga
+            ws.freeze_panes = 'A2'
+            
+            # Salva
+            wb.save(filepath)
+            
+            messagebox.showinfo(
+                self.lang.get('success', 'Successo'),
+                f"{self.lang.get('file_saved', 'File salvato in')}: {filepath}",
+                parent=self
+            )
+            
+        except Exception as e:
+            logger.error(f"Errore esportazione regole Excel: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Errore esportazione: {e}",
+                parent=self
+            )
+
+

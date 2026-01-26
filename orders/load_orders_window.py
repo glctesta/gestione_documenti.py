@@ -27,6 +27,7 @@ class LoadOrdersWindow(tk.Toplevel):
             user_name: Nome dell'utente loggato
         """
         super().__init__(master)
+        logger.info("Inizializzazione finestra di caricamento ordini Class->LoadOrdersWindow")
         self.db = db
         self.lang = lang
         self.orders_manager = orders_manager

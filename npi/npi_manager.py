@@ -3481,14 +3481,15 @@ class GestoreNPI:
                 
                 project_info = {
                     'project_id': project.ProgettoId,
-                    'project_name': project.NomeProgetto or f"Progetto {project.ProgettoId}",
+                    'project_name': (project.prodotto.CodiceProdotto if project.prodotto else None) or f"Progetto {project.ProgettoId}",  # 🆕 Usa CodiceProdotto invece di NomeProgetto
                     'is_root': (level == 0),
                     'is_parent': len(children) > 0,
                     'level': level,
                     'parent_id': parent_id,
                     'tasks': gantt_data if gantt_data else [],
                     'product_name': product_name or (project.prodotto.NomeProdotto if project.prodotto else None),
-                    'status': project.StatoProgetto
+                    'status': project.StatoProgetto,
+                    'owner': project.Responsabile if hasattr(project, 'Responsabile') else 'N/A'  # 🆕 Responsabile progetto
                 }
                 
                 projects_data.append(project_info)
@@ -3507,7 +3508,7 @@ class GestoreNPI:
             
             return {
                 'root_project_id': root_project_id,
-                'root_project_name': root_project.NomeProgetto or f"Progetto {root_project_id}",
+                'root_project_name': (root_project.prodotto.CodiceProdotto if root_project.prodotto else None) or f"Progetto {root_project_id}",  # 🆕 Usa CodiceProdotto
                 'has_hierarchy': has_hierarchy,
                 'projects': projects_data
             }

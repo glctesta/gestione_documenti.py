@@ -17,7 +17,8 @@ files_to_include = [
     'lang.conf',
     'zebra_printer_config.json',
     'Complains_numeration.json',  # File per numerazione reclami
-    'npi_notifications_config.json'  # Configurazione notifiche automatiche NPI
+    'npi_notifications_config.json',  # Configurazione notifiche automatiche NPI
+    'updater.exe'  # Updater per aggiornamenti automatici
 ]
 
 for file in files_to_include:

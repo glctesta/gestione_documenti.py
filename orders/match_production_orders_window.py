@@ -25,6 +25,7 @@ class MatchProductionOrdersWindow(tk.Toplevel):
             orders_manager: Manager degli ordini
             user_name: Nome dell'utente loggato
         """
+        logger.info("Inizializzazione finestra di accoppiamento ordini Class->MatchProductionOrdersWindow")
         super().__init__(master)
         self.db = db
         self.lang = lang

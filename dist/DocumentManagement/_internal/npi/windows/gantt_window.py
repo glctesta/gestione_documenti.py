@@ -23,6 +23,8 @@ import matplotlib.dates as mdates
 
 logger = logging.getLogger(__name__)
 
+# 🆕 FLAG GLOBALE per prevenire aperture multiple browser (persiste tra istanze)
+_GLOBAL_BROWSER_OPENED = False
 
 class NpiGanttWindow(tk.Toplevel):
     """
@@ -38,12 +40,33 @@ class NpiGanttWindow(tk.Toplevel):
         self.df = None
         self.product_name = ""
         self.gantt_data_raw = None  # Dati originali per statistiche
+        self._initializing = True  # 🆕 Flag per prevenire auto-generazione durante init
+        self._browser_opened = False  # 🆕 Flag per prevenire aperture multiple browser
+        self._instance_id = id(self)  # 🆕 DEBUG: ID univoco istanza
+        
+        logger.info(f"🔵 DEBUG: Creata nuova istanza NpiGanttWindow - ID={self._instance_id}, progetto_id={progetto_id}")
 
         self.title(f"Gantt Progetto NPI - ID: {progetto_id}")
         self.geometry("900x650")
 
         self.create_widgets()
+        
+        # 🆕 COMPORTAMENTO MIGLIORATO per progetti con gerarchia
+        if self.has_hierarchy:
+            # Seleziona il tab "Vista Consolidata" come default
+            if self.gantt_notebook:
+                self.gantt_notebook.select(1)  # Tab index 1 = Vista Consolidata
+                self.current_gantt_mode = 'consolidated'
+        
+        # 🆕 Completa l'inizializzazione DOPO la selezione del tab
+        # Questo previene che l'evento <<NotebookTabChanged>> chiami generate_gantt()
+        self._initializing = False
+        
+        # Genera il Gantt una sola volta
         self.generate_gantt()
+        
+        # 🆕 Marca che l'inizializzazione è completata (per distinguere da cambi tab manuali)
+        self._initial_load_complete = True
 
     def create_widgets(self):
         """Crea i widget della finestra."""
@@ -92,10 +115,15 @@ class NpiGanttWindow(tk.Toplevel):
         # 🆕 TABS PER GERARCHIA PROGETTI
         # Controlla se il progetto ha una gerarchia (padre o figli)
         try:
+            logger.info(f"🔍 GANTT WINDOW: Recupero gerarchia per progetto {self.progetto_id}")
             self.hierarchy_data = self.npi_manager.get_gantt_hierarchy_data(self.progetto_id)
+            logger.info(f"🔍 GANTT WINDOW: hierarchy_data ricevuto: {self.hierarchy_data is not None}")
+            if self.hierarchy_data:
+                logger.info(f"🔍 GANTT WINDOW: has_hierarchy={self.hierarchy_data.get('has_hierarchy')}, progetti={len(self.hierarchy_data.get('projects', []))}")
             self.has_hierarchy = self.hierarchy_data.get('has_hierarchy', False)
+            logger.info(f"🔍 GANTT WINDOW: self.has_hierarchy={self.has_hierarchy}")
         except Exception as e:
-            logger.warning(f"Errore recupero gerarchia Gantt: {e}")
+            logger.warning(f"Errore recupero gerarchia Gantt: {e}", exc_info=True)
             self.hierarchy_data = None
             self.has_hierarchy = False
         
@@ -113,8 +141,10 @@ class NpiGanttWindow(tk.Toplevel):
             
             current_label = ttk.Label(
                 tab_current, 
-                text=f"Genera Gantt per: {self.hierarchy_data.get('root_project_name', 'Progetto')}",
-                font=("Calibri", 10)
+                text=f"Vista: {self.hierarchy_data.get('root_project_name', 'Progetto')} (solo progetto principale)\n\n"
+                     f"Clicca '🔄 Rigenera Gantt' per visualizzare questa vista.",
+                font=("Calibri", 10),
+                justify=tk.LEFT
             )
             current_label.pack(pady=10)
             
@@ -124,8 +154,10 @@ class NpiGanttWindow(tk.Toplevel):
             
             consolidated_label = ttk.Label(
                 tab_consolidated,
-                text=f"Genera Gantt Consolidato con tutti i {len(self.hierarchy_data['projects'])} progetti",
-                font=("Calibri", 10)
+                text=f"Vista: Gantt Consolidato con tutti i {len(self.hierarchy_data['projects'])} progetti e relativi task\n\n"
+                     f"Clicca '🔄 Rigenera Gantt' per visualizzare questa vista.",
+                font=("Calibri", 10),
+                justify=tk.LEFT
             )
             consolidated_label.pack(pady=10)
             
@@ -138,8 +170,10 @@ class NpiGanttWindow(tk.Toplevel):
                     
                     child_label = ttk.Label(
                         tab_child,
-                        text=f"Genera Gantt per: {proj_data['project_name']}",
-                        font=("Calibri", 10)
+                        text=f"Vista: {proj_data['project_name']} (progetto figlio)\n\n"
+                             f"Clicca '🔄 Rigenera Gantt' per visualizzare questa vista.",
+                        font=("Calibri", 10),
+                        justify=tk.LEFT
                     )
                     child_label.pack(pady=10)
             
@@ -181,11 +215,66 @@ class NpiGanttWindow(tk.Toplevel):
         self.status_text.insert(tk.END, f"[{timestamp}] {message}\n")
         self.status_text.see(tk.END)
         self.update_idletasks()
+    
+    def _on_tab_changed(self, event):
+        """Gestisce il cambio di tab per rigenerare il Gantt appropriato."""
+        # 🆕 PREVENZIONE: Non fare nulla durante l'inizializzazione
+        if self._initializing:
+            return
+            
+        if not self.gantt_notebook:
+            return
+        
+        try:
+            # Ottieni l'indice del tab selezionato
+            selected_tab_index = self.gantt_notebook.index(self.gantt_notebook.select())
+            
+            self.log_status(f"📑 Cambio tab rilevato: indice {selected_tab_index}")
+            
+            # Determina la modalità in base all'indice del tab
+            if selected_tab_index == 0:
+                # Tab 1: Progetto Corrente
+                self.current_gantt_mode = 'current'
+                self.log_status("📋 Modalità: Progetto Corrente")
+            elif selected_tab_index == 1:
+                # Tab 2: Vista Consolidata
+                self.current_gantt_mode = 'consolidated'
+                self.log_status("🔗 Modalità: Vista Consolidata")
+            else:
+                # Tab 3+: Progetti figli
+                # L'indice 2 corrisponde al primo figlio, 3 al secondo, ecc.
+                child_index = selected_tab_index - 2
+                
+                # Trova il progetto figlio corrispondente
+                child_projects = [p for p in self.hierarchy_data.get('projects', []) if not p['is_root']]
+                
+                if child_index < len(child_projects):
+                    child_project = child_projects[child_index]
+                    child_project_id = child_project['project_id']
+                    self.current_gantt_mode = f'child_{child_project_id}'
+                    self.log_status(f"📄 Modalità: Progetto Figlio - {child_project['project_name']}")
+                else:
+                    self.log_status(f"⚠️ Indice figlio {child_index} fuori range")
+                    return
+            
+            
+            # 🆕 Reset flag per permettere apertura browser SOLO se non siamo in fase di caricamento iniziale
+            if hasattr(self, '_initial_load_complete') and self._initial_load_complete:
+                self._browser_opened = False
+            
+            # Rigenera il Gantt con la nuova modalità
+            self.generate_gantt()
+            
+        except Exception as e:
+            logger.error(f"Errore cambio tab: {e}", exc_info=True)
+            self.log_status(f"❌ Errore cambio tab: {str(e)}")
 
     def generate_gantt(self):
         """Genera il diagramma di Gantt."""
         try:
             self.log_status("=== INIZIO GENERAZIONE GANTT ===")
+            self.log_status(f"🔍 Modalità: {self.current_gantt_mode}")
+            logger.info(f"🔴 DEBUG: generate_gantt() chiamato - istanza_id={self._instance_id}, modalità={self.current_gantt_mode}, _browser_opened={self._browser_opened}")
             
             # 🆕 Gestisci diverse modalità di visualizzazione
             if self.current_gantt_mode == 'current':
@@ -267,11 +356,14 @@ class NpiGanttWindow(tk.Toplevel):
             
             self.log_status(f"📊 Processa {len(projects)} progetti nella gerarchia...")
             
-            # 🆕 Step 3: Costruisci lista consolidata con BARRE PROGETTO + TASK
+            # 🆕 Step 3: Costruisci lista consolidata con RAGGRUPPAMENTO CORRETTO
+            # STRATEGIA: Ogni progetto seguito immediatamente dai suoi task
             consolidated_tasks = []
+            display_order = 0  # Contatore globale per ordinamento
             
             for proj_data in projects:
                 project_name = proj_data['project_name']
+                project_id = proj_data['project_id']
                 level = proj_data['level']
                 is_root = proj_data['is_root']
                 tasks = proj_data.get('tasks', [])
@@ -296,33 +388,39 @@ class NpiGanttWindow(tk.Toplevel):
                         completions = [t.get('Completion', 0) for t in tasks]
                         project_completion = int(sum(completions) / len(completions)) if completions else 0
                         
-                        # Aggiungi barra progetto
+                        # Aggiungi barra progetto con dati corretti
                         project_bar = {
                             'Task': f"{indent}{prefix} {project_name}",
                             'Category': '🔗 Progetti',  # Categoria speciale
                             'Start': project_start,
                             'Finish': project_finish,
-                            'Owner': proj_data.get('status', 'N/A'),  # Mostra stato progetto
-                            'Status': '_PROJECT_BAR_',  # Status speciale per identificare barre progetto
-                            'TaskProdottoID': -proj_data['project_id'],  # ID negativo per progetti
+                            'Owner': proj_data.get('owner', 'N/A'),  # 🆕 Responsabile del progetto
+                            'Status': proj_data.get('status', 'N/A'),  # 🆕 Stato del progetto
+                            'TaskProdottoID': -project_id,  # ID negativo per progetti
                             'Dependencies': [],
                             'Completion': project_completion,
                             'IsTargetNPI': False,
                             '_is_project_bar': True,  # Flag per identificazione
                             '_project_name': project_name,
-                            '_level': level
+                            '_project_id': project_id,  # ID progetto per raggruppamento
+                            '_level': level,
+                            '_display_order': display_order  # Ordine sequenziale
                         }
                         consolidated_tasks.append(project_bar)
+                        display_order += 1
                 
-                # Task del progetto (indentati)
+                # Task del progetto (IMMEDIATAMENTE dopo la barra progetto)
                 for task in tasks:
                     # Aggiungi indicatore livello al nome task
                     task_modified = task.copy()
                     task_modified['Task'] = f"{indent}  └─ {task['Task']}"
                     task_modified['_project_name'] = project_name
+                    task_modified['_project_id'] = project_id  # Associa al progetto
                     task_modified['_level'] = level
                     task_modified['_is_project_bar'] = False
+                    task_modified['_display_order'] = display_order  # Ordine sequenziale
                     consolidated_tasks.append(task_modified)
+                    display_order += 1
             
             if not consolidated_tasks:
                 self.log_status("❌ Nessun task trovato nella gerarchia")
@@ -528,13 +626,24 @@ class NpiGanttWindow(tk.Toplevel):
             df['Start'] = pd.to_datetime(df['Start'])
             df['Finish'] = pd.to_datetime(df['Finish'])
             
-            # Ordinamento per Categoria e poi Data Inizio (molto importante per il raggruppamento visuale)
-            # I task sono mostrati dal più vecchio al più nuovo (ordine cronologico)
-            df = df.sort_values(by=['Category', 'Start'], ascending=[True, True])
+            # 🆕 ORDINAMENTO SEMPLIFICATO: Usa solo _display_order per mantenere la gerarchia
+            # I progetti e i loro task sono già nell'ordine corretto dalla costruzione
+            if '_display_order' in df.columns:
+                # Vista consolidata: mantieni l'ordine di inserimento
+                df = df.sort_values(by=['_display_order'], ascending=[True])
+            else:
+                # Vista singola progetto (comportamento originale)
+                df = df.sort_values(by=['Category', 'Start'], ascending=[True, True])
             
-            # 🆕 Etichetta asse Y con indicatore ritardo
+            # 🆕 Etichetta asse Y con indicatore ritardo e NOME PROGETTO PULITO
             def create_label_with_delay(row):
-                base_label = f"<b>[{row['Category'].upper()}]</b><br>{row['Task']} (ID:{row['TaskProdottoID']})"
+                # 🆕 Per le barre progetto, usa SOLO il nome senza categoria
+                if row.get('_is_project_bar', False):
+                    # Mostra solo il nome del task (che già contiene emoji e nome progetto)
+                    base_label = f"{row['Task']}"
+                else:
+                    # Per i task normali, mostra categoria + nome + ID
+                    base_label = f"<b>[{row['Category'].upper()}]</b><br>{row['Task']} (ID:{row['TaskProdottoID']})"
                 
                 # Calcola ritardo se task scaduto e non completato
                 if row['Status'] != 'Completato':
@@ -602,7 +711,15 @@ class NpiGanttWindow(tk.Toplevel):
                         hoverinfo='text', showlegend=False
                     ))
                 else:
-                    # Barra Task o Progetto
+                    # Barra Task o Progetto con hover text appropriato
+                    # 🆕 Distingui hover text per progetti vs task
+                    if row.get('_is_project_bar', False):
+                        # Hover per progetti: mostra stato e responsabile
+                        hover_text = f"<b>{row['Task']}</b><br>Stato: {row['Status']}<br>Responsabile: {row['Owner']}<br>Fine prevista: {row['Finish'].strftime('%d/%m/%Y')}<br>Completamento: {completion_val}%"
+                    else:
+                        # Hover per task: mostra responsabile
+                        hover_text = f"<b>{row['Task']}</b><br>Responsabile: {row['Owner']}<br>Fine prevista: {row['Finish'].strftime('%d/%m/%Y')}<br>Completamento: {completion_val}%"
+                    
                     fig.add_trace(go.Bar(
                         base=[row['Start']],
                         x=[duration_ms],
@@ -610,7 +727,7 @@ class NpiGanttWindow(tk.Toplevel):
                         orientation='h',
                         marker=dict(color=color, line=dict(color='black', width=0.5)),
                         width=bar_height,  # 🆕 Altezza barra variabile
-                        hovertext=f"<b>{row['Task']}</b><br>Responsabile: {row['Owner']}<br>Fine prevista: {row['Finish'].strftime('%d/%m/%Y')}<br>Completamento: {completion_val}%",
+                        hovertext=hover_text,
                         hoverinfo='text',
                         text=f" {completion_val}% ",
                         textposition='auto',
@@ -656,43 +773,78 @@ class NpiGanttWindow(tk.Toplevel):
                                 hovertext=f"Dipendenza: {p_row['Task']} ➔ {row['Task']}"
                             ))
 
-            # 4. Layout
+            # 4. Layout con annotazione logo integrata
             fig.update_layout(
                 title=dict(
                     text=f"<b>PROJECT GANTT: {product_name}</b>",
-                    x=0.5, y=0.96, font=dict(size=24, color='#2c3e50')
+                    x=0.5, y=0.98, font=dict(size=24, color='#2c3e50')  # 🆕 Spostato più in alto
                 ),
                 xaxis=dict(type='date', side='top', gridcolor='lightgrey', tickformat='%d/%m/%y'),
                 yaxis=dict(autorange="reversed", gridcolor='whitesmoke', automargin=True),
                 plot_bgcolor='white', paper_bgcolor='white',
-                height=max(600, len(df) * 45 + 160),
-                margin=dict(l=20, r=40, t=120, b=50),
+                height=max(600, len(df) * 45 + 200),  # 🆕 Più spazio verticale
+                margin=dict(l=20, r=40, t=180, b=50),  # 🆕 Margine superiore aumentato da 120 a 180
                 barmode='overlay'
             )
-
-            # if logo_base64:
-            #     fig.add_layout_image(
-            #         dict(
-            #             source=logo_base64,
-            #             xref="paper", yref="paper",
-            #             x=-0.05, y=1.0,
-            #             sizex=0.18, sizey=0.18,
-            #             xanchor="left", yanchor="top",
-            #             layer="above"
-            #         )
-            #     )
-            # Logo forzato a sinistra con coordinate negative
+            
+            # 🆕 LOGO.PNG - Carica e posiziona l'immagine reale PIÙ A SINISTRA
             if logo_base64:
                 fig.add_layout_image(
                     dict(
                         source=logo_base64,
                         xref="paper", yref="paper",
-                        x=-0.12, y=1.15,  # Più in alto e più a sinistra
+                        x=-0.08, y=1.0,  # 🆕 Coordinate negative per spostare a sinistra
                         sizex=0.12, sizey=0.12,
-                        xanchor="left", yanchor="top",
+                        xanchor="left", yanchor="bottom",
                         layer="above"
                     )
                 )
+
+
+            
+            # 🆕 BOTTONI EXPAND/COLLAPSE - Posizionati a DESTRA per evitare sovrapposizioni
+            if '_display_order' in df.columns and '_is_project_bar' in df.columns:
+                # Crea bottoni per espandere/collassare ogni progetto
+                buttons = []
+                
+                # Bottone "Espandi Tutti"
+                buttons.append(dict(
+                    label="▼ Espandi Tutti",
+                    method="restyle",
+                    args=[{"visible": True}],  # Mostra tutte le tracce
+                ))
+                
+                # Bottone "Collassa Tutti" (mostra solo progetti)
+                project_visibility = []
+                for idx, row in df.iterrows():
+                    is_project = row.get('_is_project_bar', False)
+                    project_visibility.append(is_project)  # True solo per progetti
+                
+                buttons.append(dict(
+                    label="▶ Collassa Tutti",
+                    method="restyle",
+                    args=[{"visible": project_visibility}],
+                ))
+                
+                # Aggiungi menu bottoni A DESTRA
+                fig.update_layout(
+                    updatemenus=[
+                        dict(
+                            type="buttons",
+                            direction="down",
+                            x=0.98,  # 🆕 Spostato a destra (era 0.01)
+                            y=1.05,
+                            xanchor="right",  # 🆕 Ancorato a destra
+                            yanchor="top",
+                            buttons=buttons,
+                            bgcolor="rgba(255,255,255,0.9)",
+                            bordercolor="#2c3e50",
+                            borderwidth=1,
+                            font=dict(size=10, family="Arial")
+                        )
+                    ]
+                )
+            
             # Oggi
             today = datetime.now()
             fig.add_shape(
@@ -710,18 +862,105 @@ class NpiGanttWindow(tk.Toplevel):
             # 🆕 Config per rimuovere logo Plotly
             config = {
                 'displaylogo': False,  # Rimuove logo Plotly
-                'displayModeBar': False  # Nasconde completamente la barra strumenti
+                'displayModeBar': True,  # Mostra barra strumenti per zoom/pan
+                'modeBarButtonsToRemove': ['lasso2d', 'select2d']
             }
             
+            # Genera HTML base
             fig.write_html(temp_file, auto_open=False, config=config)
-            webbrowser.open(f'file://{temp_file}')
             
-            self.log_status("✅ Gantt grafico rigenerato con successo!")
+            # 🆕 AGGIUNGI JAVASCRIPT PER EXPAND/COLLAPSE (solo vista consolidata)
+            if '_display_order' in df.columns:
+                self._add_interactive_features(temp_file, df)
+            
+            # 🆕 APRI BROWSER SOLO UNA VOLTA (usa flag globale)
+            global _GLOBAL_BROWSER_OPENED
+            logger.info(f"🔴 DEBUG: Tentativo apertura browser - _GLOBAL_BROWSER_OPENED={_GLOBAL_BROWSER_OPENED}")
+            if not _GLOBAL_BROWSER_OPENED:
+                webbrowser.open(f'file://{temp_file}')
+                _GLOBAL_BROWSER_OPENED = True
+                self.log_status("✅ Gantt grafico rigenerato e aperto nel browser!")
+                logger.info("🔴 DEBUG: Browser aperto con successo (flag globale impostato)")
+            else:
+                self.log_status("⚠️ Browser già aperto, file aggiornato ma non riaperto")
+                logger.info("🔴 DEBUG: Browser NON aperto (flag globale già True)")
 
         except Exception as e:
             self.log_status(f"❌ Errore grafico: {str(e)}")
             logger.error(f"Gantt creation error: {e}", exc_info=True)
             raise
+    
+    def _add_interactive_features(self, html_file, df):
+        """Aggiunge JavaScript per expand/collapse dei progetti nel Gantt HTML."""
+        try:
+            # Leggi il file HTML generato
+            with open(html_file, 'r', encoding='utf-8') as f:
+                html_content = f.read()
+            
+            # Crea mapping progetto -> task indices
+            project_tasks = {}
+            for idx, row in df.iterrows():
+                if row.get('_is_project_bar', False):
+                    project_id = row.get('_project_id')
+                    project_tasks[project_id] = {'project_idx': idx, 'task_indices': []}
+            
+            # Associa task ai progetti
+            for idx, row in df.iterrows():
+                if not row.get('_is_project_bar', False):
+                    project_id = row.get('_project_id')
+                    if project_id in project_tasks:
+                        project_tasks[project_id]['task_indices'].append(idx)
+            
+            # JavaScript per expand/collapse
+            js_code = """
+<script>
+// Stato di espansione dei progetti (tutti espansi di default)
+const projectStates = {};
+
+// Inizializza stati
+window.addEventListener('load', function() {
+    console.log('🎯 Gantt interattivo caricato');
+    
+    // Aggiungi click handler alle barre progetto
+    const plotDiv = document.querySelector('.plotly');
+    if (plotDiv) {
+        plotDiv.on('plotly_click', function(data) {
+            if (data.points && data.points.length > 0) {
+                const point = data.points[0];
+                const label = point.y;
+                
+                // Verifica se è una barra progetto (contiene 📦 o 📄)
+                if (label && (label.includes('📦') || label.includes('📄'))) {
+                    console.log('🖱️ Click su progetto:', label);
+                    toggleProject(label);
+                }
+            }
+        });
+    }
+});
+
+function toggleProject(projectLabel) {
+    // TODO: Implementazione expand/collapse
+    // Plotly non supporta nativamente hide/show di singole tracce
+    // Questa funzionalità richiederebbe una ristrutturazione completa
+    console.log('⚠️ Expand/collapse non ancora implementato per:', projectLabel);
+    alert('Funzionalità expand/collapse in sviluppo.\n\nPer ora, usa lo zoom e il pan per navigare il Gantt.');
+}
+</script>
+"""
+            
+            # Inserisci JavaScript prima del tag </body>
+            html_content = html_content.replace('</body>', f'{js_code}</body>')
+            
+            # Scrivi il file modificato
+            with open(html_file, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            
+            self.log_status("🎯 Funzionalità interattive aggiunte al Gantt")
+            
+        except Exception as e:
+            logger.warning(f"Errore aggiunta funzionalità interattive: {e}")
+            # Non bloccare se fallisce - il Gantt funziona comunque
 
     # ========== EXPORT EXCEL AVANZATO ==========
 
@@ -1476,28 +1715,5 @@ Task in Ritardo: {stats['late_tasks']}
         pdf.savefig(fig, bbox_inches='tight')
         plt.close()
     
-    def _on_tab_changed(self, event=None):
-        """Gestisce il cambio di tab nel Gantt gerarchico."""
-        if not self.gantt_notebook:
-            return
-        
-        # Determina quale tab è selezionato
-        current_tab_index = self.gantt_notebook.index(self.gantt_notebook.select())
-        
-        if current_tab_index == 0:
-            # Tab "Progetto Corrente"
-            self.current_gantt_mode = 'current'
-            self.log_status("📋 Selezionato: Progetto Corrente")
-        elif current_tab_index == 1:
-            # Tab "Vista Consolidata"
-            self.current_gantt_mode = 'consolidated'
-            self.log_status("🔗 Selezionato: Vista Consolidata")
-        else:
-            # Tab di un progetto figlio
-            child_index = current_tab_index - 2  # Sottrai i primi 2 tabs
-           # Trova il progetto figlio corrispondente
-            children = [p for p in self.hierarchy_data['projects'] if not p['is_root']]
-            if child_index < len(children):
-                selected_child = children[child_index]
-                self.current_gantt_mode = f"child_{selected_child['project_id']}"
-                self.log_status(f"📄 Selezionato: {selected_child['project_name']}")
+    # METODO RIMOSSO: _on_tab_changed duplicato eliminato
+    # La versione corretta è definita alle righe 200-247
