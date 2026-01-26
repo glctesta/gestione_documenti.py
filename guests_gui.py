@@ -134,7 +134,7 @@ class GuestRegistrationWindow(tk.Toplevel):
         ttk.Button(btn_frame, text=self.lang.get('btn_delete', 'Elimina'),
                    command=self._on_delete).pack(side='left', padx=2)
         ttk.Button(btn_frame, text=self.lang.get('btn_close', 'Chiudi'),
-                   command=self.destroy).pack(side='left', padx=2)
+                   command=self._on_close).pack(side='left', padx=2)
 
         form_frame.columnconfigure(1, weight=1)
 
@@ -411,6 +411,54 @@ class GuestRegistrationWindow(tk.Toplevel):
         self.welcome_var.set('Welcome in our factory')
         self.sponsor_var.set('')
         self.guest_combo['values'] = []
+
+    def _on_close(self):
+        """Gestisce la chiusura della finestra con prompt per prenotazione sala riunioni"""
+        # Chiedi se l'utente vuole prenotare una meeting room
+        response = messagebox.askyesno(
+            self.lang.get('book_meeting_room', 'Prenotazione Sala'),
+            self.lang.get('book_meeting_room_question', 'Vuoi prenotare una sala riunioni?')
+        )
+        
+        if response:
+            # Apri la finestra di prenotazione sale con dati preimpostati
+            self._open_room_booking()
+        else:
+            # Chiudi la finestra
+            self.destroy()
+    
+    def _open_room_booking(self):
+        """Apre la finestra di prenotazione sale con dati preimpostati"""
+        try:
+            # Importa la classe BookingManagerWindow
+            from room_booking_gui import BookingManagerWindow
+            
+            # Recupera le date e ore dal form ospiti
+            start_date = self.start_date.get_date()
+            end_date = self.end_date.get_date()
+            
+            # Crea la finestra di prenotazione
+            booking_window = BookingManagerWindow(self, self.db, self.lang, self.user_name)
+            
+            # Preimposta i campi con i dati degli ospiti
+            booking_window.start_date_var.set(start_date.strftime('%Y-%m-%d'))
+            booking_window.end_date_var.set(end_date.strftime('%Y-%m-%d'))
+            
+            # Imposta ore di default per la riunione (es. 09:00 - 17:00)
+            booking_window.start_time_var.set('09:00')
+            booking_window.end_time_var.set('17:00')
+            
+            # Chiudi la finestra ospiti dopo aver aperto quella di prenotazione
+            self.destroy()
+            
+        except Exception as e:
+            logger.error(f"Errore apertura finestra prenotazione sale: {e}")
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Errore durante l'apertura della prenotazione sale: {str(e)}"
+            )
+            # In caso di errore, chiudi comunque la finestra
+            self.destroy()
 
     def _on_closing(self):
         """Gestisce la chiusura della finestra stampando la lista giornaliera"""

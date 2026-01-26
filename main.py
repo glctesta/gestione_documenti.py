@@ -263,7 +263,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.2.9.3'  # Versione aggiornata
+APP_VERSION = '2.3.0.8'  # Versione aggiornata
 APP_DEVELOPER = 'Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -10696,191 +10696,6 @@ class App(tk.Tk):
             # es. if hasattr(self, "labels_form") and self.labels_form.winfo_exists(): ...
             pass
 
-    def _check_calibration_warnings_startup_async(self):
-        import threading, logging
-        # Verifica se è giorno lavorativo
-        if not should_send_notification(country_code='IT'):
-            logger.info("calibration warning check in non inviato: oggi non è un giorno lavorativo")
-            return
-
-        logging.getLogger("TraceabilityRS").debug("Startup: launch calibration warning check in background thread")
-
-        try:
-            threading.Thread(
-                target=self._check_calibration_warnings_startup,
-                name="CalibWarnStartup",
-                daemon=True
-            ).start()
-            logging.info("Startup: controllo calibrazioni completato.")
-        except Exception as e:
-            logging.exception("Errore controllo calibrazioni in avvio: %s", e)
-
-    def _check_calibration_warnings_startup(self):
-        """
-        Controlla le calibrazioni in scadenza/mancanti e invia un avviso email una volta al giorno.
-        Non blocca l’avvio: eventuali errori vengono loggati.
-        """
-        #return
-        logger = logging.getLogger("TraceabilityRS")
-        logger.info("Startup: avvio controllo calibrazioni...")
-
-        from business_days import should_send_notification, get_next_business_day
-        if not should_send_notification(country_code='IT'):
-            next_day = get_next_business_day()
-            logger.info("Oggi non è un giorno lavorativo. Prossimo invio: %s", next_day)
-            return
-
-        try:
-            rows = self.db.fetch_calibration_warnings() or []
-            logger.info("Startup: controllo calibrazioni -> %d righe da notificare", len(rows))
-            if not rows:
-                return
-
-            # Destinatari da settings (passa l'attributo dinamicamente)
-            try:
-                with self.db._lock:
-                    recipients = utils.get_email_recipients(self.db.conn, attribute='Sys_Email_Calibration')
-            except Exception as e:
-                logger.error("Errore lettura destinatari calibrazioni: %s", e)
-                recipients = []
-
-            if not recipients:
-                logger.warning("Nessun destinatario per Sys_Email_Calibration: avviso non inviato.")
-                return
-
-            # Prepara email HTML
-            import html as html_mod
-            from datetime import date as dtdate, datetime as dtdt
-
-            def nz(v):
-                return "#N/A" if v in (None, "", "None") else str(v)
-
-            def fmt_date(d):
-                try:
-                    if isinstance(d, (dtdt, dtdate)):
-                        return d.strftime("%d.%m.%Y")
-                    return nz(d)
-                except Exception:
-                    return nz(d)
-
-            def hesc(s):
-                return html_mod.escape(nz(s))
-
-            rows_html = []
-            cal_ids_to_mark = []
-            equip_ids_to_mark = []
-            today = dtdate.today()
-
-            for r in rows:
-                # Estrai campi con fallback sicuro
-                equip_id = getattr(r, 'EquipmentId', None)
-                equip = getattr(r, 'Equipment', None) or (r[1] if isinstance(r, (tuple, list)) and len(r) > 1 else None)
-                last_cal = getattr(r, 'LastCalibrationDate', None)
-                by = getattr(r, 'CalibratedBy', None)
-                cert = getattr(r, 'NrCertificate', None)
-                exp = getattr(r, 'ExpireOn', None)
-                note = getattr(r, 'Note', None)
-                cal_id = getattr(r, 'CalibrationId', None)
-                equip_id = getattr(r, 'EquipmentId', None)
-                if equip_id is None and isinstance(r, (tuple, list)) and len(r) > 0:
-                    equip_id = r[0]
-                if equip_id is not None:
-                    equip_ids_to_mark.append(int(equip_id))
-
-                # Calcolo stato e colore
-                if exp is None:
-                    status = "MISSING calibration"
-                    status_color = "#cc0000"
-                else:
-                    try:
-                        days = (exp - today).days if isinstance(exp, dtdate) else None
-                    except Exception:
-                        days = None
-                    if days is None:
-                        status = "#N/A"
-                        status_color = "#999999"
-                    elif days < 0:
-                        status = f"EXPIRED {-days} day(s) ago"
-                        status_color = "#cc0000"
-                    elif days <= 7:
-                        status = f"Expires in {days} day(s)"
-                        status_color = "#d17f00"  # arancione
-                    else:
-                        status = f"Expires in {days} day(s)"
-                        status_color = "#006600"  # verde (in pratica non dovrebbe capitare col filtro SQL)
-
-                rows_html.append(f"""
-                  <tr>
-                    <td>{hesc(equip)}</td>
-                    <td>{hesc(fmt_date(last_cal))}</td>
-                    <td>{hesc(by)}</td>
-                    <td>{hesc(cert)}</td>
-                    <td>{hesc(fmt_date(exp))}</td>
-                    <td style="color:{status_color}; font-weight:600;">{hesc(status)}</td>
-                    <td>{hesc(note)}</td>
-                  </tr>
-                """)
-
-                if cal_id is not None:
-                    cal_ids_to_mark.append(cal_id)
-
-            subject = f"[Calibration] Warning report - {len(rows_html)} item(s)"
-            body = f"""
-            <html>
-              <body style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#222; line-height:1.35;">
-                <p>Dear Colleagues,</p>
-                <p>
-                  Below is a list of equipment with missing or expiring calibrations.
-                  Unavailable values are indicated by  <strong>#N/A</strong>.
-                </p>
-                <table cellpadding="6" cellspacing="0" border="1" style="border-collapse:collapse; border-color:#bbb; width:100%; max-width:1200px;">
-                  <thead style="background:#f2f2f2;">
-                    <tr>
-                      <th align="left">Equipment</th>
-                      <th align="left">Last cal.</th>
-                      <th align="left">Calibrated by</th>
-                      <th align="left">Certificate</th>
-                      <th align="left">Expire on</th>
-                      <th align="left">Status</th>
-                      <th align="left">Note</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {''.join(rows_html)}
-                  </tbody>
-                </table>
-                <p style="margin-top:14px; color:#666; font-size:11px;">
-                  This message is automatically generated by the system.
-                </p>
-              </body>
-            </html>
-            """
-
-            # Invia come HTML
-            try:
-                utils.send_email(recipients=recipients, subject=subject, body=body, is_html=True)
-                logger.info("Email calibrazioni inviata con successo a %d destinatari", len(recipients))
-            except Exception as e:
-                logger.error("Errore invio email calibrazioni: %s", e)
-                return
-
-            # Dopo invio email riuscito:
-            if equip_ids_to_mark:
-                ok = self.db.mark_calibration_warning_sent(equip_ids_to_mark)
-                if not ok:
-                    logger.warning("Impossibile registrare CalibrationWarnings: %s", self.db.last_error_details)
-                else:
-                    logger.info("Registrati %d avvisi in eqp.CalibrationWarnings", len(equip_ids_to_mark))
-
-        except Exception as e:
-            logger.exception("Errore controllo calibrazioni in avvio: %s", e)
-
-    def _not_implemented(self, title, action):
-        messagebox.showinfo(
-            self.lang.get('info_title', 'Informazione'),
-            f"{title} - {action}: funzione in sviluppo.",
-            parent=self
-        )
 
     # Locazioni
     def open_kanban_locations_create(self):
@@ -10945,6 +10760,69 @@ class App(tk.Tk):
             menu_translation_key='submenu_scrap_declaration',
             action_callback=lambda:scarti_gui.open_scrap_declaration_window(self, self.db, self.lang)
         )
+
+    def open_fai_template_manager_with_login(self):
+        """Apre la finestra di gestione template FAI con autenticazione e autorizzazione."""
+        self._execute_authorized_action(
+            menu_translation_key='gestione_template_fai',
+            action_callback=lambda: self._open_fai_template_manager()
+        )
+
+    def _open_fai_template_manager(self):
+        """Apre la finestra di gestione template FAI."""
+        try:
+            import fai_template_manager
+            fai_template_manager.open_fai_template_manager(
+                self, self.db, self.lang, self.last_authenticated_user_name
+            )
+        except Exception as e:
+            logger.error(f"Errore apertura gestione template FAI: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire la gestione template FAI:\n{e}"
+            )
+
+    def open_line_validations_with_login(self):
+        """Apre la finestra validazioni linea con autenticazione e autorizzazione."""
+        self._execute_authorized_action(
+            menu_translation_key='validazione_line',
+            action_callback=lambda: self._open_line_validations()
+        )
+
+    def _open_line_validations(self):
+        """Apre la finestra validazioni linea."""
+        try:
+            import line_validation_gui
+            line_validation_gui.open_line_validation_window(
+                self, self.db, self.lang, self.last_authenticated_user_name
+            )
+        except Exception as e:
+            logger.error(f"Errore apertura validazioni linea: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire le validazioni:\n{e}"
+            )
+    
+    def open_fai_reports_viewer_with_login(self):
+        """Apre il viewer storico validazioni FAI con autenticazione"""
+        self._execute_simple_login(
+            action_callback=lambda user_id: self._open_fai_reports_viewer(user_id)
+        )
+    
+    def _open_fai_reports_viewer(self, user_name):
+        """Apre il viewer storico validazioni FAI"""
+        try:
+            from fai_reports_viewer import FaiReportsViewerWindow
+            FaiReportsViewerWindow(
+                self, self.db, self.lang, user_name
+            )
+        except Exception as e:
+            logger.error(f"Errore apertura viewer FAI: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire lo storico validazioni:\n{e}"
+            )
+
 
     def open_calibrations_manager_with_login(self):
         logger = logging.getLogger("TraceabilityRS")
@@ -11277,10 +11155,10 @@ class App(tk.Tk):
         ))
         
         # Ritardo 6 secondi: Controllo calibrazioni
-        self.after(6000, lambda: self._delayed_task(
-            'controllo_calibrazioni',
-            self._check_calibration_warnings_startup_async
-        ))
+        #self.after(6000, lambda: self._delayed_task(
+        #    'controllo_calibrazioni',
+        #    self._check_calibration_warnings_startup_async
+        #))
         
         # Ritardo 9 secondi: Controllo quantità kanban
         self.after(9000, lambda: self._delayed_task(
@@ -11978,23 +11856,16 @@ class App(tk.Tk):
                 
                 if force_update:
                     # Update obbligatorio
-                    title = self.lang.get("upgrade_required_title", "Aggiornamento Richiesto")
+                    title = self.lang.get("upgrade_required_title")
                     
                     if is_mandatory:
                         message = self.lang.get(
                             "force_upgrade_message_mandatory",
-                            "È disponibile una nuova versione OBBLIGATORIA ({0}).\n"
-                            "La versione attuale è obsoleta ({1}).\n\n"
-                            "Il programma si chiuderà per avviare l'aggiornamento automatico.",
                             version_info.Version, APP_VERSION
                         )
                     else:
                         message = self.lang.get(
                             "force_upgrade_message_max_skips",
-                            "È disponibile una nuova versione ({0}).\n"
-                            "La versione attuale è obsoleta ({1}).\n\n"
-                            "Hai raggiunto il numero massimo di rinvii (3).\n"
-                            "Il programma si chiuderà per avviare l'aggiornamento automatico.",
                             version_info.Version, APP_VERSION
                         )
                     
@@ -12022,14 +11893,10 @@ class App(tk.Tk):
                     return False
                 else:
                     # Update opzionale - chiedi all'utente
-                    title = self.lang.get("upgrade_available_title", "Aggiornamento Disponibile")
+                    title = self.lang.get("upgrade_available_title")
                     remaining_skips = 3 - skip_count
                     message = self.lang.get(
                         "optional_upgrade_message",
-                        "È disponibile una nuova versione ({0}).\n"
-                        "La versione attuale è ({1}).\n\n"
-                        "Vuoi aggiornare ora?\n\n"
-                        "Puoi ancora rinviare l'aggiornamento {2} volte.",
                         version_info.Version, APP_VERSION, remaining_skips
                     )
                     
@@ -12177,6 +12044,9 @@ class App(tk.Tk):
         
         # Menu Assenze
         self.absences_submenu = tk.Menu(self.personnel_menu, tearoff=0)
+        
+        # Menu Ordini
+        self.orders_menu = tk.Menu(self.operations_menu, tearoff=0)
 
     def _init_production_submenus(self):
         """Inizializza la gerarchia completa del menu Produzione"""
@@ -12185,6 +12055,7 @@ class App(tk.Tk):
 
         # Sottomenu di Produzione
         self.declarations_submenu = tk.Menu(self.production_submenu, tearoff=0)
+        self.line_validation_submenu = tk.Menu(self.production_submenu, tearoff=0)
 
         # Gerarchia KanBan
         self.kanban_root_submenu = tk.Menu(self.production_submenu, tearoff=0)
@@ -12387,6 +12258,28 @@ class App(tk.Tk):
             command=self.open_news_management_with_login
         )
 
+        self.operations_menu.add_separator()
+
+        # 5. Popola il menu 'Ordini'
+        self.operations_menu.add_cascade(
+            label=self.lang.get('menu_orders', 'Ordini'),
+            menu=self.orders_menu
+        )
+        self.orders_menu.delete(0, 'end')
+        
+        self.orders_menu.add_command(
+            label=self.lang.get('submenu_load_orders', 'Carica Ordini'),
+            command=self._load_orders_placeholder
+        )
+        
+        
+        self.orders_menu.add_command(
+            label=self.lang.get('submenu_orders_reports', 'Rapporti'),
+            command=self._orders_reports_placeholder
+        )
+
+        self.operations_menu.add_separator()
+
         # Comandi del menu NPI
 
         self.npi_menu.add_command(
@@ -12478,6 +12371,30 @@ class App(tk.Tk):
             label=self.lang.get('submenu_scrap_declaration', "Dichiarazione scarti"),
             command=self.open_scrap_declaration_with_login
         )
+        self.declarations_submenu.add_separator()
+        self.declarations_submenu.add_cascade(
+            label=self.lang.get('submenu_line_validation', "Validazione linea"),
+            menu=self.line_validation_submenu
+        )
+        self._update_line_validation_submenu()
+
+    def _update_line_validation_submenu(self):
+        """Aggiorna il sottomenu Validazione linea"""
+        self.line_validation_submenu.delete(0, 'end')
+        self.line_validation_submenu.add_command(
+            label=self.lang.get('gestione_template_fai', "Gestione Template"),
+            command=self.open_fai_template_manager_with_login
+        )
+        self.line_validation_submenu.add_separator()
+        self.line_validation_submenu.add_command(
+            label=self.lang.get('validazione_line', "Validazioni"),
+            command=self.open_line_validations_with_login
+        )
+        self.line_validation_submenu.add_command(
+            label=self.lang.get('storico_validazioni_fai', "Storico Validazioni FAI"),
+            command=self.open_fai_reports_viewer_with_login
+        )
+
 
     def _update_kanban_submenus(self):
         """Aggiorna tutta la gerarchia KanBan"""
@@ -13042,36 +12959,75 @@ class App(tk.Tk):
                     )
                     return
 
-                # Crea una finestra di selezione
+                # Crea una finestra di selezione più larga
                 selection_window = tk.Toplevel(self)
                 selection_window.title("Seleziona Progetto NPI")
-                selection_window.geometry("400x200")
+                selection_window.geometry("900x250")
                 selection_window.transient(self)
                 selection_window.grab_set()
 
-                ttk.Label(selection_window, text="Seleziona il progetto da gestire:").pack(pady=10)
+                ttk.Label(selection_window, text="Seleziona il progetto da gestire:", 
+                         font=('Helvetica', 10, 'bold')).pack(pady=10)
 
-                # Combobox con i progetti
+                # Frame per il combobox
+                combo_frame = ttk.Frame(selection_window)
+                combo_frame.pack(pady=10, padx=20, fill=tk.X)
+
+                # Combobox editabile con i progetti - usa il campo ActiveNpi formattato
                 combo_var = tk.StringVar()
-                combo = ttk.Combobox(selection_window, textvariable=combo_var, width=50)
-                combo['values'] = [f"{p.ProgettoId} - {p.prodotto.NomeProdotto} ({p.prodotto.CodiceProdotto})" for p in
-                                   progetti]
-                combo.pack(pady=10)
+                combo = ttk.Combobox(combo_frame, textvariable=combo_var, width=100)
+                
+                # Prepara lista completa dei progetti con formato ActiveNpi
+                all_projects_list = [p['ActiveNpi'] for p in progetti]
+                progetti_map = {p['ActiveNpi']: p['ProgettoId'] for p in progetti}
+                
+                combo['values'] = all_projects_list
+                combo.pack(fill=tk.X, expand=True)
+
+                # Funzione per filtrare il combobox mentre l'utente digita
+                def on_keyrelease(event):
+                    typed_text = combo_var.get().lower()
+                    
+                    if typed_text == '':
+                        # Se il campo è vuoto, mostra tutti i progetti
+                        combo['values'] = all_projects_list
+                    else:
+                        # Filtra i progetti che contengono il testo digitato
+                        filtered = [p for p in all_projects_list if typed_text in p.lower()]
+                        combo['values'] = filtered
+                    
+                    # Riapri il dropdown se ci sono risultati
+                    if filtered or typed_text == '':
+                        combo.event_generate('<Down>')
+
+                # Bind dell'evento di digitazione
+                combo.bind('<KeyRelease>', on_keyrelease)
 
                 def open_selected():
-                    if combo_var.get():
-                        project_id = int(combo_var.get().split(" - ")[0])
+                    selected_text = combo_var.get()
+                    if selected_text and selected_text in progetti_map:
+                        project_id = progetti_map[selected_text]
                         selection_window.destroy()
 
                         # Recupera il nome dell'utente che ha appena effettuato l'autenticazione
-                        # 'self' qui si riferisce all'istanza dell'applicazione principale
                         logged_user = self.last_authenticated_user_name
 
                         # Passa il nome utente come argomento esplicito a ProjectWindow
                         ProjectWindow(self, self.npi_manager, self.lang, project_id, self,
                                       logged_user, final_customers)
+                    else:
+                        messagebox.showwarning(
+                            "Selezione non valida",
+                            "Seleziona un progetto valido dalla lista.",
+                            parent=selection_window
+                        )
 
-                ttk.Button(selection_window, text="Apri", command=open_selected).pack(pady=10)
+                # Frame per i pulsanti
+                btn_frame = ttk.Frame(selection_window)
+                btn_frame.pack(pady=10)
+                
+                ttk.Button(btn_frame, text="Apri", command=open_selected, width=15).pack(side=tk.LEFT, padx=5)
+                ttk.Button(btn_frame, text="Annulla", command=selection_window.destroy, width=15).pack(side=tk.LEFT, padx=5)
 
             except Exception as e:
                 messagebox.showerror(
@@ -13142,7 +13098,7 @@ class App(tk.Tk):
     def _launch_gantt_window(self):
         """
         Chiede all'utente di selezionare un progetto NPI attivo e poi lancia la
-        finestra del Gantt per quel progetto.
+        finestra del Gantt per quel progetto, con filtri per cliente e prodotto.
         """
         if self.npi_manager is None:
             messagebox.showerror("Errore", "Il modulo NPI non è inizializzato.")
@@ -13155,23 +13111,156 @@ class App(tk.Tk):
                 messagebox.showinfo("Nessun Progetto", "Non ci sono progetti NPI attivi da visualizzare.", parent=self)
                 return
 
-            # 2. Prepara i dati per il dialogo: un dizionario che mappa il nome del prodotto all'ID del progetto.
-            #    Questo ci serve perché l'utente sceglierà il nome, ma noi abbiamo bisogno dell'ID.
-            progetti_map = {proj.prodotto.NomeProdotto: proj.ProgettoId for proj in progetti_attivi}
-            lista_nomi_progetti = list(progetti_map.keys())
+            # 2. Recupera prodotti per il filtro
+            prodotti = self.npi_manager.get_prodotti()
 
-            # 3. Chiedi all'utente di scegliere un progetto da una semplice finestra di dialogo.
-            #    Usiamo un trucco con simpledialog e una Listbox per creare una selezione.
-            #    Questo è un modo standard per fare una scelta da una lista.
+            # 3. Crea la finestra di dialogo
             scelta_dialog = tk.Toplevel(self)
-            scelta_dialog.title("Seleziona Progetto")
+            scelta_dialog.title(self.lang.get("gantt_select_project", "Seleziona Progetto"))
+            scelta_dialog.geometry("700x500")
             scelta_dialog.transient(self)
-            tk.Label(scelta_dialog, text="Scegli un progetto per visualizzare il Gantt:").pack(padx=20, pady=10)
+            scelta_dialog.grab_set()
 
-            listbox = tk.Listbox(scelta_dialog, exportselection=False)
-            for nome in lista_nomi_progetti:
-                listbox.insert(tk.END, nome)
-            listbox.pack(padx=20, pady=5, fill=tk.BOTH, expand=True)
+            # Frame principale
+            main_frame = ttk.Frame(scelta_dialog, padding=10)
+            main_frame.pack(fill=tk.BOTH, expand=True)
+
+            # Label titolo
+            ttk.Label(main_frame, text=self.lang.get("gantt_choose_project", "Scegli un progetto per visualizzare il Gantt:")).pack(pady=(0, 10))
+
+            # Frame filtri
+            filter_frame = ttk.LabelFrame(main_frame, text=self.lang.get("filters", "Filtri"), padding=10)
+            filter_frame.pack(fill=tk.X, pady=(0, 10))
+
+            # Filtro Cliente
+            client_frame = ttk.Frame(filter_frame)
+            client_frame.pack(fill=tk.X, pady=5)
+            ttk.Label(client_frame, text=self.lang.get("gantt_select_client", "Cliente:"), width=12).pack(side=tk.LEFT)
+            
+            client_var = tk.StringVar()
+            client_combo = ttk.Combobox(client_frame, textvariable=client_var, width=50)
+            
+            # Estrai clienti unici dai progetti attivi, rimuovendo spazi e duplicati
+            clienti_set = set()
+            for proj in progetti_attivi:
+                cliente = proj.get('Cliente', '').strip()
+                if cliente:
+                    clienti_set.add(cliente)
+            
+            clienti_unici = sorted(clienti_set)
+            client_values = [self.lang.get("gantt_all_clients", "Tutti i Clienti")] + clienti_unici
+            
+            client_combo['values'] = client_values
+            client_combo.current(0)
+            client_combo.pack(side=tk.LEFT, padx=(5, 0), fill=tk.X, expand=True)
+
+            # Filtro Prodotto
+            product_frame = ttk.Frame(filter_frame)
+            product_frame.pack(fill=tk.X, pady=5)
+            ttk.Label(product_frame, text=self.lang.get("gantt_select_product", "Prodotto:"), width=12).pack(side=tk.LEFT)
+            
+            product_var = tk.StringVar()
+            product_combo = ttk.Combobox(product_frame, textvariable=product_var, width=50)
+            
+            # Mappa completa prodotti (ID -> dati prodotto)
+            all_products_map = {p.ProdottoID: p for p in prodotti}
+            
+            product_combo.pack(side=tk.LEFT, padx=(5, 0), fill=tk.X, expand=True)
+
+            # Frame listbox
+            list_frame = ttk.Frame(main_frame)
+            list_frame.pack(fill=tk.BOTH, expand=True)
+
+            # Scrollbar
+            scrollbar = ttk.Scrollbar(list_frame)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+            # Listbox progetti
+            listbox = tk.Listbox(list_frame, exportselection=False, yscrollcommand=scrollbar.set)
+            listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            scrollbar.config(command=listbox.yview)
+
+            # Mappa progetti: ActiveNpi -> dati completi
+            progetti_map = {proj['ActiveNpi']: proj for proj in progetti_attivi}
+
+            # Funzione per filtrare e aggiornare la listbox (DEFINITA PRIMA)
+            def update_listbox(*args):
+                listbox.delete(0, tk.END)
+                
+                selected_client_name = client_var.get()
+                selected_product_id = None
+                
+                # Ottieni il product_map dal combobox (aggiornato dinamicamente)
+                if hasattr(product_combo, 'product_map'):
+                    selected_product_id = product_combo.product_map.get(product_var.get())
+                
+                # "Tutti i Clienti" ha valore None nella mappa
+                filter_by_client = selected_client_name != self.lang.get("gantt_all_clients", "Tutti i Clienti")
+                filter_by_product = selected_product_id is not None
+                
+                for active_npi, proj_data in progetti_map.items():
+                    # Applica filtro cliente (basato sul nome stringa)
+                    if filter_by_client and proj_data.get('Cliente', '').strip() != selected_client_name:
+                        continue
+                    # Applica filtro prodotto (basato su ProdottoID)
+                    if filter_by_product and proj_data.get('ProdottoID') != selected_product_id:
+                        continue
+                    
+                    listbox.insert(tk.END, active_npi)
+            
+            # Funzione per aggiornare la lista prodotti in base al cliente selezionato (DEFINITA DOPO)
+            def update_product_combo(*args):
+                selected_client = client_var.get()
+                all_products_label = self.lang.get("gantt_all_products", "Tutti i Prodotti")
+                
+                if selected_client == self.lang.get("gantt_all_clients", "Tutti i Clienti"):
+                    # Mostra tutti i prodotti
+                    product_values = [all_products_label]
+                    product_map = {all_products_label: None}
+                    
+                    for prodotto in prodotti:
+                        nome = prodotto.NomeProdotto
+                        product_values.append(nome)
+                        product_map[nome] = prodotto.ProdottoID
+                else:
+                    # Filtra prodotti per il cliente selezionato
+                    product_values = [all_products_label]
+                    product_map = {all_products_label: None}
+                    
+                    # Trova i ProdottoID dei progetti di questo cliente
+                    prodotti_cliente = set()
+                    for proj in progetti_attivi:
+                        if proj.get('Cliente', '').strip() == selected_client:
+                            prodotti_cliente.add(proj.get('ProdottoID'))
+                    
+                    logger.info(f"Cliente selezionato: '{selected_client}', Prodotti trovati: {len(prodotti_cliente)} - IDs: {prodotti_cliente}")
+                    
+                    # Aggiungi solo i prodotti di questo cliente
+                    for prod_id in sorted(prodotti_cliente):
+                        if prod_id in all_products_map:
+                            prodotto = all_products_map[prod_id]
+                            nome = prodotto.NomeProdotto
+                            product_values.append(nome)
+                            product_map[nome] = prodotto.ProdottoID
+                
+                # Aggiorna il combobox
+                product_combo['values'] = product_values
+                product_var.set(all_products_label)
+                
+                # Salva la mappa per l'uso nel filtro
+                product_combo.product_map = product_map
+                
+                # Aggiorna anche la listbox
+                update_listbox()
+            
+            # Inizializza con tutti i prodotti
+            update_product_combo()
+
+            # Collega eventi combobox
+            client_combo.bind('<<ComboboxSelected>>', update_product_combo)
+            product_combo.bind('<<ComboboxSelected>>', update_listbox)
+
+            # Popola listbox iniziale (non serve chiamare update_listbox qui, già chiamato da update_product_combo)
 
             scelta_utente = None
 
@@ -13180,19 +13269,41 @@ class App(tk.Tk):
                 selezionato = listbox.curselection()
                 if selezionato:
                     scelta_utente = listbox.get(selezionato[0])
-                scelta_dialog.destroy()
+                    scelta_dialog.destroy()
+                else:
+                    messagebox.showwarning(
+                        self.lang.get("warning", "Attenzione"),
+                        self.lang.get("gantt_select_project_warning", "Seleziona un progetto dalla lista."),
+                        parent=scelta_dialog
+                    )
 
-            btn_frame = tk.Frame(scelta_dialog)
-            btn_frame.pack(pady=10)
-            tk.Button(btn_frame, text="OK", command=on_ok).pack(side=tk.LEFT, padx=10)
-            tk.Button(btn_frame, text="Annulla", command=scelta_dialog.destroy).pack(side=tk.LEFT, padx=10)
+            def on_double_click(event):
+                nonlocal scelta_utente
+                selezionato = listbox.curselection()
+                if selezionato:
+                    scelta_utente = listbox.get(selezionato[0])
+                    scelta_dialog.destroy()
+
+            # Bind doppio click
+            listbox.bind('<Double-Button-1>', on_double_click)
+
+            # Frame pulsanti
+            btn_frame = ttk.Frame(main_frame)
+            btn_frame.pack(pady=(10, 0))
+            ttk.Button(btn_frame, text=self.lang.get("button_ok", "OK"), command=on_ok).pack(side=tk.LEFT, padx=5)
+            ttk.Button(btn_frame, text=self.lang.get("button_cancel", "Annulla"), command=scelta_dialog.destroy).pack(side=tk.LEFT, padx=5)
 
             # Centra la finestra di dialogo e attendi che venga chiusa
+            scelta_dialog.update_idletasks()
+            x = (scelta_dialog.winfo_screenwidth() // 2) - (scelta_dialog.winfo_width() // 2)
+            y = (scelta_dialog.winfo_screenheight() // 2) - (scelta_dialog.winfo_height() // 2)
+            scelta_dialog.geometry(f"+{x}+{y}")
+            
             self.wait_window(scelta_dialog)
 
             # 4. Se l'utente ha fatto una scelta (e non ha annullato), procedi.
             if scelta_utente:
-                progetto_selezionato_id = progetti_map[scelta_utente]
+                progetto_selezionato_id = progetti_map[scelta_utente]['ProgettoId']
                 logger.info(f"Lancio della finestra Gantt per il progetto ID: {progetto_selezionato_id}")
 
                 # 5. Apri la finestra Gantt, passando l'ID del progetto richiesto.
@@ -13200,7 +13311,7 @@ class App(tk.Tk):
                     master=self,
                     npi_manager=self.npi_manager,
                     lang=self.lang,
-                    progetto_id=progetto_selezionato_id  # Ecco l'argomento mancante!
+                    progetto_id=progetto_selezionato_id
                 )
             else:
                 logger.info("Apertura finestra Gantt annullata dall'utente.")
@@ -13772,13 +13883,6 @@ class App(tk.Tk):
         self.update_texts()
         self._save_language_setting(lang_code)
 
-        # # Mostra un messaggio per informare l'utente
-        # messagebox.showinfo(
-        #     self.lang.get('lang_change_title', "Language Changed"),
-        #     self.lang.get('lang_change_message',
-        #                   "The language has been updated. Please reopen any open windows to apply the changes."),
-        #     parent=self
-        # )
 
     def _open_fct_settings(self):
         """Apre la finestra di configurazione FCT Transfer (con controllo login)"""
@@ -13907,6 +14011,25 @@ class App(tk.Tk):
             action_callback=lambda user_name: materials_gui.open_manage_materials(self, self.db, self.lang, user_name)
         )
 
+    def open_translations_manager_with_login(self):
+        """Apre la finestra di gestione traduzioni con login autorizzato"""
+        def action():
+            try:
+                import translations_manager
+                translations_manager.open_translations_manager(self, self.db, self.lang)
+            except Exception as e:
+                logger.error(f"Errore apertura finestra gestione traduzioni: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire la finestra di gestione traduzioni: {str(e)}",
+                    parent=self
+                )
+        
+        self._execute_authorized_action(
+            menu_translation_key='manage_translations',
+            action_callback=action
+        )
+
     def open_view_materials(self):
         """Apre la finestra di visualizzazione materiali (senza login)."""
         # Passiamo 'None' come user_name perché non c'è autenticazione
@@ -13924,6 +14047,68 @@ class App(tk.Tk):
         self._execute_simple_login(
             action_callback=lambda user_name: maintenance_gui.open_add_machine(self, self.db, self.lang)
         )
+
+    # =========================================================================
+    # METODI MENU ORDINI (PLACEHOLDER)
+    # =========================================================================
+    
+    def _load_orders_placeholder(self):
+        """Menu Carica Ordini - Protetto da autorizzazione"""
+        def authorized_action():
+            """Apre la finestra di caricamento ordini"""
+            try:
+                from orders.load_orders_window import open_load_orders_window
+                
+                # Recupera il nome dell'utente autenticato
+                user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
+                
+                open_load_orders_window(self, self.db, self.lang, user_name)
+            except Exception as e:
+                logger.error(f"Errore apertura finestra caricamento ordini: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"{self.lang.get('error_opening_window', 'Errore apertura finestra')}:\n{e}",
+                    parent=self
+                )
+        
+        self._execute_authorized_action(
+            menu_translation_key='Aggiungi_Ordini',
+            action_callback=authorized_action
+        )
+    
+    
+    def _orders_reports_placeholder(self):
+        """Apre la finestra dei rapporti ordini con controllo autorizzazioni"""
+        def authorized_action():
+            try:
+                from orders.orders_reports_window import open_orders_reports_window
+                
+                # Recupera il nome dell'utente autenticato
+                user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
+                
+                open_orders_reports_window(
+                    master=self,
+                    db=self.db,
+                    lang=self.lang,
+                    user_name=user_name
+                )
+            except Exception as e:
+                logger.error(f"Errore apertura finestra rapporti ordini: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire la finestra rapporti ordini:\n{e}",
+                    parent=self
+                )
+        
+        # Esegue l'azione con controllo autorizzazioni
+        self._execute_authorized_action(
+            menu_translation_key='regole_di_spedizione',
+            action_callback=authorized_action
+        )
+
+    # =========================================================================
+    # FINE METODI MENU ORDINI
+    # =========================================================================
 
     def _on_closing(self, force_quit=False):
         """Gestisce la chiusura dell'applicazione."""
