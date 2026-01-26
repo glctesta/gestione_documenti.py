@@ -32,6 +32,9 @@ class GuestRegistrationWindow(tk.Toplevel):
         self._build_ui()
         self._load_companies()
         self._load_sponsors()
+        
+        # Intercetta la chiusura della finestra (X button)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_ui(self):
         """Costruisce l'interfaccia"""
