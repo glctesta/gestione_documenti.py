@@ -263,7 +263,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.0.8'  # Versione aggiornata
+APP_VERSION = '2.3.0.9'  # Versione aggiornata
 APP_DEVELOPER = 'Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -14120,9 +14120,21 @@ class App(tk.Tk):
 
         self._stop_product_check_background_task()
 
-        if force_quit or messagebox.showinfo(self.lang.get('quit_title'), self.lang.get('quit_message')):
+        # Se force_quit è True, chiudi senza chiedere conferma
+        if force_quit:
             self.db.disconnect()
             self.destroy()
+            return
+        
+        # Chiedi conferma all'utente con possibilità di annullare
+        # askokcancel ritorna: True=OK (chiudi), False=Annulla (non chiudere)
+        if messagebox.askokcancel(
+            self.lang.get('quit_title', 'Chiudi Applicazione'),
+            self.lang.get('quit_message', 'Sei sicuro di voler chiudere l\'applicazione?')
+        ):
+            self.db.disconnect()
+            self.destroy()
+        # else: l'utente ha cliccato Annulla, non fare nulla
 
 class UpdateNotificationDialog(tk.Toplevel):
     """Dialogo per notificare un nuovo aggiornamento e chiedere l'azione desiderata."""
