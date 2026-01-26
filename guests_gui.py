@@ -418,17 +418,19 @@ class GuestRegistrationWindow(tk.Toplevel):
     def _on_close(self):
         """Gestisce la chiusura della finestra con prompt per prenotazione sala riunioni"""
         # Chiedi se l'utente vuole prenotare una meeting room
-        response = messagebox.askyesno(
+        # askyesnocancel ritorna: True=Sì, False=No, None=Annulla
+        response = messagebox.askyesnocancel(
             self.lang.get('book_meeting_room', 'Prenotazione Sala'),
             self.lang.get('book_meeting_room_question', 'Vuoi prenotare una sala riunioni?')
         )
         
-        if response:
-            # Apri la finestra di prenotazione sale con dati preimpostati
+        if response is True:
+            # Sì: Apri la finestra di prenotazione sale con dati preimpostati
             self._open_room_booking()
-        else:
-            # Chiudi la finestra
+        elif response is False:
+            # No: Chiudi la finestra senza prenotare
             self.destroy()
+        # else: response is None (Annulla): non fare nulla, la finestra rimane aperta
     
     def _open_room_booking(self):
         """Apre la finestra di prenotazione sale con dati preimpostati"""
