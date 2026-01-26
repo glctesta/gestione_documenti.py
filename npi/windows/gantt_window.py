@@ -92,10 +92,15 @@ class NpiGanttWindow(tk.Toplevel):
         # 🆕 TABS PER GERARCHIA PROGETTI
         # Controlla se il progetto ha una gerarchia (padre o figli)
         try:
+            logger.info(f"🔍 GANTT WINDOW: Recupero gerarchia per progetto {self.progetto_id}")
             self.hierarchy_data = self.npi_manager.get_gantt_hierarchy_data(self.progetto_id)
+            logger.info(f"🔍 GANTT WINDOW: hierarchy_data ricevuto: {self.hierarchy_data is not None}")
+            if self.hierarchy_data:
+                logger.info(f"🔍 GANTT WINDOW: has_hierarchy={self.hierarchy_data.get('has_hierarchy')}, progetti={len(self.hierarchy_data.get('projects', []))}")
             self.has_hierarchy = self.hierarchy_data.get('has_hierarchy', False)
+            logger.info(f"🔍 GANTT WINDOW: self.has_hierarchy={self.has_hierarchy}")
         except Exception as e:
-            logger.warning(f"Errore recupero gerarchia Gantt: {e}")
+            logger.warning(f"Errore recupero gerarchia Gantt: {e}", exc_info=True)
             self.hierarchy_data = None
             self.has_hierarchy = False
         
