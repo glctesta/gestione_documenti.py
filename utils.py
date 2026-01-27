@@ -2,6 +2,7 @@ from email_connector import EmailSender
 import logging
 import re
 from typing import List, Optional
+import os
 
 
 logger = logging.getLogger("TraceabilityRS")  # usa la config fatta in main.py
@@ -91,6 +92,77 @@ def send_email(
         print("email inviata")
     except Exception as e:
         logger.error("Errore nell'invio dell'email: %s", str(e))
+        raise
+
+
+def send_monthly_report_email(
+    recipients: List[str],
+    attachment_path: str,
+    logo_path: str = "logo.png",
+    smtp_host: str = "vandewiele-com.mail.protection.outlook.com",
+    smtp_port: int = 25
+) -> None:
+    """
+    Invia l'email mensile con il report Excel allegato e il logo aziendale.
+
+    Args:
+        recipients: Lista di indirizzi email destinatari
+        attachment_path: Percorso completo del file Excel da allegare
+        logo_path: Percorso del logo aziendale (default: logo.png nella directory corrente)
+        smtp_host: Host SMTP
+        smtp_port: Porta SMTP
+    """
+    if not recipients:
+        logger.error("Nessun destinatario specificato per l'email mensile")
+        return
+
+    if not os.path.exists(attachment_path):
+        logger.error(f"File allegato non trovato: {attachment_path}")
+        raise FileNotFoundError(f"File allegato non trovato: {attachment_path}")
+
+    try:
+        sender = EmailSender(smtp_host, smtp_port)
+
+        # Salva credenziali
+        sender.save_credentials(
+            "Accounting@Eutron.it",
+            "9jHgFhSs7Vf+"
+        )
+
+        # Crea corpo HTML con logo embedded
+        html_body = f"""
+        <html>
+        <body>
+        <div style="font-family: Arial, sans-serif;">
+            <div style="margin-bottom: 20px;">
+                <img src="cid:company_logo" alt="Company Logo" width="200"/>
+            </div>
+            <h2 style="color: #366092;">Monthly Review - Fail after Board Validation</h2>
+            <p>Questa email riepiloga la situazione afferente alle schede che sono state validate PASS per i processi di <strong>PTH</strong>, <strong>COATING</strong> e <strong>SMT</strong>.</p>
+            <p>In allegato trovate il report dettagliato con le statistiche <strong>PPM</strong> (Parts Per Million) per utente.</p>
+            <br/>
+            <p style="color: #666;">
+                Cordiali saluti,<br/>
+                <strong>Sistema di Tracciabilità</strong>
+            </p>
+        </body>
+        </html>
+        """
+
+        # Invia email con allegato
+        sender.send_email(
+            to_email=', '.join(recipients),
+            subject="Monthly review - Fail after board validation",
+            body=html_body,
+            is_html=True,
+            attachments=[attachment_path]
+        )
+        
+        logger.info(f"Email mensile inviata con successo a {len(recipients)} destinatari")
+        logger.info(f"Allegato: {os.path.basename(attachment_path)}")
+        
+    except Exception as e:
+        logger.error(f"Errore nell'invio dell'email mensile: {str(e)}")
         raise
 
 

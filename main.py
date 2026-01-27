@@ -1,4 +1,4 @@
-#import configparser
+﻿#import configparser
 # --- StdIO safeguard + Faulthandler sicuro per exe windowed ---
 import shutil
 import sys, os, atexit
@@ -95,7 +95,7 @@ def setup_logging(debug: bool = False,
                   logger_name: str = "TraceabilityRS") -> str:
     root_logger = logging.getLogger()
     if root_logger.handlers:
-        # già configurato
+        # giÃ  configurato
         for h in root_logger.handlers:
             if hasattr(h, "baseFilename"):
                 return h.baseFilename
@@ -208,7 +208,7 @@ def setup_logging(debug: bool = False,
   
     root_logger = logging.getLogger()
 
-    # Se già configurato, non duplicare; prova a restituire il file esistente
+    # Se giÃ  configurato, non duplicare; prova a restituire il file esistente
     if root_logger.handlers:
         existing = _detect_log_file_path(logger_name)
         if existing:
@@ -234,7 +234,7 @@ def setup_logging(debug: bool = False,
     fh.setFormatter(formatter)
     root_logger.addHandler(fh)
 
-    # Console handler (solo se c’è stdout)
+    # Console handler (solo se câ€™Ã¨ stdout)
     stdout = getattr(sys, "stdout", None)
     if stdout:
         ch = logging.StreamHandler(stdout)
@@ -263,7 +263,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.0.9'  # Versione aggiornata
+APP_VERSION = '2.3.1.0'  # Versione aggiornata
 APP_DEVELOPER = 'Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -469,14 +469,14 @@ class KanbanRulesManagementForm(tk.Toplevel):
 
         ttk.Radiobutton(r1, text=self.lang.get('rule_percent', "Percentuale"), value="percent",
                         variable=self.rule_type_var).pack(side="left", padx=(8, 8))
-        ttk.Radiobutton(r1, text=self.lang.get('rule_quantity', "Quantità"), value="qty",
+        ttk.Radiobutton(r1, text=self.lang.get('rule_quantity', "QuantitÃ "), value="qty",
                         variable=self.rule_type_var).pack(side="left", padx=(0, 8))
 
         r2 = ttk.Frame(edit); r2.pack(fill="x", padx=8, pady=6)
         ttk.Label(r2, text=self.lang.get('rule_value', "Valore")).pack(side="left")
         self.value_entry = ttk.Entry(r2, textvariable=self.rule_value_var, width=12)
         self.value_entry.pack(side="left", padx=(8, 8))
-        ttk.Label(r2, text=self.lang.get('rule_value_hint', "(% intero 1..100 o quantità > 0)")).pack(side="left")
+        ttk.Label(r2, text=self.lang.get('rule_value_hint', "(% intero 1..100 o quantitÃ  > 0)")).pack(side="left")
 
         # Pulsanti azione
         btns = ttk.Frame(root); btns.pack(fill="x", pady=(10, 0))
@@ -508,7 +508,7 @@ class KanbanRulesManagementForm(tk.Toplevel):
         for r in rows:
             is_pct = getattr(r, "MinimumProcent", None) is not None
             value = int(getattr(r, "MinimumProcent", 0) if is_pct else getattr(r, "MinimumQty", 0))
-            type_txt = self.lang.get('rule_percent', "Percentuale") if is_pct else self.lang.get('rule_quantity', "Quantità")
+            type_txt = self.lang.get('rule_percent', "Percentuale") if is_pct else self.lang.get('rule_quantity', "QuantitÃ ")
             status_txt = self.lang.get('rule_status_active', "Attiva") if getattr(r, "DateOut", None) is None else self.lang.get('rule_status_closed', "Chiusa")
             dateout_txt = "" if getattr(r, "DateOut", None) is None else str(getattr(r, "DateOut"))
             self.tree.insert("", "end", iid=str(r.KanBanRuleID),
@@ -542,7 +542,7 @@ class KanbanRulesManagementForm(tk.Toplevel):
             return True, ("percent", n)
         else:
             if n <= 0:
-                return False, self.lang.get('rules_err_qty_positive', "La quantità deve essere > 0.")
+                return False, self.lang.get('rules_err_qty_positive', "La quantitÃ  deve essere > 0.")
             return True, ("qty", n)
 
     def _on_new(self):
@@ -594,8 +594,8 @@ class KanbanRulesManagementForm(tk.Toplevel):
             self._load_rules()
             self._on_new()
         else:
-            # già chiusa o altro errore
-            msg = self.lang.get('rules_already_closed', "La regola è già chiusa o non esiste.") if err == "already_closed_or_not_found" else (err or self.db.last_error_details)
+            # giÃ  chiusa o altro errore
+            msg = self.lang.get('rules_already_closed', "La regola Ã¨ giÃ  chiusa o non esiste.") if err == "already_closed_or_not_found" else (err or self.db.last_error_details)
             messagebox.showerror(self.lang.get('error_title', "Errore"),
                                  self.lang.get('rules_delete_err', f"Errore eliminazione: {msg}"),
                                  parent=self)
@@ -614,7 +614,7 @@ class LanguageManager:
         records = self.db.fetch_translations()
         if not records:
             # Usiamo print inizialmente, messagebox potrebbe non essere disponibile se la GUI principale fallisce
-            print("⚠️ Traduzioni Mancanti: Nessuna traduzione trovata nel database. Verrà usato il testo di default.")
+            print("âš ï¸ Traduzioni Mancanti: Nessuna traduzione trovata nel database. VerrÃ  usato il testo di default.")
             logger.warning("Nessuna traduzione trovata nel database")
             return
         
@@ -626,7 +626,7 @@ class LanguageManager:
             lang_counts[lang_lower] = lang_counts.get(lang_lower, 0) + 1
         
         # DEBUG: Stampa riepilogo
-        print(f"\n✅ Traduzioni caricate dal database:")
+        print(f"\nâœ… Traduzioni caricate dal database:")
         for lang, count in sorted(lang_counts.items()):
             print(f"   {lang.upper()}: {count} traduzioni")
         print(f"   Lingua corrente: {self.current_language.upper()}")
@@ -634,7 +634,7 @@ class LanguageManager:
         # DEBUG: Mostra alcune chiavi IT per verifica
         if 'it' in self.translations:
             sample_keys = ['project_window_title', 'col_task', 'status_todo']
-            print(f"\n🔍 Verifica chiavi IT:")
+            print(f"\nðŸ” Verifica chiavi IT:")
             for key in sample_keys:
                 value = self.translations['it'].get(key, 'NON TROVATA')
                 print(f"   {key}: {value}")
@@ -721,7 +721,7 @@ class Database:
                 pool_size=5,  # Numero di connessioni nel pool
                 max_overflow=10,  # Connessioni extra se necessario
                 pool_recycle=3600,  # Ricicla connessioni dopo 1 ora
-                pool_pre_ping=True,  # ⭐ Testa connessioni prima dell'uso
+                pool_pre_ping=True,  # â­ Testa connessioni prima dell'uso
                 pool_timeout=30,  # Timeout per ottenere connessione
                 echo=False  # Non loggare SQL (cambia in True per debug)
             )
@@ -1026,7 +1026,7 @@ class Database:
             # Esegui l'update
             self.cursor.execute(query, (validator_notes, validator_name, declaration_id))
 
-            # Se è approvato, recupera i dati ed esegui la stored procedure
+            # Se Ã¨ approvato, recupera i dati ed esegui la stored procedure
             if validation_status == 'Approved':
                 # Recupera i dati per la stored procedure - MODIFICA: ora recupera IDDefect invece di ScrapReasonId
                 data_query = """
@@ -1244,7 +1244,7 @@ class Database:
 
             task_id = result[0]
 
-            # Se non è generico, inserisci anche in PeriodicProductCheckListSpecifics
+            # Se non Ã¨ generico, inserisci anche in PeriodicProductCheckListSpecifics
             if not is_generic and product_check_id:
                 query2 = """
                          INSERT INTO [Traceability_RS].[dbo].[PeriodicProductCheckListSpecifics]
@@ -1258,7 +1258,7 @@ class Database:
         except Exception as e:
             self.conn.rollback()
             self.last_error_details = str(e)
-            print(f"❌ Errore insert_check_task: {e}")
+            print(f"âŒ Errore insert_check_task: {e}")
             return False
         finally:
             self.conn.autocommit = True
@@ -1294,7 +1294,7 @@ class Database:
             self.conn.autocommit = True
 
     def check_label_code_exists(self, label_code, must_check_id):
-        """Verifica se il label code esiste ed è relativo all'ordine selezionato e restituisce l'IDLabelCode"""
+        """Verifica se il label code esiste ed Ã¨ relativo all'ordine selezionato e restituisce l'IDLabelCode"""
         try:
             query = """
                     SELECT l.IDLabelCode
@@ -1470,6 +1470,162 @@ class Database:
                 logger.error(f"Error fetching product check interval: {e}")
                 return 30
 
+    def check_monthly_report_sent(self):
+        """
+        Verifica se il report mensile Ã¨ giÃ  stato inviato questo mese.
+        
+        Returns:
+            bool: True se giÃ  inviato questo mese, False altrimenti
+        """
+        query = """
+        SELECT IDSettings 
+        FROM traceability_rs.dbo.settings 
+        WHERE atribute = 'Sys_Verify_check_fail' 
+        AND lastcheck IS NOT NULL
+        AND MONTH(lastcheck) = MONTH(GETDATE())
+        AND YEAR(lastcheck) = YEAR(GETDATE())
+        """
+        with self._lock:
+            try:
+                self._clear_cursor_state()
+                self.cursor.execute(query)
+                row = self.cursor.fetchone()
+                return row is not None  # True se trovato record (giÃ  inviato)
+            except Exception as e:
+                logger.error(f"Error checking monthly report status: {e}")
+                return True  # In caso di errore, assume giÃ  inviato per sicurezza
+
+    def update_monthly_report_timestamp(self):
+        """
+        Aggiorna il timestamp lastcheck dopo l'invio del report mensile.
+        
+        Returns:
+            bool: True se aggiornamento riuscito, False altrimenti
+        """
+        query = """
+        UPDATE traceability_rs.dbo.settings 
+        SET lastcheck = GETDATE() 
+        WHERE atribute = 'Sys_Verify_check_fail'
+        """
+        with self._lock:
+            try:
+                self._clear_cursor_state()
+                self.cursor.execute(query)
+                self.conn.commit()
+                logger.info("Timestamp report mensile aggiornato con successo")
+                return True
+            except Exception as e:
+                logger.error(f"Error updating monthly report timestamp: {e}")
+                self.conn.rollback()
+                return False
+
+    def generate_monthly_report_data(self):
+        """
+        Genera i dati per il report mensile (tutti gli utenti).
+        
+        Returns:
+            list: Lista di tuple con i dati del report
+        """
+        is_analyzed = 0  # Solo non analizzati
+        label_code = None  # Tutti i label code
+        
+        sql = """
+        DECLARE @IsAnalized bit = ?;
+        DECLARE @LabelCode as nvarchar(230) = ?;
+
+        WITH EmployeeMapping AS (
+            SELECT 
+                u.nomeuser,
+                UPPER( e.EmployeeSurname + ' ' +e.EmployeeName) AS FullName,
+                ROW_NUMBER() OVER (PARTITION BY u.nomeuser ORDER BY e.employeeid) AS rn
+            FROM employee.dbo.employees e 
+            INNER JOIN resetservices.dbo.tbuserkey u ON e.employeeid = u.idanga
+        ),
+        ComponentInfo AS (
+            SELECT 
+                ProductRiferiments.CodRiferimento,
+                ProductComponentsErp.IDProduct,
+                ParentPhases.ParentPhaseName,
+                Components.ComponentCode,
+                ROW_NUMBER() OVER (PARTITION BY ProductRiferiments.CodRiferimento, ProductComponentsErp.IDProduct 
+                                  ORDER BY (SELECT NULL)) AS rn
+            FROM ProductRiferiments 
+            INNER JOIN ProductComponentsErp ON ProductComponentsErp.IDProductCompErp = ProductRiferiments.IDProductCompErp
+            INNER JOIN ParentPhases ON ParentPhases.IDParentPhase = ProductRiferiments.IDParentPhase
+            LEFT JOIN Components ON Components.IDComponent = ProductComponentsErp.IDComponent
+        )
+        SELECT distinct   
+            EmployeeMapping.FullName AS CheckUser,
+            labelcodes.LabelCod,
+            Products.ProductCode,                
+            CASE WHEN ScanDefects.IsPass = 1 THEN 'REPAIRED' ELSE 'SCRAP' END AS ResultRepair,  
+            DATEDIFF(MINUTE, PC.CheckTime, ScanDefects.StopTime) as [Minute], 
+            CASE 
+                WHEN DATEDIFF(MINUTE, PC.CheckTime, ScanDefects.StopTime) < 60 
+                    THEN CAST(DATEDIFF(MINUTE, PC.CheckTime, ScanDefects.StopTime) AS NVARCHAR(10)) + ' MINUTE'
+                WHEN DATEDIFF(HOUR, PC.CheckTime, ScanDefects.StopTime) >= 24 
+                    THEN CAST(DATEDIFF(DAY, PC.CheckTime, ScanDefects.StopTime) AS NVARCHAR(10)) + ' DAYS'
+                ELSE CAST(DATEDIFF(HOUR, PC.CheckTime, ScanDefects.StopTime) AS NVARCHAR(10)) + ' HOURS'
+            END AS TimeDefectAfterCheck,       
+            
+            Riferiments.CodRiferimento,
+            ISNULL(ComponentInfo.ParentPhaseName, 'PTHM') AS ComponentType,  
+            ISNULL(ComponentInfo.ComponentCode, '#N/D') AS ComponentCode,
+            Defects.DefectNameRO AS Defect,        
+            IIF(CAST(Boxes.BoxCode AS NVARCHAR(12)) is not null ,'IN BOX', 'NOT IN A BOX') AS BoxCode,
+            IIF(PackingLists.CodePack IS NULL, 'NOT SHIPPED YET', 'SHIPPED ALREADY') AS ShipmentStatus
+            
+        FROM ScanDefects 
+        INNER JOIN ScanDefectDetails ON ScanDefects.IDScanDefect = ScanDefectDetails.IDScanDefect
+        INNER JOIN DefectsRiferiments ON DefectsRiferiments.IDScanDefectDet = ScanDefectDetails.IDScanDefectDet
+        INNER JOIN Riferiments ON Riferiments.IDDibaRiferimento = DefectsRiferiments.IDDibaRiferimento
+        INNER JOIN Defects ON ScanDefectDetails.IDDefect = Defects.IDDefect
+        INNER JOIN Scannings ON Scannings.IDScan = ScanDefects.IDScan
+        INNER JOIN OrderPhases ON OrderPhases.IDOrderPhase = Scannings.IDOrderPhase
+        INNER JOIN Orders ON OrderPhases.IDOrder = Orders.IDOrder
+        INNER JOIN Products ON Products.IDProduct = Orders.IDProduct
+        INNER JOIN Phases ON OrderPhases.IDPhase = Phases.IDPhase
+        INNER JOIN Clients ON Clients.IDClient = Products.IDClient
+        INNER JOIN Boards ON Scannings.IDBoard = Boards.IDBoard
+        INNER JOIN Teams ON Teams.IDTeam = ScanDefects.IdTeam
+        INNER JOIN WorkLines ON WorkLines.IDWorkLine = Teams.IDWorkLine
+        INNER JOIN LabelCodes ON Boards.IDBoard = LabelCodes.IDBoard
+        INNER JOIN PeriodicalProductCheckLogs PC ON LabelCodes.IDLabelCode = PC.IDLabelCode and isnull(pc.isanalized,0) = @IsAnalized 
+
+        LEFT JOIN EmployeeMapping ON EmployeeMapping.nomeuser COLLATE database_default = PC.UserCheck 
+            AND EmployeeMapping.rn = 1
+        LEFT JOIN ComponentInfo ON ComponentInfo.CodRiferimento = Riferiments.CodRiferimento 
+            AND ComponentInfo.IDProduct = Orders.IDProduct 
+            AND ComponentInfo.rn = 1
+
+        LEFT JOIN Areas ON Areas.IDArea = ScanDefectDetails.IDArea
+        LEFT JOIN BoxDetails ON BoxDetails.IDBoard = Boards.IDBoard
+        LEFT JOIN Boxes ON Boxes.IDBox = BoxDetails.IDBox
+        LEFT JOIN BoxPKs ON BoxPKs.IDBoxPK = Boxes.IDBoxPK
+        LEFT JOIN PalletPKs ON PalletPKs.IDPalletPK = BoxPKs.IDPalletPK
+        LEFT JOIN PackingLists ON PackingLists.IDPackingList = PalletPKs.IDPackingList
+
+        WHERE 
+            Phases.IDPhase IN (102, 103, 107)
+            AND PC.Status = 'PASS'
+            AND ScanDefects.StopTime > PC.CheckTime
+            and ISNULL(ComponentInfo.ParentPhaseName, 'PTHM') = 'PTHM'
+            AND NOT defects.DefectNameRO IN ('Schimbare pin fixture test','Componenta iesita din tolerante')
+            and labelcodes.LabelCod = iif(@LabelCode is null,labelcodes.LabelCod,@LabelCode)
+        Order By [Minute];
+        """
+        
+        with self._lock:
+            try:
+                self._clear_cursor_state()
+                self.cursor.execute(sql, (is_analyzed, label_code))
+                rows = self.cursor.fetchall()
+                logger.info(f"Dati report mensile recuperati: {len(rows)} record")
+                return rows
+            except Exception as e:
+                logger.error(f"Error generating monthly report data: {e}")
+                return []
+
     def fetch_assigned_submissions(self, employee_hire_history_id: int):
         """Carica segnalazioni assegnate all'utente"""
         sql = """
@@ -1512,7 +1668,7 @@ class Database:
             return []
 
     def fetch_submission_activities(self, segnalazione_id: int):
-        """Carica attività svolte per una segnalazione"""
+        """Carica attivitÃ  svolte per una segnalazione"""
         sql = """
               SELECT sv.[SegnalazioneSvolgimentoId], \
                      sa.Note, \
@@ -1550,7 +1706,7 @@ class Database:
             return []
 
     def insert_submission_activity(self, assegnazione_id: int, descrizione: str):
-        """Inserisce nuova attività"""
+        """Inserisce nuova attivitÃ """
         sql = """
               INSERT INTO [Employee].[dbo].[SegnalazioneSvolgimenti]
                   ([SegnalazioneAssegnazioneId], [DescrizioneAttivita], [DateSys])
@@ -1572,7 +1728,7 @@ class Database:
             self.conn.autocommit = True
 
     def insert_activity_attachment(self, svolgimento_id: int, descrizione: str, file_data: bytes):
-        """Inserisce allegato per attività"""
+        """Inserisce allegato per attivitÃ """
         sql = """
               INSERT INTO [Employee].[dbo].[SegnalazioniStatiAllegati]
               ([SegnalazioneSvolgimentoId], [DescrizioneDocumento], [Allegato], [DateIn])
@@ -1608,7 +1764,7 @@ class Database:
             self.conn.autocommit = True
 
     def get_submission_assignment_id(self, segnalazione_id: int, employee_hire_history_id: int):
-        """Recupera ID assegnazione per inserire attività"""
+        """Recupera ID assegnazione per inserire attivitÃ """
         sql = """
               SELECT SegnalazioniAssegnazioniID
               FROM employee.dbo.SegnalazioneAssegnazioni
@@ -1627,7 +1783,7 @@ class Database:
         """Verifica e ripristina la connessione se necessario"""
         with self._lock:
             try:
-                # Se non c'è proprio il cursore o la connessione, prova a connettere
+                # Se non c'Ã¨ proprio il cursore o la connessione, prova a connettere
                 if not self.conn or not self.cursor:
                     return self.connect()
 
@@ -1647,10 +1803,10 @@ class Database:
                     # Riconnessione completa
                     self.conn = pyodbc.connect(self.conn_str, autocommit=False)
                     self.cursor = self.conn.cursor()  # Nuovo cursore
-                    logger.info("✓ Connessione ripristinata")
+                    logger.info("âœ“ Connessione ripristinata")
                     return True
                 except Exception as reconnect_error:
-                    logger.error(f"✗ Impossibile ripristinare la connessione: {reconnect_error}")
+                    logger.error(f"âœ— Impossibile ripristinare la connessione: {reconnect_error}")
                     return False
 
     def fetch_kanban_current_stock_by_component(self):
@@ -1666,7 +1822,7 @@ class Database:
         with self._lock:
             try:
                 if not self._ensure_connection():
-                    logger.error("✗ Connessione non disponibile in fetch_kanban_current_stock_by_component")
+                    logger.error("âœ— Connessione non disponibile in fetch_kanban_current_stock_by_component")
                     return None
 
                 self._clean_cursor()
@@ -1696,7 +1852,7 @@ class Database:
                     # Chiudi il cursore e creane uno nuovo
                     self.cursor.close()
                     self.cursor = self.conn.cursor()
-                    logger.debug("✓ Cursore pulito")
+                    logger.debug("âœ“ Cursore pulito")
             except Exception as e:
                 logger.warning(f"Errore durante la pulizia del cursore: {e}")
                 # Se fallisce, crea un nuovo cursore
@@ -1829,7 +1985,7 @@ class Database:
 
     def has_refill_request_today(self, kanban_record_id: int) -> bool:
         """
-        True se esiste già una richiesta per la stessa KanBanRecordId oggi.
+        True se esiste giÃ  una richiesta per la stessa KanBanRecordId oggi.
         """
         sql = """
         SELECT 1
@@ -2125,7 +2281,7 @@ class Database:
 
     def soft_delete_kanban_rule(self, rule_id: int):
         """
-        Cancellazione logica: setta DateOut = GETDATE() se non è già valorizzata.
+        Cancellazione logica: setta DateOut = GETDATE() se non Ã¨ giÃ  valorizzata.
         """
         try:
             self.conn.autocommit = False
@@ -2134,7 +2290,7 @@ class Database:
                 rule_id
             )
             if self.cursor.rowcount == 0:
-                # già chiusa o non trovata
+                # giÃ  chiusa o non trovata
                 self.conn.rollback()
                 return False, "already_closed_or_not_found"
             self.conn.commit()
@@ -2196,7 +2352,7 @@ class Database:
     def fetch_kanban_rules(self):
         """
         SELECT KanBanRuleID, MinimumProcent, MinimumQty FROM knb.KanBanRules
-        Ordina con percentuali prima, poi quantità.
+        Ordina con percentuali prima, poi quantitÃ .
         """
         sql = """
         SELECT KanBanRuleID, MinimumProcent, MinimumQty
@@ -2232,7 +2388,7 @@ class Database:
         """
         Associa una regola a un componente:
         - Chiude eventuale regola attiva con DateOut = GETDATE()
-        - Se kanban_rule_id è None: solo chiusura (rimozione regola)
+        - Se kanban_rule_id Ã¨ None: solo chiusura (rimozione regola)
         - Altrimenti inserisce un nuovo record con DateIn = GETDATE(), DateOut = NULL
 
         Usa transazione.
@@ -2407,7 +2563,7 @@ class Database:
                 SELECT ?, IdComponent, Quantity, GETDATE(), ?
                 FROM knb.KanBanRecords
                 WHERE LocationId = ? AND DateOut = (SELECT MAX(DateOut) FROM knb.KanBanRecords kk WHERE kk.KanBanRecordId = knb.KanBanRecords.KanBanRecordId)
-                   OR (LocationId = ? AND DateOut IS NULL) -- per sicurezza, ma dopo l'update sopra non ci saranno più NULL
+                   OR (LocationId = ? AND DateOut IS NULL) -- per sicurezza, ma dopo l'update sopra non ci saranno piÃ¹ NULL
                 ;
                 """
                 # Notare: la riga sopra replica quantity e component dagli ultimi record; in pratica, dopo l'UPDATE, le righe appena chiuse vengono reinserite.
@@ -2480,7 +2636,7 @@ class Database:
     def insert_kanban_location(self, kanban_location_id: int, location_code: str):
         """
         Inserisce una nuova locazione KanBan.
-        Ritorna (True, None) su successo, oppure (False, 'duplicate') se violazione chiave/unicità,
+        Ritorna (True, None) su successo, oppure (False, 'duplicate') se violazione chiave/unicitÃ ,
         oppure (False, 'messaggio_errore') per altri errori.
         """
         sql = """
@@ -2885,7 +3041,7 @@ class Database:
         """
         query = """
             SELECT 
-                l.IDLabelCode,           -- se non esiste la colonna, verrà None nell'accesso attributo
+                l.IDLabelCode,           -- se non esiste la colonna, verrÃ  None nell'accesso attributo
                 b.IDBoard,
                 o.OrderNumber,
                 FORMAT(o.OrderDate,'d','ro-ro') AS OrderDate,
@@ -2984,7 +3140,7 @@ class Database:
         Tenta prima l'inserimento con la nuova colonna [Riferiments];
         se la colonna non esiste, fa fallback al vecchio INSERT.
 
-        riferiments: stringa con riferimenti separati da ';' (può essere None o '')
+        riferiments: stringa con riferimenti separati da ';' (puÃ² essere None o '')
         """
         if riferiments is None:
             riferiments = ""
@@ -3072,7 +3228,7 @@ class Database:
             logger.info(f"Permissions for user_id={user_id}: {permissions}")
         except Exception as e:
             logger.error(f"ATTENZIONE: Impossibile caricare i permessi per l'utente {user_id}. Errore: {e}")
-            # L'utente potrà accedere ma non avrà permessi speciali
+            # L'utente potrÃ  accedere ma non avrÃ  permessi speciali
         finally:
             if cursor:
                 cursor.close()
@@ -3267,7 +3423,7 @@ class Database:
             return []
 
     def check_room_availability(self, room_name, start_time, end_time, exclude_booking_id=None):
-        """Verifica se una sala è libera."""
+        """Verifica se una sala Ã¨ libera."""
         query = """
             SELECT COUNT(*) FROM [Employee].[dbo].[RoomBookings]
             WHERE RoomName = ? 
@@ -3438,7 +3594,7 @@ class Database:
             # @RegistroId OUTPUT
             
             # Nota: pyodbc gestisce i parametri di output in modo specifico, 
-            # ma spesso è più semplice fare una SELECT dopo o usare sintassi specifica.
+            # ma spesso Ã¨ piÃ¹ semplice fare una SELECT dopo o usare sintassi specifica.
             # Qui proviamo con la sintassi standard T-SQL EXEC
             
             sql = """
@@ -3679,7 +3835,7 @@ class Database:
 
     def add_product_link(self, final_product_id, semi_product_id):
         """Aggiunge un nuovo collegamento."""
-        # Prima verifica se esiste già un collegamento attivo
+        # Prima verifica se esiste giÃ  un collegamento attivo
         check_query = """
         SELECT COUNT(*) FROM traceability_rs.dbo.ProductsLinked 
         WHERE IdProductFinal = ? AND IdProductSemi = ? AND Dateout IS NULL
@@ -3687,7 +3843,7 @@ class Database:
         try:
             count = self.cursor.execute(check_query, final_product_id, semi_product_id).fetchval()
             if count > 0:
-                return False, "Esiste già un collegamento attivo tra questi prodotti."
+                return False, "Esiste giÃ  un collegamento attivo tra questi prodotti."
 
             insert_query = """
             INSERT INTO dbo.ProductsLinked (IdProductFinal, IdProductSemi)
@@ -4517,7 +4673,7 @@ class Database:
                     """
 
             for detail in claim_details:
-                # Se è un dict
+                # Se Ã¨ un dict
                 if isinstance(detail, dict):
                     params = (
                         claim_log_id,
@@ -4530,7 +4686,7 @@ class Database:
                         detail.get('ClaimDefectId')
                     )
                 else:
-                    # Se è un oggetto ClaimDetail
+                    # Se Ã¨ un oggetto ClaimDetail
                     params = (
                         claim_log_id,
                         detail.FirstInspectionResultId,
@@ -4946,7 +5102,7 @@ Numero Cliente: {claim_header.CustomerClaimNumber}
 Descrizione: {claim_header.ShortClaimDescription}
 Data Reclamo: {claim_header.DateClaim}
 Data Target: {claim_header.TargetDate}
-Quantità: {claim_header.Quantity}
+QuantitÃ : {claim_header.Quantity}
 Inserito da: {claim_header.USERName}
 
 Accedi al sistema per visualizzare i dettagli completi.
@@ -5072,7 +5228,7 @@ Accedi al sistema per visualizzare i dettagli completi.
         except pyodbc.Error as e:
             self.conn.rollback()
             if 'UNIQUE' in str(e) or 'duplicate' in str(e):
-                return False, "Errore: Esiste già una compagnia con questo nome o Partita IVA."
+                return False, "Errore: Esiste giÃ  una compagnia con questo nome o Partita IVA."
             return False, f"Errore database: {e}"
 
     def update_site(self, site_id, name, address, vat, country, logo):
@@ -5088,7 +5244,7 @@ Accedi al sistema per visualizzare i dettagli completi.
 
     def delete_site(self, site_id):
         """Cancella una compagnia (da usare con cautela)."""
-        # Aggiungere un controllo per verificare se il sito è usato in altre tabelle prima di cancellare
+        # Aggiungere un controllo per verificare se il sito Ã¨ usato in altre tabelle prima di cancellare
         query = "DELETE FROM dbo.Sites WHERE IDSite = ?;"
         try:
             self.cursor.execute(query, site_id)
@@ -5099,7 +5255,7 @@ Accedi al sistema per visualizzare i dettagli completi.
             return False, f"Errore database: {e}"
 
     def check_if_brand_is_used(self, brand_id):
-        """Controlla se un brand è utilizzato in almeno una macchina."""
+        """Controlla se un brand Ã¨ utilizzato in almeno una macchina."""
         query = "SELECT COUNT(*) FROM eqp.Equipments WHERE BrandId = ?;"
         try:
             count = self.cursor.execute(query, brand_id).fetchval()
@@ -5200,7 +5356,7 @@ Accedi al sistema per visualizzare i dettagli completi.
             if not results:
                 return {}, None
 
-            # Estrae il nome del foglio (sarà lo stesso per tutte le righe)
+            # Estrae il nome del foglio (sarÃ  lo stesso per tutte le righe)
             sheet_name = results[0].SheetName
 
             # Costruisce il dizionario della mappatura
@@ -5241,11 +5397,11 @@ Accedi al sistema per visualizzare i dettagli completi.
             """
 
             for item in plan_data_list:
-                if item.get('id'):  # Se ha un ID, è un UPDATE
+                if item.get('id'):  # Se ha un ID, Ã¨ un UPDATE
                     params = (item['original_qty'], item['modified_qty'], item['note'], item['status'], item['user'],
                               item['id'])
                     self.cursor.execute(update_sql, params)
-                else:  # Altrimenti è un INSERT
+                else:  # Altrimenti Ã¨ un INSERT
                     params = (item['shipping_date'], item['order'], item['product'], item['original_qty'],
                               item['modified_qty'], item['note'], item['status'], item['user'])
                     self.cursor.execute(insert_sql, params)
@@ -5294,7 +5450,7 @@ Accedi al sistema per visualizzare i dettagli completi.
 
     def add_shipping_setting(self, day_of_week, shipping_type):
         """Aggiunge una nuova impostazione di spedizione dopo aver controllato i duplicati."""
-        # 1. Controlla se esiste già un'impostazione identica e attiva
+        # 1. Controlla se esiste giÃ  un'impostazione identica e attiva
         check_query = """
             SELECT COUNT(*) FROM [dbo].[ShippingSettings]
             WHERE DayOfWeek = ? AND ShippingType = ? AND DateEnd IS NULL;
@@ -5303,7 +5459,7 @@ Accedi al sistema per visualizzare i dettagli completi.
         try:
             count = self.cursor.execute(check_query, day_of_week, shipping_type).fetchval()
             if count > 0:
-                return False, "Errore: Esiste già un''impostazione identica per questo giorno e tipo di spedizione."
+                return False, "Errore: Esiste giÃ  un''impostazione identica per questo giorno e tipo di spedizione."
 
             # 2. Se non esiste, procedi con l'inserimento
             self.cursor.execute(insert_query, day_of_week, shipping_type)
@@ -5358,7 +5514,7 @@ Accedi al sistema per visualizzare i dettagli completi.
 
     def fetch_tasks_for_timing(self, equipment_id, intervention_id):
         """Recupera i compiti di manutenzione con i relativi tempi."""
-        # NOTA: Ho aggiunto cmt.CompitoManutenzioneTimingId alla SELECT perché è necessario per l'UPDATE.
+        # NOTA: Ho aggiunto cmt.CompitoManutenzioneTimingId alla SELECT perchÃ© Ã¨ necessario per l'UPDATE.
         query = """
                 SELECT am.CompitoId, \
                        am.NomeCompito, \
@@ -5401,7 +5557,7 @@ Accedi al sistema per visualizzare i dettagli completi.
                 update_query = "UPDATE [Traceability_RS].[eqp].CompitiManutenzioneTiming SET Dateend = GETDATE() WHERE CompitoManutenzioneTimingId = ?;"
                 self.cursor.execute(update_query, old_timing_id)
 
-            # 2. Se è stato fornito un nuovo valore in minuti, lo inserisce
+            # 2. Se Ã¨ stato fornito un nuovo valore in minuti, lo inserisce
             if new_minutes is not None and new_minutes != '':
                 insert_query = "INSERT INTO EQP.CompitiManutenzioneTiming (compitoid, TimingMinutes) VALUES (?, ?);"
                 self.cursor.execute(insert_query, task_id, new_minutes)
@@ -5699,7 +5855,7 @@ Accedi al sistema per visualizzare i dettagli completi.
             return False, f"Errore durante il salvataggio dei documenti: {e}"
     
     def check_if_material_exists(self, part_number):
-        """Controlla se un materiale con un dato Codice Articolo esiste già. Restituisce True se esiste, altrimenti False."""
+        """Controlla se un materiale con un dato Codice Articolo esiste giÃ . Restituisce True se esiste, altrimenti False."""
         query = "SELECT COUNT(*) FROM eqp.SparePartMaterials WHERE MaterialPartNumber = ?;"
         try:
             count = self.cursor.execute(query, part_number).fetchval()
@@ -5795,7 +5951,7 @@ Accedi al sistema per visualizzare i dettagli completi.
             return False, str(e)
 
     def delete_material(self, material_id):
-        """Cancella un materiale. La cancellazione a cascata (ON DELETE CASCADE) rimuoverà i link."""
+        """Cancella un materiale. La cancellazione a cascata (ON DELETE CASCADE) rimuoverÃ  i link."""
         query = "DELETE FROM eqp.SparePartMaterials WHERE SparePartMaterialId = ?;"
         try:
             self.cursor.execute(query, material_id)
@@ -5872,7 +6028,7 @@ Accedi al sistema per visualizzare i dettagli completi.
             return []
 
     def fetch_available_permissions(self, employee_hire_history_id):
-        """Recupera i menu a cui un utente NON è ancora abilitato."""
+        """Recupera i menu a cui un utente NON Ã¨ ancora abilitato."""
         query = """
         SELECT DISTINCT
                a.TranslationKey AS Translationkey,
@@ -5943,7 +6099,7 @@ Accedi al sistema per visualizzare i dettagli completi.
             return False
 
     def check_if_doc_type_is_used(self, category_id):
-        """Controlla se una categoria di documenti è usata in almeno un documento."""
+        """Controlla se una categoria di documenti Ã¨ usata in almeno un documento."""
         query = "SELECT COUNT(DocumentoId) FROM dbo.DocumentiGenerali WHERE CategoriaId = ?;"
         try:
             count = self.cursor.execute(query, category_id).fetchval()
@@ -5963,7 +6119,7 @@ Accedi al sistema per visualizzare i dettagli completi.
             self.conn.rollback()
             # Gestisce l'errore di chiave duplicata
             if 'UNIQUE KEY' in str(e):
-                return False, "Errore: Esiste già un tipo con questo nome o chiave di traduzione."
+                return False, "Errore: Esiste giÃ  un tipo con questo nome o chiave di traduzione."
             return False, f"Errore database: {e}"
 
     def update_doc_type(self, category_id, name, key):
@@ -5976,7 +6132,7 @@ Accedi al sistema per visualizzare i dettagli completi.
         except pyodbc.Error as e:
             self.conn.rollback()
             if 'UNIQUE KEY' in str(e):
-                return False, "Errore: Esiste già un tipo con questo nome o chiave di traduzione."
+                return False, "Errore: Esiste giÃ  un tipo con questo nome o chiave di traduzione."
             return False, f"Errore database: {e}"
 
     def delete_doc_type(self, category_id):
@@ -6074,7 +6230,7 @@ Accedi al sistema per visualizzare i dettagli completi.
         """
         Esegue l'autenticazione e controlla l'autorizzazione per una specifica funzione.
         Restituisce l'intera riga del DB se l'utente e la password sono corretti, altrimenti None.
-        La riga conterrà AuthorizedUsedId (che può essere NULL se non autorizzato).
+        La riga conterrÃ  AuthorizedUsedId (che puÃ² essere NULL se non autorizzato).
         """
         query = """
                 SELECT u.NomeUser, \
@@ -6093,7 +6249,7 @@ Accedi al sistema per visualizzare i dettagli completi.
                   AND a.DateOut IS NULL; \
                 """
         try:
-            # L'ordine dei parametri è fondamentale: TranslationKey, Nomeuser, Pass
+            # L'ordine dei parametri Ã¨ fondamentale: TranslationKey, Nomeuser, Pass
             logger.info(f"Chiave per accesso speciale:{menu_translation_key} per user:{user_id}")
 
             self.cursor.execute(query, menu_translation_key, user_id, password)
@@ -6114,8 +6270,8 @@ Accedi al sistema per visualizzare i dettagli completi.
             return []
 
     def check_if_cycle_is_used(self, intervention_id):
-        """Controlla se un ciclo di manutenzione è usato in almeno un log."""
-        # Un ciclo è usato se esiste un compito associato ad esso che è stato registrato in LogManutenzioni
+        """Controlla se un ciclo di manutenzione Ã¨ usato in almeno un log."""
+        # Un ciclo Ã¨ usato se esiste un compito associato ad esso che Ã¨ stato registrato in LogManutenzioni
         query = """
                 SELECT COUNT(lm.LogId)
                 FROM eqp.LogManutenzioni lm
@@ -6234,7 +6390,7 @@ Accedi al sistema per visualizzare i dettagli completi.
                     self.cursor.execute(insert_attachment_sql, new_submission_id, attachment['name'],
                                         attachment['data'])
 
-            # 3. Se tutto è andato bene, conferma la transazione
+            # 3. Se tutto Ã¨ andato bene, conferma la transazione
             self.conn.commit()
             return True, "Segnalazione registrata con successo."
 
@@ -6267,7 +6423,7 @@ Accedi al sistema per visualizzare i dettagli completi.
         """Aggiunge un nuovo brand."""
         query = "INSERT INTO eqp.EquipmentBrands (Brand, CompanyId, BrandLogo) VALUES (?, ?, ?);"
         try:
-            # Assicura che company_id sia None se non è un numero valido
+            # Assicura che company_id sia None se non Ã¨ un numero valido
             company_id_to_save = int(company_id) if company_id is not None else None
             self.cursor.execute(query, brand_name, company_id_to_save, logo_data)
             self.conn.commit()
@@ -6275,7 +6431,7 @@ Accedi al sistema per visualizzare i dettagli completi.
         except pyodbc.Error as e:
             self.conn.rollback()
             if 'UNIQUE' in str(e) or 'duplicate' in str(e):
-                return False, "Errore: Esiste già un brand con questo nome."
+                return False, "Errore: Esiste giÃ  un brand con questo nome."
             return False, f"Errore database: {e}"
 
     def update_brand(self, brand_id, brand_name, company_id, logo_data):
@@ -6311,8 +6467,8 @@ Accedi al sistema per visualizzare i dettagli completi.
             return []
 
     def add_new_supplier(self, denom_soc, nazione, cui, id_valuta):
-        """Aggiunge un nuovo fornitore dopo aver controllato che la P.IVA non esista già."""
-        # 1. Controlla se la Partita IVA (cui) esiste già
+        """Aggiunge un nuovo fornitore dopo aver controllato che la P.IVA non esista giÃ ."""
+        # 1. Controlla se la Partita IVA (cui) esiste giÃ 
         check_query = "SELECT COUNT(*) FROM resetservices.dbo.tbsocieta WHERE cui = ?;"
         insert_query = """
                        INSERT INTO resetservices.dbo.tbsocieta (DenomSoc, Nazione, cui, IdValuta, Appruved)
@@ -6321,7 +6477,7 @@ Accedi al sistema per visualizzare i dettagli completi.
         try:
             count = self.cursor.execute(check_query, cui).fetchval()
             if count > 0:
-                return False, "Errore: Partita IVA già presente nel database."
+                return False, "Errore: Partita IVA giÃ  presente nel database."
 
             # 2. Se non esiste, procedi con l'inserimento
             self.cursor.execute(insert_query, denom_soc, nazione, cui, id_valuta)
@@ -6520,7 +6676,7 @@ Accedi al sistema per visualizzare i dettagli completi.
                 VALUES (?, ?, ?, 1);
                 """
         try:
-            # Usiamo fetchval() che è perfetto per recuperare un singolo valore
+            # Usiamo fetchval() che Ã¨ perfetto per recuperare un singolo valore
             # da una query che restituisce una riga e una colonna, come il nostro OUTPUT.
             new_id = self.cursor.execute(query, material_part_number, material_code, material_description).fetchval()
 
@@ -6528,7 +6684,7 @@ Accedi al sistema per visualizzare i dettagli completi.
                 self.conn.commit()
                 return new_id
             else:
-                # Questo caso è improbabile con OUTPUT, ma è una buona pratica gestirlo
+                # Questo caso Ã¨ improbabile con OUTPUT, ma Ã¨ una buona pratica gestirlo
                 self.conn.rollback()
                 self.last_error_details = "Inserimento nel DB riuscito ma impossibile recuperare il nuovo ID."
                 return None
@@ -6563,7 +6719,7 @@ Accedi al sistema per visualizzare i dettagli completi.
     #         # Esegui l'INSERT
     #         self.cursor.execute(query, material_part_number, material_code, material_description)
     #
-    #         # Poiché abbiamo usato OUTPUT, l'INSERT ora restituisce un risultato che possiamo leggere con fetchval().
+    #         # PoichÃ© abbiamo usato OUTPUT, l'INSERT ora restituisce un risultato che possiamo leggere con fetchval().
     #         new_id = self.cursor.fetchval()
     #
     #         if new_id:
@@ -6603,7 +6759,7 @@ Accedi al sistema per visualizzare i dettagli completi.
         self.last_error_details = ""
 
         # Query fornita dall'utente. Aggiungiamo FileName e FileType necessari per l'apertura.
-        # Aggiungiamo ORDER BY per assicurarci di prendere il documento più recente se la JOIN ne producesse più di uno.
+        # Aggiungiamo ORDER BY per assicurarci di prendere il documento piÃ¹ recente se la JOIN ne producesse piÃ¹ di uno.
         query = """
                 select emd.DocumentSource, emd.FileName, emd.FileType
                 from Traceability_rs.eqp.EquipmentMantainanceDocs emd
@@ -6615,7 +6771,7 @@ Accedi al sistema per visualizzare i dettagli completi.
                 """
         try:
             self.cursor.execute(query, task_id)
-            # Usiamo fetchone() per prendere solo il primo risultato (il più recente)
+            # Usiamo fetchone() per prendere solo il primo risultato (il piÃ¹ recente)
             row = self.cursor.fetchone()
 
             if row and row.DocumentSource:
@@ -6639,7 +6795,7 @@ Accedi al sistema per visualizzare i dettagli completi.
                     temp_prefix = safe_name[:50] + "_"
 
                 # 2. Crea e scrivi file temporaneo
-                # delete=False è necessario affinché il programma esterno possa aprirlo
+                # delete=False Ã¨ necessario affinchÃ© il programma esterno possa aprirlo
                 temp_file = tempfile.NamedTemporaryFile(prefix=temp_prefix, delete=False, suffix=file_extension)
                 temp_file.write(binary_data)
                 temp_file.close()  # Chiudi handle Python per permettere apertura esterna
@@ -6713,7 +6869,7 @@ Accedi al sistema per visualizzare i dettagli completi.
 
                 # --- 1. Gestione Robusta dell'Estensione e del Nome File Temporaneo ---
 
-                # Determina l'estensione: Priorità a FileType, fallback su FileName, default a .pdf
+                # Determina l'estensione: PrioritÃ  a FileType, fallback su FileName, default a .pdf
                 file_extension = row.FileType if row.FileType else os.path.splitext(row.FileName)[1]
                 if not file_extension:
                     print(f"Attenzione: Estensione mancante per doc ID {document_id}. Usando default .pdf")
@@ -6732,10 +6888,10 @@ Accedi al sistema per visualizzare i dettagli completi.
 
                 # --- 2. Creazione File Temporaneo ---
 
-                # delete=False è necessario affinché il programma esterno possa aprirlo prima che Python lo elimini
+                # delete=False Ã¨ necessario affinchÃ© il programma esterno possa aprirlo prima che Python lo elimini
                 temp_file = tempfile.NamedTemporaryFile(prefix=temp_prefix, delete=False, suffix=file_extension)
                 temp_file.write(binary_data)
-                # Chiudi il file handle in Python affinché il sistema operativo possa aprirlo
+                # Chiudi il file handle in Python affinchÃ© il sistema operativo possa aprirlo
                 temp_file.close()
 
                 print(f"Apertura del file temporaneo: {temp_file.name}")
@@ -6793,7 +6949,7 @@ Accedi al sistema per visualizzare i dettagli completi.
                        """
         try:
             # --- INIZIO TRANSAZIONE ATOMICA ---
-            # (Poiché pyodbc è stato connesso con autocommit=False, siamo già in una transazione)
+            # (PoichÃ© pyodbc Ã¨ stato connesso con autocommit=False, siamo giÃ  in una transazione)
 
             # 1. Se richiesto, invalida i vecchi documenti (UPDATE)
             if invalidate_ids:
@@ -6884,7 +7040,7 @@ Accedi al sistema per visualizzare i dettagli completi.
             details['changes'] = self.cursor.execute(changes_query, equipment_id).fetchall()
 
             # 3. Documenti di manutenzione
-            # NOTA: Selezioniamo FileName invece di DocumentSource (che è binario e pesante) per l'elenco
+            # NOTA: Selezioniamo FileName invece di DocumentSource (che Ã¨ binario e pesante) per l'elenco
             docs_query = "SELECT FileName, UploadedBy, DateSys FROM eqp.EquipmentMantainanceDocs WHERE EquipmentId = ? ORDER BY DateSys DESC"
             details['docs'] = self.cursor.execute(docs_query, equipment_id).fetchall()
 
@@ -7170,7 +7326,7 @@ Accedi al sistema per visualizzare i dettagli completi.
                 logger.error("Document not found: %s", document_id)
                 return False
 
-            # Controlla se il documento è validato e non fuori validazione
+            # Controlla se il documento Ã¨ validato e non fuori validazione
             if not row.Validated or row.ApprovatoDa is None:
                 logger.warning("Document %s is not validated (ApprovatoDa is NULL)", document_id)
                 return False
@@ -7329,7 +7485,7 @@ Accedi al sistema per visualizzare i dettagli completi.
 
     def fetch_latest_version_info(self, software_name):
         """
-        Recupera la versione più recente, il percorso di aggiornamento e il flag Must per un dato software.
+        Recupera la versione piÃ¹ recente, il percorso di aggiornamento e il flag Must per un dato software.
         """
         query = "SELECT Version, MainPath, ISNULL(Must, 0) as Must FROM traceability_rs.dbo.SwVersions WHERE NameProgram = ? AND dateout IS NULL"
         with self._lock:
@@ -7346,8 +7502,8 @@ Accedi al sistema per visualizzare i dettagli completi.
 
     def fetch_available_maintenance_plans(self, equipment_id):
         """Recupera i piani di manutenzione disponibili per una macchina, basandosi sui compiti assegnati."""
-        # La logica per determinare se un piano è "scaduto" è complessa e la manteniamo,
-        # ma la struttura della query è più semplice senza join inutili.
+        # La logica per determinare se un piano Ã¨ "scaduto" Ã¨ complessa e la manteniamo,
+        # ma la struttura della query Ã¨ piÃ¹ semplice senza join inutili.
         query = """
                 WITH LatestLogs AS (SELECT CompitoId, MAX(DateStop) AS LastCompletionDate \
                                     FROM eqp.LogManutenzioni \
@@ -7461,7 +7617,7 @@ Accedi al sistema per visualizzare i dettagli completi.
                 binary_data = row.LinkedDocument
 
                 # --- Logica per il file temporaneo (con nome generico) ---
-                # Poiché non abbiamo il nome/tipo file, usiamo un default.
+                # PoichÃ© non abbiamo il nome/tipo file, usiamo un default.
                 file_extension = '.pdf'  # Assumiamo PDF come default
                 temp_prefix = f"task_{task_id}_documento_"
 
@@ -7748,11 +7904,11 @@ class InsertDocumentForm(tk.Toplevel):
         selected_index = selected_indices[0]
         selected_doc = self.documents_in_phase[selected_index]
 
-        # NUOVO: Controlla se il documento è validato
+        # NUOVO: Controlla se il documento Ã¨ validato
         if not selected_doc.Validated or selected_doc.ApprovatoDa is None:
             messagebox.showerror(
                 self.lang.get('app_title'),
-                self.lang.get('error_doc_not_validated', "Il documento prescelto non è ancora validato"),
+                self.lang.get('error_doc_not_validated', "Il documento prescelto non Ã¨ ancora validato"),
                 parent=self
             )
             return
@@ -7799,7 +7955,7 @@ class InsertDocumentForm(tk.Toplevel):
 
     def _apply_validation(self):
         """NUOVO: Callback da eseguire dopo autorizzazione riuscita"""
-        # Questo metodo sarà chiamato solo se l'utente è autorizzato
+        # Questo metodo sarÃ  chiamato solo se l'utente Ã¨ autorizzato
         pass
 
     def _save_document(self):
@@ -7849,7 +8005,7 @@ class InsertDocumentForm(tk.Toplevel):
         if is_validated_bool and hasattr(self.master_window, 'last_authenticated_user_name'):
             validator_info = self.master_window.last_authenticated_user_name
 
-        # NUOVO: Controlla se esiste già un documento per questa fase
+        # NUOVO: Controlla se esiste giÃ  un documento per questa fase
         existing_docs = self.db.fetch_existing_documents(product_id, parent_phase_id)
 
         if existing_docs:
@@ -7859,13 +8015,13 @@ class InsertDocumentForm(tk.Toplevel):
                 self.lang.get('app_title'),
                 self.lang.get(
                     'confirm_replace_document',
-                    f"Esiste già un documento per questa fase: {existing_doc_names}.\nDesideri sostituirlo?"
+                    f"Esiste giÃ  un documento per questa fase: {existing_doc_names}.\nDesideri sostituirlo?"
                 ),
                 parent=self
             )
 
             if response:
-                # Marca i documenti esistenti come "non più validi"
+                # Marca i documenti esistenti come "non piÃ¹ validi"
                 for doc in existing_docs:
                     self.db.mark_document_out_of_validation(doc.DocumentProductionID)
             else:
@@ -8074,17 +8230,17 @@ class ViewDocumentForm(tk.Toplevel):
             messagebox.showwarning(self.lang.get('app_title'), self.lang.get('warn_no_document_found'), parent=self)
         else:
             for i, doc in enumerate(self.documents_in_phase):
-                # Determina se il documento è valido
+                # Determina se il documento Ã¨ valido
                 is_valid = doc.Validated == 1 and doc.DateOutOfValidation is None
                 
                 # Formatta il testo di visualizzazione
                 approver_info = f" - Approvato da: {doc.ApprovatoDa}" if doc.ApprovatoDa else ""
-                status_text = "✓ VALIDO" if is_valid else "✗ Non valido"
+                status_text = "âœ“ VALIDO" if is_valid else "âœ— Non valido"
                 
                 display_text = f"{doc.DocumentName} (Rev: {doc.DocumentRevisionNumber}){approver_info} [{status_text}]"
                 self.docs_listbox.insert(tk.END, display_text)
                 
-                # Colora in base alla validità
+                # Colora in base alla validitÃ 
                 if is_valid:
                     self.docs_listbox.itemconfig(i, {'bg': '#c8e6c9'})  # Verde chiaro per validi
                 else:
@@ -8138,12 +8294,12 @@ class ViewDocumentForm(tk.Toplevel):
         selected_index = selected_indices[0]
         selected_doc = self.documents_in_phase[selected_index]
 
-        # Se già validato, chiedi conferma
+        # Se giÃ  validato, chiedi conferma
         if selected_doc.Validated:
             response = messagebox.askyesno(
                 self.lang.get('app_title'),
                 self.lang.get('confirm_revalidate_document',
-                              "Il documento è già validato. Desideri convalidarlo di nuovo?"),
+                              "Il documento Ã¨ giÃ  validato. Desideri convalidarlo di nuovo?"),
                 parent=self
             )
             if not response:
@@ -8319,7 +8475,7 @@ class KanbanLocationCreateForm(tk.Toplevel):
             return
         if len(loc) > 8:
             messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
-                                   self.lang.get('kanban_location_len', "La locazione può avere al massimo 8 caratteri."),
+                                   self.lang.get('kanban_location_len', "La locazione puÃ² avere al massimo 8 caratteri."),
                                    parent=self)
             self.location_entry.focus_set()
             return
@@ -8340,7 +8496,7 @@ class KanbanLocationCreateForm(tk.Toplevel):
             self.location_entry.focus_set()
             messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
                                    self.lang.get('kanban_location_exists',
-                                                 "La locazione esiste già per l'area selezionata. Inserire un valore diverso."),
+                                                 "La locazione esiste giÃ  per l'area selezionata. Inserire un valore diverso."),
                                    parent=self)
             return
 
@@ -8440,10 +8596,10 @@ class KanbanLocationLabelsForm(tk.Toplevel):
                                    self.lang.get('kanban_location_required', "Inserire una locazione."), parent=self)
             return
 
-        # Conformità al limite 8 char se desideri mantenerlo anche in stampa
+        # ConformitÃ  al limite 8 char se desideri mantenerlo anche in stampa
         if len(loc) > 8:
             messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
-                                   self.lang.get('kanban_location_len', "La locazione può avere al massimo 8 caratteri."),
+                                   self.lang.get('kanban_location_len', "La locazione puÃ² avere al massimo 8 caratteri."),
                                    parent=self)
             return
 
@@ -8660,7 +8816,7 @@ class KanbanLocationModifyForm(tk.Toplevel):
         self.tree.column("record_id", width=60, anchor="center")
         self.tree.heading("loc_code", text=self.lang.get('location', "Locazione"))
         self.tree.column("loc_code", width=140)
-        self.tree.heading("qty", text=self.lang.get('quantity', "Q.tà"))
+        self.tree.heading("qty", text=self.lang.get('quantity', "Q.tÃ "))
         self.tree.column("qty", width=80, anchor="e")
         self.tree.heading("desc", text=self.lang.get('description', "Descrizione"))
         self.tree.column("desc", width=360)
@@ -8695,7 +8851,7 @@ class KanbanLocationModifyForm(tk.Toplevel):
     def _load_locations(self):
         rows = self.db.fetch_locations_for_combo()
         self._locations_cache = rows
-        values = [f"{r.KanBanLocation} • {r.LocationCode}" for r in rows]
+        values = [f"{r.KanBanLocation} â€¢ {r.LocationCode}" for r in rows]
         self.dest_combo['values'] = values
         self.src_combo['values'] = values
         self.dest_combo2['values'] = values
@@ -8748,7 +8904,7 @@ class KanbanLocationModifyForm(tk.Toplevel):
             return
 
         # Evita movimento verso la stessa locazione (se deducibile)
-        # Recupero LocationId della riga selezionata leggendo i dati dal DB (più sicuro)
+        # Recupero LocationId della riga selezionata leggendo i dati dal DB (piÃ¹ sicuro)
         rows = self.db.search_component_open_records(self.component_var.get().strip())
         src_loc_id = None
         for r in rows:
@@ -8892,7 +9048,7 @@ class KanbanMaterialsManagementForm(tk.Toplevel):
         values = []
         self._comp_index_by_display.clear()
         for r in rows:
-            disp = f"{r.ComponentCode} • {r.ComponentDescription or ''}"
+            disp = f"{r.ComponentCode} â€¢ {r.ComponentDescription or ''}"
             values.append(disp)
             self._comp_index_by_display[disp] = r
         self.comp_combo['values'] = values
@@ -8910,7 +9066,7 @@ class KanbanMaterialsManagementForm(tk.Toplevel):
             if getattr(r, "MinimumProcent", None) is not None:
                 disp = f"Percentuale {int(r.MinimumProcent)}%"
             elif getattr(r, "MinimumQty", None) is not None:
-                disp = f"Quantità {int(r.MinimumQty)}"
+                disp = f"QuantitÃ  {int(r.MinimumQty)}"
             else:
                 disp = f"Regola {r.KanBanRuleID}"
             values.append(disp)
@@ -8953,7 +9109,7 @@ class KanbanMaterialsManagementForm(tk.Toplevel):
                 if getattr(rule, "MinimumProcent", None) is not None:
                     text = self.lang.get('current_rule_fmt_pct', "Regola attiva: {v}%").format(v=int(rule.MinimumProcent))
                 elif getattr(rule, "MinimumQty", None) is not None:
-                    text = self.lang.get('current_rule_fmt_qty', "Regola attiva: Q.tà {v}").format(v=int(rule.MinimumQty))
+                    text = self.lang.get('current_rule_fmt_qty', "Regola attiva: Q.tÃ  {v}").format(v=int(rule.MinimumQty))
                 else:
                     text = self.lang.get('current_rule_fmt_id', "Regola attiva ID {id}").format(id=rule.KanBanRuleID)
                 self.current_rule_label.configure(text=text)
@@ -9051,7 +9207,7 @@ class KanbanMoveForm(tk.Toplevel):
         self.cb_component.pack(side="left", fill="x", expand=True)
         self.cb_component.bind("<KeyRelease>", self._on_component_typed)
 
-        # Location row (già presente)
+        # Location row (giÃ  presente)
         r2 = ttk.Frame(sf)
         r2.pack(fill="x", padx=6, pady=6)
         ttk.Label(r2, text=self.lang.get('location', 'Locazione'), width=16).pack(side="left")
@@ -9067,10 +9223,10 @@ class KanbanMoveForm(tk.Toplevel):
         )
         self.lbl_loc_hint.pack(side="left", padx=(8, 0))
 
-        # Quantity row (già presente)
+        # Quantity row (giÃ  presente)
         r3 = ttk.Frame(sf);
         r3.pack(fill="x", padx=6, pady=6)
-        ttk.Label(r3, text=self.lang.get('quantity', 'Quantità'), width=16).pack(side="left")
+        ttk.Label(r3, text=self.lang.get('quantity', 'QuantitÃ '), width=16).pack(side="left")
         ttk.Entry(r3, textvariable=self.qty_var, width=12).pack(side="left")
 
         # Etichette saldo: qui e altrove
@@ -9107,7 +9263,7 @@ class KanbanMoveForm(tk.Toplevel):
                 self.op_var.set("unload")
                 messagebox.showwarning(
                     self.lang.get('warn_title', 'Attenzione'),
-                    self.lang.get('load_requires_login', 'Per eseguire un carico è necessario effettuare il login.'),
+                    self.lang.get('load_requires_login', 'Per eseguire un carico Ã¨ necessario effettuare il login.'),
                     parent=self
                 )
         self._refresh_component_dependent_ui()
@@ -9146,7 +9302,7 @@ class KanbanMoveForm(tk.Toplevel):
                 s = f"{code}{star} - {area}" if area else f"{code}{star}"
                 items.append(s)
         self.cb_location["values"] = items
-        # non aggiorniamo i saldi finché non c'è una locazione valida; ci pensa <<ComboboxSelected>> o FocusOut
+        # non aggiorniamo i saldi finchÃ© non c'Ã¨ una locazione valida; ci pensa <<ComboboxSelected>> o FocusOut
 
     def _resolve_component(self, text: str):
         if not text:
@@ -9204,19 +9360,19 @@ class KanbanMoveForm(tk.Toplevel):
         qty = self._parse_qty()
         if qty is None:
             messagebox.showwarning(self.lang.get('warn_title', 'Attenzione'),
-                                   self.lang.get('move_err_qty_positive', 'La quantità deve essere un intero > 0.'),
+                                   self.lang.get('move_err_qty_positive', 'La quantitÃ  deve essere un intero > 0.'),
                                    parent=self)
             return
 
         op = self.op_var.get()
         delta = qty if op == "load" else -qty
 
-        # Se prelievo, verifica disponibilità
+        # Se prelievo, verifica disponibilitÃ 
         if delta < 0:
             avail = self.db.get_current_stock(comp_id, loc_id)
             if avail + delta < 0:
                 message = self.lang.get('move_err_stock_insufficient',
-                                        'Quantità non disponibile. Disponibile: {avail}').format(avail=avail)
+                                        'QuantitÃ  non disponibile. Disponibile: {avail}').format(avail=avail)
                 messagebox.showerror(self.lang.get('error_title', 'Errore'), message, parent=self)
                 return
 
@@ -9227,7 +9383,7 @@ class KanbanMoveForm(tk.Toplevel):
             if not self._ensure_load_login():
                 messagebox.showwarning(
                     self.lang.get('warn_title', 'Attenzione'),
-                    self.lang.get('load_requires_login', 'Per eseguire un carico è necessario effettuare il login.'),
+                    self.lang.get('load_requires_login', 'Per eseguire un carico Ã¨ necessario effettuare il login.'),
                     parent=self
                 )
                 return
@@ -9278,7 +9434,7 @@ class KanbanMoveForm(tk.Toplevel):
                 return 'Component'
             if k in ('location', 'locationcode', 'loc', 'locazione', 'codicelocazione'):
                 return 'Location'
-            if k in ('quantity', 'qty', 'quantita', 'qta', 'quantità'):
+            if k in ('quantity', 'qty', 'quantita', 'qta', 'quantitÃ '):
                 return 'Quantity'
             return key
 
@@ -9298,7 +9454,7 @@ class KanbanMoveForm(tk.Toplevel):
                 except Exception:
                     messagebox.showerror(
                         self.lang.get('error_title', 'Errore'),
-                        self.lang.get('openpyxl_missing', 'Per importare file .xlsx è necessario openpyxl.'),
+                        self.lang.get('openpyxl_missing', 'Per importare file .xlsx Ã¨ necessario openpyxl.'),
                         parent=self
                     )
                     return
@@ -9358,18 +9514,18 @@ class KanbanMoveForm(tk.Toplevel):
                                                     f'Riga {idx}: campi mancanti (Component/Location/Quantity).')
                 continue
 
-            # Parse quantità
+            # Parse quantitÃ 
             try:
                 qty = int(float(qty_text))  # accetta "10.0" -> 10
             except Exception:
                 err_count += 1
                 if first_error_msg is None:
-                    first_error_msg = self.lang.get('import_err_qty', f'Riga {idx}: Quantità non valida: {qty_text}')
+                    first_error_msg = self.lang.get('import_err_qty', f'Riga {idx}: QuantitÃ  non valida: {qty_text}')
                 continue
             if qty == 0:
                 err_count += 1
                 if first_error_msg is None:
-                    first_error_msg = self.lang.get('import_err_qty_zero', f'Riga {idx}: Quantità zero non valida.')
+                    first_error_msg = self.lang.get('import_err_qty_zero', f'Riga {idx}: QuantitÃ  zero non valida.')
                 continue
 
             # Risolvi component e location
@@ -9388,7 +9544,7 @@ class KanbanMoveForm(tk.Toplevel):
                     first_error_msg = self.lang.get('import_err_loc', f'Riga {idx}: Locazione non trovata: {loc_text}')
                 continue
 
-            # Determina l'utente da salvare, in base al segno della quantità
+            # Determina l'utente da salvare, in base al segno della quantitÃ 
             if qty < 0:
                 # Prelievo: richiede utente di sessione (maschera)
                 if not session_user:
@@ -9396,7 +9552,7 @@ class KanbanMoveForm(tk.Toplevel):
                     messagebox.showwarning(
                         self.lang.get('warn_title', 'Attenzione'),
                         self.lang.get('withdraw_requires_session_login',
-                                      'Prelievo rilevato nell\'import: è necessario essere loggati alla maschera.'),
+                                      'Prelievo rilevato nell\'import: Ã¨ necessario essere loggati alla maschera.'),
                         parent=self
                     )
                     return  # interrompe l'import intero
@@ -9415,7 +9571,7 @@ class KanbanMoveForm(tk.Toplevel):
                     load_login_done = True
                 user_to_save = self._load_user
 
-            # Controllo disponibilità per prelievo (opzionale, ma utile)
+            # Controllo disponibilitÃ  per prelievo (opzionale, ma utile)
             if qty < 0:
                 try:
                     avail = self.db.get_current_stock(comp_id, loc_id)
@@ -9426,7 +9582,7 @@ class KanbanMoveForm(tk.Toplevel):
                     if first_error_msg is None:
                         first_error_msg = self.lang.get(
                             'import_err_insufficient',
-                            f'Riga {idx}: Quantità non disponibile. Disponibile: {avail}'
+                            f'Riga {idx}: QuantitÃ  non disponibile. Disponibile: {avail}'
                         )
                     continue
 
@@ -9573,7 +9729,7 @@ class KanbanMoveForm(tk.Toplevel):
     def _ensure_load_login(self) -> bool:
         """
         Richiede il login quando si seleziona 'Load'. Se ok, memorizza _load_user.
-        Ritorna True se login effettuato (o già presente), False se annullato/negato.
+        Ritorna True se login effettuato (o giÃ  presente), False se annullato/negato.
         """
         if self._load_user:
             return True
@@ -9926,7 +10082,7 @@ def connect_to_database():
         # DEBUG: Controlla il tipo e il valore
         logger.info(f"Tipo conn_str: {type(conn_str)}")
         if not isinstance(conn_str, str):
-            error_msg = f"ERRORE: conn_str non è una stringa! Tipo: {type(conn_str)}, Valore: {conn_str}"
+            error_msg = f"ERRORE: conn_str non Ã¨ una stringa! Tipo: {type(conn_str)}, Valore: {conn_str}"
             logger.error(error_msg)
             raise TypeError(error_msg)
 
@@ -10008,7 +10164,7 @@ class App(tk.Tk):
         self.lang.set_language(initial_lang)
 
         # === 2. INIZIALIZZAZIONE DEI MODULI PRINCIPALI (INCLUSO NPI) ===
-        # Questo è il posto ideale per inizializzare i moduli che dipendono da DB e Lingua
+        # Questo Ã¨ il posto ideale per inizializzare i moduli che dipendono da DB e Lingua
 
         # --- INIZIALIZZAZIONE GESTORE NPI (POSIZIONE CORRETTA) ---
         try:
@@ -10034,7 +10190,7 @@ class App(tk.Tk):
 
         # Controlla la versione (e se l'app deve chiudersi)
         if self.check_version() is False:
-            # check_version già gestisce la chiusura, quindi fermiamo l'init
+            # check_version giÃ  gestisce la chiusura, quindi fermiamo l'init
             return
         logger.debug("INIT: after check_version")
 
@@ -10043,7 +10199,7 @@ class App(tk.Tk):
         self.authenticated_user_for_maintenance = None
 
         # Creazione dei widget e dei menu
-        # Ora queste chiamate sono sicure perché self.npi_manager esiste
+        # Ora queste chiamate sono sicure perchÃ© self.npi_manager esiste
         self._create_widgets()
         logger.debug("INIT: widgets created")
         self._create_menu()
@@ -10074,6 +10230,12 @@ class App(tk.Tk):
         self._product_check_stop_event = threading.Event()
         self._start_product_check_routine()
         self._start_product_check_background_task()
+        
+        # Inizializza il thread per il report mensile
+        self._monthly_report_thread = None
+        self._monthly_report_stop_event = threading.Event()
+        self._start_monthly_report_background_task()
+        
         logger.info("INIT: App initialization complete.")
 
         # Imposta la gestione della chiusura della finestra una sola volta
@@ -10092,7 +10254,7 @@ class App(tk.Tk):
         """Avvia il thread per il controllo periodico dei prodotti"""
         from business_days import should_send_notification
         if not should_send_notification(country_code='IT'):
-            logger.info("Report non inviato: oggi non è un giorno lavorativo")
+            logger.info("Report non inviato: oggi non Ã¨ un giorno lavorativo")
             return
 
         if self._product_check_thread is None or not self._product_check_thread.is_alive():
@@ -10106,7 +10268,7 @@ class App(tk.Tk):
             logger.info("Background task per controllo prodotti avviato")
 
     def _is_working_hours(self):
-        """Verifica se l'ora corrente è nell'orario lavorativo (08:00 - 22:00)"""
+        """Verifica se l'ora corrente Ã¨ nell'orario lavorativo (08:00 - 22:00)"""
         current_hour = datetime.now().hour
         return 8 <= current_hour <= 22
 
@@ -10116,8 +10278,8 @@ class App(tk.Tk):
         
         REGOLE OPERATIVE:
         - Orario: 08:00 - 22:00
-        - Giorni: Solo giorni lavorativi (esclusi weekend e festività)
-        - Festività gestite: Natale, Capodanno, Epifania, Ferragosto, 
+        - Giorni: Solo giorni lavorativi (esclusi weekend e festivitÃ )
+        - FestivitÃ  gestite: Natale, Capodanno, Epifania, Ferragosto, 
           Ognissanti, Pasqua (calcolata dinamicamente), ecc.
         """
         while not self._product_check_stop_event.is_set():
@@ -10146,13 +10308,13 @@ class App(tk.Tk):
                     logger.debug("Fuori orario lavorativo (08:00-22:00), skip controllo prodotti")
                     continue
 
-                # 4. Verifica giorni lavorativi (esclusi weekend e festività italiane)
+                # 4. Verifica giorni lavorativi (esclusi weekend e festivitÃ  italiane)
                 # Il metodo should_send_notification() controlla:
                 # - Weekend (Sabato, Domenica)
-                # - Festività fisse (Natale, Capodanno, Ferragosto, ecc.)
-                # - Pasqua e Lunedì dell'Angelo (calcolati con algoritmo di Gauss)
+                # - FestivitÃ  fisse (Natale, Capodanno, Ferragosto, ecc.)
+                # - Pasqua e LunedÃ¬ dell'Angelo (calcolati con algoritmo di Gauss)
                 if not should_send_notification():
-                    logger.debug("Giorno non lavorativo (weekend o festività), skip controllo prodotti")
+                    logger.debug("Giorno non lavorativo (weekend o festivitÃ ), skip controllo prodotti")
                     continue
 
                 # 5. Esegui la stored procedure
@@ -10160,13 +10322,13 @@ class App(tk.Tk):
                 success = self.db.execute_product_check_sp()
 
                 if success:
-                    logger.info("✓ SP InsertProductToCheck eseguita con successo")
+                    logger.info("âœ“ SP InsertProductToCheck eseguita con successo")
 
                     # 6. (Opzionale) Verifica se ci sono nuovi prodotti da controllare
                     # e mostra una notifica all'utente
                     self._check_and_notify_pending_verifications()
                 else:
-                    logger.error(f"✗ Errore esecuzione SP: {self.db.last_error_details}")
+                    logger.error(f"âœ— Errore esecuzione SP: {self.db.last_error_details}")
 
             except Exception as e:
                 logger.error(f"Errore nel worker controllo prodotti: {e}", exc_info=True)
@@ -10175,9 +10337,248 @@ class App(tk.Tk):
 
         logger.info("Background task controllo prodotti terminato")
 
+    def _start_monthly_report_background_task(self):
+        """Avvia il thread per il report mensile"""
+        try:
+            if self._monthly_report_thread is None or not self._monthly_report_thread.is_alive():
+                self._monthly_report_stop_event.clear()
+                self._monthly_report_thread = threading.Thread(
+                    target=self._monthly_report_worker,
+                    daemon=True,
+                    name="MonthlyReportWorker"
+                )
+                self._monthly_report_thread.start()
+                logger.info("Background task per report mensile avviato")
+        except Exception as e:
+            logger.error(f"Errore nell'avvio del background task report mensile: {e}", exc_info=True)
+
+    def _is_first_working_day_of_month(self):
+        """
+        Verifica se oggi è il primo giorno lavorativo del mese.
+        Se il primo del mese cade in weekend o festività, considera il primo lunedì.
+        
+        Returns:
+            bool: True se oggi è il primo giorno lavorativo del mese
+        """
+        from datetime import datetime, timedelta
+        
+        today = datetime.now().date()
+        
+        # Trova il primo giorno del mese corrente
+        first_day_of_month = today.replace(day=1)
+        
+        # Cerca il primo giorno lavorativo del mese
+        # Controlliamo i primi 10 giorni (sicuramente il primo giorno lavorativo è entro i primi 10)
+        for day_offset in range(10):
+            check_day = first_day_of_month + timedelta(days=day_offset)
+            
+            # Verifica se è weekend (sabato=5, domenica=6)
+            if check_day.weekday() >= 5:
+                continue
+            
+            # Verifica se è festività italiana
+            is_holiday = False
+            if check_day.month == 1 and check_day.day in [1, 6]:  # Capodanno, Epifania
+                is_holiday = True
+            elif check_day.month == 4 and check_day.day == 25:  # Liberazione
+                is_holiday = True
+            elif check_day.month == 5 and check_day.day == 1:  # Festa del lavoro
+                is_holiday = True
+            elif check_day.month == 6 and check_day.day == 2:  # Festa della Repubblica
+                is_holiday = True
+            elif check_day.month == 8 and check_day.day == 15:  # Ferragosto
+                is_holiday = True
+            elif check_day.month == 11 and check_day.day == 1:  # Ognissanti
+                is_holiday = True
+            elif check_day.month == 12 and check_day.day in [8, 25, 26]:  # Immacolata, Natale, S.Stefano
+                is_holiday = True
+            
+            if not is_holiday:
+                # Questo è il primo giorno lavorativo del mese
+                return check_day == today
+        
+        return False
+        
+        # Trova il primo giorno del mese corrente
+        first_day_of_month = today.replace(day=1)
+        
+        # Cerca il primo giorno lavorativo del mese
+        current_day = first_day_of_month
+        while current_day <= today:
+            # Temporaneamente imposta la data per il controllo
+            original_now = datetime.now
+            try:
+                datetime.now = lambda: datetime.combine(current_day, datetime.min.time())
+                if should_send_notification(country_code='IT'):
+                    # Trovato il primo giorno lavorativo
+                    return current_day == today
+            finally:
+                datetime.now = original_now
+            
+            current_day += timedelta(days=1)
+        
+        return False
+
+    def _monthly_report_worker(self):
+        """
+        Worker thread che invia il report mensile il primo giorno lavorativo del mese.
+        
+        REGOLE OPERATIVE:
+        - Esecuzione: Primo giorno lavorativo del mese alle 09:00
+        - Se il primo del mese Ã¨ weekend/festivitÃ , invia il primo lunedÃ¬
+        - Controlla database per evitare invii duplicati
+        """
+        from business_days import should_send_notification
+        from product_checks_gui import generate_monthly_excel_report
+        from utils import get_email_recipients, send_monthly_report_email
+        from datetime import datetime, timedelta
+        import time
+        
+        first_run = True  # Flag per la prima esecuzione
+        
+        while not self._monthly_report_stop_event.is_set():
+            try:
+                # PRIMA ESECUZIONE: Controlla immediatamente al lancio dell'app
+                if first_run:
+                    first_run = False
+                    logger.info("Prima esecuzione worker report mensile - controllo immediato")
+                    
+                    # Verifica se esiste già un record in database
+                    query = """
+                    SELECT IDSettings 
+                    FROM traceability_rs.dbo.settings 
+                    WHERE atribute = 'Sys_Verify_check_fail' 
+                    AND lastcheck IS NOT NULL
+                    """
+                    
+                    try:
+                        cursor = self.db.conn.cursor()
+                        cursor.execute(query)
+                        row = cursor.fetchone()
+                        cursor.close()
+                        
+                        if row is None:
+                            # Nessun record trovato - prima esecuzione mai fatta
+                            logger.info("Nessun record trovato - eseguo invio immediato del report mensile")
+                            
+                            # Verifica se è giorno lavorativo
+                            if should_send_notification(country_code='IT'):
+                                # Verifica se è il primo giorno lavorativo del mese
+                                if self._is_first_working_day_of_month():
+                                    # Salta l'attesa e procedi direttamente all'invio
+                                    logger.info("Oggi è il primo giorno lavorativo - invio immediato")
+                                else:
+                                    logger.info("Oggi non è il primo giorno lavorativo del mese")
+                            else:
+                                logger.info("Oggi non è un giorno lavorativo")
+                        else:
+                            logger.info("Record trovato in database - skip invio immediato")
+                    
+                    except Exception as e:
+                        logger.error(f"Errore nel controllo prima esecuzione: {e}")
+                
+
+                # Attendi fino alle 09:00 del giorno successivo
+                now = datetime.now()
+                target_hour = 9
+                
+                if now.hour >= target_hour:
+                    # GiÃ  passate le 09:00, attendi domani
+                    next_check = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
+                    next_check = next_check + timedelta(days=1)
+                else:
+                    # Attendi le 09:00 di oggi
+                    next_check = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
+                
+                wait_seconds = (next_check - now).total_seconds()
+                logger.info(f"Prossimo controllo report mensile: {next_check.strftime('%Y-%m-%d %H:%M')}")
+                
+                # Attendi con controllo stop ogni 60 secondi
+                elapsed = 0
+                while elapsed < wait_seconds and not self._monthly_report_stop_event.is_set():
+                    time.sleep(60)
+                    elapsed += 60
+                
+                if self._monthly_report_stop_event.is_set():
+                    break
+                
+                # Verifica se Ã¨ giorno lavorativo
+                if not should_send_notification(country_code='IT'):
+                    logger.debug("Oggi non Ã¨ un giorno lavorativo, skip report mensile")
+                    continue
+                
+                # Verifica se Ã¨ il primo giorno lavorativo del mese
+                if not self._is_first_working_day_of_month():
+                    logger.debug("Oggi non Ã¨ il primo giorno lavorativo del mese")
+                    continue
+                
+                # Verifica se il report Ã¨ giÃ  stato inviato questo mese
+                if self.db.check_monthly_report_sent():
+                    logger.info("Report mensile giÃ  inviato questo mese, skip")
+                    continue
+                
+                logger.info("=== INVIO REPORT MENSILE ===")
+                
+                # Genera il file Excel
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                temp_dir = r'C:\Temp'
+                if not os.path.exists(temp_dir):
+                    os.makedirs(temp_dir)
+                
+                filename = f"Monthly_Report_{timestamp}.xlsx"
+                file_path = os.path.join(temp_dir, filename)
+                
+                logger.info(f"Generazione report Excel: {file_path}")
+                excel_file = generate_monthly_excel_report(self.db, file_path)
+                
+                if not excel_file:
+                    logger.error("Errore nella generazione del report Excel")
+                    continue
+                
+                # Ottieni destinatari email
+                recipients = get_email_recipients(self.db.conn, 'Sys_Verify_check_fail')
+                
+                if not recipients:
+                    logger.warning("Nessun destinatario configurato per Sys_Verify_check_fail")
+                    # Pulisci file temporaneo
+                    if os.path.exists(excel_file):
+                        os.remove(excel_file)
+                    continue
+                
+                logger.info(f"Destinatari email: {recipients}")
+                
+                # Invia email con allegato
+                send_monthly_report_email(
+                    recipients=recipients,
+                    attachment_path=excel_file,
+                    logo_path="logo.png"
+                )
+                
+                # Aggiorna timestamp nel database
+                if self.db.update_monthly_report_timestamp():
+                    logger.info("âœ“ Report mensile inviato con successo")
+                else:
+                    logger.error("Errore nell'aggiornamento del timestamp")
+                
+                # Pulisci file temporaneo
+                try:
+                    if os.path.exists(excel_file):
+                        os.remove(excel_file)
+                        logger.info(f"File temporaneo rimosso: {excel_file}")
+                except Exception as e:
+                    logger.warning(f"Impossibile rimuovere file temporaneo: {e}")
+                
+            except Exception as e:
+                logger.error(f"Errore nel worker report mensile: {e}", exc_info=True)
+                # In caso di errore, attendi 1 ora prima di riprovare
+                time.sleep(3600)
+        
+        logger.info("Background task report mensile terminato")
+
+
     def _show_verification_notification(self, count):
         """Mostra una notifica all'utente (eseguito nel thread principale)"""
-        msg = f"⚠️ Ci sono {count} prodotti che necessitano verifica!"
+        msg = f"âš ï¸ Ci sono {count} prodotti che necessitano verifica!"
         logger.info(msg)
 
         # Opzione 1: Messagebox (invasivo)
@@ -10186,7 +10587,7 @@ class App(tk.Tk):
         # Opzione 2: Label temporanea nella status bar (meno invasivo)
         if hasattr(self, 'status_label'):
             original_text = self.status_label.cget('text')
-            self.status_label.config(text=f"⚠️ {msg}", foreground='orange')
+            self.status_label.config(text=f"âš ï¸ {msg}", foreground='orange')
             # Ripristina dopo 10 secondi
             self.after(10000, lambda: self.status_label.config(
                 text=original_text, foreground='black'))
@@ -10197,6 +10598,12 @@ class App(tk.Tk):
             logger.info("Arresto background task controllo prodotti...")
             self._product_check_stop_event.set()
             self._product_check_thread.join(timeout=5)
+        
+        # Ferma anche il thread del report mensile
+        if self._monthly_report_thread and self._monthly_report_thread.is_alive():
+            logger.info("Arresto background task report mensile...")
+            self._monthly_report_stop_event.set()
+            self._monthly_report_thread.join(timeout=5)
 
     def _check_and_notify_pending_verifications(self):
         """Controlla se ci sono verifiche pendenti e notifica l'utente"""
@@ -10211,7 +10618,7 @@ class App(tk.Tk):
             logger.error(f"Errore controllo verifiche pendenti: {e}")
 
     def _open_product_checks_management(self):
-        """Apre la finestra di gestione periodicità verifiche prodotti"""
+        """Apre la finestra di gestione periodicitÃ  verifiche prodotti"""
         import product_checks_gui
         product_checks_gui.ProductChecksManagementWindow(
             self, self.db, self.lang, self._temp_authorized_user_id
@@ -10227,7 +10634,7 @@ class App(tk.Tk):
     def _open_product_verification(self, user_id=None):
         """Apre la finestra di esecuzione verifiche prodotti"""
         import product_checks_gui
-        # Se user_id non è passato, usa _temp_authorized_user_id (fallback per vecchie chiamate)
+        # Se user_id non Ã¨ passato, usa _temp_authorized_user_id (fallback per vecchie chiamate)
         if user_id is None:
             user_id = getattr(self, '_temp_authorized_user_id', None)
         product_checks_gui.ProductVerificationWindow(
@@ -10259,9 +10666,9 @@ class App(tk.Tk):
         """
         Pianifica il controllo refill Kanban su base configurabile (JSON stampante).
         """
-        # Verifica se è giorno lavorativo
+        # Verifica se Ã¨ giorno lavorativo
         if not should_send_notification(country_code='IT'):
-            logger.info("Report non inviato: oggi non è un giorno lavorativo")
+            logger.info("Report non inviato: oggi non Ã¨ un giorno lavorativo")
             return
         try:
             cfg = load_printer_config() or {}
@@ -10305,7 +10712,7 @@ class App(tk.Tk):
                 if manual:
                     self.after(0, lambda: messagebox.showerror(
                         self.lang.get('error_title', 'Errore'),
-                        "Connessione al database non disponibile. Riprovare più tardi."
+                        "Connessione al database non disponibile. Riprovare piÃ¹ tardi."
                     ))
                 return
         
@@ -10343,16 +10750,16 @@ class App(tk.Tk):
                 return
             log.info(f"Regole attive trovate: {len(rules_map)}")
         
-            #3. Prima quantità (per chi ha regola percentuale)
+            #3. Prima quantitÃ  (per chi ha regola percentuale)
             pct_comp_ids = [cid for cid, r in rules_map.items() if r.get('min_pct') is not None]
             first_qty_map = {}
             if pct_comp_ids:
-                log.info(f"Recupero prime quantità per {len(pct_comp_ids)} componenti...")
+                log.info(f"Recupero prime quantitÃ  per {len(pct_comp_ids)} componenti...")
                 first_qty_map = self.db.fetch_first_load_qty_by_component(pct_comp_ids)
                 if first_qty_map is None:  # Errore di connessione
-                    log.error("Errore nel recupero prime quantità")
+                    log.error("Errore nel recupero prime quantitÃ ")
                     return
-                log.info(f"Prime quantità recuperate: {len(first_qty_map)}")
+                log.info(f"Prime quantitÃ  recuperate: {len(first_qty_map)}")
         
             # 4. Max singolo carico + record id
             log.info("Recupero max carichi...")
@@ -10380,7 +10787,7 @@ class App(tk.Tk):
                         rule_type = "ABS"
                         rule_value = threshold
                     else:
-                        # percentuale: calcolo su prima quantità
+                        # percentuale: calcolo su prima quantitÃ 
                         base = int(first_qty_map.get(cid, 0))
                         pct = int(rule.get('min_pct') or 0)
                         # floor per non anticipare troppo
@@ -10398,7 +10805,7 @@ class App(tk.Tk):
                         continue
                     qty_to_refill = int(ml['max_qty'])
                     krec_id = int(ml['record_id'])
-                    # dedup: se già presente oggi per questa KanBanRecordId, salta
+                    # dedup: se giÃ  presente oggi per questa KanBanRecordId, salta
                     if self.db.has_refill_request_today(krec_id):
                         continue
                     # prepara riga
@@ -10731,7 +11138,7 @@ class App(tk.Tk):
             return
         logger.info("open_kanban_load - form aperta con successo")
 
-    # Alias per compatibilità con diverse configurazioni menu
+    # Alias per compatibilitÃ  con diverse configurazioni menu
     def open_kanban_refill(self):
         """Alias per open_kanban_load"""
         return self.open_kanban_load()
@@ -10829,7 +11236,7 @@ class App(tk.Tk):
         required = 'calibration_management'
         logger.info("Request to open CalibrationsWindow; required_permission=%r", required)
 
-        # Chiama il login in modalità "gatekeeper"
+        # Chiama il login in modalitÃ  "gatekeeper"
         user = self._execute_simple_login(required_permission=required)
         logger.info("Login result for calibrations: %s", "OK" if user else "FAILED")
 
@@ -10971,7 +11378,7 @@ class App(tk.Tk):
 
     def _flash_birthday_message(self, message):
         """Crea un effetto flashing con cambio colore per il messaggio di auguri."""
-        # Se il testo è attualmente visibile, lo nasconde
+        # Se il testo Ã¨ attualmente visibile, lo nasconde
         if self.birthday_label.cget("text"):
             self.birthday_label.config(text="")
         else:
@@ -11015,7 +11422,7 @@ class App(tk.Tk):
         if len(celebrating) == 1:
             # Caso 1: Un solo festeggiato -> Testo lampeggiante
             employee = celebrating[0]
-            message = f"LA MULȚI ANI {employee.EmployeeName.upper()} ({employee.EmployeeSurname.upper()}) !!!"
+            message = f"LA MULÈšI ANI {employee.EmployeeName.upper()} ({employee.EmployeeSurname.upper()}) !!!"
             self._display_special_image(image_path, message)
             self._flash_birthday_message(message)
             duration_ms = 2 * 60 * 1000
@@ -11023,11 +11430,11 @@ class App(tk.Tk):
             return True
 
         elif len(celebrating) > 1:
-            # Caso 2: Più festeggiati -> Testo scorrevole
-            messages = [f"LA MULȚI ANI {emp.EmployeeName.upper()} ({emp.EmployeeSurname.upper()}) !!!" for emp in
+            # Caso 2: PiÃ¹ festeggiati -> Testo scorrevole
+            messages = [f"LA MULÈšI ANI {emp.EmployeeName.upper()} ({emp.EmployeeSurname.upper()}) !!!" for emp in
                         celebrating]
             # Unisce i messaggi con un separatore visivo
-            full_message = "    •••    ".join(messages)
+            full_message = "    â€¢â€¢â€¢    ".join(messages)
 
             self._display_special_image(image_path, "Compleanni di Oggi!")  # Un messaggio generico sull'immagine
             self._start_scrolling_message(full_message)
@@ -11043,7 +11450,7 @@ class App(tk.Tk):
         self.scrolling_text = message + " " * 20
         self.scrolling_position = 0
 
-        # Cambia il colore del testo per una migliore visibilità
+        # Cambia il colore del testo per una migliore visibilitÃ 
         self.birthday_label.config(foreground="#FFD700")  # Colore oro
 
         # Avvia il primo frame dell'animazione
@@ -11136,16 +11543,16 @@ class App(tk.Tk):
         """
         logger.info("Eseguo le operazioni post-avvio...")
         
-        # ✅ Operazione 1: Orologio (immediato, non usa DB)
+        # âœ… Operazione 1: Orologio (immediato, non usa DB)
         self._update_clock()
         
-        # ✅ Operazione 2: Controllo compleanni (immediato, operazione veloce)
+        # âœ… Operazione 2: Controllo compleanni (immediato, operazione veloce)
         logger.info('Avviato controllo compleanni')
         is_birthday = self._check_for_birthdays()
         if not is_birthday:
             self._setup_slideshow()
         
-        # ⏱️ SCAGLIONAMENTO OPERAZIONI IN BACKGROUND
+        # â±ï¸ SCAGLIONAMENTO OPERAZIONI IN BACKGROUND
         # Ogni operazione viene ritardata progressivamente per evitare conflitti DB
         
         # Ritardo 3 secondi: Check versione programma
@@ -11160,7 +11567,7 @@ class App(tk.Tk):
         #    self._check_calibration_warnings_startup_async
         #))
         
-        # Ritardo 9 secondi: Controllo quantità kanban
+        # Ritardo 9 secondi: Controllo quantitÃ  kanban
         self.after(9000, lambda: self._delayed_task(
             'controllo_kanban',
             self._schedule_kanban_refill_check
@@ -11206,7 +11613,7 @@ class App(tk.Tk):
 
     def _schedule_verification_check(self):
         """
-        Verifica periodicamente se è il momento di eseguire il check.
+        Verifica periodicamente se Ã¨ il momento di eseguire il check.
         Viene chiamato ogni minuto per controllare orari configurati.
         """
         try:
@@ -11269,9 +11676,9 @@ class App(tk.Tk):
 
     def _is_workday(self):
         """
-        Verifica se oggi è un giorno lavorativo usando UF_GetWorkingDay.
+        Verifica se oggi Ã¨ un giorno lavorativo usando UF_GetWorkingDay.
         La funzione ritorna il prossimo giorno lavorativo.
-        Se la data ritornata == oggi, allora oggi è lavorativo.
+        Se la data ritornata == oggi, allora oggi Ã¨ lavorativo.
         """
         query = "SELECT employee.[dbo].[UF_GetWorkingDay](?)"
         try:
@@ -11279,10 +11686,10 @@ class App(tk.Tk):
             result = self.db.fetch_one(query, (today,))
             if result and result[0]:
                 next_workday = result[0]
-                # Se è un datetime, converti a date
+                # Se Ã¨ un datetime, converti a date
                 if isinstance(next_workday, datetime):
                     next_workday = next_workday.date()
-                # Se il prossimo giorno lavorativo è oggi, allora oggi è lavorativo
+                # Se il prossimo giorno lavorativo Ã¨ oggi, allora oggi Ã¨ lavorativo
                 return next_workday == today
         except Exception as e:
             logger.error(f"Error checking workday: {e}", exc_info=True)
@@ -11474,7 +11881,7 @@ class App(tk.Tk):
         # Salva l'ID del prossimo ciclo per poterlo annullare
         self.slideshow_job_id = self.after(self.slideshow_interval_ms, self._cycle_image)
 
-    def _draw_current_image(self, event=None):  # Aggiunto 'event=None' per la compatibilità con bind
+    def _draw_current_image(self, event=None):  # Aggiunto 'event=None' per la compatibilitÃ  con bind
         """Funzione dedicata a disegnare l'immagine corrente alla dimensione corretta."""
         if not self.image_files:
             return
@@ -11546,8 +11953,8 @@ class App(tk.Tk):
 
 
     def _open_general_docs_viewer(self, category_id, category_name):
-        """Apre la finestra di visualizzazione dei documenti in modalità SOLA LETTURA (senza login)."""
-        # L'utente non è loggato, quindi passiamo None come user_name
+        """Apre la finestra di visualizzazione dei documenti in modalitÃ  SOLA LETTURA (senza login)."""
+        # L'utente non Ã¨ loggato, quindi passiamo None come user_name
         general_docs_gui.open_general_docs_viewer(
             self, self.db, self.lang, category_id, category_name, user_name=None, view_only=True
         )
@@ -11610,7 +12017,7 @@ class App(tk.Tk):
         logger.debug("Authenticated as %r; permissions=%s", user.name,
                      sorted(user.permissions) if hasattr(user, 'permissions') else [])
 
-        # ⚠️ VERIFICA SCADENZA PASSWORD
+        # âš ï¸ VERIFICA SCADENZA PASSWORD
         import change_password_gui
         expired, msg = change_password_gui.check_password_expiration(self.db, user_id)
         if expired:
@@ -11618,7 +12025,7 @@ class App(tk.Tk):
             messagebox.showwarning(
                 self.lang.get('password_expired_title', 'Password Scaduta'),
                 self.lang.get('password_expired_message', 
-                             f'La tua password è scaduta.\n{msg}\n\nDevi cambiarla per continuare.'),
+                             f'La tua password Ã¨ scaduta.\n{msg}\n\nDevi cambiarla per continuare.'),
                 parent=self
             )
             # Forza cambio password
@@ -11642,7 +12049,7 @@ class App(tk.Tk):
         #     return None
 
         if isinstance(action_callback, collections.abc.Callable):
-            # Passa user_id invece di user.name per compatibilità con _open_product_verification
+            # Passa user_id invece di user.name per compatibilitÃ  con _open_product_verification
             action_callback(user_id)
 
         return user
@@ -11685,7 +12092,7 @@ class App(tk.Tk):
         else:
             logger.debug("User %r authorized for %r; executing action.", user_id, menu_translation_key)
             
-            # ⚠️ VERIFICA SCADENZA PASSWORD
+            # âš ï¸ VERIFICA SCADENZA PASSWORD
             import change_password_gui
             expired, msg = change_password_gui.check_password_expiration(self.db, user_id)
             if expired:
@@ -11693,7 +12100,7 @@ class App(tk.Tk):
                 messagebox.showwarning(
                     self.lang.get('password_expired_title', 'Password Scaduta'),
                     self.lang.get('password_expired_message', 
-                                 f'La tua password è scaduta.\n{msg}\n\nDevi cambiarla per continuare.'),
+                                 f'La tua password Ã¨ scaduta.\n{msg}\n\nDevi cambiarla per continuare.'),
                     parent=self
                 )
                 # Forza cambio password
@@ -11804,7 +12211,7 @@ class App(tk.Tk):
 
     def check_version(self):
         """
-        Controlla se l'app è eseguita dalla sorgente, poi verifica la versione
+        Controlla se l'app Ã¨ eseguita dalla sorgente, poi verifica la versione
         e, se necessario, lancia l'updater.
         Permette fino a 3 rinvii dell'update a meno che il campo Must non sia True.
         Restituisce False se l'app deve chiudersi, altrimenti True.
@@ -11827,7 +12234,7 @@ class App(tk.Tk):
                 title = self.lang.get("error_running_from_source_title", "Esecuzione non Permessa")
                 message = self.lang.get(
                     "error_running_from_source_message",
-                    "L'applicazione non può essere eseguita direttamente dal percorso sorgente sul server.\n\n"
+                    "L'applicazione non puÃ² essere eseguita direttamente dal percorso sorgente sul server.\n\n"
                     "Si prega di lanciare la copia installata localmente."
                 )
                 messagebox.showerror(title, message, parent=self)
@@ -11843,15 +12250,15 @@ class App(tk.Tk):
                 # Carica il conteggio dei rinvii e l'ultima versione vista
                 skip_count, last_version = load_update_skip_count()
                 
-                # Se la versione disponibile è cambiata, resetta il conteggio
+                # Se la versione disponibile Ã¨ cambiata, resetta il conteggio
                 if last_version != version_info.Version:
                     skip_count = 0
                     logger.info(f"Nuova versione disponibile ({version_info.Version}), reset conteggio rinvii")
                 
-                # Determina se l'update è obbligatorio
-                # L'update è obbligatorio se:
-                # 1. Il campo Must è True, OPPURE
-                # 2. L'utente ha già saltato l'update 3 volte
+                # Determina se l'update Ã¨ obbligatorio
+                # L'update Ã¨ obbligatorio se:
+                # 1. Il campo Must Ã¨ True, OPPURE
+                # 2. L'utente ha giÃ  saltato l'update 3 volte
                 force_update = is_mandatory or skip_count >= 3
                 
                 if force_update:
@@ -11981,11 +12388,11 @@ class App(tk.Tk):
 
         # --- NUOVA ETICHETTA PER GLI AUGURI (al centro) ---
         self.birthday_label = ttk.Label(status_bar, text="", font=("Helvetica", 10, "bold"), anchor="center")
-        # Questo pack fa sì che l'etichetta si espanda per riempire lo spazio centrale
+        # Questo pack fa sÃ¬ che l'etichetta si espanda per riempire lo spazio centrale
         self.birthday_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         # --- DOPO: Crea l'Area Centrale per lo Slideshow ---
-        # Ora questo label si espanderà per riempire tutto lo spazio RIMANENTE
+        # Ora questo label si espanderÃ  per riempire tutto lo spazio RIMANENTE
         self.slideshow_label = ttk.Label(self, background="black")
         self.slideshow_label.pack(fill=tk.BOTH, expand=True)
 
@@ -12063,7 +12470,7 @@ class App(tk.Tk):
         self.kanban_materials_submenu = tk.Menu(self.kanban_root_submenu, tearoff=0)
         self.kanban_core_submenu = tk.Menu(self.kanban_root_submenu, tearoff=0)
 
-        # Tracciabilità
+        # TracciabilitÃ 
         self.traceability_submenu = tk.Menu(self.production_submenu, tearoff=0)
         self.fct_transfer_submenu = tk.Menu(self.traceability_submenu, tearoff=0)
 
@@ -12111,7 +12518,7 @@ class App(tk.Tk):
         self.language_menu = tk.Menu(self.help_menu, tearoff=0)
         self.language_menu.add_command(label="Italiano", command=lambda: self._change_language('it'))
         self.language_menu.add_command(label="English", command=lambda: self._change_language('en'))
-        self.language_menu.add_command(label="Română", command=lambda: self._change_language('ro'))
+        self.language_menu.add_command(label="RomÃ¢nÄƒ", command=lambda: self._change_language('ro'))
         self.language_menu.add_command(label="Deutsch", command=lambda: self._change_language('de'))
         self.language_menu.add_command(label="Svenska", command=lambda: self._change_language('sv'))
 
@@ -12302,7 +12709,7 @@ class App(tk.Tk):
 
 
 
-        # Disabilita tutto se il gestore NPI non è partito
+        # Disabilita tutto se il gestore NPI non Ã¨ partito
         if self.npi_manager is None:
             # Itera sugli indici del menu per disabilitarli
             for i in range(self.npi_menu.index("end") + 1):
@@ -12325,8 +12732,8 @@ class App(tk.Tk):
                                             menu=self.kanban_root_submenu)
         self._update_kanban_submenus()
 
-        # 3. Tracciabilità
-        self.production_submenu.add_cascade(label=self.lang.get('submenu_traceability', "Tracciabilità"),
+        # 3. TracciabilitÃ 
+        self.production_submenu.add_cascade(label=self.lang.get('submenu_traceability', "TracciabilitÃ "),
                                             menu=self.traceability_submenu)
         self._update_traceability_submenu()
 
@@ -12469,7 +12876,7 @@ class App(tk.Tk):
         )
 
     def _update_traceability_submenu(self):
-        """Aggiorna il sottomenu Tracciabilità"""
+        """Aggiorna il sottomenu TracciabilitÃ """
         self.traceability_submenu.delete(0, 'end')
 
         # Clienti Finali
@@ -12540,36 +12947,36 @@ class App(tk.Tk):
 
         # Gestione Materiali Coating
         self.coating_submenu.add_cascade(
-            label=self.lang.get('submenu_coating_materials', "🧰 Gestione Materiali"),
+            label=self.lang.get('submenu_coating_materials', "ðŸ§° Gestione Materiali"),
             menu=self.coating_materials_submenu
         )
         self.coating_materials_submenu.delete(0, 'end')
 
-        # ✅ SEPARARE I DUE MENU
+        # âœ… SEPARARE I DUE MENU
         self.coating_materials_submenu.add_command(
-            label=self.lang.get('submenu_coating_types', "🎨 Gestione Tipi Vernice"),
+            label=self.lang.get('submenu_coating_types', "ðŸŽ¨ Gestione Tipi Vernice"),
             command=self.open_coating_types_with_login
         )
         self.coating_materials_submenu.add_command(
-            label=self.lang.get('submenu_coating_thickness_specs', "📐 Gestione Specifiche Spessore"),
+            label=self.lang.get('submenu_coating_thickness_specs', "ðŸ“ Gestione Specifiche Spessore"),
             command=self.open_coating_thickness_specs_with_login
         )
 
-        # Controlli Qualità
+        # Controlli QualitÃ 
         self.coating_submenu.add_separator()
         self.coating_submenu.add_command(
-            label=self.lang.get('submenu_coating_viscosity', "🧪 Controllo Viscosità"),
+            label=self.lang.get('submenu_coating_viscosity', "ðŸ§ª Controllo ViscositÃ "),
             command=self.open_coating_viscosity_with_login
         )
         self.coating_submenu.add_command(
-            label=self.lang.get('submenu_coating_thickness', "📏 Controllo Spessore"),
+            label=self.lang.get('submenu_coating_thickness', "ðŸ“ Controllo Spessore"),
             command=self.open_coating_thickness_with_login
         )
 
         # Rapporti
         self.coating_submenu.add_separator()
         self.coating_submenu.add_command(
-            label=self.lang.get('submenu_coating_reports', "📊 Rapporti"),
+            label=self.lang.get('submenu_coating_reports', "ðŸ“Š Rapporti"),
             command=self.open_coating_reports_with_login
         )
 
@@ -12731,6 +13138,7 @@ class App(tk.Tk):
 
     def _open_verification_reports(self):
         """Apre la finestra dei rapporti di verifica"""
+        logger.info("Apertura finestra dei rapporti di verifica")
         try:
             from product_checks_gui import VerificationReportsWindow
             user = getattr(self, 'last_authenticated_user_name', 'Unknown')
@@ -12742,7 +13150,7 @@ class App(tk.Tk):
         """Aggiorna il sottomenu Rapporti"""
         self.reports_submenu.delete(0, 'end')
 
-        # Operatività
+        # OperativitÃ 
         self.reports_submenu.add_cascade(label=self.lang.get('submenu_operativity', "Operativita'"),
                                          menu=self.operativity_submenu)
         self.operativity_submenu.delete(0, 'end')
@@ -12946,7 +13354,7 @@ class App(tk.Tk):
         """Apre la finestra di gestione progetti NPI (protetta da autorizzazione)"""
 
         def authorized_action():
-            """Azione da eseguire solo se l'utente è autorizzato"""
+            """Azione da eseguire solo se l'utente Ã¨ autorizzato"""
             try:
                 final_customers = self.db.get_suppliers()#fetch_final_customers()
                 progetti = self.npi_manager.get_progetti_attivi()
@@ -12959,7 +13367,7 @@ class App(tk.Tk):
                     )
                     return
 
-                # Crea una finestra di selezione più larga
+                # Crea una finestra di selezione piÃ¹ larga
                 selection_window = tk.Toplevel(self)
                 selection_window.title("Seleziona Progetto NPI")
                 selection_window.geometry("900x250")
@@ -12969,7 +13377,7 @@ class App(tk.Tk):
                 ttk.Label(selection_window, text="Seleziona il progetto da gestire:", 
                          font=('Helvetica', 10, 'bold')).pack(pady=10)
 
-                # 🆕 Frame filtri
+                # ðŸ†• Frame filtri
                 filter_frame = ttk.LabelFrame(selection_window, text=self.lang.get('filters', 'Filtri'), padding=10)
                 filter_frame.pack(pady=10, padx=20, fill=tk.X)
 
@@ -13007,13 +13415,13 @@ class App(tk.Tk):
                 # Prepara lista completa dei progetti con formato ActiveNpi
                 all_projects_list = [p['ActiveNpi'] for p in progetti]
                 progetti_map = {p['ActiveNpi']: p['ProgettoId'] for p in progetti}
-                # 🆕 Mappa inversa per accedere ai dati completi del progetto
+                # ðŸ†• Mappa inversa per accedere ai dati completi del progetto
                 progetti_map_reverse = {p['ActiveNpi']: p for p in progetti}
                 
                 combo['values'] = all_projects_list
                 combo.pack(fill=tk.X, expand=True)
 
-                # 🆕 Funzione per filtrare il combobox mentre l'utente digita (con filtro cliente)
+                # ðŸ†• Funzione per filtrare il combobox mentre l'utente digita (con filtro cliente)
                 def on_keyrelease(event):
                     typed_text = combo_var.get().lower()
                     selected_client = client_var.get()
@@ -13030,7 +13438,7 @@ class App(tk.Tk):
                     
                     # Poi filtra per testo digitato
                     if typed_text == '':
-                        # Se il campo è vuoto, mostra tutti i progetti (filtrati per cliente)
+                        # Se il campo Ã¨ vuoto, mostra tutti i progetti (filtrati per cliente)
                         combo['values'] = filtered_by_client
                     else:
                         # Filtra i progetti che contengono il testo digitato
@@ -13044,7 +13452,7 @@ class App(tk.Tk):
                 # Bind dell'evento di digitazione
                 combo.bind('<KeyRelease>', on_keyrelease)
                 
-                # 🆕 Funzione per aggiornare la lista progetti quando cambia il cliente
+                # ðŸ†• Funzione per aggiornare la lista progetti quando cambia il cliente
                 def on_client_change(event):
                     # Reset project combobox
                     combo_var.set('')
@@ -13098,7 +13506,7 @@ class App(tk.Tk):
 
         def action(user_name):
             try:
-                # 'user_name' arriva dal login e non lo usiamo qui, ma è richiesto dal callback
+                # 'user_name' arriva dal login e non lo usiamo qui, ma Ã¨ richiesto dal callback
                 logger.debug(f"Utente '{user_name}' autorizzato. Apertura Dashboard NPI.")
                 dashboard = NpiDashboardWindow(master=self,
                                                npi_manager=self.npi_manager,
@@ -13131,7 +13539,7 @@ class App(tk.Tk):
     def _launch_dashboard_window(self, username):
         """
         Crea e lancia la finestra della dashboard.
-        'username' è passato da _execute_simple_login.
+        'username' Ã¨ passato da _execute_simple_login.
         """
         logger.info(f"Utente '{username}' autorizzato. Apertura Dashboard NPI.")
 
@@ -13151,7 +13559,7 @@ class App(tk.Tk):
         finestra del Gantt per quel progetto, con filtri per cliente e prodotto.
         """
         if self.npi_manager is None:
-            messagebox.showerror("Errore", "Il modulo NPI non è inizializzato.")
+            messagebox.showerror("Errore", "Il modulo NPI non Ã¨ inizializzato.")
             return
 
         try:
@@ -13310,7 +13718,7 @@ class App(tk.Tk):
             client_combo.bind('<<ComboboxSelected>>', update_product_combo)
             product_combo.bind('<<ComboboxSelected>>', update_listbox)
 
-            # Popola listbox iniziale (non serve chiamare update_listbox qui, già chiamato da update_product_combo)
+            # Popola listbox iniziale (non serve chiamare update_listbox qui, giÃ  chiamato da update_product_combo)
 
             scelta_utente = None
 
@@ -13373,7 +13781,7 @@ class App(tk.Tk):
     def _launch_config_window(self):
         """
         Crea e lancia la finestra di configurazione Task.
-        `self._temp_authorized_user_id` è disponibile qui.
+        `self._temp_authorized_user_id` Ã¨ disponibile qui.
         """
         authorized_user = self.last_authenticated_user_name
         logger.info(f"Utente '{authorized_user}' autorizzato per la Configurazione NPI.")
@@ -13423,7 +13831,7 @@ class App(tk.Tk):
     def _add_complaint_authorized(self):
         """
         Esegue l'aggiunta reclamo dopo autorizzazione
-        Chiamato solo se l'utente è autorizzato
+        Chiamato solo se l'utente Ã¨ autorizzato
         """
         try:
             title = self.lang.get('title_add_complaint', 'Aggiungi Reclamo')
@@ -13457,7 +13865,7 @@ class App(tk.Tk):
     def _manage_complaint_authorized(self):
         """
                 Esegue l'aggiunta reclamo dopo autorizzazione
-                Chiamato solo se l'utente è autorizzato
+                Chiamato solo se l'utente Ã¨ autorizzato
                 """
         try:
             title = self.lang.get('title_add_complaint', 'Aggiungi Reclamo')
@@ -13489,7 +13897,7 @@ class App(tk.Tk):
     def _analyze_complaints_authorized(self):
         """
         Esegue l'analisi reclami dopo autorizzazione
-        Chiamato solo se l'utente è autorizzato
+        Chiamato solo se l'utente Ã¨ autorizzato
         """
         try:
             title = self.lang.get('title_analyze_complaints', 'Analisi Reclami')
@@ -13521,7 +13929,7 @@ class App(tk.Tk):
     def _complaints_report_authorized(self):
         """
         Esegue il report reclami dopo autorizzazione
-        Chiamato solo se l'utente è autorizzato
+        Chiamato solo se l'utente Ã¨ autorizzato
         """
         try:
             title = self.lang.get('title_complaints_report', 'Report Reclami')
@@ -13576,7 +13984,7 @@ class App(tk.Tk):
 
     def _open_submissions_management(self, user_id=None):
         """Apre la finestra di gestione segnalazioni"""
-        # 🔍 DEBUG: Stampa tutti gli attributi che contengono "user" o "employee"
+        # ðŸ” DEBUG: Stampa tutti gli attributi che contengono "user" o "employee"
         print("\n=== ATTRIBUTI DISPONIBILI ===")
         for attr in dir(self):
             if not attr.startswith('_'):  # Escludi attributi privati
@@ -13640,7 +14048,7 @@ class App(tk.Tk):
         self._execute_authorized_action('submenu_coating_thickness_specs', action)
 
     def open_coating_viscosity_with_login(self):
-        """Apre la finestra di registrazione viscosità con login semplice"""
+        """Apre la finestra di registrazione viscositÃ  con login semplice"""
 
         def action(user_name):
             try:
@@ -13649,7 +14057,7 @@ class App(tk.Tk):
                 window = CoatingViscosityWindow(
                     parent=self,
                     conn_str=self.db.conn_str,
-                    username=user_name,  # ✅ Parametro corretto: username (non user_name)
+                    username=user_name,  # âœ… Parametro corretto: username (non user_name)
                     language_code=self.lang.current_language
                 )
                 window.show()
@@ -13714,7 +14122,7 @@ class App(tk.Tk):
                 subject = self.lang.get('fct_loop_stopped_subject', 'FCT Transfer Loop Fermato')
                 body = self.lang.get(
                     'fct_loop_stopped_body',
-                    f'Il loop FCT Transfer è stato fermato dall\'utente {getattr(self, "current_user", "N/A")} alle {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'
+                    f'Il loop FCT Transfer Ã¨ stato fermato dall\'utente {getattr(self, "current_user", "N/A")} alle {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'
                 )
 
                 # Invio dell'email
@@ -13734,7 +14142,7 @@ class App(tk.Tk):
         thread.start()
 
     def open_scrap_types_with_login(self):
-        # Usa il gate "per menù" con chiave di traduzione dedicata
+        # Usa il gate "per menÃ¹" con chiave di traduzione dedicata
         self._execute_authorized_action(
             menu_translation_key='submenu_scrap_types',
             action_callback=lambda: scarti_gui.open_scrap_reasons_manager(self, self.db, self.lang)
@@ -13964,10 +14372,10 @@ class App(tk.Tk):
         if not self.fct_manager.is_running:
             # Avvia esecuzione
             if is_running:
-                # Già in esecuzione su altra istanza
+                # GiÃ  in esecuzione su altra istanza
                 messagebox.showinfo(
                     self.lang.get('info', "Informazione"),
-                    self.lang.get('fct_already_running', "Batch già in esecuzione su un'altra istanza"),
+                    self.lang.get('fct_already_running', "Batch giÃ  in esecuzione su un'altra istanza"),
                     parent=self
                 )
                 # Cambia comunque il menu in Stop (per coerenza UI)
@@ -14082,7 +14490,7 @@ class App(tk.Tk):
 
     def open_view_materials(self):
         """Apre la finestra di visualizzazione materiali (senza login)."""
-        # Passiamo 'None' come user_name perché non c'è autenticazione
+        # Passiamo 'None' come user_name perchÃ© non c'Ã¨ autenticazione
         materials_gui.open_view_materials(self, self.db, self.lang, user_name=None)
 
     def open_edit_machine_with_login(self):
@@ -14170,13 +14578,13 @@ class App(tk.Tk):
 
         self._stop_product_check_background_task()
 
-        # Se force_quit è True, chiudi senza chiedere conferma
+        # Se force_quit Ã¨ True, chiudi senza chiedere conferma
         if force_quit:
             self.db.disconnect()
             self.destroy()
             return
         
-        # Chiedi conferma all'utente con possibilità di annullare
+        # Chiedi conferma all'utente con possibilitÃ  di annullare
         # askokcancel ritorna: True=OK (chiudi), False=Annulla (non chiudere)
         if messagebox.askokcancel(
             self.lang.get('quit_title', 'Chiudi Applicazione'),
@@ -14200,8 +14608,8 @@ class UpdateNotificationDialog(tk.Toplevel):
         main_frame.pack(expand=True, fill="both")
 
         message = lang.get('update_notification_message',
-                           "È stata rilasciata una nuova versione del programma ({0}).\n"
-                           "La tua versione attuale è la {1}.\n\n"
+                           "Ãˆ stata rilasciata una nuova versione del programma ({0}).\n"
+                           "La tua versione attuale Ã¨ la {1}.\n\n"
                            "Cosa vuoi fare?", new_version, current_version)
 
         ttk.Label(main_frame, text=message, justify=tk.LEFT).pack(pady=10)
@@ -14234,7 +14642,7 @@ if __name__ == "__main__":
         app.mainloop()
     except KeyboardInterrupt:
         # Gestione interruzione da tastiera (Ctrl+C)
-        print("\n\n⚠️  Applicazione interrotta dall'utente (Ctrl+C)")
+        print("\n\nâš ï¸  Applicazione interrotta dall'utente (Ctrl+C)")
         print("Chiusura in corso...")
         try:
             app.destroy()
@@ -14244,7 +14652,7 @@ if __name__ == "__main__":
         sys.exit(0)
     except Exception as e:
         # Gestione errori imprevisti
-        print(f"\n\n❌ Errore critico nell'applicazione: {e}")
+        print(f"\n\nâŒ Errore critico nell'applicazione: {e}")
         import traceback
         traceback.print_exc()
         
@@ -14253,7 +14661,7 @@ if __name__ == "__main__":
             import tkinter.messagebox as mb
             mb.showerror(
                 "Errore Critico",
-                f"Si è verificato un errore critico:\n\n{str(e)}\n\nL'applicazione verrà chiusa."
+                f"Si Ã¨ verificato un errore critico:\n\n{str(e)}\n\nL'applicazione verrÃ  chiusa."
             )
         except:
             pass

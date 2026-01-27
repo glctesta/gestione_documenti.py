@@ -1,7 +1,7 @@
-"""
+﻿"""
 Modulo per la gestione delle verifiche periodiche sui prodotti.
 Gestisce:
-- Configurazione periodicità verifiche per prodotto
+- Configurazione periodicitÃ  verifiche per prodotto
 - Gestione task di verifica (generici e specifici)
 - Esecuzione verifiche con checklist
 - Report verifiche (da completare)
@@ -15,14 +15,14 @@ import subprocess
 from datetime import datetime
 import openpyxl
 from openpyxl.utils import get_column_letter
-import openpyxl
-from openpyxl.utils import get_column_letter
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.chart import BarChart, Reference
 import logging
 
 logger = logging.getLogger("TraceabilityRS")  # usa la config fatta in main.py
 
 class ProductChecksManagementWindow(tk.Toplevel):
-    """Finestra per la gestione della periodicità delle verifiche prodotti"""
+    """Finestra per la gestione della periodicitÃ  delle verifiche prodotti"""
 
     def __init__(self, parent, db_handler, lang_manager, user_id):
         super().__init__(parent)
@@ -61,8 +61,8 @@ class ProductChecksManagementWindow(tk.Toplevel):
         self.product_combo = ttk.Combobox(left_frame, state='readonly', width=40)
         self.product_combo.grid(row=0, column=1, padx=5, pady=5, sticky='ew')
 
-        # Periodicità in quantità
-        ttk.Label(left_frame, text=self.lang.get('periodicity_qty', 'Periodicità (Quantità)') + ' *').grid(row=1,
+        # PeriodicitÃ  in quantitÃ 
+        ttk.Label(left_frame, text=self.lang.get('periodicity_qty', 'PeriodicitÃ  (QuantitÃ )') + ' *').grid(row=1,
                                                                                                            column=0,
                                                                                                            sticky='w',
                                                                                                            padx=5,
@@ -91,7 +91,7 @@ class ProductChecksManagementWindow(tk.Toplevel):
         self.tree.heading('id', text='ID')
         self.tree.heading('product_code', text=self.lang.get('product_code', 'Codice'))
         self.tree.heading('product_name', text=self.lang.get('product_name', 'Nome Prodotto'))
-        self.tree.heading('periodicity', text=self.lang.get('periodicity', 'Periodicità'))
+        self.tree.heading('periodicity', text=self.lang.get('periodicity', 'PeriodicitÃ '))
 
         self.tree.column('id', width=50)
         self.tree.column('product_code', width=120)
@@ -162,7 +162,7 @@ class ProductChecksManagementWindow(tk.Toplevel):
                 raise ValueError()
         except ValueError:
             messagebox.showwarning(self.lang.get('warning', 'Attenzione'),
-                                   self.lang.get('invalid_periodicity', 'Inserire una periodicità valida (numero > 0)'))
+                                   self.lang.get('invalid_periodicity', 'Inserire una periodicitÃ  valida (numero > 0)'))
             return
 
         product_id = self.products_dict[self.product_combo.get()]
@@ -333,7 +333,7 @@ class CheckTasksManagementWindow(tk.Toplevel):
                 task.ItemToCheck,
                 self.lang.get('generic', 'Generico') if task.IsGeneric else self.lang.get('specific', 'Specifico'),
                 task.ProductCode or '',
-                '✓' if task.Doc else '',
+                'âœ“' if task.Doc else '',
                 task.UserType,
                 task.DateIn.strftime('%d/%m/%Y') if task.DateIn else ''
             ))
@@ -533,16 +533,16 @@ class ProductVerificationWindow(tk.Toplevel):
     def _perform_label_code_check(self, label_code):
         """Esegue la verifica effettiva del label code"""
         if label_code != self.label_code_var.get().strip():
-            return  # Il testo è cambiato durante il delay
+            return  # Il testo Ã¨ cambiato durante il delay
 
         try:
             label_code_id = self.db.check_label_code_exists(label_code, self._current_must_check_id)
 
             if label_code_id:
-                self.label_code_status_label.config(text='✓', foreground='green')
+                self.label_code_status_label.config(text='âœ“', foreground='green')
                 self._current_label_code_id = label_code_id  # Memorizza l'IDLabelCode
             else:
-                self.label_code_status_label.config(text='✗', foreground='red')
+                self.label_code_status_label.config(text='âœ—', foreground='red')
                 self._current_label_code_id = None  # Reset IDLabelCode
                 # Mostra messaggio di avviso
                 messagebox.showwarning(
@@ -660,7 +660,7 @@ class ProductVerificationWindow(tk.Toplevel):
         self.result_combo.grid(row=1, column=1, sticky='w', padx=5, pady=2)
         self.result_combo.bind('<<ComboboxSelected>>', self._on_result_changed)
 
-        # Campo commento (visibile solo quando risultato è FAIL)
+        # Campo commento (visibile solo quando risultato Ã¨ FAIL)
         self.comment_label = ttk.Label(input_frame, text=self.lang.get('Comments', 'Commenti'))
         self.comment_label.grid(row=2, column=0, sticky='nw', padx=5, pady=2)
 
@@ -676,7 +676,7 @@ class ProductVerificationWindow(tk.Toplevel):
         # Treeview per checklist con checkbox
         columns_right = ('check', 'id', 'item', 'doc')
         self.checklist_tree = ttk.Treeview(right_frame, columns=columns_right, show='tree headings', height=15)
-        self.checklist_tree.heading('#0', text='✓')
+        self.checklist_tree.heading('#0', text='âœ“')
         self.checklist_tree.heading('check', text='')
         self.checklist_tree.heading('id', text='ID')
         self.checklist_tree.heading('item', text=self.lang.get('item', 'Azione'))
@@ -741,11 +741,11 @@ class ProductVerificationWindow(tk.Toplevel):
 
         for task in generic_tasks:
             print(f"Generic task: {task.ItemToCheck}")
-            item_id = self.checklist_tree.insert('', 'end', text='☐', values=(
+            item_id = self.checklist_tree.insert('', 'end', text='â˜', values=(
                 False,
                 task.PriodicalProductCheckListId,
                 task.ItemToCheck,
-                '✓' if task.Doc else ''
+                'âœ“' if task.Doc else ''
             ))
             self._check_items.append({
                 'tree_id': item_id,
@@ -754,7 +754,7 @@ class ProductVerificationWindow(tk.Toplevel):
                 'doc': task.Doc
             })
 
-        # CARICA TASK SPECIFICI solo se c'è un prodotto selezionato
+        # CARICA TASK SPECIFICI solo se c'Ã¨ un prodotto selezionato
         if self._current_must_check_id:
             specific_tasks = self.db.fetch_specific_check_tasks(self._current_must_check_id)
             print(f"Found {len(specific_tasks)} specific tasks")
@@ -762,11 +762,11 @@ class ProductVerificationWindow(tk.Toplevel):
 
             for task in specific_tasks:
                 print(f"Specific task: {task.ItemToCheck}")
-                item_id = self.checklist_tree.insert('', 'end', text='☐', values=(
+                item_id = self.checklist_tree.insert('', 'end', text='â˜', values=(
                     False,
                     task.PriodicalProductCheckListId,
                     task.ItemToCheck,
-                    '✓' if task.Doc else ''
+                    'âœ“' if task.Doc else ''
                 ))
                 self._check_items.append({
                     'tree_id': item_id,
@@ -788,7 +788,7 @@ class ProductVerificationWindow(tk.Toplevel):
                 for check_item in self._check_items:
                     if check_item['tree_id'] == item_id:
                         check_item['checked'] = not check_item['checked']
-                        new_symbol = '☑' if check_item['checked'] else '☐'
+                        new_symbol = 'â˜‘' if check_item['checked'] else 'â˜'
                         self.checklist_tree.item(item_id, text=new_symbol)
                         break
 
@@ -858,7 +858,7 @@ class ProductVerificationWindow(tk.Toplevel):
         if self.result_var.get() == 'FAIL' and not comments:
             messagebox.showwarning(
                 self.lang.get('warning', 'Attenzione'),
-                self.lang.get('Comments_Required_For_Fail', 'Il campo commenti è obbligatorio per risultato FAIL'),
+                self.lang.get('Comments_Required_For_Fail', 'Il campo commenti Ã¨ obbligatorio per risultato FAIL'),
                 parent=self
             )
             return
@@ -1006,7 +1006,7 @@ class VerificationReportsWindow(tk.Toplevel):
         self.stats_tree.heading('Fail', text='Fail')
         self.stats_tree.heading('FailPercent', text='Fail %')
         self.stats_tree.heading('Not_True', text='Not True')
-        self.stats_tree.heading('Not_True_Percent', text='Not True %')
+        self.stats_tree.heading('Not_True_Percent', text='Failed PPM')
         
         self.stats_tree.column('User', width=200)
         self.stats_tree.column('Count', width=80, anchor='center')
@@ -1017,6 +1017,7 @@ class VerificationReportsWindow(tk.Toplevel):
         self.stats_tree.column('Not_True_Percent', width=80, anchor='center')
         
         self.stats_tree.tag_configure('red_bold', foreground='red', font=('Segoe UI', 9, 'bold'))
+        self.stats_tree.tag_configure('green_bold', foreground='green', font=('Segoe UI', 9, 'bold'))
         self.stats_tree.pack(fill='x', padx=5, pady=5)
 
     def _load_users(self):
@@ -1157,34 +1158,356 @@ class VerificationReportsWindow(tk.Toplevel):
             messagebox.showerror("Errore Query", f"Errore esecuzione ricerca: {e}")
 
     def _on_export(self):
-        """Esporta i dati in Excel"""
-        if not self.tree.get_children():
-            messagebox.showwarning("Attenzione", "Nessun dato da esportare")
-            return
+        """Esporta i dati in Excel - se nessun utente selezionato, esporta tutti"""
+        check_user_filter = self.user_var.get().strip()
+        
+        if not check_user_filter:
+            # Nessun utente selezionato - chiedi conferma per esportare tutti
+            if not messagebox.askyesno(
+                "Conferma", 
+                "Nessun utente selezionato. Vuoi esportare i dati di TUTTI gli utenti?",
+                parent=self
+            ):
+                return
+            
+            # Esegui la query senza filtro utente per tutti gli utenti
+            is_analyzed = 1 if self.is_analyzed_var.get() else 0
+            label_code = self.label_code_var.get().strip() or None
+            
+            sql = """
+            DECLARE @IsAnalized bit = ?;
+            DECLARE @LabelCode as nvarchar(230) = ?;
 
-        file_path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel files", "*.xlsx")])
-        if not file_path:
-            return
+            WITH EmployeeMapping AS (
+                SELECT 
+                    u.nomeuser,
+                    UPPER( e.EmployeeSurname + ' ' +e.EmployeeName) AS FullName,
+                    ROW_NUMBER() OVER (PARTITION BY u.nomeuser ORDER BY e.employeeid) AS rn
+                FROM employee.dbo.employees e 
+                INNER JOIN resetservices.dbo.tbuserkey u ON e.employeeid = u.idanga
+            ),
+            ComponentInfo AS (
+                SELECT 
+                    ProductRiferiments.CodRiferimento,
+                    ProductComponentsErp.IDProduct,
+                    ParentPhases.ParentPhaseName,
+                    Components.ComponentCode,
+                    ROW_NUMBER() OVER (PARTITION BY ProductRiferiments.CodRiferimento, ProductComponentsErp.IDProduct 
+                                      ORDER BY (SELECT NULL)) AS rn
+                FROM ProductRiferiments 
+                INNER JOIN ProductComponentsErp ON ProductComponentsErp.IDProductCompErp = ProductRiferiments.IDProductCompErp
+                INNER JOIN ParentPhases ON ParentPhases.IDParentPhase = ProductRiferiments.IDParentPhase
+                LEFT JOIN Components ON Components.IDComponent = ProductComponentsErp.IDComponent
+            )
+            SELECT distinct   
+                EmployeeMapping.FullName AS CheckUser,
+                labelcodes.LabelCod,
+                Products.ProductCode,                
+                CASE WHEN ScanDefects.IsPass = 1 THEN 'REPAIRED' ELSE 'SCRAP' END AS ResultRepair,  
+                DATEDIFF(MINUTE, PC.CheckTime, ScanDefects.StopTime) as [Minute], 
+                CASE 
+                    WHEN DATEDIFF(MINUTE, PC.CheckTime, ScanDefects.StopTime) < 60 
+                        THEN CAST(DATEDIFF(MINUTE, PC.CheckTime, ScanDefects.StopTime) AS NVARCHAR(10)) + ' MINUTE'
+                    WHEN DATEDIFF(HOUR, PC.CheckTime, ScanDefects.StopTime) >= 24 
+                        THEN CAST(DATEDIFF(DAY, PC.CheckTime, ScanDefects.StopTime) AS NVARCHAR(10)) + ' DAYS'
+                    ELSE CAST(DATEDIFF(HOUR, PC.CheckTime, ScanDefects.StopTime) AS NVARCHAR(10)) + ' HOURS'
+                END AS TimeDefectAfterCheck,       
+                
+                Riferiments.CodRiferimento,
+                ISNULL(ComponentInfo.ParentPhaseName, 'PTHM') AS ComponentType,  
+                ISNULL(ComponentInfo.ComponentCode, '#N/D') AS ComponentCode,
+                Defects.DefectNameRO AS Defect,        
+                IIF(CAST(Boxes.BoxCode AS NVARCHAR(12)) is not null ,'IN BOX', 'NOT IN A BOX') AS BoxCode,
+                IIF(PackingLists.CodePack IS NULL, 'NOT SHIPPED YET', 'SHIPPED ALREADY') AS ShipmentStatus
+                
+            FROM ScanDefects 
+            INNER JOIN ScanDefectDetails ON ScanDefects.IDScanDefect = ScanDefectDetails.IDScanDefect
+            INNER JOIN DefectsRiferiments ON DefectsRiferiments.IDScanDefectDet = ScanDefectDetails.IDScanDefectDet
+            INNER JOIN Riferiments ON Riferiments.IDDibaRiferimento = DefectsRiferiments.IDDibaRiferimento
+            INNER JOIN Defects ON ScanDefectDetails.IDDefect = Defects.IDDefect
+            INNER JOIN Scannings ON Scannings.IDScan = ScanDefects.IDScan
+            INNER JOIN OrderPhases ON OrderPhases.IDOrderPhase = Scannings.IDOrderPhase
+            INNER JOIN Orders ON OrderPhases.IDOrder = Orders.IDOrder
+            INNER JOIN Products ON Products.IDProduct = Orders.IDProduct
+            INNER JOIN Phases ON OrderPhases.IDPhase = Phases.IDPhase
+            INNER JOIN Clients ON Clients.IDClient = Products.IDClient
+            INNER JOIN Boards ON Scannings.IDBoard = Boards.IDBoard
+            INNER JOIN Teams ON Teams.IDTeam = ScanDefects.IdTeam
+            INNER JOIN WorkLines ON WorkLines.IDWorkLine = Teams.IDWorkLine
+            INNER JOIN LabelCodes ON Boards.IDBoard = LabelCodes.IDBoard
+            INNER JOIN PeriodicalProductCheckLogs PC ON LabelCodes.IDLabelCode = PC.IDLabelCode and isnull(pc.isanalized,0) = @IsAnalized 
 
-        try:
-            wb = openpyxl.Workbook()
-            ws = wb.active
-            ws.title = "Verification Report"
+            LEFT JOIN EmployeeMapping ON EmployeeMapping.nomeuser COLLATE database_default = PC.UserCheck 
+                AND EmployeeMapping.rn = 1
+            LEFT JOIN ComponentInfo ON ComponentInfo.CodRiferimento = Riferiments.CodRiferimento 
+                AND ComponentInfo.IDProduct = Orders.IDProduct 
+                AND ComponentInfo.rn = 1
 
-            # Headers
-            columns = self.tree['columns']
-            ws.append(columns)
+            LEFT JOIN Areas ON Areas.IDArea = ScanDefectDetails.IDArea
+            LEFT JOIN BoxDetails ON BoxDetails.IDBoard = Boards.IDBoard
+            LEFT JOIN Boxes ON Boxes.IDBox = BoxDetails.IDBox
+            LEFT JOIN BoxPKs ON BoxPKs.IDBoxPK = Boxes.IDBoxPK
+            LEFT JOIN PalletPKs ON PalletPKs.IDPalletPK = BoxPKs.IDPalletPK
+            LEFT JOIN PackingLists ON PackingLists.IDPackingList = PalletPKs.IDPackingList
 
-            # Data
-            for item in self.tree.get_children():
-                values = self.tree.item(item)['values']
-                ws.append(values)
+            WHERE 
+                Phases.IDPhase IN (102, 103, 107)
+                AND PC.Status = 'PASS'
+                AND ScanDefects.StopTime > PC.CheckTime
+                and ISNULL(ComponentInfo.ParentPhaseName, 'PTHM') = 'PTHM'
+                AND NOT defects.DefectNameRO IN ('Schimbare pin fixture test','Componenta iesita din tolerante')
+                and labelcodes.LabelCod = iif(@LabelCode is null,labelcodes.LabelCod,@LabelCode)
+            Order By [Minute];
+            """
+            
+            try:
+                cursor = self.db.conn.cursor()
+                try:
+                    cursor.execute(sql, (is_analyzed, label_code))
+                    rows = cursor.fetchall()
+                    
+                    if not rows:
+                        messagebox.showwarning("Attenzione", "Nessun dato da esportare", parent=self)
+                        return
+                    
+                    # Crea directory se non esiste
+                    temp_dir = r'C:\Temp'
+                    if not os.path.exists(temp_dir):
+                        os.makedirs(temp_dir)
+                    
+                    # Nome file con timestamp
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    filename = f"Report_after_check_status_{timestamp}.xlsx"
+                    file_path = os.path.join(temp_dir, filename)
+                    
+                    wb = openpyxl.Workbook()
+                    ws = wb.active
+                    ws.title = "Data"
+                    
+                    # Stili per intestazioni
+                    header_font = Font(bold=True, color="FFFFFF", size=12)
+                    header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+                    header_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                    border = Border(
+                        left=Side(style='thin'),
+                        right=Side(style='thin'),
+                        top=Side(style='thin'),
+                        bottom=Side(style='thin')
+                    )
+                    
+                    # Headers
+                    columns = ('CheckUser', 'LabelCod', 'ProductCode', 'ResultRepair', 'Minute', 
+                              'TimeDefectAfterCheck', 'CodRiferimento', 'ComponentType', 
+                              'ComponentCode', 'Defect', 'BoxCode', 'ShipmentStatus')
+                    ws.append(columns)
+                    
+                    # Formatta intestazioni
+                    for col_idx, _ in enumerate(columns, 1):
+                        cell = ws.cell(row=1, column=col_idx)
+                        cell.font = header_font
+                        cell.fill = header_fill
+                        cell.alignment = header_alignment
+                        cell.border = border
+                    
+                    # Data con formattazione
+                    for row_idx, row in enumerate(rows, 2):
+                        for col_idx, value in enumerate(row, 1):
+                            cell = ws.cell(row=row_idx, column=col_idx)
+                            cell.value = str(value) if value is not None else ''
+                            cell.border = border
+                            cell.alignment = Alignment(horizontal='left', vertical='center')
+                    
+                    # Auto-size colonne
+                    for column in ws.columns:
+                        max_length = 0
+                        column_letter = column[0].column_letter
+                        for cell in column:
+                            try:
+                                if len(str(cell.value)) > max_length:
+                                    max_length = len(str(cell.value))
+                            except:
+                                pass
+                        adjusted_width = min(max_length + 2, 50)
+                        ws.column_dimensions[column_letter].width = adjusted_width
+                    
+                    # Freeze prima riga
+                    ws.freeze_panes = 'A2'
+                    
+                    # Aggiungi filtro automatico alle intestazioni
+                    ws.auto_filter.ref = ws.dimensions
+                    
+                    # Crea foglio statistiche per grafico
+                    stats_ws = wb.create_sheet("Statistics")
+                    stats_ws.append(['User', 'Verified (PASS)', 'Failed PPM'])
+                    
+                    # Calcola statistiche per utente
+                    user_stats = {}
+                    for row in rows:
+                        user = row[0]  # CheckUser
+                        if user not in user_stats:
+                            user_stats[user] = {'verified': 0, 'failed': 0}
+                        user_stats[user]['failed'] += 1
+                    
+                    # Query per ottenere il totale verifiche PASS per utente
+                    stats_query = """
+                    WITH EmployeeMapping AS (
+                        SELECT 
+                            u.nomeuser,
+                            UPPER(e.EmployeeSurname + ' ' + e.EmployeeName) AS FullName,
+                            ROW_NUMBER() OVER (PARTITION BY u.nomeuser ORDER BY e.employeeid) AS rn
+                        FROM employee.dbo.employees e 
+                        INNER JOIN resetservices.dbo.tbuserkey u ON e.employeeid = u.idanga
+                    )
+                    SELECT 
+                        EmployeeMapping.FullName,
+                        COUNT(*) as TotalVerified
+                    FROM [Traceability_RS].[dbo].[PeriodicalProductCheckLogs] PC
+                    LEFT JOIN EmployeeMapping ON EmployeeMapping.nomeuser COLLATE database_default = PC.UserCheck 
+                        AND EmployeeMapping.rn = 1
+                    WHERE PC.Status = 'PASS'
+                    GROUP BY EmployeeMapping.FullName
+                    """
+                    
+                    cursor2 = self.db.conn.cursor()
+                    try:
+                        cursor2.execute(stats_query)
+                        verified_rows = cursor2.fetchall()
+                        
+                        for vrow in verified_rows:
+                            user = vrow[0]
+                            if user and user in user_stats:
+                                user_stats[user]['verified'] = vrow[1]
+                            elif user:
+                                user_stats[user] = {'verified': vrow[1], 'failed': 0}
+                    finally:
+                        cursor2.close()
+                    
+                    # Popola foglio statistiche con PPM
+                    for user, stats in sorted(user_stats.items()):
+                        verified = stats['verified']
+                        failed = stats['failed']
+                        # Calcola PPM (Parts Per Million)
+                        ppm = (failed / verified * 1000000) if verified > 0 else 0
+                        stats_ws.append([user, verified, round(ppm, 2)])
+                    
+                    # Formatta intestazioni statistiche
+                    for col_idx in range(1, 4):
+                        cell = stats_ws.cell(row=1, column=col_idx)
+                        cell.font = header_font
+                        cell.fill = header_fill
+                        cell.alignment = header_alignment
+                        cell.border = border
+                    
+                    # Aggiungi filtro automatico alle intestazioni statistiche
+                    stats_ws.auto_filter.ref = stats_ws.dimensions
+                    
+                    # Crea grafico a barre
+                    chart = BarChart()
+                    chart.type = "col"
+                    chart.style = 10
+                    chart.title = "Verified Boards vs Failed PPM by User"
+                    chart.y_axis.title = 'Value'
+                    chart.x_axis.title = 'User'
+                    
+                    # Dati per il grafico
+                    data = Reference(stats_ws, min_col=2, min_row=1, max_row=len(user_stats)+1, max_col=3)
+                    cats = Reference(stats_ws, min_col=1, min_row=2, max_row=len(user_stats)+1)
+                    
+                    chart.add_data(data, titles_from_data=True)
+                    chart.set_categories(cats)
+                    chart.height = 15
+                    chart.width = 25
+                    
+                    # Aggiungi grafico al foglio statistiche
+                    stats_ws.add_chart(chart, "E2")
+                    
+                    wb.save(file_path)
+                    messagebox.showinfo("Successo", f"Esportati {len(rows)} record per tutti gli utenti con grafici", parent=self)
+                    os.startfile(file_path)
 
-            wb.save(file_path)
-            messagebox.showinfo("Successo", "Esportazione completata")
-            os.startfile(file_path)
-        except Exception as e:
-            messagebox.showerror("Errore Export", f"Errore durante l'esportazione: {e}")
+                    
+                finally:
+                    cursor.close()
+                    
+            except Exception as e:
+                messagebox.showerror("Errore Export", f"Errore durante l'esportazione: {e}", parent=self)
+        else:
+            # Utente selezionato - esporta solo i dati visualizzati
+            if not self.tree.get_children():
+                messagebox.showwarning("Attenzione", "Nessun dato da esportare", parent=self)
+                return
+
+            # Crea directory se non esiste
+            temp_dir = r'C:\Temp'
+            if not os.path.exists(temp_dir):
+                os.makedirs(temp_dir)
+            
+            # Nome file con timestamp
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"Report_after_check_status_{timestamp}.xlsx"
+            file_path = os.path.join(temp_dir, filename)
+
+            try:
+                wb = openpyxl.Workbook()
+                ws = wb.active
+                ws.title = "Verification Report"
+                
+                # Stili per intestazioni
+                header_font = Font(bold=True, color="FFFFFF", size=12)
+                header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+                header_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                border = Border(
+                    left=Side(style='thin'),
+                    right=Side(style='thin'),
+                    top=Side(style='thin'),
+                    bottom=Side(style='thin')
+                )
+
+                # Headers
+                columns = self.tree['columns']
+                ws.append(columns)
+                
+                # Formatta intestazioni
+                for col_idx in range(1, len(columns) + 1):
+                    cell = ws.cell(row=1, column=col_idx)
+                    cell.font = header_font
+                    cell.fill = header_fill
+                    cell.alignment = header_alignment
+                    cell.border = border
+
+                # Data con formattazione
+                for row_idx, item in enumerate(self.tree.get_children(), 2):
+                    values = self.tree.item(item)['values']
+                    for col_idx, value in enumerate(values, 1):
+                        cell = ws.cell(row=row_idx, column=col_idx)
+                        cell.value = value
+                        cell.border = border
+                        cell.alignment = Alignment(horizontal='left', vertical='center')
+                
+                # Auto-size colonne
+                for column in ws.columns:
+                    max_length = 0
+                    column_letter = column[0].column_letter
+                    for cell in column:
+                        try:
+                            if len(str(cell.value)) > max_length:
+                                max_length = len(str(cell.value))
+                        except:
+                            pass
+                    adjusted_width = min(max_length + 2, 50)
+                    ws.column_dimensions[column_letter].width = adjusted_width
+                
+                # Freeze prima riga
+                ws.freeze_panes = 'A2'
+                
+                # Aggiungi filtro automatico alle intestazioni
+                ws.auto_filter.ref = ws.dimensions
+
+                wb.save(file_path)
+                messagebox.showinfo("Successo", "Esportazione completata con formattazione", parent=self)
+                os.startfile(file_path)
+            except Exception as e:
+                messagebox.showerror("Errore Export", f"Errore durante l'esportazione: {e}", parent=self)
 
     def _update_stats(self):
         """Calcola e mostra le statistiche"""
@@ -1291,9 +1614,16 @@ class VerificationReportsWindow(tk.Toplevel):
                     total_defects = row[4]
                     
                     fail_percent = (fail_count / total * 100) if total > 0 else 0
-                    defect_percent = (total_defects / pass_count * 100) if pass_count > 0 else 0
+                    # Calcola PPM (Parts Per Million) invece di percentuale
+                    defect_ppm = (total_defects / pass_count * 1000000) if pass_count > 0 else 0
                     
-                    tags = ('red_bold',) if total_defects > 0 else ()
+                    # Assegna tag: verde se nessun difetto, rosso se ci sono difetti
+                    if total_defects > 0:
+                        tags = ('red_bold',)
+                    elif total_defects == 0:
+                        tags = ('green_bold',)
+                    else:
+                        tags = ()
                     
                     self.stats_tree.insert('', 'end', values=(
                         row[0] or 'Unknown', 
@@ -1302,7 +1632,7 @@ class VerificationReportsWindow(tk.Toplevel):
                         fail_count, 
                         f"{fail_percent:.2f}%",
                         total_defects,
-                        f"{defect_percent:.2f}%"
+                        f"{defect_ppm:.2f}"
                     ), tags=tags)
             finally:
                 cursor.close()
@@ -1607,3 +1937,177 @@ def check_and_notify_verification_discrepancies(db_handler):
 
     except Exception as e:
         logger.error(f'Background check error: {e}')
+
+
+
+def generate_monthly_excel_report(db_handler, file_path):
+    """
+    Genera il report Excel mensile con statistiche PPM per tutti gli utenti.
+    
+    Args:
+        db_handler: Istanza del DatabaseHandler
+        file_path: Percorso completo dove salvare il file Excel
+        
+    Returns:
+        str: Percorso del file generato, None in caso di errore
+    """
+    try:
+        # Ottieni i dati dal database
+        rows = db_handler.generate_monthly_report_data()
+        
+        if not rows:
+            logger.warning("Nessun dato disponibile per il report mensile")
+            return None
+        
+        # Crea workbook
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Data"
+        
+        # Stili per intestazioni
+        header_font = Font(bold=True, color="FFFFFF", size=12)
+        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        header_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+        
+        # Headers
+        columns = ('CheckUser', 'LabelCod', 'ProductCode', 'ResultRepair', 'Minute', 
+                  'TimeDefectAfterCheck', 'CodRiferimento', 'ComponentType', 
+                  'ComponentCode', 'Defect', 'BoxCode', 'ShipmentStatus')
+        ws.append(columns)
+        
+        # Formatta intestazioni
+        for col_idx, _ in enumerate(columns, 1):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+            cell.border = border
+        
+        # Data con formattazione
+        for row_idx, row in enumerate(rows, 2):
+            for col_idx, value in enumerate(row, 1):
+                cell = ws.cell(row=row_idx, column=col_idx)
+                cell.value = str(value) if value is not None else ''
+                cell.border = border
+                cell.alignment = Alignment(horizontal='left', vertical='center')
+        
+        # Auto-size colonne
+        for column in ws.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column_letter].width = adjusted_width
+        
+        # Freeze prima riga
+        ws.freeze_panes = 'A2'
+        
+        # Aggiungi filtro automatico
+        ws.auto_filter.ref = ws.dimensions
+        
+        # Crea foglio statistiche per grafico
+        stats_ws = wb.create_sheet("Statistics")
+        stats_ws.append(['User', 'Verified (PASS)', 'Failed PPM'])
+        
+        # Calcola statistiche per utente
+        user_stats = {}
+        for row in rows:
+            user = row[0]  # CheckUser
+            if user not in user_stats:
+                user_stats[user] = {'verified': 0, 'failed': 0}
+            user_stats[user]['failed'] += 1
+        
+        # Query per ottenere il totale verifiche PASS per utente
+        stats_query = """
+        WITH EmployeeMapping AS (
+            SELECT 
+                u.nomeuser,
+                UPPER(e.EmployeeSurname + ' ' + e.EmployeeName) AS FullName,
+                ROW_NUMBER() OVER (PARTITION BY u.nomeuser ORDER BY e.employeeid) AS rn
+            FROM employee.dbo.employees e 
+            INNER JOIN resetservices.dbo.tbuserkey u ON e.employeeid = u.idanga
+        )
+        SELECT 
+            EmployeeMapping.FullName,
+            COUNT(*) as TotalVerified
+        FROM [Traceability_RS].[dbo].[PeriodicalProductCheckLogs] PC
+        LEFT JOIN EmployeeMapping ON EmployeeMapping.nomeuser COLLATE database_default = PC.UserCheck 
+            AND EmployeeMapping.rn = 1
+        WHERE PC.Status = 'PASS'
+        GROUP BY EmployeeMapping.FullName
+        """
+        
+        cursor2 = db_handler.conn.cursor()
+        try:
+            cursor2.execute(stats_query)
+            verified_rows = cursor2.fetchall()
+            
+            for vrow in verified_rows:
+                user = vrow[0]
+                if user and user in user_stats:
+                    user_stats[user]['verified'] = vrow[1]
+                elif user:
+                    user_stats[user] = {'verified': vrow[1], 'failed': 0}
+        finally:
+            cursor2.close()
+        
+        # Popola foglio statistiche con PPM
+        for user, stats in sorted(user_stats.items()):
+            verified = stats['verified']
+            failed = stats['failed']
+            # Calcola PPM (Parts Per Million)
+            ppm = (failed / verified * 1000000) if verified > 0 else 0
+            stats_ws.append([user, verified, round(ppm, 2)])
+        
+        # Formatta intestazioni statistiche
+        for col_idx in range(1, 4):
+            cell = stats_ws.cell(row=1, column=col_idx)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+            cell.border = border
+        
+        # Aggiungi filtro automatico alle intestazioni statistiche
+        stats_ws.auto_filter.ref = stats_ws.dimensions
+        
+        # Crea grafico a barre
+        chart = BarChart()
+        chart.type = "col"
+        chart.style = 10
+        chart.title = "Verified Boards vs Failed PPM by User"
+        chart.y_axis.title = 'Value'
+        chart.x_axis.title = 'User'
+        
+        # Dati per il grafico
+        data = Reference(stats_ws, min_col=2, min_row=1, max_row=len(user_stats)+1, max_col=3)
+        cats = Reference(stats_ws, min_col=1, min_row=2, max_row=len(user_stats)+1)
+        
+        chart.add_data(data, titles_from_data=True)
+        chart.set_categories(cats)
+        chart.height = 15
+        chart.width = 25
+        
+        # Aggiungi grafico al foglio statistiche
+        stats_ws.add_chart(chart, "E2")
+        
+        # Salva il file
+        wb.save(file_path)
+        logger.info(f"Report mensile generato con successo: {file_path}")
+        logger.info(f"Record esportati: {len(rows)}, Utenti: {len(user_stats)}")
+        
+        return file_path
+        
+    except Exception as e:
+        logger.error(f"Errore durante la generazione del report mensile: {e}")
+        return None
