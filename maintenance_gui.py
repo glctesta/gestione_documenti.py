@@ -1936,16 +1936,18 @@ class TaskCyclesManagerWindow(tk.Toplevel):
         list_frame.rowconfigure(0, weight=1)
         list_frame.columnconfigure(0, weight=1)
 
-        cols = ('ordine', 'description', 'value', 'flags')
+        cols = ('ordine', 'description', 'value', 'no_cycle', 'flags')
         self.tree = ttk.Treeview(list_frame, columns=cols, show="headings")
         self.tree.heading('ordine', text=self.lang.get('header_ordine', "Ord"))
         self.tree.heading('description', text=self.lang.get('header_description', "Descrizione"))
         self.tree.heading('value', text=self.lang.get('header_value', "Valore"))
+        self.tree.heading('no_cycle', text=self.lang.get('header_no_cycle', "N°Cicli"))
         self.tree.heading('flags', text=self.lang.get('header_flags', "Flag"))
         self.tree.column('ordine', width=40)
-        self.tree.column('description', width=200)
-        self.tree.column('value', width=60)
-        self.tree.column('flags', width=60)
+        self.tree.column('description', width=180)
+        self.tree.column('value', width=50)
+        self.tree.column('no_cycle', width=50)
+        self.tree.column('flags', width=50)
         self.tree.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
         self.tree.bind("<<TreeviewSelect>>", self._on_cycle_select)
 
@@ -1973,16 +1975,16 @@ class TaskCyclesManagerWindow(tk.Toplevel):
         self.ordine_entry = ttk.Entry(form_frame, textvariable=self.ordine_prn_var)
         self.ordine_entry.grid(row=2, column=1, sticky="ew", padx=5, pady=5)
 
-        ttk.Label(form_frame, text=self.lang.get('no_cycle_label', "N° Cicli:")).grid(
-            row=3, column=0, sticky="w", padx=5, pady=5)
+        self.no_cycle_label = ttk.Label(form_frame, text=self.lang.get('no_cycle_label', "N° Cicli:"))
+        self.no_cycle_label.grid(row=3, column=0, sticky="w", padx=5, pady=5)
         self.no_cycle_entry = ttk.Entry(form_frame, textvariable=self.no_cycle_var)
         self.no_cycle_entry.grid(row=3, column=1, sticky="ew", padx=5, pady=5)
 
         # Checkbuttons per i flag
         ttk.Checkbutton(form_frame, text=self.lang.get('is_fixture_label', "È per Fixture"), 
-                       variable=self.is_fixture_var).grid(row=4, column=0, columnspan=2, sticky="w", padx=5, pady=2)
+                       variable=self.is_fixture_var, command=self._on_flag_change).grid(row=4, column=0, columnspan=2, sticky="w", padx=5, pady=2)
         ttk.Checkbutton(form_frame, text=self.lang.get('is_stensil_label', "È per Stencil"), 
-                       variable=self.is_stensil_var).grid(row=5, column=0, columnspan=2, sticky="w", padx=5, pady=2)
+                       variable=self.is_stensil_var, command=self._on_flag_change).grid(row=5, column=0, columnspan=2, sticky="w", padx=5, pady=2)
 
         btn_frame = ttk.Frame(form_frame)
         btn_frame.grid(row=6, column=0, columnspan=2, pady=20)
@@ -2026,8 +2028,10 @@ class TaskCyclesManagerWindow(tk.Toplevel):
                 if cycle[6]: flags.append('S')  # IsStensil
                 flags_str = ', '.join(flags) if flags else '-'
                 
+                no_cycle_display = str(cycle[5]) if cycle[5] is not None else '-'
+                
                 self.tree.insert("", "end", iid=cycle[0], 
-                               values=(cycle[3] or '', cycle[1], cycle[2], flags_str))
+                               values=(cycle[3] or '', cycle[1], cycle[2], no_cycle_display, flags_str))
 
     def _on_cycle_select(self, event=None):
         """Gestisce la selezione di un ciclo dalla Treeview."""
@@ -2046,6 +2050,8 @@ class TaskCyclesManagerWindow(tk.Toplevel):
             self.is_fixture_var.set(bool(selected_cycle[4]))
             self.no_cycle_var.set(str(selected_cycle[5]) if selected_cycle[5] is not None else "")
             self.is_stensil_var.set(bool(selected_cycle[6]))
+            # Aggiorna stato UI in base ai flag
+            self._on_flag_change()
 
     def _clear_form(self):
         """Pulisce il form per un nuovo inserimento."""
@@ -2058,6 +2064,32 @@ class TaskCyclesManagerWindow(tk.Toplevel):
         self.is_fixture_var.set(False)
         self.is_stensil_var.set(False)
         self.description_entry.focus_set()
+        # Resetta anche lo stato del campo Valore
+        self._on_flag_change()
+
+    def _on_flag_change(self):
+        """Gestisce cambio stato checkbox IsFixture/IsStensil.
+        
+        Se almeno uno dei due flag è attivo:
+        - TimingValue viene forzato a 0 e il campo disabilitato
+        - NoCycle diventa obbligatorio (label con asterisco)
+        """
+        is_fixture = self.is_fixture_var.get()
+        is_stensil = self.is_stensil_var.get()
+        
+        if is_fixture or is_stensil:
+            # Forza TimingValue a 0 e disabilita campo
+            self.value_var.set("0")
+            self.value_entry.config(state="disabled")
+            
+            # NoCycle diventa obbligatorio - aggiorna label
+            self.no_cycle_label.config(text=self.lang.get('no_cycle_label', "N° Cicli") + " (*)")
+        else:
+            # Riabilita TimingValue
+            self.value_entry.config(state="normal")
+            
+            # NoCycle torna opzionale
+            self.no_cycle_label.config(text=self.lang.get('no_cycle_label', "N° Cicli") + ":")
 
     def _save(self):
         """Salva un ciclo (nuovo o modifica)."""
@@ -2075,28 +2107,74 @@ class TaskCyclesManagerWindow(tk.Toplevel):
             )
             return
 
-        # Validazione valore
-        if not value_str:
-            messagebox.showerror(
-                self.lang.get('error_title', "Errore"),
-                self.lang.get('error_required_fields', "Il valore è obbligatorio."),
-                parent=self
-            )
-            return
+        # Recupera flag per logica condizionale
+        is_fixture = self.is_fixture_var.get()
+        is_stensil = self.is_stensil_var.get()
 
-        try:
-            value = int(value_str)
-            if value <= 0:
-                raise ValueError("Il valore deve essere positivo")
-        except ValueError:
-            messagebox.showerror(
-                self.lang.get('error_title', "Errore"),
-                self.lang.get('error_invalid_value', "Il valore deve essere un numero intero positivo."),
-                parent=self
-            )
-            return
+        # LOGICA CONDIZIONALE: Se IsFixture O IsStensil
+        if is_fixture or is_stensil:
+            # TimingValue deve essere 0 (già forzato da UI, ma verifichiamo)
+            value = 0
+            
+            # NoCycle diventa OBBLIGATORIO
+            if not no_cycle_str:
+                messagebox.showerror(
+                    self.lang.get('error_title', "Errore"),
+                    self.lang.get('error_required_no_cycle_when_flag', 
+                                 "Il numero di cicli è obbligatorio quando IsFixture o IsStensil è selezionato."),
+                    parent=self
+                )
+                return
+            
+            try:
+                no_cycle = int(no_cycle_str)
+                if no_cycle <= 0:
+                    raise ValueError("NoCycle deve essere positivo")
+            except ValueError:
+                messagebox.showerror(
+                    self.lang.get('error_title', "Errore"),
+                    self.lang.get('error_invalid_no_cycle', "Il numero di cicli deve essere un numero intero positivo."),
+                    parent=self
+                )
+                return
+        else:
+            # LOGICA NORMALE: Validazione standard
+            
+            # Validazione valore
+            if not value_str:
+                messagebox.showerror(
+                    self.lang.get('error_title', "Errore"),
+                    self.lang.get('error_required_fields', "Il valore è obbligatorio."),
+                    parent=self
+                )
+                return
 
-        # Validazione ordine
+            try:
+                value = int(value_str)
+                if value <= 0:
+                    raise ValueError("Il valore deve essere positivo")
+            except ValueError:
+                messagebox.showerror(
+                    self.lang.get('error_title', "Errore"),
+                    self.lang.get('error_invalid_value', "Il valore deve essere un numero intero positivo."),
+                    parent=self
+                )
+                return
+            
+            # NoCycle opzionale, ma se presente deve essere intero
+            no_cycle = None
+            if no_cycle_str:
+                try:
+                    no_cycle = int(no_cycle_str)
+                except ValueError:
+                    messagebox.showerror(
+                        self.lang.get('error_title', "Errore"),
+                        self.lang.get('error_invalid_no_cycle', "Il numero di cicli deve essere un numero intero."),
+                        parent=self
+                    )
+                    return
+
+        # Validazione ordine (sempre obbligatorio)
         if not ordine_str:
             messagebox.showerror(
                 self.lang.get('error_title', "Errore"),
@@ -2114,23 +2192,6 @@ class TaskCyclesManagerWindow(tk.Toplevel):
                 parent=self
             )
             return
-
-        # Validazione NoCycle (opzionale, ma se presente deve essere intero)
-        no_cycle = None
-        if no_cycle_str:
-            try:
-                no_cycle = int(no_cycle_str)
-            except ValueError:
-                messagebox.showerror(
-                    self.lang.get('error_title', "Errore"),
-                    self.lang.get('error_invalid_no_cycle', "Il numero di cicli deve essere un numero intero."),
-                    parent=self
-                )
-                return
-
-        # Recupera flag
-        is_fixture = self.is_fixture_var.get()
-        is_stensil = self.is_stensil_var.get()
 
         # Salva nel database
         if self.current_cycle_id:

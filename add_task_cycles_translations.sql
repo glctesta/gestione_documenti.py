@@ -681,6 +681,84 @@ Obs: Cykeln kommer inte att raderas utan markeras som inaktiverad (DateOut).');
 END
 
 -- =============================================
+-- header_no_cycle (Header Treeview)
+-- =============================================
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'header_no_cycle' AND [LanguageCode] = 'it')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'header_no_cycle', N'it', N'N°Cicli');
+    PRINT 'Aggiunta traduzione IT per header_no_cycle';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'header_no_cycle' AND [LanguageCode] = 'en')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'header_no_cycle', N'en', N'N°Cycles');
+    PRINT 'Aggiunta traduzione EN per header_no_cycle';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'header_no_cycle' AND [LanguageCode] = 'ro')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'header_no_cycle', N'ro', N'Nr.Cicluri');
+    PRINT 'Aggiunta traduzione RO per header_no_cycle';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'header_no_cycle' AND [LanguageCode] = 'de')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'header_no_cycle', N'de', N'Anz.Zyklen');
+    PRINT 'Aggiunta traduzione DE per header_no_cycle';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'header_no_cycle' AND [LanguageCode] = 'sv')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'header_no_cycle', N'sv', N'Ant.Cykler');
+    PRINT 'Aggiunta traduzione SV per header_no_cycle';
+END
+
+-- =============================================
+-- error_required_no_cycle_when_flag (Messaggio Errore)
+-- =============================================
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'error_required_no_cycle_when_flag' AND [LanguageCode] = 'it')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'error_required_no_cycle_when_flag', N'it', N'Il numero di cicli è obbligatorio quando IsFixture o IsStensil è selezionato.');
+    PRINT 'Aggiunta traduzione IT per error_required_no_cycle_when_flag';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'error_required_no_cycle_when_flag' AND [LanguageCode] = 'en')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'error_required_no_cycle_when_flag', N'en', N'Number of cycles is required when IsFixture or IsStensil is selected.');
+    PRINT 'Aggiunta traduzione EN per error_required_no_cycle_when_flag';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'error_required_no_cycle_when_flag' AND [LanguageCode] = 'ro')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'error_required_no_cycle_when_flag', N'ro', N'Numărul de cicluri este obligatoriu când IsFixture sau IsStensil este selectat.');
+    PRINT 'Aggiunta traduzione RO per error_required_no_cycle_when_flag';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'error_required_no_cycle_when_flag' AND [LanguageCode] = 'de')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'error_required_no_cycle_when_flag', N'de', N'Anzahl der Zyklen ist erforderlich, wenn IsFixture oder IsStensil ausgewählt ist.');
+    PRINT 'Aggiunta traduzione DE per error_required_no_cycle_when_flag';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'error_required_no_cycle_when_flag' AND [LanguageCode] = 'sv')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'error_required_no_cycle_when_flag', N'sv', N'Antal cykler krävs när IsFixture eller IsStensil är vald.');
+    PRINT 'Aggiunta traduzione SV per error_required_no_cycle_when_flag';
+END
+
+-- =============================================
 -- Riepilogo
 -- =============================================
 
@@ -700,9 +778,11 @@ PRINT '  - is_fixture_label';
 PRINT '  - is_stensil_label';
 PRINT '  - header_ordine';
 PRINT '  - header_flags';
+PRINT '  - header_no_cycle';
 PRINT '  - error_required_ordine';
 PRINT '  - error_invalid_ordine';
 PRINT '  - error_invalid_no_cycle';
+PRINT '  - error_required_no_cycle_when_flag';
 PRINT '  - confirm_deactivate_title';
 PRINT '  - confirm_deactivate_message';
 PRINT 'Lingue: IT, EN, RO, DE, SV';
