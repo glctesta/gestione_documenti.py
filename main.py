@@ -263,7 +263,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.1.0'  # Versione aggiornata
+APP_VERSION = '2.3.1.3'  # Versione aggiornata
 APP_DEVELOPER = 'Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -7053,7 +7053,7 @@ Accedi al sistema per visualizzare i dettagli completi.
             print(f"Errore nel recupero dettagli completi macchina: {e}")
             return None
 
-    def fetch_all_equipments(self, only_with_plan=False, phase_id=None):
+    def fetch_all_equipments(self, only_with_plan=False, phase_id=None, equipment_type_id=None):
         """Recupera ID, Nome Interno e Seriale di tutte le macchine per la selezione."""
         query = """
             SELECT DISTINCT e.EquipmentId, 
@@ -7073,6 +7073,10 @@ Accedi al sistema per visualizzare i dettagli completi.
             where_clauses.append("e.ParentPhaseId = ?")
             params.append(phase_id)
         
+        if equipment_type_id is not None:
+            where_clauses.append("e.EquipmentTypeId = ?")
+            params.append(equipment_type_id)
+        
         if where_clauses:
             query += " WHERE " + " AND ".join(where_clauses)
         
@@ -7087,7 +7091,7 @@ Accedi al sistema per visualizzare i dettagli completi.
 
     def fetch_equipment_details(self, equipment_id):
         """Recupera i dettagli di una singola macchina per la modifica."""
-        query = "SELECT ParentPhaseId, InternalName, SerialNumber FROM eqp.Equipments WHERE EquipmentId = ?;"
+        query = "SELECT ParentPhaseId, EquipmentTypeId, InternalName, SerialNumber FROM eqp.Equipments WHERE EquipmentId = ?;"
         try:
             self.cursor.execute(query, equipment_id)
             return self.cursor.fetchone()
@@ -7096,18 +7100,51 @@ Accedi al sistema per visualizzare i dettagli completi.
             return None
 
     def update_and_log_equipment_changes(self, equipment_id, new_phase_id, new_internal_name, new_serial,
-                                         change_log_string, user_name):
+                                         change_log_string, user_name, new_equipment_type_id=None, new_production_year=None):
         """Aggiorna la macchina e registra la modifica in una transazione."""
         try:
             # 1. Aggiorna la tabella principale
-            update_query = """
-                           UPDATE eqp.Equipments
-                           SET ParentPhaseId = ?,
-                               InternalName  = ?,
-                               SerialNumber  = ?
-                           WHERE EquipmentId = ?;
-                           """
-            self.cursor.execute(update_query, new_phase_id, new_internal_name, new_serial, equipment_id)
+            # Costruisce la query dinamicamente in base ai parametri forniti
+            if new_equipment_type_id is not None and new_production_year is not None:
+                update_query = """
+                               UPDATE eqp.Equipments
+                               SET ParentPhaseId = ?,
+                                   EquipmentTypeId = ?,
+                                   InternalName  = ?,
+                                   SerialNumber  = ?,
+                                   ProductionYear = ?
+                               WHERE EquipmentId = ?;
+                               """
+                self.cursor.execute(update_query, new_phase_id, new_equipment_type_id, new_internal_name, new_serial, new_production_year, equipment_id)
+            elif new_equipment_type_id is not None:
+                update_query = """
+                               UPDATE eqp.Equipments
+                               SET ParentPhaseId = ?,
+                                   EquipmentTypeId = ?,
+                                   InternalName  = ?,
+                                   SerialNumber  = ?
+                               WHERE EquipmentId = ?;
+                               """
+                self.cursor.execute(update_query, new_phase_id, new_equipment_type_id, new_internal_name, new_serial, equipment_id)
+            elif new_production_year is not None:
+                update_query = """
+                               UPDATE eqp.Equipments
+                               SET ParentPhaseId = ?,
+                                   InternalName  = ?,
+                                   SerialNumber  = ?,
+                                   ProductionYear = ?
+                               WHERE EquipmentId = ?;
+                               """
+                self.cursor.execute(update_query, new_phase_id, new_internal_name, new_serial, new_production_year, equipment_id)
+            else:
+                update_query = """
+                               UPDATE eqp.Equipments
+                               SET ParentPhaseId = ?,
+                                   InternalName  = ?,
+                                   SerialNumber  = ?
+                               WHERE EquipmentId = ?;
+                               """
+                self.cursor.execute(update_query, new_phase_id, new_internal_name, new_serial, equipment_id)
 
             # 2. Inserisce il log delle modifiche
             log_query = """
@@ -10448,7 +10485,7 @@ class App(tk.Tk):
                     SELECT IDSettings 
                     FROM traceability_rs.dbo.settings 
                     WHERE atribute = 'Sys_Verify_check_fail' 
-                    AND lastcheck IS NOT NULL
+                    AND lastcheck IS  NULL
                     """
                     
                     try:
@@ -11343,6 +11380,31 @@ class App(tk.Tk):
             action_callback=lambda user_name: maintenance_gui.open_brand_manager(self, self.db, self.lang, user_name)
         )
 
+    def open_task_cycles_manager_with_login(self):
+        """Apre la finestra di gestione voci task dopo autenticazione."""
+        self._execute_authorized_action(
+            'gestione_voci_task',
+            lambda: maintenance_gui.open_task_cycles_manager(self, self.db, self.lang, self._temp_authorized_user_id)
+        )
+
+    def open_fixture_rules_with_login(self):
+        """Apre la finestra di gestione regole fixture dopo autorizzazione."""
+        import fixture_gui
+        self._execute_authorized_action(
+            menu_translation_key='submenu_fixture_rules',
+            action_callback=lambda: fixture_gui.open_fixture_rules(self, self.db, self.lang, self._temp_authorized_user_id)
+        )
+
+    def open_assign_products_fixture_with_login(self):
+        """Apre la finestra di assegnazione prodotti a fixture dopo autorizzazione."""
+        import fixture_gui
+        self._execute_authorized_action(
+            menu_translation_key='submenu_assign_products_fixture',
+            action_callback=lambda: fixture_gui.open_assign_products_to_fixtures(
+                self, self.db, self.lang, self._temp_authorized_user_id
+            )
+        )
+
     def open_missing_action_report(self):
         """Esegue il report Missing Action e lo esporta in Excel."""
         # Chiama direttamente la funzione per generare il report, senza login
@@ -11527,6 +11589,34 @@ class App(tk.Tk):
         self._execute_simple_login(
             action_callback=lambda user_name: tools_gui.open_maintenance_times_manager(self, self.db, self.lang,
                                                                                        user_name)
+        )
+
+    def open_settings_email_with_login(self):
+        """Apre la finestra di gestione impostazioni email dopo autorizzazione."""
+        import settings_gui
+        self._execute_authorized_action(
+            menu_translation_key='gestisci_email_automatiche',
+            action_callback=lambda: settings_gui.open_settings_email(
+                self, self.db, self.lang, self._temp_authorized_user_id
+            )
+        )
+
+    def open_label_print_with_login(self):
+        """Apre la finestra di stampa etichette dopo login."""
+        import label_printing_gui
+        self._execute_simple_login(
+            action_callback=lambda user_name: label_printing_gui.open_label_print_window(
+                self, self.db, self.lang, user_name
+            )
+        )
+
+    def open_printer_settings_with_login(self):
+        """Apre la finestra impostazioni stampante dopo login."""
+        import label_printing_gui
+        self._execute_simple_login(
+            action_callback=lambda user_name: label_printing_gui.open_printer_settings_window(
+                self, self.db, self.lang, user_name
+            )
         )
 
     def open_add_interruption_window(self):
@@ -12709,7 +12799,9 @@ class App(tk.Tk):
 
 
 
-        # Disabilita tutto se il gestore NPI non Ã¨ partito
+
+
+        # Disabilita tutto se il gestore NPI non è partito
         if self.npi_manager is None:
             # Itera sugli indici del menu per disabilitarli
             for i in range(self.npi_menu.index("end") + 1):
@@ -12717,6 +12809,28 @@ class App(tk.Tk):
                     self.npi_menu.entryconfig(i, state="disabled")
                 except tk.TclError:
                     pass  # Ignora errori su separatori
+
+        # 6. Menu Materiali
+        self.operations_menu.add_separator()
+        
+        materials_menu = tk.Menu(self.operations_menu, tearoff=0)
+        self.operations_menu.add_cascade(
+            label=self.lang.get('menu_materials', 'Materiali'),
+            menu=materials_menu
+        )
+        
+        # Sottomenu Etichette
+        materials_menu.add_command(
+            label=self.lang.get('submenu_labels', 'Etichette'),
+            command=self.open_label_print_with_login
+        )
+        
+        # Sottomenu Stampante
+        materials_menu.add_command(
+            label=self.lang.get('submenu_printer_settings', 'Stampante'),
+            command=self.open_printer_settings_with_login
+        )
+
 
     def _update_production_submenu(self):
         """Aggiorna il sottomenu Produzione con tutte le sezioni"""
@@ -13191,6 +13305,16 @@ class App(tk.Tk):
         machine_submenu.add_command(label=self.lang.get('submenu_view_machines'),
                                     command=lambda: maintenance_gui.open_view_machines(self, self.db, self.lang))
         machine_submenu.add_separator()
+
+        # Fixture
+        fixture_submenu = tk.Menu(machine_submenu, tearoff=0)
+        machine_submenu.add_cascade(label=self.lang.get('submenu_fixture', 'Fixture'), menu=fixture_submenu)
+        fixture_submenu.add_command(label=self.lang.get('submenu_fixture_rules', 'Regole Fixture'),
+                                    command=self.open_fixture_rules_with_login)
+        fixture_submenu.add_command(label=self.lang.get('submenu_assign_products_fixture', 'Assegnazione prodotti'),
+                                    command=self.open_assign_products_fixture_with_login)
+        
+        machine_submenu.add_separator()
         machine_submenu.add_command(label=self.lang.get('submenu_brand_management', "Gestione Brand"),
                                     command=self.open_brand_manager_with_login)
         machine_submenu.add_command(label=self.lang.get('submenu_company_management', "Gestione Compagnie"),
@@ -13202,6 +13326,8 @@ class App(tk.Tk):
             label=self.lang.get('submenu_maintenance_tasks_header', 'Task di Manutenzione'), menu=tasks_submenu)
         tasks_submenu.add_command(label=self.lang.get('submenu_manage_maint_task', "Gestione Task di Manutenzione"),
                                   command=self.open_add_maintenance_tasks_with_login)
+        tasks_submenu.add_command(label=self.lang.get('submenu_manage_task_cycles', "Gestione Voci Task"),
+                                  command=self.open_task_cycles_manager_with_login)
         tasks_submenu.add_command(label=self.lang.get('submenu_assign_responsibles', "Assegna Responsabili"),
                                   command=self.open_assign_responsibles_with_login)
 
@@ -13285,11 +13411,15 @@ class App(tk.Tk):
                                     command=self.open_maint_cycles_manager_with_login)
         self.tools_menu.add_command(label=self.lang.get('submenu_doc_types', "Aggiungi Tipo Documento"),
                                     command=self.open_doc_types_manager_with_login)
+        self.tools_menu.add_separator()
         self.tools_menu.add_command(label=self.lang.get('manage_translations', "Gestione Traduzioni"),
                                     command=self.open_translations_manager_with_login)
-
+        self.tools_menu.add_separator()
         self.tools_menu.add_command(label=self.lang.get('submenu_maint_times', "Tempi Manutenzione"),
                                     command=self.open_maintenance_times_with_login)
+        self.tools_menu.add_separator()
+        self.tools_menu.add_command(label=self.lang.get('submenu_settings_email', "Manage setting emails"),
+                                    command=self.open_settings_email_with_login)
 
     def _update_help_menu(self):
         """Aggiorna il menu Aiuto"""

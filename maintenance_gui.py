@@ -12,6 +12,9 @@ from tkcalendar import DateEntry
 from collections import Counter
 import openpyxl
 from openpyxl.styles import Font, PatternFill
+import logging
+
+logger = logging.getLogger(__name__)
 
 import richieste_intervento
 import openpyxl
@@ -57,6 +60,7 @@ class AddMachineWindow(tk.Toplevel):
     """Finestra per aggiungere una nuova macchina."""
 
     def __init__(self, parent, db, lang):
+        logger.info("AddMachineWindow: Apertura finestra aggiunta nuova macchina")
         # CORREZIONE: Passa solo 'parent' alla classe superiore
         super().__init__(parent)
         self.db = db
@@ -211,6 +215,8 @@ class SelectMachineToEditWindow(tk.Toplevel):
     """Finestra per selezionare quale macchina modificare."""
 
     def __init__(self, parent, db, lang, user_name):
+        logger.info(f"SelectMachineToEditWindow: Apertura finestra selezione macchina da modificare (user: {user_name})")
+        
         super().__init__(parent)
         self.db = db
         self.lang = lang
@@ -218,28 +224,61 @@ class SelectMachineToEditWindow(tk.Toplevel):
         self.user_name = user_name
 
         self.title(self.lang.get('select_machine_to_edit_title'))
-        self.geometry("500x150")
+        self.geometry("500x200")
         self.transient(parent)
         self.grab_set()
 
         self.equipments_data = {}
+        self.equipment_types_data = {}
         self.selected_machine_var = tk.StringVar()
+        self.equipment_type_var = tk.StringVar()
 
         frame = ttk.Frame(self, padding="15")
         frame.pack(fill=tk.BOTH, expand=True)
         frame.columnconfigure(0, weight=1)
 
-        ttk.Label(frame, text=self.lang.get('select_machine_label')).pack(fill=tk.X)
+        # Equipment Type Filter
+        ttk.Label(frame, text=self.lang.get('type_label', 'Equipment Type:')).pack(fill=tk.X, pady=(0, 5))
+        self.type_combo = ttk.Combobox(frame, textvariable=self.equipment_type_var, state='readonly')
+        self.type_combo.pack(fill=tk.X, pady=5)
+        self.type_combo.bind("<<ComboboxSelected>>", lambda e: self._load_equipments())
+
+        ttk.Label(frame, text=self.lang.get('select_machine_label')).pack(fill=tk.X, pady=(10, 0))
         self.equipment_combo = ttk.Combobox(frame, textvariable=self.selected_machine_var, state='readonly', height=10)
         self.equipment_combo.pack(fill=tk.X, pady=5)
 
         ttk.Button(frame, text=self.lang.get('edit_button'), command=self._open_edit_window).pack(pady=10)
 
+        self._load_equipment_types()
         self._load_equipments()
 
+    def _load_equipment_types(self):
+        """Carica i tipi di equipaggiamento per il filtro."""
+        try:
+            cursor = self.db.conn.cursor()
+            query = """
+            SELECT [EquipmentTypeId], [EquipmentType], [IsTest]
+            FROM [Traceability_RS].[eqp].[EquipmentTypes]
+            ORDER BY [EquipmentType]
+            """
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            cursor.close()
+            
+            # Mappa nome tipo -> ID
+            self.equipment_types_data = {row[1]: row[0] for row in rows}
+            self.type_combo['values'] = [''] + list(self.equipment_types_data.keys())
+        except Exception as e:
+            print(f"Errore caricamento tipi equipaggiamento: {e}")
+
     def _load_equipments(self):
-        """Carica la lista di tutte le macchine."""
-        equipments = self.db.fetch_all_equipments()
+        """Carica la lista di tutte le macchine, filtrate per tipo se selezionato."""
+        # Ottieni il tipo selezionato
+        selected_type = self.equipment_type_var.get()
+        type_id = self.equipment_types_data.get(selected_type) if selected_type else None
+        
+        # Carica equipaggiamenti con filtro opzionale
+        equipments = self.db.fetch_all_equipments(equipment_type_id=type_id)
         if equipments:
             # Crea un dizionario che mappa il testo visualizzato all'ID
             self.equipments_data = {f"{row.InternalName or 'N/D'} [{row.SerialNumber}]": row.EquipmentId for row in
@@ -264,6 +303,7 @@ class EditMachineWindow(tk.Toplevel):
     """Finestra per modificare i dati di una macchina specifica."""
 
     def __init__(self, parent, db, lang, equipment_id, user_name):
+        logger.info(f"EditMachineWindow: Apertura finestra modifica macchina ID={equipment_id} (user: {user_name})")
         super().__init__(parent)
         self.db = db
         self.lang = lang
@@ -273,14 +313,17 @@ class EditMachineWindow(tk.Toplevel):
         # Per confrontare i valori prima/dopo
         self.original_data = {}
         self.phases_data = {}
+        self.equipment_types_data = {}
 
         # Variabili di controllo
         self.phase_var = tk.StringVar()
+        self.equipment_type_var = tk.StringVar()
         self.serial_var = tk.StringVar()
         self.internal_name_var = tk.StringVar()
+        self.production_year_var = tk.StringVar()
 
         self.title(self.lang.get('submenu_edit_machine'))
-        self.geometry("550x300")
+        self.geometry("550x400")
         self.transient(parent)
         self.grab_set()
 
@@ -296,16 +339,31 @@ class EditMachineWindow(tk.Toplevel):
         self.phase_combo = ttk.Combobox(frame, textvariable=self.phase_var, state='readonly')
         self.phase_combo.grid(row=0, column=1, sticky=tk.EW, pady=5)
 
-        ttk.Label(frame, text=self.lang.get('internal_name_label')).grid(row=1, column=0, sticky=tk.W, pady=5)
-        self.internal_name_entry = ttk.Entry(frame, textvariable=self.internal_name_var)
-        self.internal_name_entry.grid(row=1, column=1, sticky=tk.EW, pady=5)
+        ttk.Label(frame, text=self.lang.get('type_label', 'Equipment Type:')).grid(row=1, column=0, sticky=tk.W, pady=5)
+        self.type_combo = ttk.Combobox(frame, textvariable=self.equipment_type_var, state='readonly')
+        self.type_combo.grid(row=1, column=1, sticky=tk.EW, pady=5)
 
-        ttk.Label(frame, text=self.lang.get('serial_number_label')).grid(row=2, column=0, sticky=tk.W, pady=5)
+        ttk.Label(frame, text=self.lang.get('internal_name_label')).grid(row=2, column=0, sticky=tk.W, pady=5)
+        self.internal_name_entry = ttk.Entry(frame, textvariable=self.internal_name_var)
+        self.internal_name_entry.grid(row=2, column=1, sticky=tk.EW, pady=5)
+
+        ttk.Label(frame, text=self.lang.get('serial_number_label')).grid(row=3, column=0, sticky=tk.W, pady=5)
         self.serial_entry = ttk.Entry(frame, textvariable=self.serial_var)
-        self.serial_entry.grid(row=2, column=1, sticky=tk.EW, pady=5)
+        self.serial_entry.grid(row=3, column=1, sticky=tk.EW, pady=5)
+
+        # Campo Anno Produzione
+        ttk.Label(frame, text=self.lang.get('production_year_label', 'Anno Produzione:')).grid(row=4, column=0, sticky=tk.W, pady=5)
+        self.production_year_combo = ttk.Combobox(frame, textvariable=self.production_year_var, state='readonly')
+        self.production_year_combo.grid(row=4, column=1, sticky=tk.EW, pady=5)
+        
+        # Popola con anni da (anno corrente - 15) a anno corrente
+        current_year = datetime.now().year
+        years = [str(year) for year in range(current_year - 15, current_year + 1)]
+        years.reverse()  # Ordine decrescente (più recente prima)
+        self.production_year_combo['values'] = [''] + years  # Aggiungi opzione vuota
 
         button_frame = ttk.Frame(frame)
-        button_frame.grid(row=3, column=1, sticky=tk.E, pady=(20, 0))
+        button_frame.grid(row=5, column=1, sticky=tk.E, pady=(20, 0))
         ttk.Button(button_frame, text=self.lang.get('save_button'), command=self._save_changes).pack(side=tk.LEFT,
                                                                                                      padx=5)
         ttk.Button(button_frame, text=self.lang.get('cancel_button'), command=self.destroy).pack(side=tk.LEFT)
@@ -318,6 +376,24 @@ class EditMachineWindow(tk.Toplevel):
             self.phases_data = {row.IDParentPhase: row.ParentPhaseName for row in phases}
             self.phase_combo['values'] = list(self.phases_data.values())
 
+        # Carica i tipi di equipaggiamento per il combobox
+        try:
+            cursor = self.db.conn.cursor()
+            query = """
+            SELECT [EquipmentTypeId], [EquipmentType]
+            FROM [Traceability_RS].[eqp].[EquipmentTypes]
+            ORDER BY [EquipmentType]
+            """
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            cursor.close()
+            
+            # Mappa ID -> Nome tipo
+            self.equipment_types_data = {row[0]: row[1] for row in rows}
+            self.type_combo['values'] = list(self.equipment_types_data.values())
+        except Exception as e:
+            print(f"Errore caricamento tipi equipaggiamento: {e}")
+
         # Carica i dettagli della macchina specifica
         details = self.db.fetch_equipment_details(self.equipment_id)
         if details:
@@ -325,8 +401,17 @@ class EditMachineWindow(tk.Toplevel):
 
             # Imposta i valori nei widget
             self.phase_var.set(self.phases_data.get(details.ParentPhaseId, ""))
+            
+            # Imposta il tipo di equipaggiamento se presente
+            if hasattr(details, 'EquipmentTypeId') and details.EquipmentTypeId:
+                self.equipment_type_var.set(self.equipment_types_data.get(details.EquipmentTypeId, ""))
+            
             self.internal_name_var.set(details.InternalName or "")
             self.serial_var.set(details.SerialNumber or "")
+            
+            # Imposta l'anno di produzione se presente
+            if hasattr(details, 'ProductionYear') and details.ProductionYear:
+                self.production_year_var.set(str(details.ProductionYear))
         else:
             messagebox.showerror(self.lang.get('error_title'), self.lang.get('error_loading_machine_details'),
                                  parent=self)
@@ -337,8 +422,28 @@ class EditMachineWindow(tk.Toplevel):
         # Recupera i nuovi valori
         new_phase_name = self.phase_var.get()
         new_phase_id = [k for k, v in self.phases_data.items() if v == new_phase_name][0]
+        
+        # Recupera il nuovo tipo di equipaggiamento
+        new_equipment_type_name = self.equipment_type_var.get()
+        new_equipment_type_id = None
+        if new_equipment_type_name:
+            new_equipment_type_id = [k for k, v in self.equipment_types_data.items() if v == new_equipment_type_name][0]
+        
         new_name = self.internal_name_var.get()
         new_serial = self.serial_var.get()
+        
+        # Recupera il nuovo anno di produzione
+        new_production_year = None
+        if self.production_year_var.get():
+            try:
+                new_production_year = int(self.production_year_var.get())
+            except ValueError:
+                messagebox.showerror(
+                    self.lang.get('error_title'),
+                    self.lang.get('error_invalid_year', 'Anno di produzione non valido'),
+                    parent=self
+                )
+                return
 
         # Costruisce la stringa di log confrontando i valori vecchi e nuovi
         change_log = []
@@ -346,11 +451,25 @@ class EditMachineWindow(tk.Toplevel):
             original_phase_name = self.phases_data.get(self.original_data.ParentPhaseId, 'N/D')
             change_log.append(f"Fase cambiata da '{original_phase_name}' a '{new_phase_name}'.")
 
+        # Controlla se il tipo di equipaggiamento è cambiato
+        original_equipment_type_id = getattr(self.original_data, 'EquipmentTypeId', None)
+        if new_equipment_type_id != original_equipment_type_id:
+            original_type_name = self.equipment_types_data.get(original_equipment_type_id, 'N/D') if original_equipment_type_id else 'N/D'
+            new_type_name = new_equipment_type_name if new_equipment_type_name else 'N/D'
+            change_log.append(f"Tipo Equipaggiamento cambiato da '{original_type_name}' a '{new_type_name}'.")
+
         if new_name != self.original_data.InternalName:
             change_log.append(f"Nome Interno cambiato da '{self.original_data.InternalName}' a '{new_name}'.")
 
         if new_serial != self.original_data.SerialNumber:
             change_log.append(f"Numero di Serie cambiato da '{self.original_data.SerialNumber}' a '{new_serial}'.")
+
+        # Controlla se l'anno di produzione è cambiato
+        original_production_year = getattr(self.original_data, 'ProductionYear', None)
+        if new_production_year != original_production_year:
+            original_year_str = str(original_production_year) if original_production_year else 'N/D'
+            new_year_str = str(new_production_year) if new_production_year else 'N/D'
+            change_log.append(f"Anno Produzione cambiato da '{original_year_str}' a '{new_year_str}'.")
 
         if not change_log:
             messagebox.showinfo(self.lang.get('info_title'), self.lang.get('info_no_changes'), parent=self)
@@ -365,7 +484,9 @@ class EditMachineWindow(tk.Toplevel):
             new_name,
             new_serial,
             change_log_string,
-            self.user_name
+            self.user_name,
+            new_equipment_type_id=new_equipment_type_id,
+            new_production_year=new_production_year
         )
 
         if success:
@@ -379,6 +500,7 @@ class ViewMachineWindow(tk.Toplevel):
     """Finestra di ricerca macchine con filtri."""
 
     def __init__(self, parent, db, lang):
+        logger.info("ViewMachineWindow: Apertura finestra ricerca macchine")
         super().__init__(parent)
         self.db = db
         self.lang = lang
@@ -516,6 +638,7 @@ class MachineDetailsWindow(tk.Toplevel):
     """Finestra che mostra tutte le informazioni di una singola macchina."""
 
     def __init__(self, parent, db, lang, equipment_id):
+        logger.info(f"MachineDetailsWindow: Apertura finestra dettagli macchina ID={equipment_id}")
         super().__init__(parent)
         self.db = db
         self.lang = lang
@@ -656,6 +779,7 @@ class MaintenanceDocsWindow(tk.Toplevel):
     """Finestra per la gestione dei documenti di manutenzione."""
 
     def __init__(self, parent, db, lang):
+        logger.info("MaintenanceDocsWindow: Apertura finestra documenti manutenzione")
         super().__init__(parent)
         self.title(lang.get('submenu_maintenance_docs'))
         self.geometry("600x400")
@@ -671,6 +795,7 @@ class FillTemplateWindow(tk.Toplevel):
     """Finestra per la compilazione delle schede di manutenzione."""
 
     def __init__(self, parent, db, lang, user_name):
+        logger.info(f"FillTemplateWindow: Apertura finestra compilazione schede manutenzione (user: {user_name})")
         # Passa solo 'parent' alla classe superiore
         super().__init__(parent)
 
@@ -1043,6 +1168,7 @@ class FillTemplateWindow(tk.Toplevel):
 class MaintenanceReportWindow(tk.Toplevel):
 
     def __init__(self, parent, db, lang):
+        logger.info("MaintenanceReportWindow: Apertura finestra report manutenzioni")
         super().__init__(parent)
         self.db = db
         self.lang = lang
@@ -1241,6 +1367,7 @@ class AddTaskRowDialog(tk.Toplevel):
     """Dialogo modale per inserire o MODIFICARE i dettagli di un singolo task."""
 
     def __init__(self, parent, lang, initial_data=None):
+        logger.info(f"AddTaskRowDialog: Apertura dialog {'modifica' if initial_data else 'aggiunta'} task")
         super().__init__(parent)
         self.lang = lang
         self.transient(parent)
@@ -1317,6 +1444,7 @@ class BrandManagerWindow(tk.Toplevel):
     """Finestra per la gestione dei Brand delle macchine."""
 
     def __init__(self, parent, db, lang, user_name):
+        logger.info(f"BrandManagerWindow: Apertura finestra gestione brand (user: {user_name})")
         super().__init__(parent)
         self.db = db
         self.lang = lang
@@ -1516,6 +1644,7 @@ class BrandManagerWindow(tk.Toplevel):
 class AddMaintenanceTasksWindow(tk.Toplevel):
 
     def __init__(self, parent, db, lang, user_name):
+        logger.info(f"AddMaintenanceTasksWindow: Apertura finestra aggiunta task manutenzione (user: {user_name})")
         super().__init__(parent)
         self.db = db
         self.lang = lang
@@ -1765,6 +1894,235 @@ def open_edit_machine(parent, db, lang):
 def open_view_machines(parent, db, lang):
     ViewMachineWindow(parent, db, lang)
 
+
+class TaskCyclesManagerWindow(tk.Toplevel):
+    """Finestra per la gestione delle voci task di manutenzione (cicli programmati)."""
+
+    def __init__(self, parent, db, lang, user_id):
+        logger.info(f"TaskCyclesManagerWindow: Apertura finestra gestione voci task (user_id: {user_id})")
+        super().__init__(parent)
+        self.db = db
+        self.lang = lang
+        self.user_id = user_id
+        self.title(lang.get('task_cycles_management_title', "Gestione Voci Task Manutenzione"))
+        self.geometry("900x500")
+        self.transient(parent)
+        self.grab_set()
+
+        self.current_cycle_id = None
+        self.cycles_list = []
+
+        self.description_var = tk.StringVar()
+        self.value_var = tk.StringVar()
+
+        self._create_widgets()
+        self._load_cycles()
+
+    def _create_widgets(self):
+        main_frame = ttk.Frame(self, padding="10")
+        main_frame.pack(fill="both", expand=True)
+        main_frame.rowconfigure(0, weight=1)
+        main_frame.columnconfigure(0, weight=3)
+        main_frame.columnconfigure(1, weight=2)
+        main_frame.columnconfigure(2, weight=0)
+
+        # Lista cicli (Colonna 0)
+        list_frame = ttk.LabelFrame(main_frame, text=self.lang.get('cycles_list_label', "Lista Cicli"))
+        list_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        list_frame.rowconfigure(0, weight=1)
+        list_frame.columnconfigure(0, weight=1)
+
+        cols = ('description', 'value')
+        self.tree = ttk.Treeview(list_frame, columns=cols, show="headings")
+        self.tree.heading('description', text=self.lang.get('header_description', "Descrizione"))
+        self.tree.heading('value', text=self.lang.get('header_value', "Valore"))
+        self.tree.column('description', width=250)
+        self.tree.column('value', width=80)
+        self.tree.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        self.tree.bind("<<TreeviewSelect>>", self._on_cycle_select)
+
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscroll=scrollbar.set)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        # Form dettagli (Colonna 1)
+        form_frame = ttk.LabelFrame(main_frame, text=self.lang.get('details_label', "Dettagli"))
+        form_frame.grid(row=0, column=1, sticky="nsew", padx=(0, 10))
+        form_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(form_frame, text=self.lang.get('cycle_description_label', "Descrizione (*):")).grid(
+            row=0, column=0, sticky="w", padx=5, pady=5)
+        self.description_entry = ttk.Entry(form_frame, textvariable=self.description_var)
+        self.description_entry.grid(row=0, column=1, sticky="ew", padx=5, pady=5)
+
+        ttk.Label(form_frame, text=self.lang.get('cycle_value_label', "Valore (*):")).grid(
+            row=1, column=0, sticky="w", padx=5, pady=5)
+        self.value_entry = ttk.Entry(form_frame, textvariable=self.value_var)
+        self.value_entry.grid(row=1, column=1, sticky="ew", padx=5, pady=5)
+
+        btn_frame = ttk.Frame(form_frame)
+        btn_frame.grid(row=2, column=0, columnspan=2, pady=20)
+        ttk.Button(btn_frame, text=self.lang.get('new_button_short', "Nuovo"), command=self._clear_form).pack(
+            side="left", padx=5)
+        ttk.Button(btn_frame, text=self.lang.get('save_button', "Salva"), command=self._save).pack(
+            side="left", padx=5)
+        ttk.Button(btn_frame, text=self.lang.get('delete_button', "Cancella"), command=self._delete).pack(
+            side="left", padx=5)
+
+        # Logo aziendale (Colonna 2)
+        logo_frame = ttk.Frame(main_frame)
+        logo_frame.grid(row=0, column=2, sticky="n", padx=(0, 5), pady=5)
+
+        if PIL_AVAILABLE:
+            try:
+                image = Image.open("Logo.png")
+                image.thumbnail((100, 100))
+                self.logo_image = ImageTk.PhotoImage(image)
+                logo_label = ttk.Label(logo_frame, image=self.logo_image)
+                logo_label.pack()
+            except FileNotFoundError:
+                logger.warning("Logo.png non trovato")
+                ttk.Label(logo_frame, text="Logo\nnon\ndisponibile", 
+                         font=("Arial", 8), foreground="gray").pack()
+            except Exception as e:
+                logger.error(f"Errore caricamento Logo.png: {e}")
+                ttk.Label(logo_frame, text="Errore\nlogo", 
+                         font=("Arial", 8), foreground="red").pack()
+
+    def _load_cycles(self):
+        """Carica tutti i cicli di manutenzione dal database."""
+        self.tree.delete(*self.tree.get_children())
+        self.cycles_list = self.db.fetch_maintenance_cycles()
+        
+        if self.cycles_list:
+            for cycle in self.cycles_list:
+                # cycle è una tupla: (ProgrammedInterventionId, TimingDescriprion, TimingValue)
+                self.tree.insert("", "end", iid=cycle[0], 
+                               values=(cycle[1], cycle[2]))
+
+    def _on_cycle_select(self, event=None):
+        """Gestisce la selezione di un ciclo dalla Treeview."""
+        selected_item = self.tree.focus()
+        if not selected_item:
+            return
+        
+        self.current_cycle_id = int(selected_item)
+        
+        # Trova il ciclo selezionato nella lista
+        selected_cycle = next((c for c in self.cycles_list if c[0] == self.current_cycle_id), None)
+        if selected_cycle:
+            self.description_var.set(selected_cycle[1] or "")
+            self.value_var.set(str(selected_cycle[2]) if selected_cycle[2] is not None else "")
+
+    def _clear_form(self):
+        """Pulisce il form per un nuovo inserimento."""
+        self.tree.selection_set([])
+        self.current_cycle_id = None
+        self.description_var.set("")
+        self.value_var.set("")
+        self.description_entry.focus_set()
+
+    def _save(self):
+        """Salva un ciclo (nuovo o modifica)."""
+        description = self.description_var.get().strip()
+        value_str = self.value_var.get().strip()
+
+        # Validazione
+        if not description:
+            messagebox.showerror(
+                self.lang.get('error_title', "Errore"),
+                self.lang.get('error_required_fields', "La descrizione è obbligatoria."),
+                parent=self
+            )
+            return
+
+        if not value_str:
+            messagebox.showerror(
+                self.lang.get('error_title', "Errore"),
+                self.lang.get('error_required_fields', "Il valore è obbligatorio."),
+                parent=self
+            )
+            return
+
+        try:
+            value = int(value_str)
+            if value <= 0:
+                raise ValueError("Il valore deve essere positivo")
+        except ValueError:
+            messagebox.showerror(
+                self.lang.get('error_title', "Errore"),
+                self.lang.get('error_invalid_value', "Il valore deve essere un numero intero positivo."),
+                parent=self
+            )
+            return
+
+        # Salva nel database
+        if self.current_cycle_id:
+            # Modifica esistente
+            success, message = self.db.update_maintenance_cycle(self.current_cycle_id, description, value)
+        else:
+            # Nuovo inserimento
+            success, message = self.db.add_new_maintenance_cycle(description, value)
+
+        if success:
+            messagebox.showinfo(
+                self.lang.get('success_title', "Successo"),
+                message,
+                parent=self
+            )
+            self._load_cycles()
+            self._clear_form()
+        else:
+            messagebox.showerror(
+                self.lang.get('error_title', "Errore"),
+                message,
+                parent=self
+            )
+
+    def _delete(self):
+        """Cancella un ciclo se non è utilizzato."""
+        if not self.current_cycle_id:
+            messagebox.showwarning(
+                self.lang.get('warning_title', "Attenzione"),
+                self.lang.get('warning_no_selection', "Selezionare un ciclo da cancellare."),
+                parent=self
+            )
+            return
+
+        # Verifica se il ciclo è utilizzato
+        if self.db.check_if_cycle_is_used(self.current_cycle_id):
+            messagebox.showerror(
+                self.lang.get('error_title', "Errore"),
+                self.lang.get('error_cycle_in_use', 
+                             "Impossibile cancellare: questo ciclo è già utilizzato in task di manutenzione."),
+                parent=self
+            )
+            return
+
+        # Conferma cancellazione
+        if messagebox.askyesno(
+            self.lang.get('confirm_title', "Conferma"),
+            self.lang.get('confirm_delete', "Sei sicuro di voler cancellare questo ciclo?"),
+            parent=self
+        ):
+            success, message = self.db.delete_maintenance_cycle(self.current_cycle_id)
+            if success:
+                messagebox.showinfo(
+                    self.lang.get('success_title', "Successo"),
+                    message,
+                    parent=self
+                )
+                self._load_cycles()
+                self._clear_form()
+            else:
+                messagebox.showerror(
+                    self.lang.get('error_title', "Errore"),
+                    message,
+                    parent=self
+                )
+
+
+
 def open_maintenance_docs(parent, db, lang):
     MaintenanceDocsWindow(parent, db, lang)
 
@@ -1873,3 +2231,8 @@ def open_assign_responsibles(parent, db, lang):
     """Launcher function to create and show the AssignResponsiblesWindow."""
     import assign_responsibles_maintenance
     assign_responsibles_maintenance.open_assign_responsibles(parent, db, lang)
+
+
+def open_task_cycles_manager(parent, db, lang, user_id):
+    """Launcher function to create and show the TaskCyclesManagerWindow."""
+    TaskCyclesManagerWindow(parent, db, lang, user_id)
