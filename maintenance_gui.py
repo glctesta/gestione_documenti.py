@@ -1914,6 +1914,10 @@ class TaskCyclesManagerWindow(tk.Toplevel):
 
         self.description_var = tk.StringVar()
         self.value_var = tk.StringVar()
+        self.ordine_prn_var = tk.StringVar()
+        self.is_fixture_var = tk.BooleanVar()
+        self.no_cycle_var = tk.StringVar()  # Numero di cicli (INT)
+        self.is_stensil_var = tk.BooleanVar()
 
         self._create_widgets()
         self._load_cycles()
@@ -1932,12 +1936,16 @@ class TaskCyclesManagerWindow(tk.Toplevel):
         list_frame.rowconfigure(0, weight=1)
         list_frame.columnconfigure(0, weight=1)
 
-        cols = ('description', 'value')
+        cols = ('ordine', 'description', 'value', 'flags')
         self.tree = ttk.Treeview(list_frame, columns=cols, show="headings")
+        self.tree.heading('ordine', text=self.lang.get('header_ordine', "Ord"))
         self.tree.heading('description', text=self.lang.get('header_description', "Descrizione"))
         self.tree.heading('value', text=self.lang.get('header_value', "Valore"))
-        self.tree.column('description', width=250)
-        self.tree.column('value', width=80)
+        self.tree.heading('flags', text=self.lang.get('header_flags', "Flag"))
+        self.tree.column('ordine', width=40)
+        self.tree.column('description', width=200)
+        self.tree.column('value', width=60)
+        self.tree.column('flags', width=60)
         self.tree.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
         self.tree.bind("<<TreeviewSelect>>", self._on_cycle_select)
 
@@ -1960,13 +1968,29 @@ class TaskCyclesManagerWindow(tk.Toplevel):
         self.value_entry = ttk.Entry(form_frame, textvariable=self.value_var)
         self.value_entry.grid(row=1, column=1, sticky="ew", padx=5, pady=5)
 
+        ttk.Label(form_frame, text=self.lang.get('ordine_prn_label', "Ordine (*):")).grid(
+            row=2, column=0, sticky="w", padx=5, pady=5)
+        self.ordine_entry = ttk.Entry(form_frame, textvariable=self.ordine_prn_var)
+        self.ordine_entry.grid(row=2, column=1, sticky="ew", padx=5, pady=5)
+
+        ttk.Label(form_frame, text=self.lang.get('no_cycle_label', "N° Cicli:")).grid(
+            row=3, column=0, sticky="w", padx=5, pady=5)
+        self.no_cycle_entry = ttk.Entry(form_frame, textvariable=self.no_cycle_var)
+        self.no_cycle_entry.grid(row=3, column=1, sticky="ew", padx=5, pady=5)
+
+        # Checkbuttons per i flag
+        ttk.Checkbutton(form_frame, text=self.lang.get('is_fixture_label', "È per Fixture"), 
+                       variable=self.is_fixture_var).grid(row=4, column=0, columnspan=2, sticky="w", padx=5, pady=2)
+        ttk.Checkbutton(form_frame, text=self.lang.get('is_stensil_label', "È per Stencil"), 
+                       variable=self.is_stensil_var).grid(row=5, column=0, columnspan=2, sticky="w", padx=5, pady=2)
+
         btn_frame = ttk.Frame(form_frame)
-        btn_frame.grid(row=2, column=0, columnspan=2, pady=20)
+        btn_frame.grid(row=6, column=0, columnspan=2, pady=20)
         ttk.Button(btn_frame, text=self.lang.get('new_button_short', "Nuovo"), command=self._clear_form).pack(
             side="left", padx=5)
         ttk.Button(btn_frame, text=self.lang.get('save_button', "Salva"), command=self._save).pack(
             side="left", padx=5)
-        ttk.Button(btn_frame, text=self.lang.get('delete_button', "Cancella"), command=self._delete).pack(
+        ttk.Button(btn_frame, text=self.lang.get('delete_button', "Disattiva"), command=self._delete).pack(
             side="left", padx=5)
 
         # Logo aziendale (Colonna 2)
@@ -1996,9 +2020,14 @@ class TaskCyclesManagerWindow(tk.Toplevel):
         
         if self.cycles_list:
             for cycle in self.cycles_list:
-                # cycle è una tupla: (ProgrammedInterventionId, TimingDescriprion, TimingValue)
+                # cycle: (ProgrammedInterventionId, TimingDescriprion, TimingValue, OrdinePrn, IsFixture, NoCycle, IsStensil, DateOut)
+                flags = []
+                if cycle[4]: flags.append('F')  # IsFixture
+                if cycle[6]: flags.append('S')  # IsStensil
+                flags_str = ', '.join(flags) if flags else '-'
+                
                 self.tree.insert("", "end", iid=cycle[0], 
-                               values=(cycle[1], cycle[2]))
+                               values=(cycle[3] or '', cycle[1], cycle[2], flags_str))
 
     def _on_cycle_select(self, event=None):
         """Gestisce la selezione di un ciclo dalla Treeview."""
@@ -2013,6 +2042,10 @@ class TaskCyclesManagerWindow(tk.Toplevel):
         if selected_cycle:
             self.description_var.set(selected_cycle[1] or "")
             self.value_var.set(str(selected_cycle[2]) if selected_cycle[2] is not None else "")
+            self.ordine_prn_var.set(str(selected_cycle[3]) if selected_cycle[3] is not None else "")
+            self.is_fixture_var.set(bool(selected_cycle[4]))
+            self.no_cycle_var.set(str(selected_cycle[5]) if selected_cycle[5] is not None else "")
+            self.is_stensil_var.set(bool(selected_cycle[6]))
 
     def _clear_form(self):
         """Pulisce il form per un nuovo inserimento."""
@@ -2020,14 +2053,20 @@ class TaskCyclesManagerWindow(tk.Toplevel):
         self.current_cycle_id = None
         self.description_var.set("")
         self.value_var.set("")
+        self.ordine_prn_var.set("")
+        self.no_cycle_var.set("")
+        self.is_fixture_var.set(False)
+        self.is_stensil_var.set(False)
         self.description_entry.focus_set()
 
     def _save(self):
         """Salva un ciclo (nuovo o modifica)."""
         description = self.description_var.get().strip()
         value_str = self.value_var.get().strip()
+        ordine_str = self.ordine_prn_var.get().strip()
+        no_cycle_str = self.no_cycle_var.get().strip()
 
-        # Validazione
+        # Validazione descrizione
         if not description:
             messagebox.showerror(
                 self.lang.get('error_title', "Errore"),
@@ -2036,6 +2075,7 @@ class TaskCyclesManagerWindow(tk.Toplevel):
             )
             return
 
+        # Validazione valore
         if not value_str:
             messagebox.showerror(
                 self.lang.get('error_title', "Errore"),
@@ -2056,13 +2096,53 @@ class TaskCyclesManagerWindow(tk.Toplevel):
             )
             return
 
+        # Validazione ordine
+        if not ordine_str:
+            messagebox.showerror(
+                self.lang.get('error_title', "Errore"),
+                self.lang.get('error_required_ordine', "L'ordine di visualizzazione è obbligatorio."),
+                parent=self
+            )
+            return
+
+        try:
+            ordine_prn = int(ordine_str)
+        except ValueError:
+            messagebox.showerror(
+                self.lang.get('error_title', "Errore"),
+                self.lang.get('error_invalid_ordine', "L'ordine deve essere un numero intero."),
+                parent=self
+            )
+            return
+
+        # Validazione NoCycle (opzionale, ma se presente deve essere intero)
+        no_cycle = None
+        if no_cycle_str:
+            try:
+                no_cycle = int(no_cycle_str)
+            except ValueError:
+                messagebox.showerror(
+                    self.lang.get('error_title', "Errore"),
+                    self.lang.get('error_invalid_no_cycle', "Il numero di cicli deve essere un numero intero."),
+                    parent=self
+                )
+                return
+
+        # Recupera flag
+        is_fixture = self.is_fixture_var.get()
+        is_stensil = self.is_stensil_var.get()
+
         # Salva nel database
         if self.current_cycle_id:
             # Modifica esistente
-            success, message = self.db.update_maintenance_cycle(self.current_cycle_id, description, value)
+            success, message = self.db.update_maintenance_cycle(
+                self.current_cycle_id, description, value, ordine_prn, is_fixture, no_cycle, is_stensil
+            )
         else:
             # Nuovo inserimento
-            success, message = self.db.add_new_maintenance_cycle(description, value)
+            success, message = self.db.add_new_maintenance_cycle(
+                description, value, ordine_prn, is_fixture, no_cycle, is_stensil
+            )
 
         if success:
             messagebox.showinfo(
@@ -2080,11 +2160,11 @@ class TaskCyclesManagerWindow(tk.Toplevel):
             )
 
     def _delete(self):
-        """Cancella un ciclo se non è utilizzato."""
+        """Disattiva un ciclo se non è utilizzato (soft delete)."""
         if not self.current_cycle_id:
             messagebox.showwarning(
                 self.lang.get('warning_title', "Attenzione"),
-                self.lang.get('warning_no_selection', "Selezionare un ciclo da cancellare."),
+                self.lang.get('warning_no_selection', "Selezionare un ciclo da disattivare."),
                 parent=self
             )
             return
@@ -2094,15 +2174,17 @@ class TaskCyclesManagerWindow(tk.Toplevel):
             messagebox.showerror(
                 self.lang.get('error_title', "Errore"),
                 self.lang.get('error_cycle_in_use', 
-                             "Impossibile cancellare: questo ciclo è già utilizzato in task di manutenzione."),
+                             "Impossibile disattivare: questo ciclo è già utilizzato in task di manutenzione."),
                 parent=self
             )
             return
 
-        # Conferma cancellazione
+        # Conferma disattivazione
         if messagebox.askyesno(
-            self.lang.get('confirm_title', "Conferma"),
-            self.lang.get('confirm_delete', "Sei sicuro di voler cancellare questo ciclo?"),
+            self.lang.get('confirm_deactivate_title', "Conferma Disattivazione"),
+            self.lang.get('confirm_deactivate_message', 
+                         "Sei sicuro di voler disattivare questo ciclo?\n\n"
+                         "Nota: Il ciclo non verrà cancellato ma marcato come disattivato (DateOut)."),
             parent=self
         ):
             success, message = self.db.delete_maintenance_cycle(self.current_cycle_id)

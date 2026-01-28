@@ -242,6 +242,445 @@ BEGIN
 END
 
 -- =============================================
+-- ordine_prn_label (Campo Ordine)
+-- =============================================
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'ordine_prn_label' AND [LanguageCode] = 'it')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'ordine_prn_label', N'it', N'Ordine (*)');
+    PRINT 'Aggiunta traduzione IT per ordine_prn_label';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'ordine_prn_label' AND [LanguageCode] = 'en')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'ordine_prn_label', N'en', N'Order (*)');
+    PRINT 'Aggiunta traduzione EN per ordine_prn_label';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'ordine_prn_label' AND [LanguageCode] = 'ro')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'ordine_prn_label', N'ro', N'Ordine (*)');
+    PRINT 'Aggiunta traduzione RO per ordine_prn_label';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'ordine_prn_label' AND [LanguageCode] = 'de')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'ordine_prn_label', N'de', N'Reihenfolge (*)');
+    PRINT 'Aggiunta traduzione DE per ordine_prn_label';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'ordine_prn_label' AND [LanguageCode] = 'sv')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'ordine_prn_label', N'sv', N'Ordning (*)');
+    PRINT 'Aggiunta traduzione SV per ordine_prn_label';
+END
+
+-- =============================================
+-- no_cycle_label (Campo Numero Cicli)
+-- =============================================
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'no_cycle_label' AND [LanguageCode] = 'it')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'no_cycle_label', N'it', N'N° Cicli');
+    PRINT 'Aggiunta traduzione IT per no_cycle_label';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'no_cycle_label' AND [LanguageCode] = 'en')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'no_cycle_label', N'en', N'N° Cycles');
+    PRINT 'Aggiunta traduzione EN per no_cycle_label';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'no_cycle_label' AND [LanguageCode] = 'ro')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'no_cycle_label', N'ro', N'Nr. Cicluri');
+    PRINT 'Aggiunta traduzione RO per no_cycle_label';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'no_cycle_label' AND [LanguageCode] = 'de')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'no_cycle_label', N'de', N'Anzahl Zyklen');
+    PRINT 'Aggiunta traduzione DE per no_cycle_label';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'no_cycle_label' AND [LanguageCode] = 'sv')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'no_cycle_label', N'sv', N'Antal Cykler');
+    PRINT 'Aggiunta traduzione SV per no_cycle_label';
+END
+
+-- =============================================
+-- is_fixture_label (Checkbox Fixture)
+-- =============================================
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'is_fixture_label' AND [LanguageCode] = 'it')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'is_fixture_label', N'it', N'È per Fixture');
+    PRINT 'Aggiunta traduzione IT per is_fixture_label';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'is_fixture_label' AND [LanguageCode] = 'en')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'is_fixture_label', N'en', N'Is for Fixture');
+    PRINT 'Aggiunta traduzione EN per is_fixture_label';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'is_fixture_label' AND [LanguageCode] = 'ro')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'is_fixture_label', N'ro', N'Este pentru Dispozitiv');
+    PRINT 'Aggiunta traduzione RO per is_fixture_label';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'is_fixture_label' AND [LanguageCode] = 'de')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'is_fixture_label', N'de', N'Ist für Vorrichtung');
+    PRINT 'Aggiunta traduzione DE per is_fixture_label';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'is_fixture_label' AND [LanguageCode] = 'sv')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'is_fixture_label', N'sv', N'Är för Fixtur');
+    PRINT 'Aggiunta traduzione SV per is_fixture_label';
+END
+
+-- =============================================
+-- is_stensil_label (Checkbox Stencil)
+-- =============================================
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'is_stensil_label' AND [LanguageCode] = 'it')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'is_stensil_label', N'it', N'È per Stencil');
+    PRINT 'Aggiunta traduzione IT per is_stensil_label';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'is_stensil_label' AND [LanguageCode] = 'en')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'is_stensil_label', N'en', N'Is for Stencil');
+    PRINT 'Aggiunta traduzione EN per is_stensil_label';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'is_stensil_label' AND [LanguageCode] = 'ro')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'is_stensil_label', N'ro', N'Este pentru Șablon');
+    PRINT 'Aggiunta traduzione RO per is_stensil_label';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'is_stensil_label' AND [LanguageCode] = 'de')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'is_stensil_label', N'de', N'Ist für Schablone');
+    PRINT 'Aggiunta traduzione DE per is_stensil_label';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'is_stensil_label' AND [LanguageCode] = 'sv')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'is_stensil_label', N'sv', N'Är för Stencil');
+    PRINT 'Aggiunta traduzione SV per is_stensil_label';
+END
+
+-- =============================================
+-- header_ordine (Header Treeview)
+-- =============================================
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'header_ordine' AND [LanguageCode] = 'it')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'header_ordine', N'it', N'Ord');
+    PRINT 'Aggiunta traduzione IT per header_ordine';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'header_ordine' AND [LanguageCode] = 'en')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'header_ordine', N'en', N'Ord');
+    PRINT 'Aggiunta traduzione EN per header_ordine';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'header_ordine' AND [LanguageCode] = 'ro')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'header_ordine', N'ro', N'Ord');
+    PRINT 'Aggiunta traduzione RO per header_ordine';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'header_ordine' AND [LanguageCode] = 'de')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'header_ordine', N'de', N'Ord');
+    PRINT 'Aggiunta traduzione DE per header_ordine';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'header_ordine' AND [LanguageCode] = 'sv')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'header_ordine', N'sv', N'Ord');
+    PRINT 'Aggiunta traduzione SV per header_ordine';
+END
+
+-- =============================================
+-- header_flags (Header Treeview)
+-- =============================================
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'header_flags' AND [LanguageCode] = 'it')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'header_flags', N'it', N'Flag');
+    PRINT 'Aggiunta traduzione IT per header_flags';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'header_flags' AND [LanguageCode] = 'en')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'header_flags', N'en', N'Flags');
+    PRINT 'Aggiunta traduzione EN per header_flags';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'header_flags' AND [LanguageCode] = 'ro')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'header_flags', N'ro', N'Indicatori');
+    PRINT 'Aggiunta traduzione RO per header_flags';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'header_flags' AND [LanguageCode] = 'de')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'header_flags', N'de', N'Flags');
+    PRINT 'Aggiunta traduzione DE per header_flags';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'header_flags' AND [LanguageCode] = 'sv')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'header_flags', N'sv', N'Flaggor');
+    PRINT 'Aggiunta traduzione SV per header_flags';
+END
+
+-- =============================================
+-- error_required_ordine (Messaggio Errore)
+-- =============================================
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'error_required_ordine' AND [LanguageCode] = 'it')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'error_required_ordine', N'it', N'L''ordine di visualizzazione è obbligatorio.');
+    PRINT 'Aggiunta traduzione IT per error_required_ordine';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'error_required_ordine' AND [LanguageCode] = 'en')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'error_required_ordine', N'en', N'Display order is required.');
+    PRINT 'Aggiunta traduzione EN per error_required_ordine';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'error_required_ordine' AND [LanguageCode] = 'ro')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'error_required_ordine', N'ro', N'Ordinea de afișare este obligatorie.');
+    PRINT 'Aggiunta traduzione RO per error_required_ordine';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'error_required_ordine' AND [LanguageCode] = 'de')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'error_required_ordine', N'de', N'Anzeigereihenfolge ist erforderlich.');
+    PRINT 'Aggiunta traduzione DE per error_required_ordine';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'error_required_ordine' AND [LanguageCode] = 'sv')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'error_required_ordine', N'sv', N'Visningsordning krävs.');
+    PRINT 'Aggiunta traduzione SV per error_required_ordine';
+END
+
+-- =============================================
+-- error_invalid_ordine (Messaggio Errore)
+-- =============================================
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'error_invalid_ordine' AND [LanguageCode] = 'it')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'error_invalid_ordine', N'it', N'L''ordine deve essere un numero intero.');
+    PRINT 'Aggiunta traduzione IT per error_invalid_ordine';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'error_invalid_ordine' AND [LanguageCode] = 'en')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'error_invalid_ordine', N'en', N'Order must be an integer.');
+    PRINT 'Aggiunta traduzione EN per error_invalid_ordine';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'error_invalid_ordine' AND [LanguageCode] = 'ro')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'error_invalid_ordine', N'ro', N'Ordinea trebuie să fie un număr întreg.');
+    PRINT 'Aggiunta traduzione RO per error_invalid_ordine';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'error_invalid_ordine' AND [LanguageCode] = 'de')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'error_invalid_ordine', N'de', N'Reihenfolge muss eine ganze Zahl sein.');
+    PRINT 'Aggiunta traduzione DE per error_invalid_ordine';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'error_invalid_ordine' AND [LanguageCode] = 'sv')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'error_invalid_ordine', N'sv', N'Ordning måste vara ett heltal.');
+    PRINT 'Aggiunta traduzione SV per error_invalid_ordine';
+END
+
+-- =============================================
+-- error_invalid_no_cycle (Messaggio Errore)
+-- =============================================
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'error_invalid_no_cycle' AND [LanguageCode] = 'it')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'error_invalid_no_cycle', N'it', N'Il numero di cicli deve essere un numero intero.');
+    PRINT 'Aggiunta traduzione IT per error_invalid_no_cycle';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'error_invalid_no_cycle' AND [LanguageCode] = 'en')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'error_invalid_no_cycle', N'en', N'Number of cycles must be an integer.');
+    PRINT 'Aggiunta traduzione EN per error_invalid_no_cycle';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'error_invalid_no_cycle' AND [LanguageCode] = 'ro')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'error_invalid_no_cycle', N'ro', N'Numărul de cicluri trebuie să fie un număr întreg.');
+    PRINT 'Aggiunta traduzione RO per error_invalid_no_cycle';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'error_invalid_no_cycle' AND [LanguageCode] = 'de')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'error_invalid_no_cycle', N'de', N'Anzahl der Zyklen muss eine ganze Zahl sein.');
+    PRINT 'Aggiunta traduzione DE per error_invalid_no_cycle';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'error_invalid_no_cycle' AND [LanguageCode] = 'sv')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'error_invalid_no_cycle', N'sv', N'Antal cykler måste vara ett heltal.');
+    PRINT 'Aggiunta traduzione SV per error_invalid_no_cycle';
+END
+
+-- =============================================
+-- confirm_deactivate_title (Titolo Conferma)
+-- =============================================
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'confirm_deactivate_title' AND [LanguageCode] = 'it')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'confirm_deactivate_title', N'it', N'Conferma Disattivazione');
+    PRINT 'Aggiunta traduzione IT per confirm_deactivate_title';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'confirm_deactivate_title' AND [LanguageCode] = 'en')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'confirm_deactivate_title', N'en', N'Confirm Deactivation');
+    PRINT 'Aggiunta traduzione EN per confirm_deactivate_title';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'confirm_deactivate_title' AND [LanguageCode] = 'ro')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'confirm_deactivate_title', N'ro', N'Confirmă Dezactivarea');
+    PRINT 'Aggiunta traduzione RO per confirm_deactivate_title';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'confirm_deactivate_title' AND [LanguageCode] = 'de')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'confirm_deactivate_title', N'de', N'Deaktivierung Bestätigen');
+    PRINT 'Aggiunta traduzione DE per confirm_deactivate_title';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'confirm_deactivate_title' AND [LanguageCode] = 'sv')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'confirm_deactivate_title', N'sv', N'Bekräfta Inaktivering');
+    PRINT 'Aggiunta traduzione SV per confirm_deactivate_title';
+END
+
+-- =============================================
+-- confirm_deactivate_message (Messaggio Conferma)
+-- =============================================
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'confirm_deactivate_message' AND [LanguageCode] = 'it')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'confirm_deactivate_message', N'it', N'Sei sicuro di voler disattivare questo ciclo?
+
+Nota: Il ciclo non verrà cancellato ma marcato come disattivato (DateOut).');
+    PRINT 'Aggiunta traduzione IT per confirm_deactivate_message';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'confirm_deactivate_message' AND [LanguageCode] = 'en')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'confirm_deactivate_message', N'en', N'Are you sure you want to deactivate this cycle?
+
+Note: The cycle will not be deleted but marked as deactivated (DateOut).');
+    PRINT 'Aggiunta traduzione EN per confirm_deactivate_message';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'confirm_deactivate_message' AND [LanguageCode] = 'ro')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'confirm_deactivate_message', N'ro', N'Sigur doriți să dezactivați acest ciclu?
+
+Notă: Ciclul nu va fi șters, ci marcat ca dezactivat (DateOut).');
+    PRINT 'Aggiunta traduzione RO per confirm_deactivate_message';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'confirm_deactivate_message' AND [LanguageCode] = 'de')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'confirm_deactivate_message', N'de', N'Sind Sie sicher, dass Sie diesen Zyklus deaktivieren möchten?
+
+Hinweis: Der Zyklus wird nicht gelöscht, sondern als deaktiviert markiert (DateOut).');
+    PRINT 'Aggiunta traduzione DE per confirm_deactivate_message';
+END
+
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [TranslationKey] = 'confirm_deactivate_message' AND [LanguageCode] = 'sv')
+BEGIN
+    INSERT INTO [dbo].[AppTranslations] ([TranslationKey], [LanguageCode], [TranslationValue])
+    VALUES (N'confirm_deactivate_message', N'sv', N'Är du säker på att du vill inaktivera denna cykel?
+
+Obs: Cykeln kommer inte att raderas utan markeras som inaktiverad (DateOut).');
+    PRINT 'Aggiunta traduzione SV per confirm_deactivate_message';
+END
+
+-- =============================================
 -- Riepilogo
 -- =============================================
 
@@ -255,6 +694,17 @@ PRINT '  - cycles_list_label';
 PRINT '  - cycle_description_label';
 PRINT '  - cycle_value_label';
 PRINT '  - error_cycle_in_use';
+PRINT '  - ordine_prn_label';
+PRINT '  - no_cycle_label';
+PRINT '  - is_fixture_label';
+PRINT '  - is_stensil_label';
+PRINT '  - header_ordine';
+PRINT '  - header_flags';
+PRINT '  - error_required_ordine';
+PRINT '  - error_invalid_ordine';
+PRINT '  - error_invalid_no_cycle';
+PRINT '  - confirm_deactivate_title';
+PRINT '  - confirm_deactivate_message';
 PRINT 'Lingue: IT, EN, RO, DE, SV';
 PRINT '=============================================';
 

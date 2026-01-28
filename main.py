@@ -6260,8 +6260,12 @@ Accedi al sistema per visualizzare i dettagli completi.
             return None
 
     def fetch_maintenance_cycles(self):
-        """Recupera tutti i cicli di manutenzione programmati."""
-        query = "SELECT ProgrammedInterventionId, TimingDescriprion, TimingValue FROM eqp.ProgrammedInterventions ORDER BY TimingDescriprion;"
+        """Recupera tutti i cicli di manutenzione programmati (solo attivi)."""
+        query = """SELECT ProgrammedInterventionId, TimingDescriprion, TimingValue, 
+                          OrdinePrn, IsFixture, NoCycle, IsStensil, DateOut
+                   FROM eqp.ProgrammedInterventions 
+                   WHERE DateOut IS NULL
+                   ORDER BY OrdinePrn, TimingDescriprion;"""
         try:
             self.cursor.execute(query)
             return self.cursor.fetchall()
@@ -6285,22 +6289,27 @@ Accedi al sistema per visualizzare i dettagli completi.
             print(f"Errore nel controllo uso ciclo: {e}")
             return True  # Per sicurezza, in caso di errore, si assume che sia usato
 
-    def add_new_maintenance_cycle(self, description, value):
+    def add_new_maintenance_cycle(self, description, value, ordine_prn, is_fixture, no_cycle, is_stensil):
         """Aggiunge un nuovo ciclo di manutenzione."""
-        query = "INSERT INTO eqp.ProgrammedInterventions (TimingDescriprion, TimingValue) VALUES (?, ?);"
+        query = """INSERT INTO eqp.ProgrammedInterventions 
+                   (TimingDescriprion, TimingValue, OrdinePrn, IsFixture, NoCycle, IsStensil, DateOut) 
+                   VALUES (?, ?, ?, ?, ?, ?, NULL);"""
         try:
-            self.cursor.execute(query, description, value)
+            self.cursor.execute(query, description, value, ordine_prn, is_fixture, no_cycle, is_stensil)
             self.conn.commit()
             return True, "Ciclo aggiunto con successo."
         except pyodbc.Error as e:
             self.conn.rollback()
             return False, f"Errore database: {e}"
 
-    def update_maintenance_cycle(self, intervention_id, description, value):
+    def update_maintenance_cycle(self, intervention_id, description, value, ordine_prn, is_fixture, no_cycle, is_stensil):
         """Aggiorna un ciclo di manutenzione esistente."""
-        query = "UPDATE eqp.ProgrammedInterventions SET TimingDescriprion = ?, TimingValue = ? WHERE ProgrammedInterventionId = ?;"
+        query = """UPDATE eqp.ProgrammedInterventions 
+                   SET TimingDescriprion = ?, TimingValue = ?, OrdinePrn = ?, 
+                       IsFixture = ?, NoCycle = ?, IsStensil = ?
+                   WHERE ProgrammedInterventionId = ?;"""
         try:
-            self.cursor.execute(query, description, value, intervention_id)
+            self.cursor.execute(query, description, value, ordine_prn, is_fixture, no_cycle, is_stensil, intervention_id)
             self.conn.commit()
             return True, "Ciclo aggiornato con successo."
         except pyodbc.Error as e:
@@ -6308,12 +6317,12 @@ Accedi al sistema per visualizzare i dettagli completi.
             return False, f"Errore database: {e}"
 
     def delete_maintenance_cycle(self, intervention_id):
-        """Cancella un ciclo di manutenzione."""
-        query = "DELETE FROM eqp.ProgrammedInterventions WHERE ProgrammedInterventionId = ?;"
+        """Disattiva un ciclo di manutenzione (soft delete con DateOut)."""
+        query = "UPDATE eqp.ProgrammedInterventions SET DateOut = GETDATE() WHERE ProgrammedInterventionId = ?;"
         try:
             self.cursor.execute(query, intervention_id)
             self.conn.commit()
-            return True, "Ciclo cancellato con successo."
+            return True, "Ciclo disattivato con successo."
         except pyodbc.Error as e:
             self.conn.rollback()
             return False, f"Errore database: {e}"
