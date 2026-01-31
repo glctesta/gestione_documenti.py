@@ -539,10 +539,10 @@ class ProductVerificationWindow(tk.Toplevel):
             label_code_id = self.db.check_label_code_exists(label_code, self._current_must_check_id)
 
             if label_code_id:
-                self.label_code_status_label.config(text='âœ“', foreground='green')
+                self.label_code_status_label.config(text='[X]', foreground='green')
                 self._current_label_code_id = label_code_id  # Memorizza l'IDLabelCode
             else:
-                self.label_code_status_label.config(text='âœ—', foreground='red')
+                self.label_code_status_label.config(text='[ ]', foreground='red')
                 self._current_label_code_id = None  # Reset IDLabelCode
                 # Mostra messaggio di avviso
                 messagebox.showwarning(
@@ -741,11 +741,11 @@ class ProductVerificationWindow(tk.Toplevel):
 
         for task in generic_tasks:
             print(f"Generic task: {task.ItemToCheck}")
-            item_id = self.checklist_tree.insert('', 'end', text='â˜', values=(
+            item_id = self.checklist_tree.insert('', 'end', text='[ ]', values=(
                 False,
                 task.PriodicalProductCheckListId,
                 task.ItemToCheck,
-                'âœ“' if task.Doc else ''
+                '[X]' if task.Doc else '[ ]'
             ))
             self._check_items.append({
                 'tree_id': item_id,
@@ -754,7 +754,7 @@ class ProductVerificationWindow(tk.Toplevel):
                 'doc': task.Doc
             })
 
-        # CARICA TASK SPECIFICI solo se c'Ã¨ un prodotto selezionato
+        # CARICA TASK SPECIFICI solo se c'e' un prodotto selezionato
         if self._current_must_check_id:
             specific_tasks = self.db.fetch_specific_check_tasks(self._current_must_check_id)
             print(f"Found {len(specific_tasks)} specific tasks")
@@ -762,11 +762,11 @@ class ProductVerificationWindow(tk.Toplevel):
 
             for task in specific_tasks:
                 print(f"Specific task: {task.ItemToCheck}")
-                item_id = self.checklist_tree.insert('', 'end', text='â˜', values=(
+                item_id = self.checklist_tree.insert('', 'end', text='[ ]', values=(
                     False,
                     task.PriodicalProductCheckListId,
                     task.ItemToCheck,
-                    'âœ“' if task.Doc else ''
+                    '[X]' if task.Doc else ''
                 ))
                 self._check_items.append({
                     'tree_id': item_id,
@@ -788,7 +788,7 @@ class ProductVerificationWindow(tk.Toplevel):
                 for check_item in self._check_items:
                     if check_item['tree_id'] == item_id:
                         check_item['checked'] = not check_item['checked']
-                        new_symbol = 'â˜‘' if check_item['checked'] else 'â˜'
+                        new_symbol = '[X]' if check_item['checked'] else '[ ]'
                         self.checklist_tree.item(item_id, text=new_symbol)
                         break
 
@@ -1417,6 +1417,11 @@ class VerificationReportsWindow(tk.Toplevel):
                     chart.set_categories(cats)
                     chart.height = 15
                     chart.width = 25
+                    
+                    # Aggiungi etichette dati per mostrare i valori PPM sulle barre
+                    from openpyxl.chart.label import DataLabelList
+                    chart.dataLabels = DataLabelList()
+                    chart.dataLabels.showVal = True
                     
                     # Aggiungi grafico al foglio statistiche
                     stats_ws.add_chart(chart, "E2")
@@ -2097,6 +2102,11 @@ def generate_monthly_excel_report(db_handler, file_path):
         chart.set_categories(cats)
         chart.height = 15
         chart.width = 25
+        
+        # Aggiungi etichette dati per mostrare i valori PPM sulle barre
+        from openpyxl.chart.label import DataLabelList
+        chart.dataLabels = DataLabelList()
+        chart.dataLabels.showVal = True
         
         # Aggiungi grafico al foglio statistiche
         stats_ws.add_chart(chart, "E2")

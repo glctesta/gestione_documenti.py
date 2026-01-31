@@ -18,6 +18,7 @@ class PrinterConfigWindow(tk.Toplevel):
     """Finestra per la gestione delle configurazioni stampanti"""
 
     def __init__(self, parent, db_handler, lang_manager, user_id):
+        logger.info(f"PrinterConfigWindow: Apertura finestra gestione configurazioni stampanti (user: {user_id})")
         super().__init__(parent)
         self.db = db_handler
         self.lang = lang_manager

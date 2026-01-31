@@ -379,7 +379,7 @@ def generate_fai_report(fai_log_id, db, output_path):
         
         # Recupera dati ordine (OrderNumber, ProductCode, Quantity)
         order_query = """
-        SELECT o.OrderNumber, o.orderquantity, p.ProductCode
+        SELECT o.OrderNumber, o.orderquantity, p.productcode
         FROM Traceability_RS.fai.FaiLogHeathers h
         INNER JOIN Traceability_RS.fai.FaiLogs l ON h.FaiLogId = l.FaiLogId
         INNER JOIN Traceability_RS.dbo.orders o ON l.OrderId = o.IDOrder

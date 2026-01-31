@@ -1,0 +1,6 @@
+data = open(r'c:\Users\gtesta\PythonProjetcs\Python\PrductionDocumentation\product_checks_gui.py', 'rb').read()
+data = data.replace(b'\xc3\xa2\xcb\x9c\xc2\x91', b'[X]')
+data = data.replace(b'\xc3\xa2\xc5\x93\xe2\x9c\x93', b'OK')
+data = data.replace(b'\xc3\xa2\xc5\x93\xe2\x9c\x97', b'X')
+open(r'c:\Users\gtesta\PythonProjetcs\Python\PrductionDocumentation\product_checks_gui.py', 'wb').write(data)
+print('All remaining corrupted characters fixed!')

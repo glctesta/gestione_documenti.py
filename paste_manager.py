@@ -204,20 +204,20 @@ class PasteConfigurationWindow(tk.Toplevel):
         """Carica prodotti disponibili"""
         try:
             query = """
-                SELECT IdProduct, ProductCode, ProductName 
+                SELECT IdProduct, productcode, productname 
                 FROM [Traceability_RS].[dbo].[Products] 
-                ORDER BY ProductCode
+                ORDER BY productcode
             """
             cursor = self.db.conn.cursor()
             cursor.execute(query)
             
             self.products_dict = {}
             for row in cursor.fetchall():
-                display = f"{row.ProductCode} - {row.ProductName}"
+                display = f"{row.productcode} - {row.productname}"
                 self.products_dict[display] = {
                     'id': row.IdProduct,
-                    'code': row.ProductCode,
-                    'name': row.ProductName
+                    'code': row.productcode,
+                    'name': row.productname
                 }
             
             if hasattr(self, 'product_combo'):
@@ -373,7 +373,7 @@ class PasteConfigurationWindow(tk.Toplevel):
             try:
                 cursor = self.db.conn.cursor()
                 cursor.execute("""
-                    SELECT p.ProductCode, pp.NotRecicle
+                    SELECT p.productcode, pp.NotRecicle
                     FROM [Traceability_RS].[pst].[PastaProducts] pp
                     INNER JOIN [Traceability_RS].[dbo].[Products] p 
                         ON pp.IdProduct = p.IdProduct
@@ -383,7 +383,7 @@ class PasteConfigurationWindow(tk.Toplevel):
                 
                 products_list = []
                 for row in cursor.fetchall():
-                    product_code = row.ProductCode
+                    product_code = row.productcode
                     not_recicle = row.NotRecicle if row.NotRecicle else 0
                     recicle_mark = '❌' if not_recicle else '✔️'
                     products_list.append(f"{product_code} {recicle_mark}")
@@ -524,7 +524,7 @@ class PasteConfigurationWindow(tk.Toplevel):
             # Carica tutti i prodotti con DateOut NULL per questa pasta
             cursor.execute("""
                 SELECT pp.PastaProductId, pp.IdProduct, pp.NotRecicle,
-                       p.ProductCode, p.ProductName
+                       p.productcode, p.productname
                 FROM [Traceability_RS].[pst].[PastaProducts] pp
                 INNER JOIN [Traceability_RS].[dbo].[Products] p 
                     ON pp.IdProduct = p.IdProduct
@@ -542,15 +542,15 @@ class PasteConfigurationWindow(tk.Toplevel):
                 not_recicle = row.NotRecicle if row.NotRecicle is not None else 0
                 
                 self.selected_products[product_id] = {
-                    'code': row.ProductCode,
-                    'name': row.ProductName,
+                    'code': row.productcode,
+                    'name': row.productname,
                     'no_reuse': bool(not_recicle)
                 }
                 
                 self.products_tree.insert('', 'end', iid=str(product_id), values=(
                     product_id,
-                    row.ProductCode,
-                    row.ProductName,
+                    row.productcode,
+                    row.productname,
                     '☑' if not_recicle else '☐'
                 ))
             

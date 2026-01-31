@@ -72,20 +72,20 @@ def _load_products(self):
     """Carica prodotti disponibili"""
     try:
         query = """
-            SELECT IdProduct, ProductCode, ProductName 
+            SELECT IdProduct, productcode, productname 
             FROM [Traceability_RS].[dbo].[Products] 
-            ORDER BY ProductCode
+            ORDER BY productcode
         """
         cursor = self.db.conn.cursor()
         cursor.execute(query)
         
         self.products_dict = {}
         for row in cursor.fetchall():
-            display = f"{row.ProductCode} - {row.ProductName}"
+            display = f"{row.productcode} - {row.productname}"
             self.products_dict[display] = {
                 'id': row.IdProduct,
-                'code': row.ProductCode,
-                'name': row.ProductName
+                'code': row.productcode,
+                'name': row.productname
             }
         
         self.product_combo['values'] = list(self.products_dict.keys())
@@ -330,7 +330,7 @@ def _load_associated_products(self, pasta_id):
         # Carica tutti i prodotti con DateOut NULL
         cursor.execute("""
             SELECT pp.PastaProductId, pp.IdProduct, pp.NotRecicle,
-                   p.ProductCode, p.ProductName
+                   p.productcode, p.productname
             FROM [Traceability_RS].[pst].[PastaProducts] pp
             INNER JOIN [Traceability_RS].[dbo].[Products] p 
                 ON pp.IdProduct = p.IdProduct
@@ -350,15 +350,15 @@ def _load_associated_products(self, pasta_id):
             not_recicle = row.NotRecicle if row.NotRecicle is not None else 0
             
             self.selected_products[product_id] = {
-                'code': row.ProductCode,
-                'name': row.ProductName,
+                'code': row.productcode,
+                'name': row.productname,
                 'no_reuse': bool(not_recicle)
             }
             
             self.products_tree.insert('', 'end', iid=str(product_id), values=(
                 product_id,
-                row.ProductCode,
-                row.ProductName,
+                row.productcode,
+                row.productname,
                 '☑' if not_recicle else '☐'
             ))
         

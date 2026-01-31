@@ -41,33 +41,52 @@ class OrdersManager:
             logger.error(f"Errore nella creazione della sessione: {e}")
             raise
     
-    def get_all_dynamic_orders(self) -> List[Dict]:
+    def get_all_dynamic_orders(self, days_limit: int = 100, linked_filter: str = 'All') -> List[Dict]:
         """
         Recupera tutti gli ordini dinamici con i dati dei prodotti
+        
+        Args:
+            days_limit: Numero di giorni dalla data odierna per filtrare ShipDateRequest (default 100)
+            linked_filter: Filtro per ordini collegati ('All', 'Yes', 'No')
         
         Returns:
             Lista di dizionari con i dati degli ordini
         """
-        query = text("""
-            SELECT  
-                d.[DynamicSaleOrderId],
-                d.[SONumber],
-                d.[CustomerName],
-                d.[ItemCode] as ProductCode,
-                d.[ItemName] as ProductName,
-                d.[ShipDateRequest],
-                d.[QtyOrder],
-                d.[QtyToShip],
-                d.[QtyStock],
-                d.[Currency],
-                d.[UnitPrice]
-            FROM [Traceability_RS].[dyn].[DynamicSaleOrders] d 
-            ORDER BY d.SONumber, d.ItemCode
-        """)
+        # Costruisci la query base
+        base_query = """
+            SELECT s.[DynamicSaleOrderId]
+                  ,[SONumber]
+                  ,[CustomerName]
+                  ,[ItemCode]
+                  ,[ItemName]
+                  ,[ShipDateRequest]
+                  ,[QtyOrder]
+                  ,[QtyToShip]
+                  ,[QtyStock]
+                  ,[Currency]
+                  ,[UnitPrice]
+                  ,[LastUpdate]
+                  ,iif(isnull(p.idorder ,0)=0,'No','Yes') as Linked
+              FROM [Traceability_RS].[dyn].[DynamicSaleOrders] S 
+              LEFT JOIN [Traceability_RS].[dyn].[DynamicProductionOrders] P 
+                ON p.DynamicSaleOrderId=s.DynamicSaleOrderId
+              WHERE datediff(DAY,getdate(),s.ShipDateRequest) < :days_limit
+                AND CHARINDEX('ECORE',[CustomerName],1) = 0
+        """
+        
+        # Aggiungi filtro Linked se necessario
+        if linked_filter == 'Yes':
+            base_query += "                AND isnull(p.idorder, 0) <> 0\n"
+        elif linked_filter == 'No':
+            base_query += "                AND isnull(p.idorder, 0) = 0\n"
+        
+        base_query += "              ORDER BY s.sonumber"
+        
+        query = text(base_query)
         
         session = self._get_session()
         try:
-            result = session.execute(query)
+            result = session.execute(query, {'days_limit': days_limit})
             orders = []
             for row in result:
                 orders.append({
@@ -81,7 +100,9 @@ class OrdersManager:
                     'QtyToShip': row[7],
                     'QtyStock': row[8],
                     'Currency': row[9],
-                    'UnitPrice': row[10]
+                    'UnitPrice': row[10],
+                    'LastUpdate': row[11],
+                    'Linked': row[12]
                 })
             return orders
         except Exception as e:

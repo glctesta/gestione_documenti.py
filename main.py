@@ -263,7 +263,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.1.3'  # Versione aggiornata
+APP_VERSION = '2.3.2.1'  # Versione aggiornata
 APP_DEVELOPER = 'Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -914,7 +914,7 @@ class Database:
     def fetch_products_for_checks(self):
         """Recupera prodotti per combo gestione verifiche"""
         query = """
-                SELECT p.IDProduct, ProductCode, ProductName
+                SELECT p.IDProduct, productcode, productname
                 FROM traceability_rs.dbo.products AS P
                          LEFT JOIN traceability_rs.dbo.PeriodicalProductChecks AS PC
                                    ON p.idproduct = pc.idproduct AND pc.datestop IS NULL
@@ -1155,12 +1155,12 @@ class Database:
     def fetch_products_with_checks(self):
         """Recupera prodotti con verifiche configurate"""
         query = """
-                SELECT pc.PeriodicalProductCheckId, p.ProductCode, p.ProductName
+                SELECT pc.PeriodicalProductCheckId, p.productcode, p.productname
                 FROM [Traceability_RS].[dbo].[PeriodicalProductChecks] pc
-                    INNER JOIN dbo.products p \
+                    INNER JOIN dbo.products p 
                 ON p.IDProduct = pc.IdProduct
                 WHERE pc.datestop IS NULL
-                ORDER BY p.ProductCode; \
+                ORDER BY p.productcode; \
                 """
         try:
             self.cursor.execute(query)
@@ -3771,10 +3771,10 @@ class Database:
     def fetch_final_products_by_client(self, client_id):
         """Recupera i prodotti finali per un cliente specifico."""
         query = """
-        SELECT idproduct, ProductCode, ProductName, ProductCodClienteFinal, isnull(Version, '') as Version
+        SELECT idproduct, productcode, productname, ProductCodClienteFinal, isnull(Version, '') as Version
         FROM traceability_rs.dbo.products
         WHERE idfinalclient = ? AND IsFinalProduct = 1
-        ORDER BY ProductCode
+        ORDER BY productcode
         """
         try:
             self.cursor.execute(query, client_id)
@@ -3786,7 +3786,7 @@ class Database:
     def fetch_semi_products_by_client(self, client_id):
         """Recupera i semilavorati per un cliente specifico."""
         query = """
-        SELECT idproduct, ProductCode, ProductName, isnull(Version, '') as Version
+        SELECT idproduct, productcode, productname, isnull(Version, '') as Version
         FROM traceability_rs.dbo.products
         WHERE (idfinalclient = ? ) 
         AND (IsFinalProduct = 0 OR IsFinalProduct IS NULL)
@@ -3981,7 +3981,7 @@ class Database:
             return False, f"Errore database: {e}"
 
     def fetch_kce_products(self):
-        query = "SELECT idProduct, ProductCode FROM dbo.PRODUCTS WHERE PRODUCTCODE LIKE '%KCE%' ORDER BY ProductCode;"
+        query = "SELECT idProduct, productcode FROM dbo.PRODUCTS WHERE PRODUCTCODE LIKE '%KCE%' ORDER BY productcode;"
         try:
             self.cursor.execute(query)
             return self.cursor.fetchall()
@@ -6553,13 +6553,27 @@ Accedi al sistema per visualizzare i dettagli completi.
             self.last_error_details = str(e)
             return False
 
-    def fetch_maintenance_interventions(self):
-        """Recupera i tipi di intervento di manutenzione per la selezione."""
+    def fetch_maintenance_interventions(self, equipment_type_filter=None):
+        """Recupera i tipi di intervento di manutenzione per la selezione, con filtro opzionale per tipo."""
         query = """
-                SELECT [ProgrammedInterventionId], [TimingDescriprion]
+                SELECT [ProgrammedInterventionId], [TimingDescriprion],
+                       ISNULL(IsFixture, 0) AS IsFixture,
+                       ISNULL(IsStensil, 0) AS IsStensil
                 FROM [Traceability_RS].[eqp].[ProgrammedInterventions]
-                ORDER BY TimingDescriprion; \
-                """
+                WHERE DateOut IS NULL
+        """
+        
+        # Aggiungi filtro per tipo di equipaggiamento
+        if equipment_type_filter == 'fixture':
+            query += " AND ISNULL(IsFixture, 0) = 1"
+        elif equipment_type_filter == 'stensil':
+            query += " AND ISNULL(IsStensil, 0) = 1"
+        elif equipment_type_filter == 'all':
+            # Per "all", mostra solo interventi che NON sono specifici per fixture o stencil
+            query += " AND ISNULL(IsFixture, 0) = 0 AND ISNULL(IsStensil, 0) = 0"
+        
+        query += " ORDER BY TimingDescriprion;"
+        
         try:
             self.cursor.execute(query)
             return self.cursor.fetchall()
@@ -7062,12 +7076,14 @@ Accedi al sistema per visualizzare i dettagli completi.
             print(f"Errore nel recupero dettagli completi macchina: {e}")
             return None
 
-    def fetch_all_equipments(self, only_with_plan=False, phase_id=None, equipment_type_id=None):
-        """Recupera ID, Nome Interno e Seriale di tutte le macchine per la selezione."""
+    def fetch_all_equipments(self, only_with_plan=False, phase_id=None, equipment_type_id=None, equipment_type_filter=None):
+        """Recupera ID, Nome Interno, Seriale e tipo (Fixture/Stensil) di tutte le macchine per la selezione."""
         query = """
             SELECT DISTINCT e.EquipmentId, 
                    InternalName + IIF(cm.CompitoId IS NULL, '', ' (*) ') AS InternalName, 
-                   SerialNumber 
+                   SerialNumber,
+                   ISNULL(e.IsFixture, 0) AS IsFixture,
+                   ISNULL(e.IsStensil, 0) AS IsStensil
             FROM eqp.Equipments E 
             LEFT JOIN [eqp].[CompitiManutenzione] CM ON e.EquipmentId = cm.EquipmentId
         """
@@ -7086,6 +7102,13 @@ Accedi al sistema per visualizzare i dettagli completi.
             where_clauses.append("e.EquipmentTypeId = ?")
             params.append(equipment_type_id)
         
+        # Nuovo filtro per tipo di equipaggiamento
+        if equipment_type_filter == 'fixture':
+            where_clauses.append("ISNULL(e.IsFixture, 0) = 1")
+        elif equipment_type_filter == 'stensil':
+            where_clauses.append("ISNULL(e.IsStensil, 0) = 1")
+        # Se equipment_type_filter è 'all' o None, non aggiungiamo filtri
+        
         if where_clauses:
             query += " WHERE " + " AND ".join(where_clauses)
         
@@ -7100,7 +7123,10 @@ Accedi al sistema per visualizzare i dettagli completi.
 
     def fetch_equipment_details(self, equipment_id):
         """Recupera i dettagli di una singola macchina per la modifica."""
-        query = "SELECT ParentPhaseId, EquipmentTypeId, InternalName, SerialNumber FROM eqp.Equipments WHERE EquipmentId = ?;"
+        query = """SELECT ParentPhaseId, EquipmentTypeId, InternalName, SerialNumber, 
+                          ProductionYear, IsFixture, IsStensil, MustCalibrated 
+                   FROM eqp.Equipments 
+                   WHERE EquipmentId = ?;"""
         try:
             self.cursor.execute(query, equipment_id)
             return self.cursor.fetchone()
@@ -7109,51 +7135,50 @@ Accedi al sistema per visualizzare i dettagli completi.
             return None
 
     def update_and_log_equipment_changes(self, equipment_id, new_phase_id, new_internal_name, new_serial,
-                                         change_log_string, user_name, new_equipment_type_id=None, new_production_year=None):
+                                         change_log_string, user_name, new_equipment_type_id=None, new_production_year=None,
+                                         new_is_fixture=None, new_is_stensil=None, new_must_calibrated=None):
         """Aggiorna la macchina e registra la modifica in una transazione."""
         try:
-            # 1. Aggiorna la tabella principale
             # Costruisce la query dinamicamente in base ai parametri forniti
-            if new_equipment_type_id is not None and new_production_year is not None:
-                update_query = """
-                               UPDATE eqp.Equipments
-                               SET ParentPhaseId = ?,
-                                   EquipmentTypeId = ?,
-                                   InternalName  = ?,
-                                   SerialNumber  = ?,
-                                   ProductionYear = ?
-                               WHERE EquipmentId = ?;
-                               """
-                self.cursor.execute(update_query, new_phase_id, new_equipment_type_id, new_internal_name, new_serial, new_production_year, equipment_id)
-            elif new_equipment_type_id is not None:
-                update_query = """
-                               UPDATE eqp.Equipments
-                               SET ParentPhaseId = ?,
-                                   EquipmentTypeId = ?,
-                                   InternalName  = ?,
-                                   SerialNumber  = ?
-                               WHERE EquipmentId = ?;
-                               """
-                self.cursor.execute(update_query, new_phase_id, new_equipment_type_id, new_internal_name, new_serial, equipment_id)
-            elif new_production_year is not None:
-                update_query = """
-                               UPDATE eqp.Equipments
-                               SET ParentPhaseId = ?,
-                                   InternalName  = ?,
-                                   SerialNumber  = ?,
-                                   ProductionYear = ?
-                               WHERE EquipmentId = ?;
-                               """
-                self.cursor.execute(update_query, new_phase_id, new_internal_name, new_serial, new_production_year, equipment_id)
-            else:
-                update_query = """
-                               UPDATE eqp.Equipments
-                               SET ParentPhaseId = ?,
-                                   InternalName  = ?,
-                                   SerialNumber  = ?
-                               WHERE EquipmentId = ?;
-                               """
-                self.cursor.execute(update_query, new_phase_id, new_internal_name, new_serial, equipment_id)
+            set_clauses = [
+                "ParentPhaseId = ?",
+                "InternalName = ?",
+                "SerialNumber = ?"
+            ]
+            params = [new_phase_id, new_internal_name, new_serial]
+            
+            # Aggiungi campi opzionali se forniti
+            if new_equipment_type_id is not None:
+                set_clauses.append("EquipmentTypeId = ?")
+                params.append(new_equipment_type_id)
+            
+            if new_production_year is not None:
+                set_clauses.append("ProductionYear = ?")
+                params.append(new_production_year)
+            
+            if new_is_fixture is not None:
+                set_clauses.append("IsFixture = ?")
+                params.append(1 if new_is_fixture else 0)
+            
+            if new_is_stensil is not None:
+                set_clauses.append("IsStensil = ?")
+                params.append(1 if new_is_stensil else 0)
+            
+            if new_must_calibrated is not None:
+                set_clauses.append("MustCalibrated = ?")
+                params.append(1 if new_must_calibrated else 0)
+            
+            # Aggiungi equipment_id alla fine
+            params.append(equipment_id)
+            
+            # Costruisci la query completa
+            update_query = f"""
+                UPDATE eqp.Equipments
+                SET {', '.join(set_clauses)}
+                WHERE EquipmentId = ?;
+            """
+            
+            self.cursor.execute(update_query, *params)
 
             # 2. Inserisce il log delle modifiche
             log_query = """
@@ -11628,6 +11653,15 @@ class App(tk.Tk):
             )
         )
 
+    def _open_label_config_placeholder(self):
+        """Apre la finestra di configurazione etichetta."""
+        def action():
+            import label_printing_gui
+            label_printing_gui.open_label_config_window(
+                self, self.db, self.lang, self.last_authenticated_user_name
+            )
+        self._execute_authorized_action('organizza_label_setup', action)
+
     def open_add_interruption_window(self):
         """Apre la finestra per dichiarare un'interruzione di produzione."""
         self._execute_simple_login(
@@ -12780,11 +12814,11 @@ class App(tk.Tk):
         
         
         self.orders_menu.add_command(
-            label=self.lang.get('submenu_orders_reports', 'Rapporti'),
+            label=self.lang.get('submenu_orders_reports', 'Urgenze'),
             command=self._orders_reports_placeholder
         )
 
-        self.operations_menu.add_separator()
+        #self.operations_menu.add_separator()
 
         # Comandi del menu NPI
 
@@ -12828,16 +12862,29 @@ class App(tk.Tk):
             menu=materials_menu
         )
         
-        # Sottomenu Etichette
+        # Sottomenu Etichette (voce diretta)
         materials_menu.add_command(
             label=self.lang.get('submenu_labels', 'Etichette'),
             command=self.open_label_print_with_login
         )
         
-        # Sottomenu Stampante
-        materials_menu.add_command(
-            label=self.lang.get('submenu_printer_settings', 'Stampante'),
+        # Sottomenu Configurazioni
+        materials_config_menu = tk.Menu(materials_menu, tearoff=0)
+        materials_menu.add_cascade(
+            label=self.lang.get('submenu_configurations', 'Configurazioni'),
+            menu=materials_config_menu
+        )
+        
+        # Stampanti sotto Configurazioni
+        materials_config_menu.add_command(
+            label=self.lang.get('submenu_printer_settings', 'Stampanti'),
             command=self.open_printer_settings_with_login
+        )
+        
+        # Etichetta sotto Configurazioni
+        materials_config_menu.add_command(
+            label=self.lang.get('submenu_label_config', 'Etichetta'),
+            command=self._open_label_config_placeholder
         )
 
 

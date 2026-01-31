@@ -160,7 +160,11 @@ class DynamicShippingWindow(tk.Toplevel):
         
         for col, (text, width) in visible_columns.items():
             self.orders_tree.heading(col, text=text)
-            self.orders_tree.column(col, width=width, anchor=tk.E if col not in ['Customer', 'ItemName'] else tk.W)
+            # Centra colonne numeriche e date, allinea a sinistra testo
+            if col in ['Customer', 'ItemName']:
+                self.orders_tree.column(col, width=width, anchor=tk.W)
+            else:
+                self.orders_tree.column(col, width=width, anchor=tk.CENTER)
         
         # Scrollbars
         vsb = ttk.Scrollbar(orders_frame, orient=tk.VERTICAL, command=self.orders_tree.yview)
@@ -211,7 +215,8 @@ class DynamicShippingWindow(tk.Toplevel):
         self.rules_info_label.pack(side=tk.LEFT, padx=20)
         
         # Treeview regole
-        columns = ('RuleId', 'QtyToShip', 'DateToShip', 'TimeToShip', 'ShipTo', 'AddedBy', 'DateAdded')
+        columns = ('RuleId', 'ProdOrder', 'RequestedOn', 'RequestDateToShip', 'RequestQty', 
+                   'RemainOverPO', 'RemainOverRequest', 'ShipTo', 'AddedBy')
         
         self.rules_tree = ttk.Treeview(rules_frame, columns=columns, show='headings', selectmode='browse')
         
@@ -220,19 +225,25 @@ class DynamicShippingWindow(tk.Toplevel):
         self.rules_tree.heading('RuleId', text='')
         
         
-        self.rules_tree.heading('QtyToShip', text=self.lang.get('col_qty_to_ship', 'QtÃ  da Spedire'))
-        self.rules_tree.heading('DateToShip', text=self.lang.get('col_date_to_ship', 'Data Spedizione'))
-        self.rules_tree.heading('TimeToShip', text=self.lang.get('col_time_to_ship', 'Ora'))
+        # Intestazioni colonne
+        self.rules_tree.heading('ProdOrder', text=self.lang.get('col_prod_order', 'Ordine Prod.'))
+        self.rules_tree.heading('RequestedOn', text=self.lang.get('col_requested_on', 'Richiesto Il'))
+        self.rules_tree.heading('RequestDateToShip', text=self.lang.get('col_request_date_to_ship', 'Data Spedizione'))
+        self.rules_tree.heading('RequestQty', text=self.lang.get('col_request_qty', 'Qta Richiesta'))
+        self.rules_tree.heading('RemainOverPO', text=self.lang.get('col_remain_over_po', 'Rim. su PO'))
+        self.rules_tree.heading('RemainOverRequest', text=self.lang.get('col_remain_over_request', 'Rim. su Richiesta'))
         self.rules_tree.heading('ShipTo', text=self.lang.get('col_ship_to', 'Destinazione'))
         self.rules_tree.heading('AddedBy', text=self.lang.get('col_added_by', 'Aggiunto Da'))
-        self.rules_tree.heading('DateAdded', text=self.lang.get('col_date_added', 'Data Inserimento'))
         
-        self.rules_tree.column('QtyToShip', width=100, anchor=tk.E)
-        self.rules_tree.column('DateToShip', width=100)
-        self.rules_tree.column('TimeToShip', width=60)
-        self.rules_tree.column('ShipTo', width=180)
-        self.rules_tree.column('AddedBy', width=120)
-        self.rules_tree.column('DateAdded', width=140)
+        # Larghezze colonne (centrate per migliore leggibilità)
+        self.rules_tree.column('ProdOrder', width=120, anchor=tk.CENTER)
+        self.rules_tree.column('RequestedOn', width=100, anchor=tk.CENTER)
+        self.rules_tree.column('RequestDateToShip', width=120, anchor=tk.CENTER)
+        self.rules_tree.column('RequestQty', width=90, anchor=tk.CENTER)
+        self.rules_tree.column('RemainOverPO', width=90, anchor=tk.CENTER)
+        self.rules_tree.column('RemainOverRequest', width=120, anchor=tk.CENTER)
+        self.rules_tree.column('ShipTo', width=180, anchor=tk.CENTER)
+        self.rules_tree.column('AddedBy', width=120, anchor=tk.CENTER)
         
         scrollbar = ttk.Scrollbar(rules_frame, orient=tk.VERTICAL, command=self.rules_tree.yview)
         self.rules_tree.configure(yscrollcommand=scrollbar.set)
@@ -369,7 +380,7 @@ class DynamicShippingWindow(tk.Toplevel):
                 OUTER APPLY 
                     (SELECT NoBoards FROM traceability_rs.[dbo].[QuantitaProdottaPerFase](o.IDOrder, 135)) sub7
                 OUTER APPLY 
-                    (SELECT NoBoards FROM traceability_rs.[dbo].[QuantitaProdottaPerFase](o.IDOrder, 900)) sub8
+                    (select NoBoards from traceability_rs.[dbo].[GetOrderPhaseStatus](o.IDOrder,9)) as sub8
             """
             
             # Aggiungi filtri dinamici
@@ -531,10 +542,20 @@ class DynamicShippingWindow(tk.Toplevel):
         
         try:
             query = """
-            SELECT DybamicShippingRuleId, QtyToShip, DateToship, ShipTo, AddBayUser, DateOut
-            FROM [Traceability_RS].[dyn].[DynamicShippingRules]
-            WHERE DynamicProductionOrderID = ?
-            ORDER BY DateToship
+            SELECT R.DybamicShippingRuleId, po.ordernumber as Prod_Order, r.datesys as RequestedOn, 
+                   FORMAT(R.DateToship, 'dd.MM.yyyy ''at'' hh:mm') as RequestDateToShip, R.QtyToShip AS RequestQty, 
+                   S.QtyOrder - K.Packet AS RemainOverPO,
+                   r.QtyToShip - p.Noboards As RemainOverRequest, R.ShipTo, R.AddBayUser
+            FROM [Traceability_RS].[dyn].[DynamicShippingRules] R
+            INNER JOIN Traceability_RS.dyn.DynamicProductionOrders O on O.DynamicProductionOrderID = R.DynamicProductionOrderID
+            INNER JOIN TRACEABILITY_RS.DYN.DynamicSaleOrders S on s.DynamicSaleOrderId=o.DynamicSaleOrderId
+            OUTER APPLY
+                (select NoBoards as Packet from traceability_rs.[dbo].[GetOrderPhaseStatus](o.idorder,9)) as K
+            OUTER APPLY     
+                Traceability_rs.dbo.da_eusta_fn_GetPackedBoards(o.idorder, 920, NULL) AS P
+            inner join traceability_rs.dbo.Orders PO on o.idorder=po.idorder
+            WHERE R.DynamicProductionOrderID = ?
+            ORDER BY R.DateToship
             """
             
             self.db.cursor.execute(query, (self.current_production_order_id,))
@@ -547,20 +568,21 @@ class DynamicShippingWindow(tk.Toplevel):
             
             # Popola treeview
             for row in rows:
-                # ðŸ†• Separa data e ora
-                date_to_ship = row.DateToship.strftime('%d/%m/%Y') if row.DateToship else ''
-                time_to_ship = row.DateToship.strftime('%H:%M') if row.DateToship else ''
-                date_out = row.DateOut.strftime('%d/%m/%Y %H:%M') if row.DateOut else ''
+                # Formatta date (RequestedOn è datetime, RequestDateToShip è già formattata da SQL)
+                requested_on = row.RequestedOn.strftime('%d/%m/%Y') if row.RequestedOn else ''
+                request_date_to_ship = row.RequestDateToShip or ''  # Già formattata da SQL con FORMAT()
                 ship_to = row.ShipTo or ''
                 
                 self.rules_tree.insert('', tk.END, values=(
                     row.DybamicShippingRuleId,
-                    row.QtyToShip,
-                    date_to_ship,
-                    time_to_ship,
+                    row.Prod_Order or '',
+                    requested_on,
+                    request_date_to_ship,
+                    row.RequestQty or 0,
+                    row.RemainOverPO or 0,
+                    row.RemainOverRequest or 0,
                     ship_to,
-                    row.AddBayUser or '',
-                    date_out
+                    row.AddBayUser or ''
                 ))
             
             # Abilita/disabilita bottoni edit/delete
@@ -646,7 +668,7 @@ class DynamicShippingWindow(tk.Toplevel):
             )
     
     def _export_to_excel(self):
-        """Esporta i dati in Excel professionale"""
+        """Esporta i dati in Excel con vista gerarchica: ordini + regole indentate"""
         try:
             # Crea directory se non esiste
             temp_dir = r'c:\Temp'
@@ -654,17 +676,19 @@ class DynamicShippingWindow(tk.Toplevel):
                 os.makedirs(temp_dir)
             
             # Nome file con timestamp
-            filename = f"DynamicShipping_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            filename = f"DynamicShipping_Complete_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
             filepath = os.path.join(temp_dir, filename)
             
             # Crea workbook
             wb = openpyxl.Workbook()
             ws = wb.active
-            ws.title = "Ordini"
+            ws.title = "Vista Completa"
             
             # Stili
             header_font = Font(bold=True, color="FFFFFF", size=11)
             header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+            order_fill = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid")
+            rule_fill = PatternFill(start_color="F5F5F5", end_color="F5F5F5", fill_type="solid")
             border = Border(
                 left=Side(style='thin'),
                 right=Side(style='thin'),
@@ -672,26 +696,127 @@ class DynamicShippingWindow(tk.Toplevel):
                 bottom=Side(style='thin')
             )
             
-            # Ottieni colonne (escludi IDOrder nascosto)
-            columns = self.orders_tree['columns'][1:]  # Salta IDOrder
+            # Ottieni colonne ordini (escludi IDOrder)
+            order_columns = self.orders_tree['columns'][1:]
+            # Ottieni colonne regole (escludi RuleId)
+            rule_columns = self.rules_tree['columns'][1:]
             
-            # Scrivi intestazioni
-            for col_idx, col in enumerate(columns, 1):
-                cell = ws.cell(row=1, column=col_idx)
+            # Crea intestazioni combinate
+            current_col = 1
+            
+            # Intestazioni ordini
+            for col in order_columns:
+                cell = ws.cell(row=1, column=current_col)
                 cell.value = self.orders_tree.heading(col)['text']
                 cell.font = header_font
                 cell.fill = header_fill
                 cell.alignment = Alignment(horizontal='center', vertical='center')
                 cell.border = border
+                current_col += 1
             
-            # Scrivi dati
-            for row_idx, item_id in enumerate(self.orders_tree.get_children(), 2):
-                values = self.orders_tree.item(item_id, 'values')[1:]  # Salta IDOrder
-                for col_idx, value in enumerate(values, 1):
-                    cell = ws.cell(row=row_idx, column=col_idx)
+            # Intestazioni regole (con prefisso per chiarezza)
+            for col in rule_columns:
+                cell = ws.cell(row=1, column=current_col)
+                cell.value = f"↳ {self.rules_tree.heading(col)['text']}"
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                cell.border = border
+                current_col += 1
+            
+            # Scrivi dati gerarchici
+            excel_row = 2
+            
+            for item_id in self.orders_tree.get_children():
+                # Ottieni dati ordine
+                order_values = self.orders_tree.item(item_id, 'values')
+                order_id = order_values[0]  # IDOrder
+                order_data = order_values[1:]  # Dati visibili
+                
+                # Scrivi riga ordine
+                current_col = 1
+                for value in order_data:
+                    cell = ws.cell(row=excel_row, column=current_col)
                     cell.value = value
                     cell.border = border
-                    cell.alignment = Alignment(horizontal='left', vertical='center')
+                    cell.fill = order_fill
+                    cell.font = Font(bold=True)
+                    cell.alignment = Alignment(horizontal='center', vertical='center')
+                    current_col += 1
+                
+                excel_row += 1
+                
+                # Carica regole per questo ordine
+                try:
+                    # Trova il DynamicProductionOrderID per questo ordine
+                    query_po_id = """
+                    SELECT DynamicProductionOrderID 
+                    FROM [Traceability_RS].[dyn].[DynamicProductionOrders]
+                    WHERE idorder = ?
+                    """
+                    self.db.cursor.execute(query_po_id, (order_id,))
+                    po_result = self.db.cursor.fetchone()
+                    
+                    if po_result and po_result.DynamicProductionOrderID:
+                        # Carica regole
+                        query_rules = """
+                        SELECT R.DybamicShippingRuleId, po.ordernumber as Prod_Order, r.datesys as RequestedOn, 
+                               FORMAT(R.DateToship, 'dd.MM.yyyy ''at'' hh:mm') as RequestDateToShip, R.QtyToShip AS RequestQty, 
+                               S.QtyOrder - K.Packet AS RemainOverPO,
+                               r.QtyToShip - p.Noboards As RemainOverRequest, R.ShipTo, R.AddBayUser
+                        FROM [Traceability_RS].[dyn].[DynamicShippingRules] R
+                        INNER JOIN Traceability_RS.dyn.DynamicProductionOrders O on O.DynamicProductionOrderID = R.DynamicProductionOrderID
+                        INNER JOIN TRACEABILITY_RS.DYN.DynamicSaleOrders S on s.DynamicSaleOrderId=o.DynamicSaleOrderId
+                        OUTER APPLY (select NoBoards as Packet from traceability_rs.[dbo].[GetOrderPhaseStatus](o.idorder,9)) as K
+                        OUTER APPLY Traceability_rs.dbo.da_eusta_fn_GetPackedBoards(o.idorder, 920, NULL) AS P
+                        inner join traceability_rs.dbo.Orders PO on o.idorder=po.idorder
+                        WHERE R.DynamicProductionOrderID = ?
+                        ORDER BY R.DateToship
+                        """
+                        
+                        self.db.cursor.execute(query_rules, (po_result.DynamicProductionOrderID,))
+                        rules = self.db.cursor.fetchall()
+                        
+                        # Scrivi regole indentate
+                        for rule in rules:
+                            # Formatta date
+                            requested_on = rule.RequestedOn.strftime('%d/%m/%Y') if rule.RequestedOn else ''
+                            request_date_to_ship = rule.RequestDateToShip or ''
+                            
+                            rule_data = [
+                                rule.Prod_Order or '',
+                                requested_on,
+                                request_date_to_ship,
+                                rule.RequestQty or 0,
+                                rule.RemainOverPO or 0,
+                                rule.RemainOverRequest or 0,
+                                rule.ShipTo or '',
+                                rule.AddBayUser or ''
+                            ]
+                            
+                            # Lascia vuote le colonne ordine, scrivi solo nelle colonne regole
+                            current_col = 1
+                            # Salta colonne ordine
+                            for _ in order_data:
+                                cell = ws.cell(row=excel_row, column=current_col)
+                                cell.value = ""
+                                cell.border = border
+                                cell.fill = rule_fill
+                                current_col += 1
+                            
+                            # Scrivi dati regola
+                            for value in rule_data:
+                                cell = ws.cell(row=excel_row, column=current_col)
+                                cell.value = value
+                                cell.border = border
+                                cell.fill = rule_fill
+                                cell.alignment = Alignment(horizontal='center', vertical='center', indent=1)
+                                current_col += 1
+                            
+                            excel_row += 1
+                
+                except Exception as e:
+                    logger.error(f"Errore caricamento regole per ordine {order_id}: {e}")
             
             # Auto-size colonne
             for column in ws.columns:
@@ -712,11 +837,21 @@ class DynamicShippingWindow(tk.Toplevel):
             # Salva
             wb.save(filepath)
             
-            messagebox.showinfo(
+            # Chiedi se aprire il file
+            if messagebox.askyesno(
                 self.lang.get('success', 'Successo'),
-                f"{self.lang.get('file_saved', 'File salvato in')}: {filepath}",
+                f"{self.lang.get('file_saved', 'File salvato in')}: {filepath}\n\n{self.lang.get('open_file_question', 'Vuoi aprire il file?')}",
                 parent=self
-            )
+            ):
+                try:
+                    os.startfile(filepath)
+                except Exception as e:
+                    logger.error(f"Errore apertura file: {e}")
+                    messagebox.showerror(
+                        self.lang.get('error', 'Errore'),
+                        f"Impossibile aprire il file: {e}",
+                        parent=self
+                    )
             
         except Exception as e:
             logger.error(f"Errore esportazione Excel: {e}", exc_info=True)
@@ -851,11 +986,21 @@ class DynamicShippingWindow(tk.Toplevel):
             # Salva
             wb.save(filepath)
             
-            messagebox.showinfo(
+            # Chiedi se aprire il file
+            if messagebox.askyesno(
                 self.lang.get('success', 'Successo'),
-                f"{self.lang.get('file_saved', 'File salvato in')}: {filepath}",
+                f"{self.lang.get('file_saved', 'File salvato in')}: {filepath}\n\n{self.lang.get('open_file_question', 'Vuoi aprire il file?')}",
                 parent=self
-            )
+            ):
+                try:
+                    os.startfile(filepath)
+                except Exception as e:
+                    logger.error(f"Errore apertura file: {e}")
+                    messagebox.showerror(
+                        self.lang.get('error', 'Errore'),
+                        f"Impossibile aprire il file: {e}",
+                        parent=self
+                    )
             
         except Exception as e:
             logger.error(f"Errore esportazione regole Excel: {e}", exc_info=True)

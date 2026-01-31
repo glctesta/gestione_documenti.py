@@ -321,6 +321,9 @@ class EditMachineWindow(tk.Toplevel):
         self.serial_var = tk.StringVar()
         self.internal_name_var = tk.StringVar()
         self.production_year_var = tk.StringVar()
+        self.is_fixture_var = tk.BooleanVar()
+        self.is_stensil_var = tk.BooleanVar()
+        self.must_calibrated_var = tk.BooleanVar()
 
         self.title(self.lang.get('submenu_edit_machine'))
         self.geometry("550x400")
@@ -362,8 +365,17 @@ class EditMachineWindow(tk.Toplevel):
         years.reverse()  # Ordine decrescente (più recente prima)
         self.production_year_combo['values'] = [''] + years  # Aggiungi opzione vuota
 
+        # Checkbox IsFixture
+        ttk.Checkbutton(frame, text="Is Fixture", variable=self.is_fixture_var).grid(row=5, column=0, columnspan=2, sticky=tk.W, pady=5)
+        
+        # Checkbox IsStensil
+        ttk.Checkbutton(frame, text="Is Stensil", variable=self.is_stensil_var).grid(row=6, column=0, columnspan=2, sticky=tk.W, pady=5)
+        
+        # Checkbox MustCalibrated
+        ttk.Checkbutton(frame, text="Must be Calibrated", variable=self.must_calibrated_var).grid(row=7, column=0, columnspan=2, sticky=tk.W, pady=5)
+
         button_frame = ttk.Frame(frame)
-        button_frame.grid(row=5, column=1, sticky=tk.E, pady=(20, 0))
+        button_frame.grid(row=8, column=1, sticky=tk.E, pady=(20, 0))
         ttk.Button(button_frame, text=self.lang.get('save_button'), command=self._save_changes).pack(side=tk.LEFT,
                                                                                                      padx=5)
         ttk.Button(button_frame, text=self.lang.get('cancel_button'), command=self.destroy).pack(side=tk.LEFT)
@@ -412,6 +424,14 @@ class EditMachineWindow(tk.Toplevel):
             # Imposta l'anno di produzione se presente
             if hasattr(details, 'ProductionYear') and details.ProductionYear:
                 self.production_year_var.set(str(details.ProductionYear))
+            
+            # Carica i campi booleani
+            if hasattr(details, 'IsFixture'):
+                self.is_fixture_var.set(bool(details.IsFixture))
+            if hasattr(details, 'IsStensil'):
+                self.is_stensil_var.set(bool(details.IsStensil))
+            if hasattr(details, 'MustCalibrated'):
+                self.must_calibrated_var.set(bool(details.MustCalibrated))
         else:
             messagebox.showerror(self.lang.get('error_title'), self.lang.get('error_loading_machine_details'),
                                  parent=self)
@@ -444,6 +464,11 @@ class EditMachineWindow(tk.Toplevel):
                     parent=self
                 )
                 return
+        
+        # Recupera i nuovi valori booleani
+        new_is_fixture = self.is_fixture_var.get()
+        new_is_stensil = self.is_stensil_var.get()
+        new_must_calibrated = self.must_calibrated_var.get()
 
         # Costruisce la stringa di log confrontando i valori vecchi e nuovi
         change_log = []
@@ -470,6 +495,21 @@ class EditMachineWindow(tk.Toplevel):
             original_year_str = str(original_production_year) if original_production_year else 'N/D'
             new_year_str = str(new_production_year) if new_production_year else 'N/D'
             change_log.append(f"Anno Produzione cambiato da '{original_year_str}' a '{new_year_str}'.")
+        
+        # Controlla se IsFixture è cambiato
+        original_is_fixture = getattr(self.original_data, 'IsFixture', 0)
+        if new_is_fixture != bool(original_is_fixture):
+            change_log.append(f"IsFixture cambiato da '{bool(original_is_fixture)}' a '{new_is_fixture}'.")
+        
+        # Controlla se IsStensil è cambiato
+        original_is_stensil = getattr(self.original_data, 'IsStensil', 0)
+        if new_is_stensil != bool(original_is_stensil):
+            change_log.append(f"IsStensil cambiato da '{bool(original_is_stensil)}' a '{new_is_stensil}'.")
+        
+        # Controlla se MustCalibrated è cambiato
+        original_must_calibrated = getattr(self.original_data, 'MustCalibrated', 0)
+        if new_must_calibrated != bool(original_must_calibrated):
+            change_log.append(f"MustCalibrated cambiato da '{bool(original_must_calibrated)}' a '{new_must_calibrated}'.")
 
         if not change_log:
             messagebox.showinfo(self.lang.get('info_title'), self.lang.get('info_no_changes'), parent=self)
@@ -486,7 +526,10 @@ class EditMachineWindow(tk.Toplevel):
             change_log_string,
             self.user_name,
             new_equipment_type_id=new_equipment_type_id,
-            new_production_year=new_production_year
+            new_production_year=new_production_year,
+            new_is_fixture=new_is_fixture,
+            new_is_stensil=new_is_stensil,
+            new_must_calibrated=new_must_calibrated
         )
 
         if success:
@@ -1662,6 +1705,7 @@ class AddMaintenanceTasksWindow(tk.Toplevel):
         self.equipment_var = tk.StringVar()
         self.intervention_var = tk.StringVar()
         self.category_var = tk.StringVar()
+        self.equipment_type_filter_var = tk.StringVar(value='all')  # Filtro tipo equipaggiamento
 
         # 3. Creazione dei widget e caricamento dati
         self._create_widgets()
@@ -1679,20 +1723,31 @@ class AddMaintenanceTasksWindow(tk.Toplevel):
         filter_frame.columnconfigure(1, weight=1)
         filter_frame.columnconfigure(3, weight=1)
 
+        # Filtro per tipo di equipaggiamento (Radio buttons)
+        type_filter_frame = ttk.Frame(filter_frame)
+        type_filter_frame.grid(row=0, column=0, columnspan=4, sticky="w", padx=5, pady=(0, 5))
+        ttk.Label(type_filter_frame, text="Tipo:").pack(side="left", padx=(0, 10))
+        ttk.Radiobutton(type_filter_frame, text="Tutte", variable=self.equipment_type_filter_var, 
+                       value='all', command=self._on_equipment_type_filter_changed).pack(side="left", padx=5)
+        ttk.Radiobutton(type_filter_frame, text="Fixture", variable=self.equipment_type_filter_var, 
+                       value='fixture', command=self._on_equipment_type_filter_changed).pack(side="left", padx=5)
+        ttk.Radiobutton(type_filter_frame, text="Stencil", variable=self.equipment_type_filter_var, 
+                       value='stensil', command=self._on_equipment_type_filter_changed).pack(side="left", padx=5)
+
         # Creazione dei widget Combobox (vengono creati PRIMA di essere popolati)
-        ttk.Label(filter_frame, text="Macchina:").grid(row=0, column=0, sticky="w", padx=5)
+        ttk.Label(filter_frame, text="Macchina:").grid(row=1, column=0, sticky="w", padx=5)
         self.equipment_combo = ttk.Combobox(filter_frame, textvariable=self.equipment_var, state='readonly')
-        self.equipment_combo.grid(row=0, column=1, sticky="ew", padx=(0, 15))
+        self.equipment_combo.grid(row=1, column=1, sticky="ew", padx=(0, 15))
         self.equipment_combo.bind("<<ComboboxSelected>>", self._load_existing_tasks)
 
-        ttk.Label(filter_frame, text="Tipo Intervento:").grid(row=0, column=2, sticky="w", padx=5)
+        ttk.Label(filter_frame, text="Tipo Intervento:").grid(row=1, column=2, sticky="w", padx=5)
         self.intervention_combo = ttk.Combobox(filter_frame, textvariable=self.intervention_var, state='readonly')
-        self.intervention_combo.grid(row=0, column=3, sticky="ew")
+        self.intervention_combo.grid(row=1, column=3, sticky="ew")
         self.intervention_combo.bind("<<ComboboxSelected>>", self._load_existing_tasks)
 
-        ttk.Label(filter_frame, text="Categoria/Titolo Generale:").grid(row=1, column=0, sticky="w", padx=5, pady=5)
+        ttk.Label(filter_frame, text="Categoria/Titolo Generale:").grid(row=2, column=0, sticky="w", padx=5, pady=5)
         self.category_entry = ttk.Entry(filter_frame, textvariable=self.category_var)
-        self.category_entry.grid(row=1, column=1, columnspan=3, sticky="ew", pady=5)
+        self.category_entry.grid(row=2, column=1, columnspan=3, sticky="ew", pady=5)
 
         # Creazione della Treeview e dei pulsanti
         tasks_frame = ttk.LabelFrame(main_frame, text="Compiti", padding="10")
@@ -1725,17 +1780,69 @@ class AddMaintenanceTasksWindow(tk.Toplevel):
 
     def _load_filters(self):
         """Carica i dati dal DB e li inserisce nei combobox."""
-        # Carica Macchine
-        equipments = self.db.fetch_all_equipments()
+        # Carica Macchine con filtro tipo
+        equipment_filter = self.equipment_type_filter_var.get()
+        equipments = self.db.fetch_all_equipments(equipment_type_filter=equipment_filter)
         if equipments:
-            self.equipments_data = {f"{r.InternalName or ''} [{r.SerialNumber}]": r.EquipmentId for r in equipments}
+            self.equipments_data = {}
+            for r in equipments:
+                # Determina il tipo di equipaggiamento
+                equipment_type = ''
+                if r.IsFixture == 1:
+                    equipment_type = ' (Fixture)'
+                elif r.IsStensil == 1:
+                    equipment_type = ' (Stencil)'
+                
+                # Formato: "Nome [Seriale] (Tipo)"
+                display_name = f"{r.InternalName or ''} [{r.SerialNumber}]{equipment_type}"
+                self.equipments_data[display_name] = r.EquipmentId
+            
             self.equipment_combo['values'] = sorted(list(self.equipments_data.keys()))
 
-        # Carica Tipi di Intervento
-        interventions = self.db.fetch_maintenance_interventions()
+        # Carica Tipi di Intervento con filtro tipo
+        equipment_filter = self.equipment_type_filter_var.get()
+        interventions = self.db.fetch_maintenance_interventions(equipment_type_filter=equipment_filter)
         if interventions:
             self.interventions_data = {r.TimingDescriprion: r.ProgrammedInterventionId for r in interventions}
             self.intervention_combo['values'] = sorted(list(self.interventions_data.keys()))
+
+    def _on_equipment_type_filter_changed(self):
+        """Gestisce il cambio del filtro tipo equipaggiamento."""
+        # Pulisce la selezione corrente
+        self.equipment_var.set('')
+        self.intervention_var.set('')  # Pulisce anche la selezione intervento
+        
+        equipment_filter = self.equipment_type_filter_var.get()
+        
+        # Ricarica la lista delle macchine con il nuovo filtro
+        equipments = self.db.fetch_all_equipments(equipment_type_filter=equipment_filter)
+        if equipments:
+            self.equipments_data = {}
+            for r in equipments:
+                # Determina il tipo di equipaggiamento
+                equipment_type = ''
+                if r.IsFixture == 1:
+                    equipment_type = ' (Fixture)'
+                elif r.IsStensil == 1:
+                    equipment_type = ' (Stencil)'
+                
+                # Formato: "Nome [Seriale] (Tipo)"
+                display_name = f"{r.InternalName or ''} [{r.SerialNumber}]{equipment_type}"
+                self.equipments_data[display_name] = r.EquipmentId
+            
+            self.equipment_combo['values'] = sorted(list(self.equipments_data.keys()))
+        else:
+            self.equipments_data = {}
+            self.equipment_combo['values'] = []
+        
+        # Ricarica anche la lista degli interventi con il nuovo filtro
+        interventions = self.db.fetch_maintenance_interventions(equipment_type_filter=equipment_filter)
+        if interventions:
+            self.interventions_data = {r.TimingDescriprion: r.ProgrammedInterventionId for r in interventions}
+            self.intervention_combo['values'] = sorted(list(self.interventions_data.keys()))
+        else:
+            self.interventions_data = {}
+            self.intervention_combo['values'] = []
 
     def get_selected_equipment_name(self):
         """Restituisce il nome del macchinario selezionato."""

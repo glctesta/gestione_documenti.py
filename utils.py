@@ -137,13 +137,13 @@ def send_monthly_report_email(
             <div style="margin-bottom: 20px;">
                 <img src="cid:company_logo" alt="Company Logo" width="200"/>
             </div>
-            <h2 style="color: #366092;">Monthly Review - Fail after Board Validation</h2>
-            <p>Questa email riepiloga la situazione afferente alle schede che sono state validate PASS per i processi di <strong>PTH</strong>, <strong>COATING</strong> e <strong>SMT</strong>.</p>
-            <p>In allegato trovate il report dettagliato con le statistiche <strong>PPM</strong> (Parts Per Million) per utente.</p>
+            <h2 style="color: #366092;">Raport Lunar - Defecte după Validarea Plăcilor</h2>
+            <p>Acest email rezumă situația referitoare la plăcile care au fost validate PASS pentru procesele de <strong>PTH</strong>, <strong>COATING</strong> și <strong>SMT</strong>.</p>
+            <p>În atașament găsiți raportul detaliat cu statisticile <strong>PPM</strong> (Parts Per Million) pe utilizator.</p>
             <br/>
             <p style="color: #666;">
-                Cordiali saluti,<br/>
-                <strong>Sistema di Tracciabilità</strong>
+                Cu stimă,<br/>
+                <strong>Sistem de Trasabilitate</strong>
             </p>
         </body>
         </html>

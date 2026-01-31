@@ -368,13 +368,13 @@ class LineValidationWindow(tk.Toplevel):
         """Carica gli ordini dal database (escludendo CIPR e RMA)"""
         try:
             query = """
-            SELECT o.IDOrder, o.OrderNumber, o.orderquantity, p.ProductCode, p.ProductName 
-            FROM [Traceability_RS].dbo.orders o 
-            INNER JOIN [Traceability_RS].dbo.products p ON o.IDProduct = p.IDProduct
-            WHERE o.OrderDate >= '2025-08-01' 
-                AND CHARINDEX('cipr', UPPER(p.ProductCode), 1) = 0 
-                AND CHARINDEX('RMA', UPPER(p.ProductCode), 1) = 0
-            ORDER BY o.OrderDate
+            SELECT o.IDOrder, o.OrderNumber, o.orderquantity, p.productcode, p.productname 
+            FROM [Traceability_RS].[dbo].[Orders] o
+            INNER JOIN [Traceability_RS].[dbo].[Products] p ON o.IDProduct = p.IDProduct
+            WHERE o.OrderNumber IS NOT NULL
+                AND CHARINDEX('cipr', UPPER(p.productcode), 1) = 0 
+                AND CHARINDEX('RMA', UPPER(p.productcode), 1) = 0
+            ORDER BY o.OrderDate DESC
             """
             
             logger.info(f"Esecuzione query ordini...")
@@ -390,12 +390,12 @@ class LineValidationWindow(tk.Toplevel):
             if result and len(result) > 0:
                 logger.info(f"Trovati {len(result)} ordini")
                 self.orders_map = {
-                    f"{row.OrderNumber} - {row.ProductCode} - {row.ProductName}": {
+                    f"{row.OrderNumber} - {row.productcode} - {row.productname}": {
                         'IDOrder': row.IDOrder,
                         'OrderNumber': row.OrderNumber,
                         'OrderQuantity': row.orderquantity,
-                        'ProductCode': row.ProductCode,
-                        'ProductName': row.ProductName
+                        'ProductCode': row.productcode,
+                        'ProductName': row.productname
                     }
                     for row in result
                 }
@@ -1111,8 +1111,8 @@ class LineValidationWindow(tk.Toplevel):
             # ORA inserisci l'header in FaiLogHeathers usando il FaiLogId valido
             header_query = """
             INSERT INTO Traceability_RS.fai.FaiLogHeathers 
-            (FaiLogId, NPI, Test, PRODUCTION, StandardProcessDeviation, Others)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (FaiLogId, NPI, Test, PRODUCTION, StandardProcessDeviation, Others, SerialNumberInterval)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """
             
             header_params = (
@@ -1121,7 +1121,8 @@ class LineValidationWindow(tk.Toplevel):
                 1 if self.test_var.get() else 0,
                 1 if self.production_var.get() else 0,
                 1 if self.std_deviation_var.get() else 0,
-                1 if self.others_var.get() else 0
+                1 if self.others_var.get() else 0,
+                labelcode_value  # 🆕 Salva LabelCode validato in SerialNumberInterval
             )
             
             # Esegui insert header

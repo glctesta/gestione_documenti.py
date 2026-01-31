@@ -173,11 +173,11 @@ class AddComplaintWindow(tk.Toplevel):
 
             # Products (con IDFinalClient per filtro)
             query_products = """
-                             SELECT idproduct, ProductCode, ProductName, IDFinalClient
+                             SELECT idproduct, productcode, productname, IDFinalClient
                              FROM products
-                             WHERE CHARINDEX('cipr', ProductCode, 1) = 0
-                               AND CHARINDEX('RMA', ProductCode, 1) = 0
-                             ORDER BY ProductCode
+                             WHERE CHARINDEX('cipr', productcode, 1) = 0
+                               AND CHARINDEX('RMA', productcode, 1) = 0
+                             ORDER BY productcode
                              """
             products = self.db.fetch_all(query_products)
             self.combo_data['products'] = products

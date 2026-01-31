@@ -34,8 +34,19 @@ class LoadOrdersWindow(tk.Toplevel):
         self.user_name = user_name
         
         self.title(self.lang.get('load_orders_title', 'Carica Ordini'))
-        self.geometry('1400x700')
+        self.geometry('1600x700')
         self.transient(master)
+        
+        # Variabile per il filtro giorni
+        self.days_limit = tk.IntVar(value=100)
+        
+        # Variabile per il filtro Linked
+        self.linked_filter = tk.StringVar(value='All')
+        
+        # Variabili per l'ordinamento
+        self.sort_column = None
+        self.sort_reverse = False
+        self.orders_data = []  # Cache dei dati per ordinamento locale
         
         self._create_widgets()
         self._load_orders()
@@ -55,6 +66,48 @@ class LoadOrdersWindow(tk.Toplevel):
             text=self.lang.get('dynamic_orders_list', 'Elenco Ordini Dinamici'),
             font=('Helvetica', 14, 'bold')
         ).pack(side=tk.LEFT)
+        
+        # Frame per filtro giorni
+        filter_frame = ttk.Frame(header_frame)
+        filter_frame.pack(side=tk.LEFT, padx=20)
+        
+        ttk.Label(
+            filter_frame,
+            text=self.lang.get('days_filter', 'Giorni dalla data odierna:'),
+            font=('Helvetica', 10)
+        ).pack(side=tk.LEFT, padx=(0, 5))
+        
+        days_spinbox = ttk.Spinbox(
+            filter_frame,
+            from_=1,
+            to=365,
+            textvariable=self.days_limit,
+            width=10,
+            command=self._on_days_filter_change
+        )
+        days_spinbox.pack(side=tk.LEFT)
+        days_spinbox.bind('<Return>', lambda e: self._on_days_filter_change())
+        days_spinbox.bind('<FocusOut>', lambda e: self._on_days_filter_change())
+        
+        # Frame per filtro Linked
+        linked_frame = ttk.Frame(header_frame)
+        linked_frame.pack(side=tk.LEFT, padx=20)
+        
+        ttk.Label(
+            linked_frame,
+            text=self.lang.get('linked_filter', 'Collegato:'),
+            font=('Helvetica', 10)
+        ).pack(side=tk.LEFT, padx=(0, 5))
+        
+        linked_combo = ttk.Combobox(
+            linked_frame,
+            textvariable=self.linked_filter,
+            values=['All', 'Yes', 'No'],
+            state='readonly',
+            width=8
+        )
+        linked_combo.pack(side=tk.LEFT)
+        linked_combo.bind('<<ComboboxSelected>>', lambda e: self._on_filter_change())
         
         # Bottoni azione
         btn_frame = ttk.Frame(header_frame)
@@ -84,22 +137,18 @@ class LoadOrdersWindow(tk.Toplevel):
         
         columns = (
             'SONumber', 'CustomerName', 'ProductCode', 'ProductName',
-            'ShipDate', 'QtyOrder', 'QtyToShip', 'QtyStock', 'Currency', 'UnitPrice'
+            'ShipDate', 'QtyOrder', 'QtyToShip', 'QtyStock', 'Currency', 'UnitPrice',
+            'LastUpdate', 'Linked'
         )
         
         self.tree = ttk.Treeview(tree_frame, columns=columns, show='headings', selectmode='browse')
         
-        # Configura intestazioni
-        self.tree.heading('SONumber', text=self.lang.get('col_so_number', 'N. Ordine'))
-        self.tree.heading('CustomerName', text=self.lang.get('col_customer', 'Cliente'))
-        self.tree.heading('ProductCode', text=self.lang.get('col_product_code', 'Cod. Prodotto'))
-        self.tree.heading('ProductName', text=self.lang.get('col_product_name', 'Nome Prodotto'))
-        self.tree.heading('ShipDate', text=self.lang.get('col_ship_date', 'Data Spedizione'))
-        self.tree.heading('QtyOrder', text=self.lang.get('col_qty_order', 'Qtà Ordinata'))
-        self.tree.heading('QtyToShip', text=self.lang.get('col_qty_to_ship', 'Qtà da Spedire'))
-        self.tree.heading('QtyStock', text=self.lang.get('col_qty_stock', 'Qtà in Stock'))
-        self.tree.heading('Currency', text=self.lang.get('col_currency', 'Valuta'))
-        self.tree.heading('UnitPrice', text=self.lang.get('col_unit_price', 'Prezzo Unit.'))
+        # Configura intestazioni (cliccabili per ordinamento)
+        for col in columns:
+            self.tree.heading(col, text=self._get_column_header(col), command=lambda c=col: self._sort_by_column(c))
+        
+        # Imposta testi intestazioni
+        self._update_column_headers()
         
         # Larghezza colonne
         self.tree.column('SONumber', width=100)
@@ -112,6 +161,8 @@ class LoadOrdersWindow(tk.Toplevel):
         self.tree.column('QtyStock', width=80)
         self.tree.column('Currency', width=60)
         self.tree.column('UnitPrice', width=80)
+        self.tree.column('LastUpdate', width=100)
+        self.tree.column('Linked', width=80)
         
         # Scrollbar
         scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
@@ -124,33 +175,134 @@ class LoadOrdersWindow(tk.Toplevel):
         self.status_label = ttk.Label(main_frame, text='', relief=tk.SUNKEN, anchor=tk.W)
         self.status_label.pack(fill=tk.X, pady=(10, 0))
     
+    def _get_column_header(self, col):
+        """Restituisce il testo dell'intestazione per una colonna"""
+        headers = {
+            'SONumber': self.lang.get('col_so_number', 'N. Ordine'),
+            'CustomerName': self.lang.get('col_customer', 'Cliente'),
+            'ProductCode': self.lang.get('col_product_code', 'Cod. Prodotto'),
+            'ProductName': self.lang.get('col_product_name', 'Nome Prodotto'),
+            'ShipDate': self.lang.get('col_ship_date', 'Data Spedizione'),
+            'QtyOrder': self.lang.get('col_qty_order', 'Qtà Ordinata'),
+            'QtyToShip': self.lang.get('col_qty_to_ship', 'Qtà da Spedire'),
+            'QtyStock': self.lang.get('col_qty_stock', 'Qtà in Stock'),
+            'Currency': self.lang.get('col_currency', 'Valuta'),
+            'UnitPrice': self.lang.get('col_unit_price', 'Prezzo Unit.'),
+            'LastUpdate': self.lang.get('col_last_update', 'Ultimo Agg.'),
+            'Linked': self.lang.get('col_linked', 'Collegato')
+        }
+        return headers.get(col, col)
+    
+    def _update_column_headers(self):
+        """Aggiorna le intestazioni delle colonne con indicatori di ordinamento"""
+        columns = (
+            'SONumber', 'CustomerName', 'ProductCode', 'ProductName',
+            'ShipDate', 'QtyOrder', 'QtyToShip', 'QtyStock', 'Currency', 'UnitPrice',
+            'LastUpdate', 'Linked'
+        )
+        
+        for col in columns:
+            header_text = self._get_column_header(col)
+            if col == self.sort_column:
+                # Aggiungi indicatore di ordinamento
+                indicator = ' ▼' if self.sort_reverse else ' ▲'
+                header_text += indicator
+            self.tree.heading(col, text=header_text)
+    
+    def _sort_by_column(self, col):
+        """Ordina i dati per la colonna selezionata"""
+        # Se clicchiamo sulla stessa colonna, inverti l'ordine
+        if self.sort_column == col:
+            self.sort_reverse = not self.sort_reverse
+        else:
+            self.sort_column = col
+            self.sort_reverse = False
+        
+        # Ordina i dati in memoria
+        self._sort_and_display_orders()
+    
+    def _sort_and_display_orders(self):
+        """Ordina e visualizza gli ordini nella treeview"""
+        if not self.orders_data:
+            return
+        
+        # Mappa colonne treeview a chiavi dizionario
+        column_map = {
+            'SONumber': 'SONumber',
+            'CustomerName': 'CustomerName',
+            'ProductCode': 'ProductCode',
+            'ProductName': 'ProductName',
+            'ShipDate': 'ShipDateRequest',
+            'QtyOrder': 'QtyOrder',
+            'QtyToShip': 'QtyToShip',
+            'QtyStock': 'QtyStock',
+            'Currency': 'Currency',
+            'UnitPrice': 'UnitPrice',
+            'LastUpdate': 'LastUpdate',
+            'Linked': 'Linked'
+        }
+        
+        if self.sort_column:
+            data_key = column_map.get(self.sort_column)
+            if data_key:
+                # Ordina con gestione di valori None
+                self.orders_data.sort(
+                    key=lambda x: (x.get(data_key) is None, x.get(data_key) or ''),
+                    reverse=self.sort_reverse
+                )
+        
+        # Pulisci e ricarica treeview
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        
+        for order in self.orders_data:
+            ship_date = order['ShipDateRequest'].strftime('%d/%m/%Y') if order['ShipDateRequest'] else ''
+            last_update = order['LastUpdate'].strftime('%d/%m/%Y %H:%M') if order.get('LastUpdate') else ''
+            
+            self.tree.insert('', tk.END, values=(
+                order['SONumber'] or '',
+                order['CustomerName'] or '',
+                order['ProductCode'] or '',
+                order['ProductName'] or '',
+                ship_date,
+                order['QtyOrder'] or 0,
+                order['QtyToShip'] or 0,
+                order['QtyStock'] or 0,
+                order['Currency'] or '',
+                f"{order['UnitPrice']:.2f}" if order['UnitPrice'] else '0.00',
+                last_update,
+                order.get('Linked', 'No')
+            ))
+        
+        # Aggiorna intestazioni con indicatori
+        self._update_column_headers()
+    
+    def _on_filter_change(self):
+        """Gestisce il cambio di qualsiasi filtro e ricarica gli ordini"""
+        self._load_orders()
+    
+    def _on_days_filter_change(self):
+        """Gestisce il cambio del filtro giorni e ricarica gli ordini"""
+        self._load_orders()
+    
     def _load_orders(self):
         """Carica gli ordini dal database"""
         try:
-            # Pulisci treeview
-            for item in self.tree.get_children():
-                self.tree.delete(item)
+            # Carica ordini con filtri
+            days_limit = self.days_limit.get()
+            linked_filter = self.linked_filter.get()
+            self.orders_data = self.orders_manager.get_all_dynamic_orders(
+                days_limit=days_limit,
+                linked_filter=linked_filter
+            )
             
-            # Carica ordini
-            orders = self.orders_manager.get_all_dynamic_orders()
+            # Visualizza con ordinamento corrente
+            self._sort_and_display_orders()
             
-            for order in orders:
-                ship_date = order['ShipDateRequest'].strftime('%d/%m/%Y') if order['ShipDateRequest'] else ''
-                
-                self.tree.insert('', tk.END, values=(
-                    order['SONumber'] or '',
-                    order['CustomerName'] or '',
-                    order['ProductCode'] or '',
-                    order['ProductName'] or '',
-                    ship_date,
-                    order['QtyOrder'] or 0,
-                    order['QtyToShip'] or 0,
-                    order['QtyStock'] or 0,
-                    order['Currency'] or '',
-                    f"{order['UnitPrice']:.2f}" if order['UnitPrice'] else '0.00'
-                ))
-            
-            self.status_label.config(text=f"{len(orders)} {self.lang.get('orders_loaded', 'ordini caricati')}")
+            self.status_label.config(
+                text=f"{len(self.orders_data)} {self.lang.get('orders_loaded', 'ordini caricati')} "
+                     f"(filtro: {days_limit} giorni, collegato: {linked_filter})"
+            )
             
         except Exception as e:
             logger.error(f"Errore nel caricamento ordini: {e}", exc_info=True)
