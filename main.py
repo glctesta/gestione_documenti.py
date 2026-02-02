@@ -7731,100 +7731,120 @@ Accedi al sistema per visualizzare i dettagli completi.
             list: Lista di record con informazioni sui cicli se soglie critiche raggiunte, [] altrimenti
         """
         query = """
-        SELECT * FROM (
-            SELECT  
-                (SELECT DISTINCT p1.ProgrammedInterventionId
-                 FROM [Traceability_RS].[eqp].[CompitiManutenzione] C
-                 INNER JOIN eqp.Equipments e ON e.EquipmentId=c.EquipmentId
-                 INNER JOIN eqp.EquipmentTypes t ON t.EquipmentTypeId=e.EquipmentTypeId 
-                 INNER JOIN eqp.ProgrammedInterventions p1 ON p1.ProgrammedInterventionId=c.ProgrammedInterventionId
-                 WHERE t.istest=1 AND e.EquipmentId=k.EquipmentId AND p1.NoCycle=p.NoCycle
-                ) AS ProgrammedInterventionId,
-                k.EquipmentId,
-                k.QtyScan,
-                k.EndOfLifeCycle,
-                k.QtyScan - k.EndOfLifeCycle AS CylesOverEquipmentLife,
-                p.NoCycle,
-                CASE WHEN k.QtyScan >= 0.95 * p.NoCycle THEN 1 ELSE 0 END AS IsAt95PercentTask,
-                CASE WHEN K.QtyScan>= 0.95 * EndOfLifeCycle THEN 1 ELSE 0 END AS IsAt95ProcentEndOfLIfe,
-                CASE WHEN K.QtyScan>= EndOfLifeCycle THEN 1 ELSE 0 END AS IsEndOfLife      
+        WITH LastMaint AS (
+            SELECT 
+                LM.EquipmentID,
+                MAX(LM.DateStop) AS LastDateStop
+            FROM Traceability_RS.eqp.LogManutenzioni LM
+            GROUP BY LM.EquipmentID
+        ),
+        ScanBase AS (
+            SELECT 
+                S.ScanTimeFinish,
+                S.IsPass,
+                P.ProductCode,
+                Ph.PhaseName,
+                E.EquipmentId,
+                E.InternalName + ' S/N:' + E.SerialNumber AS Equipment,
+                T.EquipmentType,
+                ISNULL(T.EndOfLifeCycle, 100000) AS EndOfLifeCycle
+            FROM Traceability_rs.dbo.Scannings S
+            INNER JOIN Traceability_rs.dbo.OrderPhases OP   ON OP.IDOrderPhase = S.IDOrderPhase
+            INNER JOIN Traceability_rs.dbo.Phases Ph        ON Ph.IDPhase      = OP.IDPhase
+            INNER JOIN Traceability_rs.dbo.Boards  B        ON B.IDBoard       = S.IDBoard
+            INNER JOIN Traceability_rs.dbo.Orders  O        ON O.IDOrder       = B.IDOrder
+            INNER JOIN Traceability_rs.dbo.Products P       ON P.IDProduct     = O.IDProduct
+            INNER JOIN Traceability_rs.eqp.EquipmentFixtures F ON F.IdProduct  = P.IDProduct
+            INNER JOIN Traceability_rs.eqp.Equipments E     ON E.EquipmentId   = F.EquipmentId
+            INNER JOIN Traceability_rs.eqp.EquipmentTypes T ON T.EquipmentTypeId = E.EquipmentTypeId
+            INNER JOIN Traceability_RS.eqp.EquipmentFixtureRules R 
+                ON R.EquipmentTypeId = T.EquipmentTypeId
+            LEFT JOIN LastMaint LM 
+                ON LM.EquipmentID = E.EquipmentId
+            WHERE 
+                S.ScanTimeFinish BETWEEN 
+                    COALESCE(LM.LastDateStop, DATEFROMPARTS(E.ProductionYear,1,1))
+                    AND GETDATE()
+                AND Ph.IDPhase IN (102,103)
+                AND E.EquipmentId = ?
+        ),
+        K AS (
+            SELECT 
+                A.EquipmentId,
+                A.Equipment + ' [' + A.EquipmentType + ']' AS Equipment,
+                A.EndOfLifeCycle,
+                SUM(CASE WHEN A.IsPass = 0 THEN A.QtyBoards ELSE 0 END)
+                + SUM(CASE WHEN A.IsPass = 1 THEN A.QtyBoards ELSE 0 END) AS QtyScan
             FROM (
                 SELECT 
-                    A.EquipmentId,
-                    Equipment + ' [' + EquipmentType + ']' AS Equipment,
-                    EndOfLifeCycle,
-                    SUM(DISTINCT CASE WHEN IsPass = 0 THEN QtyBoards ELSE 0 END) 
-                    + SUM(DISTINCT CASE WHEN IsPass = 1 THEN QtyBoards ELSE 0 END) AS QtyScan
-                FROM (
-                    SELECT 
-                        Products.ProductCode, 
-                        Phases.PhaseName, 
-                        scannings.IsPass, 
-                        COUNT(*) AS QtyBoards,
-                        Equipments.InternalName + ' S/N:' + Equipments.SerialNumber AS Equipment, 
-                        EquipmentTypes.EquipmentType,
-                        Equipments.EquipmentId, 
-                        ISNULL(EndOfLifeCycle, 100000) AS EndOfLifeCycle
-                    FROM Traceability_rs.dbo.Scannings
-                    INNER JOIN Traceability_rs.dbo.OrderPhases 
-                        ON OrderPhases.IDOrderPhase = Scannings.IDOrderPhase
-                    INNER JOIN Traceability_rs.dbo.Phases 
-                        ON Phases.IDPhase = OrderPhases.IDPhase
-                    INNER JOIN Traceability_rs.dbo.Boards 
-                        ON Boards.IDBoard = Scannings.IDBoard
-                    INNER JOIN Traceability_rs.dbo.Orders 
-                        ON Orders.IDOrder = Boards.IDOrder
-                    INNER JOIN Traceability_rs.dbo.Products 
-                        ON Products.IDProduct = Orders.IDProduct
-                    INNER JOIN Traceability_rs.eqp.EquipmentFixtures 
-                        ON EquipmentFixtures.IdProduct = Products.IDProduct
-                    INNER JOIN Traceability_rs.eqp.Equipments 
-                        ON Equipments.EquipmentId = EquipmentFixtures.EquipmentId
-                    INNER JOIN Traceability_rs.eqp.EquipmentBrands 
-                        ON EquipmentBrands.EquipmentBrandId = Equipments.BrandId
-                    INNER JOIN Traceability_rs.eqp.EquipmentTypes 
-                        ON EquipmentTypes.EquipmentTypeId = Equipments.EquipmentTypeId
-                    INNER JOIN Traceability_RS.eqp.EquipmentFixtureRules 
-                        ON EquipmentFixtureRules.EquipmentTypeId = EquipmentTypes.EquipmentTypeId
-                    WHERE ScanTimeFinish BETWEEN DATEFROMPARTS(Equipments.ProductionYear, 1, 1) 
-                                             AND GETDATE()
-                      AND Phases.IDPhase IN (102, 103)
-                    GROUP BY 
-                        Products.ProductCode, 
-                        Phases.PhaseName, 
-                        scannings.IsPass,
-                        Equipments.InternalName + ' S/N:' + Equipments.SerialNumber,
-                        ISNULL(EndOfLifeCycle, 100000),
-                        EquipmentTypes.EquipmentType,
-                        Equipments.EquipmentId
-                ) A
-                INNER JOIN Traceability_rs.eqp.CompitiManutenzione  
-                    ON CompitiManutenzione.EquipmentId = A.EquipmentId
+                    SB.ProductCode,
+                    SB.PhaseName,
+                    SB.IsPass,
+                    COUNT(*) AS QtyBoards,
+                    SB.Equipment,
+                    SB.EquipmentType,
+                    SB.EquipmentId,
+                    SB.EndOfLifeCycle
+                FROM ScanBase SB
                 GROUP BY 
-                    Equipment,
-                    EquipmentType,
-                    A.EquipmentId, 
-                    EndOfLifeCycle
-            ) K
-            LEFT JOIN (
-                SELECT DISTINCT 
-                    e.EquipmentId,
-                    p.NoCycle
-                FROM Traceability_RS.eqp.CompitiManutenzione C
-                INNER JOIN eqp.Equipments e 
-                    ON e.EquipmentId = C.EquipmentId
-                INNER JOIN eqp.EquipmentTypes t 
-                    ON t.EquipmentTypeId = e.EquipmentTypeId 
-                INNER JOIN eqp.ProgrammedInterventions p 
-                    ON p.ProgrammedInterventionId = C.ProgrammedInterventionId
-                WHERE t.istest = 1
-            ) P ON P.EquipmentId = K.EquipmentId
-            WHERE k.equipmentid = ?
+                    SB.ProductCode,
+                    SB.PhaseName,
+                    SB.IsPass,
+                    SB.Equipment,
+                    SB.EquipmentType,
+                    SB.EquipmentId,
+                    SB.EndOfLifeCycle
+            ) A
+            INNER JOIN Traceability_rs.eqp.CompitiManutenzione CM
+                ON CM.EquipmentId = A.EquipmentId
+            GROUP BY 
+                A.Equipment,
+                A.EquipmentType,
+                A.EquipmentId,
+                A.EndOfLifeCycle
+        ),
+        P AS (
+            SELECT DISTINCT 
+                e.EquipmentId,
+                p.NoCycle
+            FROM Traceability_RS.eqp.CompitiManutenzione C
+            INNER JOIN eqp.Equipments e 
+                ON e.EquipmentId = C.EquipmentId
+            INNER JOIN eqp.EquipmentTypes t 
+                ON t.EquipmentTypeId = e.EquipmentTypeId 
+            INNER JOIN eqp.ProgrammedInterventions p 
+                ON p.ProgrammedInterventionId = C.ProgrammedInterventionId
+            WHERE t.istest = 1
+        )
+        SELECT *
+        FROM (
+            SELECT 
+                (SELECT DISTINCT p1.ProgrammedInterventionId
+                 FROM [Traceability_RS].[eqp].[CompitiManutenzione] C
+                 INNER JOIN eqp.Equipments e ON e.EquipmentId=C.EquipmentId
+                 INNER JOIN eqp.EquipmentTypes t ON t.EquipmentTypeId=e.EquipmentTypeId 
+                 INNER JOIN eqp.ProgrammedInterventions p1 ON p1.ProgrammedInterventionId=C.ProgrammedInterventionId
+                 WHERE t.istest=1 AND e.EquipmentId=k.EquipmentId AND p1.NoCycle=p.NoCycle
+                ) AS ProgrammedInterventionId,
+                k.equipmentid,
+                k.Equipment,
+                k.QtyScan,
+                k.QtyScan - k.EndOfLifeCycle AS CylesOverEquipmentLife,
+                p.NoCycle,
+                CASE WHEN k.QtyScan >= 0.95 * p.NoCycle      THEN 1 ELSE 0 END AS IsAt95PercentTask,
+                k.EndOfLifeCycle,
+                CASE WHEN k.QtyScan >= 0.95 * k.EndOfLifeCycle THEN 1 ELSE 0 END AS IsAt95ProcentEndOfLIfe,
+                CASE WHEN k.QtyScan >= k.EndOfLifeCycle        THEN 1 ELSE 0 END AS IsEndOfLife
+            FROM K
+            LEFT JOIN P
+                ON P.EquipmentId = K.EquipmentId
         ) G
-        WHERE G.IsAt95PercentTask = 1 
-           OR g.IsAt95ProcentEndOfLIfe = 1
-           OR g.IsEndOfLife = 1
-        ORDER BY G.QtyScan DESC;
+        WHERE 
+            G.IsAt95PercentTask = 1 
+            OR G.IsAt95ProcentEndOfLIfe = 1
+            OR G.IsEndOfLife = 1
+        ORDER BY 
+            G.QtyScan DESC;
         """
         try:
             cursor = self.conn.cursor()
