@@ -913,6 +913,43 @@ class FillTemplateWindow(tk.Toplevel):
         self.responsible_label = ttk.Label(selection_frame, text="", font=("Helvetica", 9, "bold"), foreground="blue")
         self.responsible_label.pack(side=tk.LEFT, padx=10)
 
+        # --- Cycle Statistics Frame (for test equipment only) ---
+        self.cycle_stats_frame = ttk.LabelFrame(
+            frame, 
+            text=self.lang.get('cycle_statistics', 'Statistiche Cicli Equipaggiamento'), 
+            padding="10"
+        )
+        # Don't pack yet - will be shown/hidden dynamically
+        
+        # Create labels for statistics
+        stats_inner_frame = ttk.Frame(self.cycle_stats_frame)
+        stats_inner_frame.pack(fill=tk.X)
+        
+        ttk.Label(stats_inner_frame, text=self.lang.get('cycles_performed', 'Cicli Effettuati:')).grid(
+            row=0, column=0, sticky=tk.W, padx=5, pady=2)
+        self.cycles_performed_label = ttk.Label(stats_inner_frame, text="", font=("Helvetica", 10, "bold"))
+        self.cycles_performed_label.grid(row=0, column=1, sticky=tk.W, padx=5, pady=2)
+        
+        ttk.Label(stats_inner_frame, text=self.lang.get('end_of_life_limit', 'Limite Ciclo Vita:')).grid(
+            row=1, column=0, sticky=tk.W, padx=5, pady=2)
+        self.end_of_life_label = ttk.Label(stats_inner_frame, text="", font=("Helvetica", 10))
+        self.end_of_life_label.grid(row=1, column=1, sticky=tk.W, padx=5, pady=2)
+        
+        ttk.Label(stats_inner_frame, text=self.lang.get('cycles_over_life', 'Cicli Oltre Vita:')).grid(
+            row=2, column=0, sticky=tk.W, padx=5, pady=2)
+        self.cycles_over_life_label = ttk.Label(stats_inner_frame, text="", font=("Helvetica", 10, "bold"))
+        self.cycles_over_life_label.grid(row=2, column=1, sticky=tk.W, padx=5, pady=2)
+        
+        # Warning label for critical status
+        self.cycle_warning_label = ttk.Label(
+            self.cycle_stats_frame, 
+            text="", 
+            font=("Helvetica", 9, "bold"),
+            foreground="red"
+        )
+        self.cycle_warning_label.pack(pady=5)
+
+
         # --- Sezione Compiti (Center) ---
         tasks_frame = ttk.LabelFrame(frame, text=self.lang.get('maintenance_tasks_label', "Compiti da Eseguire"), padding="10")
         tasks_frame.pack(fill=tk.BOTH, expand=True, pady=5)
@@ -1068,17 +1105,30 @@ class FillTemplateWindow(tk.Toplevel):
 
     def _on_equipment_select(self, event=None):
         self._reset_plan_and_tasks()
+        self._hide_cycle_stats()  # Hide stats frame initially
+        
         equipment_selection = self.equipment_var.get()
         equipment_id = self.equipments_data.get(equipment_selection)
 
-        if equipment_id:
-            plans = self.db.fetch_available_maintenance_plans(equipment_id)
-            if plans:
-                self.plans_data = {row.TimingDescriprion: (getattr(row, 'PianoManutenzioneId', None), row.ProgrammedInterventionId) for row in plans}
-                self.plan_combo['values'] = list(self.plans_data.keys())
-                self.plan_combo.config(state='readonly')
-            else:
-                messagebox.showinfo(self.lang.get('info_title', "Info"), self.lang.get('info_no_plans_available', "Nessun piano di manutenzione disponibile..."), parent=self)
+        if not equipment_id:
+            return
+        
+        # Check if this is test equipment
+        is_test = self.db.is_test_equipment(equipment_id)
+        
+        # Check cycle status (returns records only if critical thresholds reached)
+        cycle_status_records = self.db.fetch_equipment_cycle_status(equipment_id)
+        
+        if cycle_status_records:
+            # Equipment has reached critical thresholds
+            self._handle_critical_cycle_status(equipment_id, cycle_status_records, is_test)
+        else:
+            # Normal flow - load all plans
+            self._load_all_plans(equipment_id)
+        
+        # Show cycle statistics for test equipment (if applicable)
+        if is_test and cycle_status_records:
+            self._display_cycle_statistics(cycle_status_records[0])
 
     def _on_plan_select(self, event=None):
         self._reset_tasks()
@@ -1209,6 +1259,133 @@ class FillTemplateWindow(tk.Toplevel):
                 self._on_equipment_select()
             else:
                 messagebox.showerror(self.lang.get('error_title'), self.db.last_error_details, parent=self)
+
+    def _hide_cycle_stats(self):
+        """Nasconde il frame delle statistiche cicli."""
+        if hasattr(self, 'cycle_stats_frame'):
+            self.cycle_stats_frame.pack_forget()
+
+    def _display_cycle_statistics(self, cycle_record):
+        """Mostra le statistiche dei cicli per equipaggiamenti di test."""
+        # Show the frame - pack it between selection_frame and tasks_frame
+        # Find the selection_frame's parent to pack after it
+        self.cycle_stats_frame.pack(fill=tk.X, pady=5, before=self.tasks_tree.master)
+        
+        # Populate data
+        qty_scan = cycle_record.QtyScan or 0
+        end_of_life = cycle_record.EndOfLifeCycle or 0
+        cycles_over = cycle_record.CylesOverEquipmentLife or 0
+        
+        # Color coding based on thresholds
+        if cycle_record.IsEndOfLife:
+            color = "red"
+            warning_text = "⚠️ EQUIPAGGIAMENTO HA RAGGIUNTO IL FINE VITA!"
+        elif cycle_record.IsAt95ProcentEndOfLIfe or cycle_record.IsAt95PercentTask:
+            color = "orange"
+            warning_text = "⚠️ Equipaggiamento vicino al limite (≥95%)"
+        else:
+            color = "green"
+            warning_text = ""
+        
+        # Update labels
+        self.cycles_performed_label.config(text=f"{qty_scan:,}", foreground=color)
+        self.end_of_life_label.config(text=f"{end_of_life:,}")
+        self.cycles_over_life_label.config(
+            text=f"{cycles_over:,}", 
+            foreground="red" if cycles_over > 0 else "green"
+        )
+        self.cycle_warning_label.config(text=warning_text)
+
+    def _show_cycle_warning(self, cycle_records):
+        """Mostra un messaggio di avviso per soglie critiche."""
+        record = cycle_records[0]
+        
+        warnings = []
+        if record.IsEndOfLife:
+            warnings.append("• Equipaggiamento ha RAGGIUNTO il fine vita")
+        if record.IsAt95ProcentEndOfLIfe:
+            warnings.append("• Equipaggiamento al 95% del ciclo vita")
+        if record.IsAt95PercentTask:
+            warnings.append("• Equipaggiamento al 95% del ciclo task")
+        
+        if warnings:
+            message = "⚠️ ATTENZIONE - Soglie Critiche Raggiunte:\n\n" + "\n".join(warnings)
+            message += f"\n\nCicli effettuati: {record.QtyScan:,}"
+            message += f"\nLimite ciclo vita: {record.EndOfLifeCycle:,}"
+            
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                message,
+                parent=self
+            )
+
+    def _handle_critical_cycle_status(self, equipment_id, cycle_records, is_test):
+        """Gestisce equipaggiamenti che hanno raggiunto soglie critiche."""
+        # Extract ProgrammedInterventionIds from records
+        intervention_ids = [
+            rec.ProgrammedInterventionId 
+            for rec in cycle_records 
+            if rec.ProgrammedInterventionId is not None
+        ]
+        
+        if not intervention_ids:
+            # No valid intervention IDs, load all plans
+            self._load_all_plans(equipment_id)
+            return
+        
+        # Load plans filtered by intervention IDs
+        all_plans = self.db.fetch_available_maintenance_plans(equipment_id)
+        
+        if all_plans:
+            # Filter plans to only show those matching critical intervention IDs
+            filtered_plans = [
+                plan for plan in all_plans 
+                if plan.ProgrammedInterventionId in intervention_ids
+            ]
+            
+            if filtered_plans:
+                self.plans_data = {
+                    row.TimingDescriprion: (
+                        getattr(row, 'PianoManutenzioneId', None), 
+                        row.ProgrammedInterventionId
+                    ) 
+                    for row in filtered_plans
+                }
+                self.plan_combo['values'] = list(self.plans_data.keys())
+                self.plan_combo.config(state='readonly')
+                
+                # Show warning message
+                self._show_cycle_warning(cycle_records)
+            else:
+                # No matching plans found, show all
+                self._load_all_plans(equipment_id)
+        else:
+            messagebox.showinfo(
+                self.lang.get('info_title', "Info"), 
+                self.lang.get('info_no_plans_available', "Nessun piano di manutenzione disponibile..."), 
+                parent=self
+            )
+
+    def _load_all_plans(self, equipment_id):
+        """Carica tutti i piani disponibili (comportamento normale)."""
+        plans = self.db.fetch_available_maintenance_plans(equipment_id)
+        if plans:
+            self.plans_data = {
+                row.TimingDescriprion: (
+                    getattr(row, 'PianoManutenzioneId', None), 
+                    row.ProgrammedInterventionId
+                ) 
+                for row in plans
+            }
+            self.plan_combo['values'] = list(self.plans_data.keys())
+            self.plan_combo.config(state='readonly')
+        else:
+            messagebox.showinfo(
+                self.lang.get('info_title', "Info"), 
+                self.lang.get('info_no_plans_available', "Nessun piano di manutenzione disponibile..."), 
+                parent=self
+            )
+
 
 class MaintenanceReportWindow(tk.Toplevel):
 

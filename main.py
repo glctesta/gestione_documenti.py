@@ -263,7 +263,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.2.1'  # Versione aggiornata
+APP_VERSION = '2.3.2.2'  # Versione aggiornata
 APP_DEVELOPER = 'Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -7721,6 +7721,145 @@ Accedi al sistema per visualizzare i dettagli completi.
             print(f"Errore imprevisto durante la gestione del file temporaneo: {e}")
             self.last_error_details = f"Errore Applicazione (File System): {e}"
             return False
+
+    def fetch_equipment_cycle_status(self, equipment_id):
+        """
+        Verifica lo stato dei cicli per un equipaggiamento.
+        Ritorna records solo se l'equipaggiamento ha raggiunto soglie critiche (>=95%).
+        
+        Returns:
+            list: Lista di record con informazioni sui cicli se soglie critiche raggiunte, [] altrimenti
+        """
+        query = """
+        SELECT * FROM (
+            SELECT  
+                (SELECT DISTINCT p1.ProgrammedInterventionId
+                 FROM [Traceability_RS].[eqp].[CompitiManutenzione] C
+                 INNER JOIN eqp.Equipments e ON e.EquipmentId=c.EquipmentId
+                 INNER JOIN eqp.EquipmentTypes t ON t.EquipmentTypeId=e.EquipmentTypeId 
+                 INNER JOIN eqp.ProgrammedInterventions p1 ON p1.ProgrammedInterventionId=c.ProgrammedInterventionId
+                 WHERE t.istest=1 AND e.EquipmentId=k.EquipmentId AND p1.NoCycle=p.NoCycle
+                ) AS ProgrammedInterventionId,
+                k.EquipmentId,
+                k.QtyScan,
+                k.EndOfLifeCycle,
+                k.QtyScan - k.EndOfLifeCycle AS CylesOverEquipmentLife,
+                p.NoCycle,
+                CASE WHEN k.QtyScan >= 0.95 * p.NoCycle THEN 1 ELSE 0 END AS IsAt95PercentTask,
+                CASE WHEN K.QtyScan>= 0.95 * EndOfLifeCycle THEN 1 ELSE 0 END AS IsAt95ProcentEndOfLIfe,
+                CASE WHEN K.QtyScan>= EndOfLifeCycle THEN 1 ELSE 0 END AS IsEndOfLife      
+            FROM (
+                SELECT 
+                    A.EquipmentId,
+                    Equipment + ' [' + EquipmentType + ']' AS Equipment,
+                    EndOfLifeCycle,
+                    SUM(DISTINCT CASE WHEN IsPass = 0 THEN QtyBoards ELSE 0 END) 
+                    + SUM(DISTINCT CASE WHEN IsPass = 1 THEN QtyBoards ELSE 0 END) AS QtyScan
+                FROM (
+                    SELECT 
+                        Products.ProductCode, 
+                        Phases.PhaseName, 
+                        scannings.IsPass, 
+                        COUNT(*) AS QtyBoards,
+                        Equipments.InternalName + ' S/N:' + Equipments.SerialNumber AS Equipment, 
+                        EquipmentTypes.EquipmentType,
+                        Equipments.EquipmentId, 
+                        ISNULL(EndOfLifeCycle, 100000) AS EndOfLifeCycle
+                    FROM Traceability_rs.dbo.Scannings
+                    INNER JOIN Traceability_rs.dbo.OrderPhases 
+                        ON OrderPhases.IDOrderPhase = Scannings.IDOrderPhase
+                    INNER JOIN Traceability_rs.dbo.Phases 
+                        ON Phases.IDPhase = OrderPhases.IDPhase
+                    INNER JOIN Traceability_rs.dbo.Boards 
+                        ON Boards.IDBoard = Scannings.IDBoard
+                    INNER JOIN Traceability_rs.dbo.Orders 
+                        ON Orders.IDOrder = Boards.IDOrder
+                    INNER JOIN Traceability_rs.dbo.Products 
+                        ON Products.IDProduct = Orders.IDProduct
+                    INNER JOIN Traceability_rs.eqp.EquipmentFixtures 
+                        ON EquipmentFixtures.IdProduct = Products.IDProduct
+                    INNER JOIN Traceability_rs.eqp.Equipments 
+                        ON Equipments.EquipmentId = EquipmentFixtures.EquipmentId
+                    INNER JOIN Traceability_rs.eqp.EquipmentBrands 
+                        ON EquipmentBrands.EquipmentBrandId = Equipments.BrandId
+                    INNER JOIN Traceability_rs.eqp.EquipmentTypes 
+                        ON EquipmentTypes.EquipmentTypeId = Equipments.EquipmentTypeId
+                    INNER JOIN Traceability_RS.eqp.EquipmentFixtureRules 
+                        ON EquipmentFixtureRules.EquipmentTypeId = EquipmentTypes.EquipmentTypeId
+                    WHERE ScanTimeFinish BETWEEN DATEFROMPARTS(Equipments.ProductionYear, 1, 1) 
+                                             AND GETDATE()
+                      AND Phases.IDPhase IN (102, 103)
+                    GROUP BY 
+                        Products.ProductCode, 
+                        Phases.PhaseName, 
+                        scannings.IsPass,
+                        Equipments.InternalName + ' S/N:' + Equipments.SerialNumber,
+                        ISNULL(EndOfLifeCycle, 100000),
+                        EquipmentTypes.EquipmentType,
+                        Equipments.EquipmentId
+                ) A
+                INNER JOIN Traceability_rs.eqp.CompitiManutenzione  
+                    ON CompitiManutenzione.EquipmentId = A.EquipmentId
+                GROUP BY 
+                    Equipment,
+                    EquipmentType,
+                    A.EquipmentId, 
+                    EndOfLifeCycle
+            ) K
+            LEFT JOIN (
+                SELECT DISTINCT 
+                    e.EquipmentId,
+                    p.NoCycle
+                FROM Traceability_RS.eqp.CompitiManutenzione C
+                INNER JOIN eqp.Equipments e 
+                    ON e.EquipmentId = C.EquipmentId
+                INNER JOIN eqp.EquipmentTypes t 
+                    ON t.EquipmentTypeId = e.EquipmentTypeId 
+                INNER JOIN eqp.ProgrammedInterventions p 
+                    ON p.ProgrammedInterventionId = C.ProgrammedInterventionId
+                WHERE t.istest = 1
+            ) P ON P.EquipmentId = K.EquipmentId
+            WHERE k.equipmentid = ?
+        ) G
+        WHERE G.IsAt95PercentTask = 1 
+           OR g.IsAt95ProcentEndOfLIfe = 1
+           OR g.IsEndOfLife = 1
+        ORDER BY G.QtyScan DESC;
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(query, (equipment_id,))
+            rows = cursor.fetchall()
+            cursor.close()
+            return rows if rows else []
+        except Exception as e:
+            logger.error(f"Error fetching equipment cycle status: {e}", exc_info=True)
+            return []
+
+    def is_test_equipment(self, equipment_id):
+        """
+        Verifica se l'equipaggiamento è di tipo test (IsTest=1).
+        
+        Args:
+            equipment_id: ID dell'equipaggiamento da verificare
+            
+        Returns:
+            bool: True se l'equipaggiamento è di tipo test, False altrimenti
+        """
+        query = """
+        SELECT t.IsTest
+        FROM [Traceability_RS].[eqp].[Equipments] e
+        INNER JOIN [Traceability_RS].[eqp].[EquipmentTypes] t 
+            ON t.EquipmentTypeId = e.EquipmentTypeId
+        WHERE e.EquipmentId = ?
+        """
+        try:
+            result = self.fetch_one(query, (equipment_id,))
+            return bool(result[0]) if result else False
+        except Exception as e:
+            logger.error(f"Error checking if equipment is test type: {e}", exc_info=True)
+            return False
+
 
 class LoginWindow(tk.Toplevel):
     """Finestra per raccogliere le credenziali dell'utente."""
