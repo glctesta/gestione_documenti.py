@@ -13356,6 +13356,8 @@ class App(tk.Tk):
         self.maintenance_menu.add_cascade(label=self.lang.get('submenu_machines'), menu=machine_submenu)
         machine_submenu.add_command(label=self.lang.get('submenu_add_machine'),
                                     command=self.open_add_machine_with_login)
+        machine_submenu.add_command(label=self.lang.get('submenu_equipment_types', "Gestione Tipi Macchine"),
+                                    command=self.open_equipment_types_manager_with_login)
         machine_submenu.add_command(label=self.lang.get('submenu_edit_machine'),
                                     command=self.open_edit_machine_with_login)
         machine_submenu.add_command(label=self.lang.get('submenu_view_machines'),
@@ -13375,6 +13377,8 @@ class App(tk.Tk):
                                     command=self.open_brand_manager_with_login)
         machine_submenu.add_command(label=self.lang.get('submenu_company_management', "Gestione Compagnie"),
                                     command=self.open_company_manager_with_login)
+        # machine_submenu.add_command(label=self.lang.get('submenu_equipment_types', "Gestione Tipi Macchine"),
+        #                             command=self.open_equipment_types_manager_with_login)
 
         # Task di Manutenzione
         tasks_submenu = tk.Menu(self.maintenance_menu, tearoff=0)
@@ -14747,6 +14751,25 @@ class App(tk.Tk):
         # Esegue l'azione con controllo autorizzazioni
         self._execute_authorized_action(
             menu_translation_key='regole_di_spedizione',
+            action_callback=authorized_action
+        )
+
+    def open_equipment_types_manager_with_login(self):
+        """Apre la finestra di gestione tipi macchine con autorizzazione"""
+        def authorized_action():
+            try:
+                user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
+                maintenance_gui.EquipmentTypesManagerWindow(self, self.db, self.lang, user_name)
+            except Exception as e:
+                logger.error(f"Errore apertura finestra gestione tipi macchine: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire la finestra gestione tipi macchine:\n{e}",
+                    parent=self
+                )
+        
+        self._execute_authorized_action(
+            menu_translation_key='gestione_tipi_macchine',
             action_callback=authorized_action
         )
 

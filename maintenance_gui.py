@@ -257,7 +257,7 @@ class SelectMachineToEditWindow(tk.Toplevel):
         try:
             cursor = self.db.conn.cursor()
             query = """
-            SELECT [EquipmentTypeId], [EquipmentType], [IsTest]
+            SELECT [EquipmentTypeId], [EquipmentType], [IsTest], [EndOfLifeCycle]
             FROM [Traceability_RS].[eqp].[EquipmentTypes]
             ORDER BY [EquipmentType]
             """
@@ -265,8 +265,8 @@ class SelectMachineToEditWindow(tk.Toplevel):
             rows = cursor.fetchall()
             cursor.close()
             
-            # Mappa nome tipo -> ID
-            self.equipment_types_data = {row[1]: row[0] for row in rows}
+            # Mappa nome tipo -> dati completi (ID, IsTest, EndOfLifeCycle)
+            self.equipment_types_data = {row[1]: {'id': row[0], 'is_test': row[2], 'end_of_life_cycle': row[3]} for row in rows}
             self.type_combo['values'] = [''] + list(self.equipment_types_data.keys())
         except Exception as e:
             print(f"Errore caricamento tipi equipaggiamento: {e}")
@@ -275,7 +275,7 @@ class SelectMachineToEditWindow(tk.Toplevel):
         """Carica la lista di tutte le macchine, filtrate per tipo se selezionato."""
         # Ottieni il tipo selezionato
         selected_type = self.equipment_type_var.get()
-        type_id = self.equipment_types_data.get(selected_type) if selected_type else None
+        type_id = self.equipment_types_data.get(selected_type, {}).get('id') if selected_type else None
         
         # Carica equipaggiamenti con filtro opzionale
         equipments = self.db.fetch_all_equipments(equipment_type_id=type_id)
@@ -392,7 +392,7 @@ class EditMachineWindow(tk.Toplevel):
         try:
             cursor = self.db.conn.cursor()
             query = """
-            SELECT [EquipmentTypeId], [EquipmentType]
+            SELECT [EquipmentTypeId], [EquipmentType], [IsTest], [EndOfLifeCycle]
             FROM [Traceability_RS].[eqp].[EquipmentTypes]
             ORDER BY [EquipmentType]
             """
@@ -400,9 +400,9 @@ class EditMachineWindow(tk.Toplevel):
             rows = cursor.fetchall()
             cursor.close()
             
-            # Mappa ID -> Nome tipo
-            self.equipment_types_data = {row[0]: row[1] for row in rows}
-            self.type_combo['values'] = list(self.equipment_types_data.values())
+            # Mappa ID -> dati completi (Nome tipo, IsTest, EndOfLifeCycle)
+            self.equipment_types_data = {row[0]: {'name': row[1], 'is_test': row[2], 'end_of_life_cycle': row[3]} for row in rows}
+            self.type_combo['values'] = [v['name'] for v in self.equipment_types_data.values()]
         except Exception as e:
             print(f"Errore caricamento tipi equipaggiamento: {e}")
 
@@ -416,7 +416,8 @@ class EditMachineWindow(tk.Toplevel):
             
             # Imposta il tipo di equipaggiamento se presente
             if hasattr(details, 'EquipmentTypeId') and details.EquipmentTypeId:
-                self.equipment_type_var.set(self.equipment_types_data.get(details.EquipmentTypeId, ""))
+                type_data = self.equipment_types_data.get(details.EquipmentTypeId, {})
+                self.equipment_type_var.set(type_data.get('name', ""))
             
             self.internal_name_var.set(details.InternalName or "")
             self.serial_var.set(details.SerialNumber or "")
@@ -447,7 +448,7 @@ class EditMachineWindow(tk.Toplevel):
         new_equipment_type_name = self.equipment_type_var.get()
         new_equipment_type_id = None
         if new_equipment_type_name:
-            new_equipment_type_id = [k for k, v in self.equipment_types_data.items() if v == new_equipment_type_name][0]
+            new_equipment_type_id = [k for k, v in self.equipment_types_data.items() if v.get('name') == new_equipment_type_name][0]
         
         new_name = self.internal_name_var.get()
         new_serial = self.serial_var.get()
@@ -479,7 +480,8 @@ class EditMachineWindow(tk.Toplevel):
         # Controlla se il tipo di equipaggiamento è cambiato
         original_equipment_type_id = getattr(self.original_data, 'EquipmentTypeId', None)
         if new_equipment_type_id != original_equipment_type_id:
-            original_type_name = self.equipment_types_data.get(original_equipment_type_id, 'N/D') if original_equipment_type_id else 'N/D'
+            original_type_data = self.equipment_types_data.get(original_equipment_type_id, {}) if original_equipment_type_id else {}
+            original_type_name = original_type_data.get('name', 'N/D')
             new_type_name = new_equipment_type_name if new_equipment_type_name else 'N/D'
             change_log.append(f"Tipo Equipaggiamento cambiato da '{original_type_name}' a '{new_type_name}'.")
 
@@ -2486,3 +2488,333 @@ def open_assign_responsibles(parent, db, lang):
 def open_task_cycles_manager(parent, db, lang, user_id):
     """Launcher function to create and show the TaskCyclesManagerWindow."""
     TaskCyclesManagerWindow(parent, db, lang, user_id)
+
+
+class EquipmentTypesManagerWindow(tk.Toplevel):
+    """Finestra per la gestione dei tipi di equipaggiamento"""
+    
+    def __init__(self, parent, db, lang, user_name):
+        logger.info(f"EquipmentTypesManagerWindow: Apertura finestra gestione tipi equipaggiamento (user: {user_name})")
+        super().__init__(parent)
+        self.db = db
+        self.lang = lang
+        self.user_name = user_name
+        
+        self.title(self.lang.get('submenu_equipment_types', 'Gestione Tipi Macchine'))
+        self.geometry("800x600")
+        self.transient(parent)
+        self.grab_set()
+        
+        self._create_widgets()
+        self._load_equipment_types()
+    
+    def _create_widgets(self):
+        """Crea i widget della finestra"""
+        main_frame = ttk.Frame(self, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Frame per i pulsanti in alto
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Button(button_frame, text=self.lang.get('btn_add', 'Aggiungi'), 
+                   command=self._add_equipment_type).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text=self.lang.get('btn_edit', 'Modifica'), 
+                   command=self._edit_equipment_type).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text=self.lang.get('btn_delete', 'Elimina'), 
+                   command=self._delete_equipment_type).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text=self.lang.get('btn_refresh', 'Aggiorna'), 
+                   command=self._load_equipment_types).pack(side=tk.LEFT, padx=5)
+        
+        # Frame per la Treeview
+        tree_frame = ttk.Frame(main_frame)
+        tree_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Scrollbar
+        scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Treeview
+        columns = ('id', 'type', 'is_test', 'end_of_life')
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show='headings', 
+                                 yscrollcommand=scrollbar.set)
+        
+        self.tree.heading('id', text='ID')
+        self.tree.heading('type', text=self.lang.get('equipment_type', 'Tipo Equipaggiamento'))
+        self.tree.heading('is_test', text=self.lang.get('is_test', 'Test'))
+        self.tree.heading('end_of_life', text=self.lang.get('end_of_life_cycle', 'Fine Ciclo Vita'))
+        
+        self.tree.column('id', width=50, anchor='center')
+        self.tree.column('type', width=300, anchor='w')
+        self.tree.column('is_test', width=80, anchor='center')
+        self.tree.column('end_of_life', width=120, anchor='center')
+        
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self.tree.yview)
+        
+        # Doppio click per modificare
+        self.tree.bind('<Double-1>', lambda e: self._edit_equipment_type())
+        
+        # Frame pulsante chiudi
+        close_frame = ttk.Frame(main_frame)
+        close_frame.pack(fill=tk.X, pady=(10, 0))
+        ttk.Button(close_frame, text=self.lang.get('btn_close', 'Chiudi'), 
+                   command=self.destroy).pack(side=tk.RIGHT)
+    
+    def _load_equipment_types(self):
+        """Carica i tipi di equipaggiamento dal database"""
+        # Pulisci la treeview
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        
+        try:
+            cursor = self.db.conn.cursor()
+            query = """
+            SELECT [EquipmentTypeId], [EquipmentType], [IsTest], [EndOfLifeCycle]
+            FROM [Traceability_RS].[eqp].[EquipmentTypes]
+            ORDER BY [EquipmentType]
+            """
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            cursor.close()
+            
+            for row in rows:
+                is_test_display = '✓' if row.IsTest else ''
+                end_of_life_display = str(row.EndOfLifeCycle) if row.EndOfLifeCycle is not None else ''
+                
+                self.tree.insert('', tk.END, values=(
+                    row.EquipmentTypeId,
+                    row.EquipmentType,
+                    is_test_display,
+                    end_of_life_display
+                ))
+        except Exception as e:
+            logger.error(f"Errore caricamento tipi equipaggiamento: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile caricare i tipi di equipaggiamento: {e}",
+                parent=self
+            )
+    
+    def _add_equipment_type(self):
+        """Apre dialog per aggiungere un nuovo tipo"""
+        dialog = EquipmentTypeDialog(self, self.db, self.lang, None)
+        self.wait_window(dialog)
+        if dialog.result:
+            self._load_equipment_types()
+    
+    def _edit_equipment_type(self):
+        """Apre dialog per modificare il tipo selezionato"""
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('select_item_first', 'Seleziona prima un elemento'),
+                parent=self
+            )
+            return
+        
+        item = self.tree.item(selected[0])
+        equipment_type_id = item['values'][0]
+        
+        dialog = EquipmentTypeDialog(self, self.db, self.lang, equipment_type_id)
+        self.wait_window(dialog)
+        if dialog.result:
+            self._load_equipment_types()
+    
+    def _delete_equipment_type(self):
+        """Elimina il tipo selezionato"""
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('select_item_first', 'Seleziona prima un elemento'),
+                parent=self
+            )
+            return
+        
+        item = self.tree.item(selected[0])
+        equipment_type_id = item['values'][0]
+        equipment_type_name = item['values'][1]
+        
+        # Conferma eliminazione
+        confirm = messagebox.askyesno(
+            self.lang.get('confirm_delete', 'Conferma Eliminazione'),
+            f"Sei sicuro di voler eliminare il tipo '{equipment_type_name}'?\n\n"
+            f"ATTENZIONE: Questa operazione potrebbe fallire se ci sono macchine associate a questo tipo.",
+            parent=self
+        )
+        
+        if not confirm:
+            return
+        
+        try:
+            cursor = self.db.conn.cursor()
+            query = """
+            DELETE FROM [Traceability_RS].[eqp].[EquipmentTypes]
+            WHERE [EquipmentTypeId] = ?
+            """
+            cursor.execute(query, (equipment_type_id,))
+            self.db.conn.commit()
+            cursor.close()
+            
+            messagebox.showinfo(
+                self.lang.get('success', 'Successo'),
+                self.lang.get('delete_successful', 'Eliminazione completata con successo'),
+                parent=self
+            )
+            self._load_equipment_types()
+        except Exception as e:
+            logger.error(f"Errore eliminazione tipo equipaggiamento: {e}", exc_info=True)
+            self.db.conn.rollback()
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile eliminare il tipo:\n{e}\n\n"
+                f"Probabilmente ci sono macchine associate a questo tipo.",
+                parent=self
+            )
+
+
+class EquipmentTypeDialog(tk.Toplevel):
+    """Dialog per aggiungere/modificare un tipo di equipaggiamento"""
+    
+    def __init__(self, parent, db, lang, equipment_type_id=None):
+        super().__init__(parent)
+        self.db = db
+        self.lang = lang
+        self.equipment_type_id = equipment_type_id
+        self.result = False
+        
+        title = self.lang.get('edit_equipment_type', 'Modifica Tipo') if equipment_type_id else self.lang.get('add_equipment_type', 'Aggiungi Tipo')
+        self.title(title)
+        self.geometry("400x250")
+        self.transient(parent)
+        self.grab_set()
+        
+        self._create_widgets()
+        if equipment_type_id:
+            self._load_data()
+    
+    def _create_widgets(self):
+        """Crea i widget del dialog"""
+        main_frame = ttk.Frame(self, padding="15")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Equipment Type
+        ttk.Label(main_frame, text=self.lang.get('equipment_type', 'Tipo Equipaggiamento:') + ' *').grid(
+            row=0, column=0, sticky=tk.W, pady=5)
+        self.type_var = tk.StringVar()
+        self.type_entry = ttk.Entry(main_frame, textvariable=self.type_var, width=30)
+        self.type_entry.grid(row=0, column=1, sticky=tk.EW, pady=5)
+        
+        # IsTest
+        self.is_test_var = tk.BooleanVar()
+        ttk.Checkbutton(main_frame, text=self.lang.get('is_test', 'È un tipo di test'), 
+                        variable=self.is_test_var).grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=5)
+        
+        # EndOfLifeCycle
+        ttk.Label(main_frame, text=self.lang.get('end_of_life_cycle', 'Fine Ciclo Vita (ore):')).grid(
+            row=2, column=0, sticky=tk.W, pady=5)
+        self.end_of_life_var = tk.StringVar()
+        self.end_of_life_entry = ttk.Entry(main_frame, textvariable=self.end_of_life_var, width=30)
+        self.end_of_life_entry.grid(row=2, column=1, sticky=tk.EW, pady=5)
+        
+        # Configura espansione colonna
+        main_frame.columnconfigure(1, weight=1)
+        
+        # Pulsanti
+        button_frame = ttk.Frame(main_frame)
+        button_frame.grid(row=3, column=0, columnspan=2, pady=(20, 0))
+        
+        ttk.Button(button_frame, text=self.lang.get('btn_save', 'Salva'), 
+                   command=self._save).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text=self.lang.get('btn_cancel', 'Annulla'), 
+                   command=self.destroy).pack(side=tk.LEFT, padx=5)
+    
+    def _load_data(self):
+        """Carica i dati del tipo esistente"""
+        try:
+            cursor = self.db.conn.cursor()
+            query = """
+            SELECT [EquipmentType], [IsTest], [EndOfLifeCycle]
+            FROM [Traceability_RS].[eqp].[EquipmentTypes]
+            WHERE [EquipmentTypeId] = ?
+            """
+            cursor.execute(query, (self.equipment_type_id,))
+            row = cursor.fetchone()
+            cursor.close()
+            
+            if row:
+                self.type_var.set(row.EquipmentType or '')
+                self.is_test_var.set(bool(row.IsTest))
+                self.end_of_life_var.set(str(row.EndOfLifeCycle) if row.EndOfLifeCycle is not None else '')
+        except Exception as e:
+            logger.error(f"Errore caricamento dati tipo: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile caricare i dati: {e}",
+                parent=self
+            )
+            self.destroy()
+    
+    def _save(self):
+        """Salva il tipo nel database"""
+        # Validazione
+        equipment_type = self.type_var.get().strip()
+        if not equipment_type:
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('equipment_type_required', 'Il nome del tipo è obbligatorio'),
+                parent=self
+            )
+            return
+        
+        is_test = 1 if self.is_test_var.get() else 0
+        
+        # Valida EndOfLifeCycle
+        end_of_life = None
+        end_of_life_str = self.end_of_life_var.get().strip()
+        if end_of_life_str:
+            try:
+                end_of_life = int(end_of_life_str)
+            except ValueError:
+                messagebox.showwarning(
+                    self.lang.get('warning', 'Attenzione'),
+                    self.lang.get('invalid_number', 'Fine Ciclo Vita deve essere un numero intero'),
+                    parent=self
+                )
+                return
+        
+        try:
+            cursor = self.db.conn.cursor()
+            
+            if self.equipment_type_id:
+                # UPDATE
+                query = """
+                UPDATE [Traceability_RS].[eqp].[EquipmentTypes]
+                SET [EquipmentType] = ?, [IsTest] = ?, [EndOfLifeCycle] = ?
+                WHERE [EquipmentTypeId] = ?
+                """
+                cursor.execute(query, (equipment_type, is_test, end_of_life, self.equipment_type_id))
+            else:
+                # INSERT
+                query = """
+                INSERT INTO [Traceability_RS].[eqp].[EquipmentTypes]
+                ([EquipmentType], [IsTest], [EndOfLifeCycle])
+                VALUES (?, ?, ?)
+                """
+                cursor.execute(query, (equipment_type, is_test, end_of_life))
+            
+            self.db.conn.commit()
+            cursor.close()
+            
+            self.result = True
+            self.destroy()
+        except Exception as e:
+            logger.error(f"Errore salvataggio tipo equipaggiamento: {e}", exc_info=True)
+            self.db.conn.rollback()
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile salvare il tipo:\n{e}",
+                parent=self
+            )
