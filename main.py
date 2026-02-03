@@ -145,6 +145,7 @@ from tkcalendar import DateEntry
 import pandas as pd
 import general_docs_gui
 import maintenance_gui
+import fixtures_report_window
 import materials_gui
 import operations_gui
 import permissions_gui
@@ -263,7 +264,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.2.2'  # Versione aggiornata
+APP_VERSION = '2.3.2.4'  # Versione aggiornata
 APP_DEVELOPER = 'Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -7773,8 +7774,8 @@ Accedi al sistema per visualizzare i dettagli completi.
                 A.EquipmentId,
                 A.Equipment + ' [' + A.EquipmentType + ']' AS Equipment,
                 A.EndOfLifeCycle,
-                SUM(CASE WHEN A.IsPass = 0 THEN A.QtyBoards ELSE 0 END)
-                + SUM(CASE WHEN A.IsPass = 1 THEN A.QtyBoards ELSE 0 END) AS QtyScan
+                SUM(DISTINCT CASE WHEN A.IsPass = 0 THEN A.QtyBoards ELSE 0 END)
+                + SUM(DISTINCT CASE WHEN A.IsPass = 1 THEN A.QtyBoards ELSE 0 END) AS QtyScan
             FROM (
                 SELECT 
                     SB.ProductCode,
@@ -12977,8 +12978,6 @@ class App(tk.Tk):
             command=self._orders_reports_placeholder
         )
 
-        #self.operations_menu.add_separator()
-
         # Comandi del menu NPI
 
         self.npi_menu.add_command(
@@ -12998,10 +12997,6 @@ class App(tk.Tk):
             label=self.lang.get('npi_setup_tasks', 'Configura Catalogo Task...'),
             command=self._configura_catalogo_task_npi
         )
-
-
-
-
 
         # Disabilita tutto se il gestore NPI non è partito
         if self.npi_manager is None:
@@ -13554,8 +13549,16 @@ class App(tk.Tk):
         self.maintenance_menu.add_command(label=self.lang.get('submenu_fill_templates'),
                                           command=self.open_fill_templates_with_login)
         self.maintenance_menu.add_separator()
-        self.maintenance_menu.add_command(label=self.lang.get('submenu_reports', "Report Panoramica"),
-                                          command=lambda: maintenance_gui.open_reports(self, self.db, self.lang))
+        
+        # Sottomenu Rapporti
+        reports_submenu = tk.Menu(self.maintenance_menu, tearoff=0)
+        self.maintenance_menu.add_cascade(
+            label=self.lang.get('submenu_reports_header', 'Rapporti'), menu=reports_submenu)
+        reports_submenu.add_command(label=self.lang.get('submenu_reports', "Report Panoramica"),
+                                   command=lambda: maintenance_gui.open_reports(self, self.db, self.lang))
+        reports_submenu.add_command(label=self.lang.get('submenu_fixtures_report', "Rapporti Fixtures"),
+                                   command=lambda: self._open_fixtures_report())
+        
         self.maintenance_menu.add_command(label=self.lang.get('submenu_missing_action', "Missing Action Report"),
                                           command=self.open_missing_action_report)
 
@@ -13575,6 +13578,18 @@ class App(tk.Tk):
                 lambda: self._open_submissions_management()
             )
         )
+
+    def _open_fixtures_report(self):
+        """Apre la finestra dei rapporti fixtures (senza login)"""
+        try:
+            fixtures_report_window.open_fixtures_report(self, self.db, self.lang)
+        except Exception as e:
+            logger.error(f"Errore apertura rapporti fixtures: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Errore apertura finestra: {e}",
+                parent=self
+            )
 
     def _update_tools_menu(self):
         """Aggiorna il menu Strumenti"""

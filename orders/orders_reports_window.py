@@ -117,6 +117,16 @@ class DynamicShippingWindow(tk.Toplevel):
         self.date_to.set_date(datetime.now() + timedelta(days=180))
         self.date_to.pack(side=tk.LEFT, padx=(0, 15))
         
+        # Checkbox filtro rimanenti
+        self.remain_filter_var = tk.BooleanVar(value=False)
+        self.remain_checkbox = ttk.Checkbutton(
+            row2, 
+            text=self.lang.get('only_remaining', 'Solo rimanenti'),
+            variable=self.remain_filter_var,
+            command=self._apply_filters
+        )
+        self.remain_checkbox.pack(side=tk.LEFT, padx=15)
+        
         ttk.Button(row2, text=self.lang.get('btn_filter', 'Filtra'), command=self._apply_filters).pack(side=tk.LEFT, padx=5)
         ttk.Button(row2, text=self.lang.get('btn_reset_filters', 'Reset Filtri'), command=self._reset_filters).pack(side=tk.LEFT, padx=5)
         ttk.Button(row2, text=self.lang.get('btn_export_excel', 'Esporta Excel'), command=self._export_to_excel).pack(side=tk.LEFT, padx=5)
@@ -303,6 +313,10 @@ class DynamicShippingWindow(tk.Toplevel):
         if product and product != self.lang.get('all_products', 'Tutti i Prodotti'):
             filters['product'] = product
         
+        # Filtro rimanenti
+        if self.remain_filter_var.get():
+            filters['only_remaining'] = True
+        
         # ðŸ†• Date non piÃ¹ incluse automaticamente - solo quando utente applica filtri
         # filters['date_from'] = self.date_from.get_date()
         # filters['date_to'] = self.date_to.get_date()
@@ -324,6 +338,7 @@ class DynamicShippingWindow(tk.Toplevel):
         self.so_filter.delete(0, tk.END)
         self.po_filter.delete(0, tk.END)
         self.product_filter.current(0)
+        self.remain_filter_var.set(False)
         self.date_from.set_date(datetime.now() - timedelta(days=180))
         self.date_to.set_date(datetime.now() + timedelta(days=180))
         self._load_order_data()
@@ -437,6 +452,13 @@ class DynamicShippingWindow(tk.Toplevel):
                 DynamicProductionOrderID
             FROM 
                 OrderData
+            """
+            
+            # Filtro rimanenti (applicato dopo la CTE)
+            if 'only_remaining' in filters:
+                query += " WHERE ([QtyOrder] - ISNULL(OutOfBox, 0)) > 0"
+            
+            query += """
             ORDER BY 
                 SONumber
             """
@@ -552,7 +574,7 @@ class DynamicShippingWindow(tk.Toplevel):
             OUTER APPLY
                 (select NoBoards as Packet from traceability_rs.[dbo].[GetOrderPhaseStatus](o.idorder,9)) as K
             OUTER APPLY     
-                Traceability_rs.dbo.da_eusta_fn_GetPackedBoards(o.idorder, 920, NULL) AS P
+                Traceability_rs.dbo.da_eusta_fn_GetPackedBoards(o.idorder, 920, NULL,0) AS P
             inner join traceability_rs.dbo.Orders PO on o.idorder=po.idorder
             WHERE R.DynamicProductionOrderID = ?
             ORDER BY R.DateToship
@@ -768,7 +790,7 @@ class DynamicShippingWindow(tk.Toplevel):
                         INNER JOIN Traceability_RS.dyn.DynamicProductionOrders O on O.DynamicProductionOrderID = R.DynamicProductionOrderID
                         INNER JOIN TRACEABILITY_RS.DYN.DynamicSaleOrders S on s.DynamicSaleOrderId=o.DynamicSaleOrderId
                         OUTER APPLY (select NoBoards as Packet from traceability_rs.[dbo].[GetOrderPhaseStatus](o.idorder,9)) as K
-                        OUTER APPLY Traceability_rs.dbo.da_eusta_fn_GetPackedBoards(o.idorder, 920, NULL) AS P
+                        OUTER APPLY Traceability_rs.dbo.da_eusta_fn_GetPackedBoards(o.idorder, 920, NULL,0) AS P
                         inner join traceability_rs.dbo.Orders PO on o.idorder=po.idorder
                         WHERE R.DynamicProductionOrderID = ?
                         ORDER BY R.DateToship

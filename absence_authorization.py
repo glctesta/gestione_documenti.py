@@ -195,6 +195,8 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
                     AR.[DateEnd],
                     DATEDIFF(DAY, AR.[DateStart], AR.[DateEnd]) + 1 AS NrDays,
                     DATEDIFF(HOUR, AR.[DateStart], AR.[DateEnd]) AS NrHours,
+                    ar.FromTime,
+                    ar.ToTime,
                     H.EmployeeHireHistoryId,
                     R.IDRequestType
                 FROM 
