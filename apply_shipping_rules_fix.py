@@ -75,7 +75,7 @@ new_query = """            query = \"\"\"
             OUTER APPLY
                 (select NoBoards as Packet from traceability_rs.[dbo].[GetOrderPhaseStatus](o.idorder,9)) as K
             OUTER APPLY     
-                Traceability_rs.dbo.da_eusta_fn_GetPackedBoards(o.idorder, 920, NULL) AS P
+                Traceability_rs.dbo.da_eusta_fn_GetPackedBoards(o.idorder, 920, NULL,0) AS P
             inner join traceability_rs.dbo.Orders PO on o.idorder=po.idorder
             WHERE DynamicProductionOrderID = ?
             ORDER BY DateToship

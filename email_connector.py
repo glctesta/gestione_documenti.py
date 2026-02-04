@@ -64,7 +64,7 @@ class EmailSender:
         email, _ = decrypted_credentials.split(":")
         return email
 
-    def send_email(self, to_email, subject, body, is_html=False, attachments=None):
+    def send_email(self, to_email, subject, body, is_html=False, attachments=None, cc_emails=None):
         """
         Invia una email usando il relay server
 
@@ -74,6 +74,7 @@ class EmailSender:
             body (str): Corpo dell'email
             is_html (bool): True se il body è in formato HTML
             attachments (list): Lista opzionale di percorsi file da allegare
+            cc_emails (list): Lista opzionale di indirizzi email in CC
         """
         # Carica l'indirizzo email del mittente
         from_email = self.load_credentials()
@@ -83,6 +84,13 @@ class EmailSender:
         msg['From'] = from_email
         msg['To'] = to_email
         msg['Subject'] = subject
+        
+        # Aggiungi CC se presenti
+        if cc_emails:
+            if isinstance(cc_emails, list):
+                msg['Cc'] = ', '.join(cc_emails)
+            else:
+                msg['Cc'] = cc_emails
 
         # Aggiungi il corpo
         if is_html:
@@ -93,23 +101,42 @@ class EmailSender:
         # Aggiungi allegati se presenti
         if attachments:
             from email.mime.base import MIMEBase
+            from email.mime.image import MIMEImage
             from email import encoders
             import os
             
-            for file_path in attachments:
-                if os.path.exists(file_path):
-                    try:
-                        with open(file_path, 'rb') as f:
-                            part = MIMEBase('application', 'octet-stream')
-                            part.set_payload(f.read())
-                            encoders.encode_base64(part)
-                            part.add_header(
-                                'Content-Disposition',
-                                f'attachment; filename= {os.path.basename(file_path)}'
-                            )
-                            msg.attach(part)
-                    except Exception as e:
-                        print(f"Warning: Could not attach file {file_path}: {e}")
+            for attachment in attachments:
+                # Supporta sia stringhe (file path) che tuple (type, path, cid)
+                if isinstance(attachment, tuple):
+                    attach_type, file_path, cid = attachment
+                    
+                    if attach_type == 'inline' and os.path.exists(file_path):
+                        try:
+                            with open(file_path, 'rb') as f:
+                                # Usa MIMEImage per immagini inline
+                                img = MIMEImage(f.read())
+                                img.add_header('Content-ID', f'<{cid}>')
+                                img.add_header('Content-Disposition', 'inline', filename=os.path.basename(file_path))
+                                msg.attach(img)
+                        except Exception as e:
+                            print(f"Warning: Could not attach inline image {file_path}: {e}")
+                else:
+                    # Allegato normale (file path come stringa)
+                    file_path = attachment
+                    if os.path.exists(file_path):
+                        try:
+                            with open(file_path, 'rb') as f:
+                                part = MIMEBase('application', 'octet-stream')
+                                part.set_payload(f.read())
+                                encoders.encode_base64(part)
+                                part.add_header(
+                                    'Content-Disposition',
+                                    f'attachment; filename= {os.path.basename(file_path)}'
+                                )
+                                msg.attach(part)
+                        except Exception as e:
+                            print(f"Warning: Could not attach file {file_path}: {e}")
+
 
         try:
             print(f"Tentativo di connessione a {self.smtp_server}:{self.smtp_port}...")
@@ -118,9 +145,17 @@ class EmailSender:
 
             # Non serve TLS o autenticazione per il relay server interno
 
+            # Prepara lista destinatari (To + CC)
+            recipients = [to_email]
+            if cc_emails:
+                if isinstance(cc_emails, list):
+                    recipients.extend(cc_emails)
+                else:
+                    recipients.append(cc_emails)
+
             # Invia email
             print("Invio email...")
-            server.send_message(msg)
+            server.sendmail(from_email, recipients, msg.as_string())
             print("Email inviata con successo!")
 
             server.quit()

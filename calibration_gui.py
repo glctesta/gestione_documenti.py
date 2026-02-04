@@ -20,8 +20,8 @@ class CalibrationsWindow(tk.Toplevel):
         self.equipment_map = {}
         self.supplier_map = {}
         self.all_supplier_names = []
+        self.all_equipment_names = []  # Lista completa equipment per filtro
         self.current_equipment_id = None
-        self.current_calibration_id = None  # ID della calibrazione selezionata per modifica
 
         self.title(self.lang.get('calibrations_title', "Gestione Calibrazioni"))
         self.geometry("650x600")  # Aumentata altezza per il nuovo bottone
@@ -44,20 +44,10 @@ class CalibrationsWindow(tk.Toplevel):
         select_frame = ttk.LabelFrame(main_frame, text=self.lang.get('select_equipment', "Seleziona Attrezzatura"),
                                       padding="10")
         select_frame.pack(fill=tk.X, expand=True, pady=(0, 10))
-        self.combo_equipment = ttk.Combobox(select_frame, state="readonly", font=('Segoe UI', 10))
+        self.combo_equipment = ttk.Combobox(select_frame, state="normal", font=('Segoe UI', 10))
         self.combo_equipment.pack(fill=tk.X, expand=True)
         self.combo_equipment.bind("<<ComboboxSelected>>", self._on_equipment_select)
-
-        # BOTTONE MODIFICA (visibile solo quando esiste una calibrazione)
-        self.btn_edit_frame = ttk.Frame(main_frame)
-        self.btn_edit_frame.pack(fill=tk.X, pady=(0, 10))
-        self.btn_edit_calibration = ttk.Button(
-            self.btn_edit_frame,
-            text=self.lang.get('edit_calibration', "Modifica Calibrazione"),
-            command=self._edit_calibration,
-            state="disabled"
-        )
-        self.btn_edit_calibration.pack(side=tk.LEFT)
+        self.combo_equipment.bind('<KeyRelease>', self._on_equipment_search)
 
         self.details_frame = ttk.LabelFrame(main_frame,
                                             text=self.lang.get('calibration_details', "Dettagli Ultima Calibrazione"),
@@ -80,6 +70,13 @@ class CalibrationsWindow(tk.Toplevel):
         self.btn_open_cert = ttk.Button(self.details_frame, text=self.lang.get('open_certificate', "Apri certificato"),
                                         command=self._open_certificate, state="disabled")
         self.btn_open_cert.grid(row=2, column=2, sticky="e", pady=2, padx=5)
+        
+        # Bottone Export Storico
+        self.btn_export_history = ttk.Button(self.details_frame, 
+                                             text=self.lang.get('export_history', "Esporta Storico"),
+                                             command=self._export_calibration_history, 
+                                             state="disabled")
+        self.btn_export_history.grid(row=3, column=1, columnspan=2, sticky="e", pady=5, padx=5)
 
         self.insert_frame = ttk.LabelFrame(main_frame,
                                            text=self.lang.get('new_calibration_data', "Inserisci Nuova Calibrazione"),
@@ -133,10 +130,20 @@ class CalibrationsWindow(tk.Toplevel):
             equipment_display_list = [f"{row.InternalName} (Mat: {row.InventoryNumber}) - {row.Brand}" for row in rows]
             self.equipment_map = {f"{row.InternalName} (Mat: {row.InventoryNumber}) - {row.Brand}": row.EquipmentId for
                                   row in rows}
+            self.all_equipment_names = equipment_display_list  # Salva lista completa per filtro
             self.combo_equipment['values'] = equipment_display_list
         except Exception as e:
             messagebox.showerror(self.lang.get('error', "Errore"), f"Impossibile caricare la lista attrezzature:\n{e}",
                                  parent=self)
+    
+    def _on_equipment_search(self, event=None):
+        """Filtra la lista equipment mentre l'utente digita"""
+        value = self.combo_equipment.get().lower()
+        if value == '':
+            self.combo_equipment['values'] = self.all_equipment_names
+        else:
+            filtered_data = [name for name in self.all_equipment_names if value in name.lower()]
+            self.combo_equipment['values'] = filtered_data
 
     def _load_suppliers(self):
         try:
@@ -167,10 +174,6 @@ class CalibrationsWindow(tk.Toplevel):
 
     def _load_calibration_data(self, equipment_id):
         try:
-            self.insert_frame.pack_forget()
-            self.details_frame.pack_forget()
-            self.btn_edit_frame.pack_forget()
-
             # reset stato certificati
             self.current_cert_bytes = None
             self.selected_pdf_path = None
@@ -178,7 +181,6 @@ class CalibrationsWindow(tk.Toplevel):
             self.lbl_cert_file.config(text=self.lang.get('no_file_selected', "Nessun file selezionato"),
                                       foreground="gray")
             self.btn_save.state(["disabled"])
-            self.current_calibration_id = None
 
             row = self.db.get_last_calibration(equipment_id)
 
@@ -198,19 +200,15 @@ class CalibrationsWindow(tk.Toplevel):
                     else self.lang.get('certificate_absent', "Assente")
                 )
                 self.btn_open_cert.configure(state="normal" if has_cert else "disabled")
-
-                # Memorizza l'ID della calibrazione corrente
-                self.current_calibration_id = getattr(row, 'CalibrationID', None)
-
-                # Mostra il bottone modifica
-                self.btn_edit_calibration.state(["!disabled"])
-                self.btn_edit_frame.pack(fill=tk.X, pady=(0, 10))
+                # Abilita export storico
+                self.btn_export_history.configure(state="normal")
             else:
                 self.lbl_last_date.config(text="Nessuna calibrazione registrata")
                 self.lbl_expiry_date.config(text="N/D")
                 self.lbl_cert_status.config(text=self.lang.get('certificate_absent', "Assente"))
                 self.btn_open_cert.configure(state="disabled")
-                self.btn_edit_calibration.state(["disabled"])
+                # Abilita export storico anche se non ci sono calibrazioni (per mostrare vuoto)
+                self.btn_export_history.configure(state="normal")
 
             self.details_frame.pack(fill=tk.X, expand=True, pady=10)
 
@@ -220,53 +218,126 @@ class CalibrationsWindow(tk.Toplevel):
         except Exception as e:
             messagebox.showerror(self.lang.get('error', "Errore"), f"Impossibile caricare i dati di calibrazione:\n{e}",
                                  parent=self)
-
-    def _edit_calibration(self):
-        """Carica i dati della calibrazione corrente nei campi per la modifica"""
-        if not self.current_calibration_id:
+    
+    def _export_calibration_history(self):
+        """Esporta lo storico calibrazioni dell'equipment selezionato in Excel"""
+        if not self.current_equipment_id:
+            messagebox.showwarning(
+                self.lang.get('warning', "Attenzione"),
+                "Selezionare un'attrezzatura prima di esportare lo storico.",
+                parent=self
+            )
             return
-
+        
         try:
-            # Recupera i dettagli completi della calibrazione
-            calibration_details = self.db.get_calibration_details(self.current_calibration_id)
-            if not calibration_details:
-                messagebox.showwarning("Attenzione", "Dati della calibrazione non trovati.", parent=self)
+            # Recupera nome equipment per il filename
+            selected_equipment_name = self.combo_equipment.get()
+            equipment_safe_name = selected_equipment_name.replace('/', '_').replace('\\', '_').replace(':', '_')
+            
+            # Recupera tutte le calibrazioni per questo equipment (anche quelle non valide)
+            calibrations = self.db.get_all_calibrations_history(self.current_equipment_id)
+            
+            if not calibrations:
+                messagebox.showinfo(
+                    self.lang.get('info', "Informazione"),
+                    "Nessuna calibrazione trovata per questa attrezzatura.",
+                    parent=self
+                )
                 return
-
-            # Popola i campi con i dati esistenti
-            if calibration_details.ExpireOn:
-                self.entry_new_expiry_date.set_date(calibration_details.ExpireOn)
-
-            if calibration_details.SupplierId:
-                supplier_name = self._get_supplier_name_by_id(calibration_details.SupplierId)
-                if supplier_name:
-                    self.combo_cert_body.set(supplier_name)
-
-            # Gestione PDF esistente
-            cert = getattr(calibration_details, 'NrCertificate', None)
-            if cert:
-                try:
-                    self.selected_pdf_bytes = bytes(cert)
-                except Exception:
-                    self.selected_pdf_bytes = cert
-
-                if self.selected_pdf_bytes:
-                    self.lbl_cert_file.config(text="Certificato esistente caricato", foreground="green")
-                    self.btn_save.state(["!disabled"])
-
-            messagebox.showinfo("Modifica",
-                                "Dati calibrazione caricati per la modifica. Modifica i campi necessari e salva.",
-                                parent=self)
-
+            
+            # Crea directory C:\Temp se non esiste
+            import os
+            temp_dir = r"C:\Temp"
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            # Nome file con timestamp
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"Calibrazioni_{equipment_safe_name}_{timestamp}.xlsx"
+            filepath = os.path.join(temp_dir, filename)
+            
+            # Crea Excel con openpyxl
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill, Alignment
+            
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Storico Calibrazioni"
+            
+            # Header
+            headers = [
+                "ID Calibrazione",
+                "Data Calibrazione",
+                "Data Scadenza",
+                "Ente Certificatore",
+                "Valido"
+            ]
+            
+            # Stile header
+            header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+            header_font = Font(bold=True, color="FFFFFF")
+            
+            for col_num, header in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col_num, value=header)
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            
+            # Dati
+            for row_num, cal in enumerate(calibrations, 2):
+                ws.cell(row=row_num, column=1, value=cal.CalibrationID)
+                ws.cell(row=row_num, column=2, value=str(cal.CalibratedOn) if cal.CalibratedOn else "N/D")
+                ws.cell(row=row_num, column=3, value=str(cal.ExpireOn) if cal.ExpireOn else "N/D")
+                
+                # Recupera nome fornitore
+                supplier_name = "N/D"
+                if hasattr(cal, 'SupplierId') and cal.SupplierId:
+                    for name, id_val in self.supplier_map.items():
+                        if id_val == cal.SupplierId:
+                            supplier_name = name
+                            break
+                ws.cell(row=row_num, column=4, value=supplier_name)
+                
+                ws.cell(row=row_num, column=5, value="Sì" if getattr(cal, 'IsValid', 1) == 1 else "No")
+            
+            # Auto-size columns
+            for column in ws.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = min(max_length + 2, 50)
+                ws.column_dimensions[column_letter].width = adjusted_width
+            
+            # Salva file
+            wb.save(filepath)
+            
+            # Apri file automaticamente
+            if hasattr(os, "startfile"):  # Windows
+                os.startfile(filepath)
+            else:
+                if sys.platform == "darwin":
+                    subprocess.Popen(["open", filepath])
+                else:
+                    subprocess.Popen(["xdg-open", filepath])
+            
+            messagebox.showinfo(
+                self.lang.get('success', "Successo"),
+                f"Storico esportato con successo:\n{filepath}",
+                parent=self
+            )
+            
         except Exception as e:
-            messagebox.showerror("Errore", f"Impossibile caricare i dati per la modifica:\n{e}", parent=self)
-
-    def _get_supplier_name_by_id(self, supplier_id):
-        """Restituisce il nome del fornitore dato il suo ID"""
-        for name, id_val in self.supplier_map.items():
-            if id_val == supplier_id:
-                return name
-        return None
+            messagebox.showerror(
+                self.lang.get('error', "Errore"),
+                f"Errore durante l'esportazione:\n{e}",
+                parent=self
+            )
+            logger.error(f"Errore export calibrazioni: {e}", exc_info=True)
 
     def _choose_pdf_file(self):
         path = filedialog.askopenfilename(
@@ -345,47 +416,44 @@ class CalibrationsWindow(tk.Toplevel):
             return
 
         try:
-            # Verifica se esiste già una calibrazione valida per questa attrezzatura
-            existing_calibration = self.db.get_last_calibration(equipment_id)
+            # LOGICA SEMPLIFICATA: Sempre INSERT nuovo record
+            # 1. Invalida tutte le calibrazioni precedenti per questo equipment (IsValid = 0)
+            self.db.invalidate_previous_calibrations(equipment_id)
+            
+            # 2. Inserisce la nuova calibrazione (IsValid = 1 di default)
+            self.db.add_new_calibration(
+                equipment_id, 
+                new_expiry_date, 
+                supplier_id, 
+                self.selected_pdf_bytes,
+                username
+            )
+            
+            messagebox.showinfo(
+                self.lang.get('success', "Successo"),
+                "Nuova calibrazione inserita correttamente.",
+                parent=self
+            )
 
-            if existing_calibration and self.current_calibration_id:
-                # MODIFICA: aggiorna la calibrazione esistente
-                self.db.update_calibration(
-                    self.current_calibration_id,
-                    new_expiry_date,
-                    supplier_id,
-                    self.selected_pdf_bytes,
-                    username  # Aggiunto username
-                )
-                messagebox.showinfo(self.lang.get('success', "Successo"),
-                                    "Dati di calibrazione aggiornati correttamente.",
-                                    parent=self)
-            else:
-                # NUOVA INSERZIONE: controlla se ci sono calibrazioni scadute da invalidare
-                if existing_calibration:
-                    # Imposta IsValid = 0 per le calibrazioni precedenti
-                    self.db.invalidate_previous_calibrations(equipment_id)
-
-                # Inserisce la nuova calibrazione
-                self.db.add_new_calibration(equipment_id, new_expiry_date, supplier_id, self.selected_pdf_bytes,
-                                            username)
-                messagebox.showinfo(self.lang.get('success', "Successo"),
-                                    "Nuova calibrazione inserita correttamente.",
-                                    parent=self)
-
-            # reset campo PDF selezionato
+            # Reset campi
             self.selected_pdf_path = None
             self.selected_pdf_bytes = None
-            self.lbl_cert_file.config(text=self.lang.get('no_file_selected', "Nessun file selezionato"),
-                                      foreground="gray")
+            self.lbl_cert_file.config(
+                text=self.lang.get('no_file_selected', "Nessun file selezionato"),
+                foreground="gray"
+            )
             self.btn_save.state(["disabled"])
             self.combo_cert_body.set('')
-            # ricarica dati
+            
+            # Ricarica dati per mostrare la nuova calibrazione
             self._load_calibration_data(equipment_id)
 
         except Exception as e:
-            messagebox.showerror(self.lang.get('error', "Errore di Salvataggio"),
-                                 f"Impossibile salvare i dati:\n{e}", parent=self)
+            messagebox.showerror(
+                self.lang.get('error', "Errore di Salvataggio"),
+                f"Impossibile salvare i dati:\n{e}", 
+                parent=self
+            )
 
     def _get_logged_in_username(self):
         """Recupera il nome dell'utente loggato dalla finestra parent"""

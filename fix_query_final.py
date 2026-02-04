@@ -27,7 +27,7 @@ for i, line in enumerate(lines):
             "            OUTER APPLY\n",
             "                (select NoBoards as Packet from traceability_rs.[dbo].[GetOrderPhaseStatus](o.idorder,9)) as K\n",
             "            OUTER APPLY     \n",
-            "                Traceability_rs.dbo.da_eusta_fn_GetPackedBoards(o.idorder, 920, NULL) AS P\n",
+            "                Traceability_rs.dbo.da_eusta_fn_GetPackedBoards(o.idorder, 920, NULL,0) AS P\n",
             "            inner join traceability_rs.dbo.Orders PO on o.idorder=po.idorder\n",
             "            WHERE DynamicProductionOrderID = ?\n",
             "            ORDER BY DateToship\n",

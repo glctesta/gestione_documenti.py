@@ -264,7 +264,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.2.4'  # Versione aggiornata
+APP_VERSION = '2.3.2.5'  # Versione aggiornata
 APP_DEVELOPER = 'Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -3297,6 +3297,39 @@ class Database:
             cursor = self.conn.cursor()
             cursor.execute(query, equipment_id)
             return cursor.fetchone()
+        finally:
+            if cursor:
+                cursor.close()
+    
+    def get_all_calibrations_history(self, equipment_id):
+        """
+        Recupera tutte le calibrazioni per un equipment (incluse quelle con IsValid=0)
+        Ordinate per data scadenza DESC per mostrare lo storico completo
+        
+        Args:
+            equipment_id: ID dell'equipment
+            
+        Returns:
+            Lista di tutte le calibrazioni per l'equipment
+        """
+        query = """
+            SELECT 
+                c.CalibrationID,
+                c.EquipmentId,
+                c.CalibratedOn,
+                c.ExpireOn,
+                c.SupplierId,
+                c.NrCertificate,
+                c.IsValid
+            FROM eqp.Calibrations AS c
+            WHERE c.EquipmentId = ?
+            ORDER BY c.ExpireOn DESC
+        """
+        cursor = None
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(query, equipment_id)
+            return cursor.fetchall()
         finally:
             if cursor:
                 cursor.close()
