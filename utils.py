@@ -216,3 +216,223 @@ def get_employee_work_email(conn, employee_name: str) -> Optional[str]:
     except Exception as e:
         logger.error(f"Errore nel recupero della WorkEmail per {employee_name}: {e}")
         raise
+
+
+def send_fai_fails_notification(conn, logo_path: str = "logo.png") -> bool:
+    """
+    Invia email automatica per FAI fails non analizzati.
+    
+    Args:
+        conn: Connessione al database
+        logo_path: Percorso del logo aziendale
+        
+    Returns:
+        True se email inviata con successo, False altrimenti
+    """
+    try:
+        # 1. Recupera i fails non analizzati
+        query_fails = """
+        SELECT 
+            l.FaiLogId,
+            l.Operator,
+            p.productcode,
+            l.DateIn,
+            l.IsOk
+        FROM [Traceability_RS].[fai].[FaiLogs] l
+        LEFT JOIN [Traceability_RS].[dbo].[orders] o ON l.OrderId = o.IDOrder
+        LEFT JOIN [Traceability_RS].[dbo].[Products] p ON o.IDProduct = p.IDProduct
+        WHERE l.IsOk = 0 
+            AND ISNULL(l.IsAnalized, 0) = 0
+        ORDER BY l.DateIn DESC
+        """
+        
+        with conn.cursor() as cursor:
+            cursor.execute(query_fails)
+            fails = cursor.fetchall()
+        
+        if not fails:
+            logger.info("Nessun FAI fail non analizzato trovato. Email non inviata.")
+            return False
+        
+        fail_ids = [row.FaiLogId for row in fails]
+        num_fails = len(fail_ids)
+        
+        logger.info(f"Trovati {num_fails} FAI fails non analizzati")
+        
+        # 2. Calcola statistiche per operatore
+        query_stats = """
+        SELECT 
+            l.Operator,
+            COUNT(DISTINCT l.FaiLogId) as TotalFAI,
+            SUM(CASE WHEN l.IsOk = 0 THEN 1 ELSE 0 END) as TotalFails,
+            CAST(SUM(CASE WHEN l.IsOk = 0 THEN 1 ELSE 0 END) * 100.0 / 
+                 NULLIF(COUNT(DISTINCT l.FaiLogId), 0) AS DECIMAL(5,2)) as FailureRate
+        FROM [Traceability_RS].[fai].[FaiLogs] l
+        WHERE ISNULL(l.IsAnalized, 0) = 0 AND l.IsOk = 0
+        GROUP BY l.Operator
+        ORDER BY FailureRate DESC
+        """
+        
+        with conn.cursor() as cursor:
+            cursor.execute(query_stats)
+            statistics = cursor.fetchall()
+        
+        # 3. Recupera destinatari TO (capi linea/turno)
+        query_recipients_to = """
+        SELECT a.WorkEmail, 
+               UPPER(e.EmployeeSurname + ' ' + e.EmployeeName) As Employee
+        FROM employee.dbo.employees e
+        INNER JOIN employee.dbo.EmployeeHireHistory h 
+            ON h.employeeid = e.employeeid 
+            AND h.EndWorkDate IS NULL 
+            AND h.employeerid = 2
+        INNER JOIN employee.dbo.EmployeeAddress a 
+            ON a.EmployeeId = e.EmployeeId 
+            AND a.dateout IS NULL
+        INNER JOIN employee.dbo.EmployeeCdcStories ch 
+            ON ch.EmployeeHireHistoryId = h.EmployeeHireHistoryId 
+            AND ch.DateOut IS NULL
+        INNER JOIN employee.dbo.CdcSub cs 
+            ON cs.SubCdcId = ch.SubCdcId
+        INNER JOIN employee.dbo.CostCenters c 
+            ON c.CdcId = cs.CdcId
+        INNER JOIN employee.dbo.functions f 
+            ON ch.FunctionId = f.FunctionId
+        WHERE f.FunctionId IN (5, 6, 7)
+            AND a.WorkEmail IS NOT NULL
+        ORDER BY a.WorkEmail
+        """
+        
+        with conn.cursor() as cursor:
+            cursor.execute(query_recipients_to)
+            recipients_to_rows = cursor.fetchall()
+        
+        recipients_to = [row.WorkEmail.strip() for row in recipients_to_rows if row.WorkEmail]
+        
+        if not recipients_to:
+            logger.error("Nessun destinatario TO trovato. Email non inviata.")
+            return False
+        
+        logger.info(f"Destinatari TO: {recipients_to}")
+        
+        # 4. Recupera destinatari CC
+        recipients_cc = get_email_recipients(conn, attribute='Sys_email_fai_fails')
+        logger.info(f"Destinatari CC: {recipients_cc}")
+        
+        # 5. Genera tabella HTML con statistiche
+        table_rows = ""
+        for stat in statistics:
+            operator = stat.Operator or 'N/A'
+            total_fai = stat.TotalFAI or 0
+            total_fails = stat.TotalFails or 0
+            failure_rate = stat.FailureRate or 0.0
+            
+            # Colore riga in base al tasso di fallimento
+            if failure_rate < 5.0:
+                row_color = "#d4edda"  # Verde chiaro
+            elif failure_rate < 15.0:
+                row_color = "#fff3cd"  # Giallo chiaro
+            else:
+                row_color = "#f8d7da"  # Rosso chiaro
+            
+            table_rows += f"""
+            <tr style="background-color: {row_color};">
+                <td style="padding: 10px; border: 1px solid #ddd;">{operator}</td>
+                <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">{total_fai}</td>
+                <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">{total_fails}</td>
+                <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">{failure_rate:.2f}%</td>
+            </tr>
+            """
+        
+        # 6. Genera corpo email HTML in rumeno
+        html_body = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; color: #333;">
+            <div style="margin-bottom: 20px;">
+                <img src="cid:company_logo" alt="Company Logo" width="120"/>
+            </div>
+            
+            <h2 style="color: #366092;">Raport Automat - Defecte FAI Nevalidate</h2>
+            
+            <p>Bună ziua,</p>
+            
+            <p>În legătură cu declarațiile FAI obligatorii, după un control automat asupra calității 
+            fișelor declarate Valide pentru confirmarea începerii producției, a rezultat că 
+            <strong>{num_fails} fișe</strong> au fost marcate ca <strong>FAIL</strong> după 
+            declarația de validare.</p>
+            
+            <h3 style="color: #366092;">Statistici pe Operator:</h3>
+            
+            <table style="border-collapse: collapse; width: 100%; margin: 20px 0;">
+                <thead>
+                    <tr style="background-color: #366092; color: white;">
+                        <th style="padding: 10px; border: 1px solid #ddd;">Operator</th>
+                        <th style="padding: 10px; border: 1px solid #ddd;">Total FAI</th>
+                        <th style="padding: 10px; border: 1px solid #ddd;">Total Defecte</th>
+                        <th style="padding: 10px; border: 1px solid #ddd;">Procent Defecte (%)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {table_rows}
+                </tbody>
+            </table>
+            
+            <hr style="margin: 30px 0; border: none; border-top: 1px solid #ddd;"/>
+            
+            <p style="font-weight: bold; color: #d9534f;">Vă recomandăm să acordați atenție maximă 
+            în faza de validare a liniilor.</p>
+            
+            <p>Acest control este fundamental pentru a evita reparații inutile și, în consecință, 
+            risipa de resurse și, evident, de bani.</p>
+            
+            <p>Responsabilitatea revine șefilor de linie și, în consecință, șefilor de tură.</p>
+            
+            <p style="font-style: italic;">În fiecare lună va fi întocmit un raport rezumativ cu 
+            defectele de acest tip care vor influența evaluarea celor responsabili.</p>
+            
+            <br/>
+            <p>Mulțumim,<br/>
+            <strong>Sistem de Trasabilitate</strong></p>
+        </body>
+        </html>
+        """
+        
+        # 7. Invia email
+        sender = EmailSender()
+        sender.save_credentials("Accounting@Eutron.it", "9jHgFhSs7Vf+")
+        
+        # Prepara allegati con logo inline
+        attachments = []
+        if os.path.exists(logo_path):
+            attachments.append(('inline', logo_path, 'company_logo'))
+        
+        sender.send_email(
+            to_email=', '.join(recipients_to),
+            subject="Raport Automat - Defecte FAI Nevalidate",
+            body=html_body,
+            is_html=True,
+            attachments=attachments,
+            cc_emails=recipients_cc
+        )
+        
+        logger.info(f"Email FAI fails inviata con successo a {len(recipients_to)} destinatari")
+        
+        # 8. Aggiorna flag IsAnalized dopo invio successo
+        placeholders = ','.join(['?' for _ in fail_ids])
+        update_query = f"""
+        UPDATE [Traceability_RS].[fai].[FaiLogs]
+        SET IsAnalized = 1
+        WHERE FaiLogId IN ({placeholders})
+        """
+        
+        with conn.cursor() as cursor:
+            cursor.execute(update_query, fail_ids)
+            conn.commit()
+        
+        logger.info(f"Aggiornati {len(fail_ids)} record con IsAnalized = 1")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Errore nell'invio email FAI fails: {str(e)}", exc_info=True)
+        return False

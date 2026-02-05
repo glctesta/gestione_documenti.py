@@ -10,6 +10,8 @@ Gestisce:
 import tkinter as tk
 from tkinter import ttk, messagebox
 import logging
+import qrcode
+from io import BytesIO
 
 logger = logging.getLogger("TraceabilityRS")
 
@@ -42,7 +44,7 @@ class LabelPrintWindow(tk.Toplevel):
         self.user_name = user_name
         
         self.title(self.lang.get('label_print_window_title', 'Stampa Etichette'))
-        self.geometry('900x450')
+        self.geometry('1000x650')
         self.transient(parent)
         self.grab_set()
         
@@ -138,13 +140,12 @@ class LabelPrintWindow(tk.Toplevel):
         """Carica gli ordini dal database."""
         try:
             cursor = self.db.conn.cursor()
+            # Query ottimizzata: carica solo ordini recenti senza filtro produzione (più veloce)
+            # Il filtro sulla produzione può essere fatto dopo, se necessario
             query = """
-            SELECT IDOrder, OrderNumber
-            FROM [Traceability_RS].[dbo].[Orders] o
-            OUTER APPLY
-                (SELECT NoBoards FROM [Traceability_RS].[dbo].QuantitaProdottaPerFase (o.IDOrder, 4)) AS K
-            WHERE CAST(o.orderdate AS DATE) >= '2025-10-01'
-            AND k.NoBoards=0
+            SELECT TOP 200 IDOrder, OrderNumber
+            FROM [Traceability_RS].[dbo].[Orders]
+            WHERE CAST(orderdate AS DATE) >= DATEADD(MONTH, -3, GETDATE())
             ORDER BY OrderNumber DESC
             """
             cursor.execute(query)
@@ -163,12 +164,12 @@ class LabelPrintWindow(tk.Toplevel):
             self.order_combo['values'] = order_list
             
             if order_list:
-                logger.info(f"Caricati {len(order_list)} ordini")
+                logger.info(f"Caricati {len(order_list)} ordini (ultimi 3 mesi)")
             else:
-                logger.warning("Nessun ordine trovato dal 2025-10-01 con NoBoards=0")
+                logger.warning("Nessun ordine trovato negli ultimi 3 mesi")
                 messagebox.showinfo(
                     self.lang.get('info_title', 'Informazione'),
-                    self.lang.get('no_orders_found', 'Nessun ordine trovato dal 2025-10-01 senza produzione'),
+                    self.lang.get('no_orders_found', 'Nessun ordine trovato negli ultimi 3 mesi'),
                     parent=self
                 )
         
@@ -252,7 +253,7 @@ class LabelPrintWindow(tk.Toplevel):
                 O.OrderNumber,
                 O.OrderQuantity,
                 C.ComponentCode,
-                x.ComponentQuantity,
+                C.ComponentDescription,
                 AR.CodRiferimentiConcatenati,
                 pp.ParentPhaseName
             FROM Orders O
@@ -270,6 +271,7 @@ class LabelPrintWindow(tk.Toplevel):
                 O.OrderNumber,
                 O.OrderQuantity,
                 C.ComponentCode,
+                C.ComponentDescription,
                 AR.CodRiferimentiConcatenati,
                 pp.ParentPhaseName
             """
@@ -288,14 +290,14 @@ class LabelPrintWindow(tk.Toplevel):
                 order_quantity = None
                 
                 for row in rows:
-                    product_code, order_number, order_quantity, component_code, component_quantity, cod_riferimenti, parent_phase = row
+                    product_code, order_number, order_quantity, component_code, component_desc, cod_riferimenti, parent_phase = row
                     
                     self.label_data.append({
                         'ProductCode': product_code,
                         'OrderNumber': order_number,
                         'OrderQuantity': order_quantity,
                         'ComponentCode': component_code,
-                        'ComponentQuantity': component_quantity,
+                        'ComponentDescription': component_desc,
                         'CodRiferimenti': cod_riferimenti,
                         'ParentPhaseName': parent_phase
                     })
@@ -322,6 +324,9 @@ class LabelPrintWindow(tk.Toplevel):
                 
                 # Aggiorna il conteggio dei componenti per la fase selezionata
                 self._update_components_count()
+                
+                # Posiziona il focus sul campo component code
+                self.component_code_entry.focus_set()
                 
                 logger.info(f"Caricati {len(self.label_data)} record per ordine {order_number}")
                 logger.info(f"Fasi trovate: {len(phases_set)}")
@@ -358,8 +363,11 @@ class LabelPrintWindow(tk.Toplevel):
     
     def _on_print(self):
         """Gestisce il click sul pulsante Stampa."""
+        logger.info("🖱️ GUI: Utente ha cliccato sul pulsante Stampa")
+        
         # Validazione
         if not self.order_combo.get():
+            logger.warning("🖱️ GUI: Validazione fallita - Nessun ordine selezionato")
             messagebox.showwarning(
                 self.lang.get('warning_title', 'Attenzione'),
                 self.lang.get('select_order', 'Seleziona un ordine'),
@@ -368,6 +376,7 @@ class LabelPrintWindow(tk.Toplevel):
             return
         
         if not self.phase_combo.get():
+            logger.warning("🖱️ GUI: Validazione fallita - Nessuna fase selezionata")
             messagebox.showwarning(
                 self.lang.get('warning_title', 'Attenzione'),
                 self.lang.get('select_phase', 'Seleziona una fase'),
@@ -378,12 +387,15 @@ class LabelPrintWindow(tk.Toplevel):
         # Validazione codice componente
         component_code = self.component_code_var.get().strip()
         if not component_code:
+            logger.warning("🖱️ GUI: Validazione fallita - Nessun codice componente inserito")
             messagebox.showwarning(
                 self.lang.get('warning_title', 'Attenzione'),
                 self.lang.get('enter_component_code', 'Inserisci il codice componente'),
                 parent=self
             )
             return
+        
+        logger.info(f"🖱️ GUI: Validazione completata - Ordine: {self.order_combo.get()}, Fase: {self.phase_combo.get()}, Componente: {component_code}")
         
         # Filtra i dati in base alla fase selezionata
         selected_phase = self.phase_combo.get()
@@ -393,6 +405,7 @@ class LabelPrintWindow(tk.Toplevel):
         component_data = [d for d in filtered_data if d['ComponentCode'] == component_code]
         
         if not component_data:
+            logger.warning(f"🖱️ GUI: Componente '{component_code}' non trovato per la fase '{selected_phase}'")
             messagebox.showwarning(
                 self.lang.get('warning_title', 'Attenzione'),
                 self.lang.get('component_not_found', f'Componente "{component_code}" non trovato per la fase selezionata'),
@@ -403,25 +416,69 @@ class LabelPrintWindow(tk.Toplevel):
         # Prendi il primo record (dovrebbe essere unico per componente+fase)
         label_to_print = component_data[0]
         
-        # TODO: Implementare la stampa dell'etichetta
-        # Per ora mostra un messaggio placeholder con i dati
-        data_summary = f"Etichetta da stampare:\n\n"
-        data_summary += f"Ordine: {label_to_print['OrderNumber']}\n"
-        data_summary += f"Prodotto: {label_to_print['ProductCode']}\n"
-        data_summary += f"Quantità: {label_to_print['OrderQuantity']}\n"
-        data_summary += f"Componente: {label_to_print['ComponentCode']}\n"
-        data_summary += f"Fase: {label_to_print['ParentPhaseName']}\n"
-        data_summary += f"Riferimenti: {label_to_print['CodRiferimenti'] or 'N/A'}\n\n"
-        data_summary += "Funzionalità di stampa da implementare."
+        # Prepara i dati completi per l'etichetta
+        label_print_data = {
+            'OrderNumber': label_to_print['OrderNumber'],
+            'ComponentCode': label_to_print['ComponentCode'],
+            'ComponentDescription': label_to_print.get('ComponentDescription', ''),
+            'OrderQuantity': label_to_print['OrderQuantity'],
+            'References': label_to_print['CodRiferimenti'] or 'N/A',
+            'Phase': label_to_print['ParentPhaseName'],
+            'ProductCode': label_to_print['ProductCode']
+        }
         
-        messagebox.showinfo(
-            self.lang.get('info_title', 'Informazione'),
-            data_summary,
-            parent=self
-        )
+        logger.info(f"🖱️ GUI: Dati etichetta preparati - {label_print_data}")
         
-        logger.info(f"Richiesta stampa etichetta - Ordine: {self.selected_order_number}, "
-                   f"Componente: {component_code}, Fase: {selected_phase}")
+        # Genera QR code per il component code
+        try:
+            logger.info(f"🖱️ GUI: Generazione QR code per componente '{component_code}'...")
+            qr = qrcode.QRCode(
+                version=1,
+                error_correction=qrcode.constants.ERROR_CORRECT_L,
+                box_size=10,
+                border=4,
+            )
+            qr.add_data(component_code)
+            qr.make(fit=True)
+            
+            # Crea l'immagine QR code
+            qr_img = qr.make_image(fill_color="black", back_color="white")
+            
+            # Salva in BytesIO per uso futuro
+            qr_buffer = BytesIO()
+            qr_img.save(qr_buffer, format='PNG')
+            qr_buffer.seek(0)
+            
+            label_print_data['QRCodeImage'] = qr_buffer
+            
+            logger.info(f"🖱️ GUI: ✓ QR code generato con successo per componente: {component_code}")
+        except Exception as e:
+            logger.error(f"🖱️ GUI: ❌ Errore generazione QR code: {e}")
+            label_print_data['QRCodeImage'] = None
+        
+        # Stampa l'etichetta usando il modulo label_printer
+        logger.info("🖱️ GUI: Chiamata al modulo label_printer per stampare l'etichetta...")
+        from label_printer import print_label
+        
+        success, error_msg = print_label(label_print_data, self.db)
+        
+        if success:
+            logger.info(f"🖱️ GUI: ✅ Stampa completata con successo!")
+            messagebox.showinfo(
+                self.lang.get('success_title', 'Successo'),
+                self.lang.get('label_printed', 'Etichetta stampata con successo!'),
+                parent=self
+            )
+            logger.info(f"🖱️ GUI: Etichetta stampata - Ordine: {self.selected_order_number}, "
+                       f"Componente: {component_code}, Fase: {selected_phase}")
+        else:
+            logger.error(f"🖱️ GUI: ❌ Errore durante la stampa: {error_msg}")
+            messagebox.showerror(
+                self.lang.get('error_title', 'Errore'),
+                f"{self.lang.get('print_error', 'Errore durante la stampa')}:\n{error_msg}",
+                parent=self
+            )
+            logger.error(f"🖱️ GUI: Errore stampa etichetta: {error_msg}")
 
     
     def _on_cancel(self):
@@ -538,6 +595,8 @@ class PrinterSettingsWindow(tk.Toplevel):
                        value='ZEBRA').pack(side='left', padx=5)
         ttk.Radiobutton(model_frame, text='Brother', variable=self.printer_model_var, 
                        value='BROTHER').pack(side='left', padx=5)
+        ttk.Radiobutton(model_frame, text='ZJIANG ZJ-9210', variable=self.printer_model_var, 
+                       value='ZJIANG').pack(side='left', padx=5)
         
         self.usb_frame.columnconfigure(1, weight=1)
         

@@ -1508,6 +1508,22 @@ class ProjectWindow(tk.Toplevel):
                     lang=self.lang
                 )
 
+            # 🆕 Invia email di completamento progetto se questo è il task finale completato
+            if (nuovo_stato_db == 'Completato' and 
+                self.fields['IsPostFinalMilestone'].var.get()):
+                try:
+                    logger.info(f"Task finale completato - invio email completamento progetto {self.project_id}")
+                    success, msg = self.npi_manager.send_project_completion_email(
+                        self.project_id,
+                        self.lang
+                    )
+                    if success:
+                        logger.info(f"Email completamento progetto inviata: {msg}")
+                    else:
+                        logger.warning(f"Email completamento progetto non inviata: {msg}")
+                except Exception as e:
+                    logger.error(f"Errore invio email completamento progetto: {e}", exc_info=True)
+
             messagebox.showinfo(
                 self.lang.get('success_title', 'Successo'),
                 self.lang.get('success_task_updated', 'Task aggiornato con successo.'),

@@ -804,12 +804,35 @@ class GestoreNPI:
                 f"Validazione task finale {task_prodotto_id} "
                 f"({task.task_catalogo.NomeTask if task.task_catalogo else 'Unknown'})"
             )
+            
+            # Ottieni il ProgettoID dalla wave del task
+            project_id = task.wave.ProgettoID if task.wave else None
+            if not project_id:
+                return False, "Impossibile determinare il progetto del task."
+            
+            # Recupera SOLO i task della stessa wave E dello stesso progetto
+            # che sono stati effettivamente assegnati (OwnerID non null O Stato non null)
             wave_tasks = session.scalars(
                 select(TaskProdotto)
                 .join(TaskCatalogo, TaskProdotto.TaskID == TaskCatalogo.TaskID)
-                .where(TaskProdotto.WaveID == task.WaveID)
+                .join(WaveNPI, TaskProdotto.WaveID == WaveNPI.WaveID)
+                .where(
+                    and_(
+                        TaskProdotto.WaveID == task.WaveID,
+                        WaveNPI.ProgettoID == project_id,
+                        or_(
+                            TaskProdotto.OwnerID.isnot(None),
+                            TaskProdotto.Stato.isnot(None)
+                        )
+                    )
+                )
                 .order_by(TaskCatalogo.NrOrdin.asc())
             ).all()
+            
+            logger.info(
+                f"Validazione progetto {project_id}: trovati {len(wave_tasks)} task "
+                f"(filtrati per WaveID={task.WaveID}, ProgettoID={project_id}, con Owner/Stato assegnato)"
+            )
 
             # Trova il task finale nella lista
             final_task_index = None
@@ -1629,6 +1652,298 @@ class GestoreNPI:
         """
         
         return html
+    
+    def send_project_completion_email(self, project_id: int, lang: dict = None):
+        """
+        Invia email di completamento progetto a tutti i partecipanti con statistiche complete.
+        
+        Args:
+            project_id: ID del progetto completato
+            lang: Dizionario traduzioni (opzionale)
+        
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        session = self._get_session()
+        try:
+            # 1. Carica progetto con tutte le relazioni
+            progetto = session.scalars(
+                select(ProgettoNPI)
+                .options(
+                    joinedload(ProgettoNPI.prodotto),
+                    joinedload(ProgettoNPI.owner),
+                    subqueryload(ProgettoNPI.waves).subqueryload(WaveNPI.tasks).options(
+                        joinedload(TaskProdotto.owner),
+                        joinedload(TaskProdotto.task_catalogo).joinedload(TaskCatalogo.categoria),
+                        selectinload(TaskProdotto.documents).joinedload(NpiDocument.document_type)
+                    )
+                )
+                .where(ProgettoNPI.ProgettoId == project_id)
+            ).first()
+            
+            if not progetto or not progetto.waves:
+                return False, "Progetto non trovato"
+            
+            # 2. Raccogli tutti i partecipanti (owner unici dei task)
+            participants = {}
+            wave = progetto.waves[0]
+            
+            for task in wave.tasks:
+                if task.owner and task.owner.Email and task.OwnerID:
+                    participants[task.owner.Email] = task.owner.Nome
+            
+            if not participants:
+                return False, "Nessun partecipante trovato"
+            
+            logger.info(f"Trovati {len(participants)} partecipanti per progetto {project_id}")
+            
+            # 3. Calcola statistiche task
+            completed_tasks = [t for t in wave.tasks if t.Stato == 'Completato' and t.OwnerID]
+            total_tasks = len(completed_tasks)
+            
+            if total_tasks == 0:
+                return False, "Nessun task completato"
+            
+            on_time_tasks = []
+            late_tasks = []
+            
+            for task in completed_tasks:
+                if task.DataCompletamento and task.DataScadenza:
+                    if task.DataCompletamento <= task.DataScadenza:
+                        on_time_tasks.append(task)
+                    else:
+                        late_tasks.append(task)
+            
+            on_time_count = len(on_time_tasks)
+            late_count = len(late_tasks)
+            on_time_percent = round((on_time_count / total_tasks) * 100, 1) if total_tasks > 0 else 0
+            late_percent = round((late_count / total_tasks) * 100, 1) if total_tasks > 0 else 0
+            
+            # 4. Calcola costi progetto (da documenti NPI)
+            total_cost = 0
+            cost_breakdown = {}
+            
+            for task in wave.tasks:
+                for doc in task.documents:
+                    if doc.DocValue and not doc.DateOut:
+                        total_cost += doc.DocValue
+                        doc_type = doc.document_type.TypeName if doc.document_type else "Other"
+                        cost_breakdown[doc_type] = cost_breakdown.get(doc_type, 0) + doc.DocValue
+            
+            # 5. Prepara dati email
+            email_data = {
+                'project_name': progetto.prodotto.NomeProdotto if progetto.prodotto else "N/A",
+                'product_code': progetto.prodotto.CodiceProdotto if progetto.prodotto else "N/A",
+                'version': progetto.Version or "N/A",
+                'start_date': progetto.DataInizio.strftime('%d/%m/%Y') if progetto.DataInizio else "N/A",
+                'completion_date': datetime.now().strftime('%d/%m/%Y'),
+                'owner_name': progetto.owner.Nome if progetto.owner else "N/A",
+                'total_tasks': total_tasks,
+                'on_time_tasks': on_time_count,
+                'on_time_percent': on_time_percent,
+                'late_tasks': late_count,
+                'late_percent': late_percent,
+                'total_cost': total_cost,
+                'cost_breakdown': cost_breakdown,
+                'tasks': completed_tasks,
+                'on_time_task_list': on_time_tasks,
+                'late_task_list': late_tasks
+            }
+            
+            # 6. Genera HTML email
+            email_html = self._generate_project_completion_email_html(email_data)
+            
+            # 7. Invia email a tutti i partecipanti
+            from utils import send_email
+            
+            recipient_list = list(participants.keys())
+            subject = f"🎉 NPI Project Completed: {email_data['project_name']}"
+            
+            try:
+                send_email(
+                    recipients=recipient_list,
+                    subject=subject,
+                    body=email_html,
+                    is_html=True
+                )
+                logger.info(f"Email completamento progetto {project_id} inviata a {len(recipient_list)} partecipanti")
+                return True, f"Email inviata a {len(recipient_list)} partecipanti"
+            except Exception as email_error:
+                logger.error(f"Errore invio email completamento progetto: {email_error}")
+                return False, f"Errore invio email: {str(email_error)}"
+                
+        except Exception as e:
+            logger.error(f"Errore in send_project_completion_email: {e}", exc_info=True)
+            return False, f"Errore: {str(e)}"
+        finally:
+            session.close()
+    
+    def _generate_project_completion_email_html(self, data):
+        """Genera HTML email di completamento progetto in inglese con logo aziendale."""
+        import base64
+        
+        # Carica logo e converti in base64 per embedding
+        logo_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Logo.png')
+        logo_base64 = ""
+        
+        try:
+            if os.path.exists(logo_path):
+                with open(logo_path, 'rb') as f:
+                    logo_base64 = base64.b64encode(f.read()).decode('utf-8')
+        except Exception as e:
+            logger.warning(f"Impossibile caricare logo: {e}")
+        
+        # Genera righe tabella task
+        task_rows = ""
+        for task in data['tasks']:
+            is_on_time = task in data.get('on_time_task_list', [])
+            status_icon = "✅" if is_on_time else "⚠️"
+            status_text = "On-Time" if is_on_time else "Late"
+            status_color = "#28a745" if is_on_time else "#dc3545"
+            
+            task_rows += f"""
+            <tr>
+                <td style="padding: 8px; border-bottom: 1px solid #dee2e6;">{task.task_catalogo.NomeTask if task.task_catalogo else 'N/A'}</td>
+                <td style="padding: 8px; border-bottom: 1px solid #dee2e6;">{task.task_catalogo.categoria.Category if task.task_catalogo and task.task_catalogo.categoria else 'N/A'}</td>
+                <td style="padding: 8px; border-bottom: 1px solid #dee2e6;">{task.owner.Nome if task.owner else 'N/A'}</td>
+                <td style="padding: 8px; border-bottom: 1px solid #dee2e6;">{task.DataScadenza.strftime('%d/%m/%Y') if task.DataScadenza else 'N/A'}</td>
+                <td style="padding: 8px; border-bottom: 1px solid #dee2e6;">{task.DataCompletamento.strftime('%d/%m/%Y') if task.DataCompletamento else 'N/A'}</td>
+                <td style="padding: 8px; border-bottom: 1px solid #dee2e6; color: {status_color}; font-weight: bold;">{status_icon} {status_text}</td>
+            </tr>
+            """
+        
+        # Genera righe breakdown costi
+        cost_rows = ""
+        for doc_type, cost in data['cost_breakdown'].items():
+            cost_rows += f"""
+            <tr>
+                <td style="padding: 8px; border-bottom: 1px solid #dee2e6;">{doc_type}</td>
+                <td style="padding: 8px; border-bottom: 1px solid #dee2e6; text-align: right;">€ {cost:,.2f}</td>
+            </tr>
+            """
+        
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <style>
+                body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                .container {{ max-width: 800px; margin: 0 auto; padding: 20px; }}
+                .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; border-radius: 10px 10px 0 0; }}
+                .logo {{ width: 80px; height: auto; margin-bottom: 15px; }}
+                .content {{ background: #f8f9fa; padding: 30px; }}
+                .section {{ background: white; padding: 20px; margin-bottom: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+                h2 {{ color: #667eea; margin-top: 0; }}
+                h3 {{ color: #764ba2; border-bottom: 2px solid #667eea; padding-bottom: 10px; }}
+                table {{ width: 100%; border-collapse: collapse; margin-top: 15px; }}
+                th {{ background: #667eea; color: white; padding: 12px; text-align: left; }}
+                .stats-grid {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; }}
+                .stat-box {{ background: #e9ecef; padding: 15px; border-radius: 8px; text-align: center; }}
+                .stat-value {{ font-size: 32px; font-weight: bold; color: #667eea; }}
+                .stat-label {{ font-size: 14px; color: #6c757d; margin-top: 5px; }}
+                .footer {{ text-align: center; padding: 20px; color: #6c757d; font-size: 12px; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    {f'<img src="data:image/png;base64,{logo_base64}" class="logo" alt="Company Logo">' if logo_base64 else ''}
+                    <h1 style="margin: 0;">🎉 NPI Project Completed</h1>
+                    <p style="margin: 10px 0 0 0; opacity: 0.9;">Project Management System</p>
+                </div>
+                
+                <div class="content">
+                    <!-- Project Summary -->
+                    <div class="section">
+                        <h3>📊 Project Summary</h3>
+                        <table style="border: none;">
+                            <tr><td style="padding: 8px; font-weight: bold; width: 200px;">Product Name:</td><td style="padding: 8px;">{data['project_name']}</td></tr>
+                            <tr><td style="padding: 8px; font-weight: bold;">Product Code:</td><td style="padding: 8px;">{data['product_code']}</td></tr>
+                            <tr><td style="padding: 8px; font-weight: bold;">Version:</td><td style="padding: 8px;">{data['version']}</td></tr>
+                            <tr><td style="padding: 8px; font-weight: bold;">Start Date:</td><td style="padding: 8px;">{data['start_date']}</td></tr>
+                            <tr><td style="padding: 8px; font-weight: bold;">Completion Date:</td><td style="padding: 8px;">{data['completion_date']}</td></tr>
+                            <tr><td style="padding: 8px; font-weight: bold;">Project Owner:</td><td style="padding: 8px;">{data['owner_name']}</td></tr>
+                        </table>
+                    </div>
+                    
+                    <!-- Task Statistics -->
+                    <div class="section">
+                        <h3>📈 Task Statistics</h3>
+                        <div class="stats-grid">
+                            <div class="stat-box">
+                                <div class="stat-value">{data['total_tasks']}</div>
+                                <div class="stat-label">Total Tasks Completed</div>
+                            </div>
+                            <div class="stat-box" style="background: #d4edda;">
+                                <div class="stat-value" style="color: #28a745;">{data['on_time_percent']}%</div>
+                                <div class="stat-label">On-Time Completion ({data['on_time_tasks']} tasks)</div>
+                            </div>
+                            <div class="stat-box" style="background: #f8d7da;">
+                                <div class="stat-value" style="color: #dc3545;">{data['late_percent']}%</div>
+                                <div class="stat-label">Late Completion ({data['late_tasks']} tasks)</div>
+                            </div>
+                            <div class="stat-box">
+                                <div class="stat-value">€ {data['total_cost']:,.2f}</div>
+                                <div class="stat-label">Total Project Cost</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Cost Breakdown -->
+                    {f'''
+                    <div class="section">
+                        <h3>💰 Cost Breakdown</h3>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Category</th>
+                                    <th style="text-align: right;">Amount</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {cost_rows}
+                                <tr style="background: #e9ecef; font-weight: bold;">
+                                    <td style="padding: 12px;">TOTAL</td>
+                                    <td style="padding: 12px; text-align: right;">€ {data['total_cost']:,.2f}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    ''' if data['cost_breakdown'] else ''}
+                    
+                    <!-- Task Details -->
+                    <div class="section">
+                        <h3>📋 Task Details</h3>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Task Name</th>
+                                    <th>Category</th>
+                                    <th>Assigned To</th>
+                                    <th>Due Date</th>
+                                    <th>Completed</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {task_rows}
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    <div class="footer">
+                        <p>This is an automated notification from the NPI Project Management System.</p>
+                        <p>© {datetime.now().year} Vandewiele. All rights reserved.</p>
+                    </div>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        return html
+
 
     def get_gantt_data(self, progetto_id: int):
         """Recupera i dati di un progetto formattati per Plotly per il diagramma di Gantt."""

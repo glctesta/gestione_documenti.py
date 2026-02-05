@@ -264,7 +264,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.2.5'  # Versione aggiornata
+APP_VERSION = '2.3.2.6'  # Versione aggiornata
 APP_DEVELOPER = 'Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -2867,11 +2867,11 @@ class Database:
             e.EmployeeName + ' ' + e.EmployeeSurname AS InputFrom,
             se.Titolo,
             se.Descrizione,
-            IIF(sa.SegnalazioneStatoAllegatoID IS NULL, 'No attached doc', sa.DescrizioneDocumento) AS Documents,
+            '' Documents,
             sts.TipoStato,
             IIF(sts.StatoChiuso = 0, 'OPEN', 'CLOSED') AS StatoType,
             eaFrom.WorkEmail AS Email,
-            sa.
+            '' as DescrizioneDocumento
         FROM Employee.dbo.Segnalazioni se
         INNER JOIN Employee.dbo.SegnalazioneStati ss
             ON ss.SegnalazioneId = se.SegnalazioneId              -- join corretto sull'ID segnalazione
@@ -2884,8 +2884,7 @@ class Database:
         LEFT JOIN Employee.dbo.EmployeeAddress eaFrom
             ON eaFrom.EmployeeId = e.EmployeeId
            AND eaFrom.DateOut IS NULL
-        LEFT JOIN Employee.dbo.SegnalazioniStatiAllegati sa
-            ON sa.SegnalazioneStatoId = ss.SegnalazioneStatoId
+        
         WHERE sts.StatoChiuso = 0
           AND NOT EXISTS (
               SELECT 1
@@ -2893,6 +2892,8 @@ class Database:
               WHERE sea.SegnalazioneId = se.SegnalazioneId
           )
         ORDER BY se.DataSegnalazione DESC;
+
+        select * from Employee.dbo.SegnalazioniStatiAllegati
         """
         cur = None
         try:
@@ -10500,6 +10501,12 @@ class App(tk.Tk):
         self._monthly_report_stop_event = threading.Event()
         self._start_monthly_report_background_task()
         
+        # Inizializza il thread per l'invio automatico email FAI fails
+        self._fai_fails_email_thread = None
+        self._fai_fails_email_stop_event = threading.Event()
+        self._fai_fails_email_last_sent = None  # Track last send date
+        self._start_fai_fails_email_background_task()
+        
         logger.info("INIT: App initialization complete.")
 
         # Imposta la gestione della chiusura della finestra una sola volta
@@ -10838,6 +10845,108 @@ class App(tk.Tk):
                 time.sleep(3600)
         
         logger.info("Background task report mensile terminato")
+
+    def _start_fai_fails_email_background_task(self):
+        """Avvia il thread per l'invio automatico email FAI fails"""
+        try:
+            if self._fai_fails_email_thread is None or not self._fai_fails_email_thread.is_alive():
+                self._fai_fails_email_stop_event.clear()
+                self._fai_fails_email_thread = threading.Thread(
+                    target=self._fai_fails_email_worker,
+                    daemon=True,
+                    name="FaiFailsEmailWorker"
+                )
+                self._fai_fails_email_thread.start()
+                logger.info("Background task per invio email FAI fails avviato")
+        except Exception as e:
+            logger.error(f"Errore nell'avvio del background task FAI fails email: {e}", exc_info=True)
+
+    def _fai_fails_email_worker(self):
+        """
+        Worker thread che invia email FAI fails automaticamente una volta al giorno.
+        
+        REGOLE OPERATIVE:
+        - Orario: 07:00 (una volta al giorno)
+        - Giorni: Solo giorni lavorativi
+        - Invia solo se ci sono fails non analizzati (IsAnalized = 0)
+        """
+        import utils
+        from business_days import should_send_notification
+        from datetime import datetime, timedelta
+        import time
+        
+        logger.info("Worker FAI fails email avviato")
+        
+        while not self._fai_fails_email_stop_event.is_set():
+            try:
+                now = datetime.now()
+                current_date = now.date()
+                current_hour = now.hour
+                
+                # Verifica se è giorno lavorativo
+                if not should_send_notification(country_code='IT'):
+                    logger.debug("FAI fails email: oggi non è un giorno lavorativo")
+                    # Attendi fino a domani
+                    time.sleep(3600)  # 1 ora
+                    continue
+                
+                # Verifica se l'email è già stata inviata oggi
+                if self._fai_fails_email_last_sent == current_date:
+                    logger.debug(f"FAI fails email già inviata oggi ({current_date})")
+                    # Attendi 1 ora prima di ricontrollare
+                    time.sleep(3600)
+                    continue
+                
+                # Verifica se è l'orario corretto (07:00)
+                if current_hour == 7:
+                    logger.info("FAI fails email: orario corretto (07:00) - tentativo invio")
+                    
+                    try:
+                        # Invia email FAI fails
+                        success = utils.send_fai_fails_notification(
+                            self.db.conn, 
+                            logo_path="logo.png"
+                        )
+                        
+                        if success:
+                            logger.info("✅ Email FAI fails inviata con successo")
+                            self._fai_fails_email_last_sent = current_date
+                        else:
+                            logger.info("ℹ️ Nessun FAI fail non analizzato - email non inviata")
+                            # Marca comunque come "inviata" per oggi per evitare retry continui
+                            self._fai_fails_email_last_sent = current_date
+                    
+                    except Exception as e:
+                        logger.error(f"Errore nell'invio email FAI fails: {e}", exc_info=True)
+                        # Non marcare come inviata in caso di errore - riproverà
+                    
+                    # Attendi 1 ora per evitare invii multipli nella stessa ora
+                    time.sleep(3600)
+                
+                else:
+                    # Non è ancora l'orario giusto
+                    # Calcola quanto tempo manca alle 07:00
+                    target_time = now.replace(hour=7, minute=0, second=0, microsecond=0)
+                    
+                    if current_hour >= 7:
+                        # Già passate le 07:00 oggi, attendi fino a domani
+                        target_time += timedelta(days=1)
+                    
+                    wait_seconds = (target_time - now).total_seconds()
+                    
+                    # Attendi massimo 1 ora alla volta per permettere controlli intermedi
+                    wait_seconds = min(wait_seconds, 3600)
+                    
+                    logger.debug(f"FAI fails email: attesa {wait_seconds/60:.1f} minuti fino alle 07:00")
+                    time.sleep(wait_seconds)
+            
+            except Exception as e:
+                logger.error(f"Errore nel worker FAI fails email: {e}", exc_info=True)
+                # In caso di errore, attendi 1 ora prima di riprovare
+                time.sleep(3600)
+        
+        logger.info("Background task FAI fails email terminato")
+
 
 
     def _show_verification_notification(self, count):
@@ -11493,6 +11602,68 @@ class App(tk.Tk):
                 self.lang.get('error', 'Errore'),
                 f"Impossibile aprire lo storico validazioni:\n{e}"
             )
+    
+    def open_fai_fails_report_with_login(self):
+        """Apre il rapporto FAI fails con autenticazione"""
+        self._execute_simple_login(
+            action_callback=lambda user_id: self._open_fai_fails_report(user_id)
+        )
+    
+    def _open_fai_fails_report(self, user_name):
+        """Apre il rapporto FAI fails"""
+        try:
+            from fai_fails_report import FaiFailsReportWindow
+            FaiFailsReportWindow(
+                self, self.db, self.lang, user_name
+            )
+        except Exception as e:
+            logger.error(f"Errore apertura rapporto FAI fails: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire il rapporto FAI fails:\n{e}"
+            )
+    
+    def send_fai_fails_email_with_login(self):
+        """Invia email automatica FAI fails con autenticazione"""
+        self._execute_simple_login(
+            action_callback=lambda user_id: self._send_fai_fails_email(user_id)
+        )
+    
+    def _send_fai_fails_email(self, user_name):
+        """Invia email automatica per FAI fails non analizzati"""
+        try:
+            import utils
+            
+            # Mostra messaggio di attesa
+            self.status_label.config(text="Invio email FAI fails in corso...")
+            self.update_idletasks()
+            
+            # Invia email
+            success = utils.send_fai_fails_notification(self.db.conn, logo_path="logo.png")
+            
+            if success:
+                messagebox.showinfo(
+                    "Successo", 
+                    "Email FAI fails inviata con successo!\n\n"
+                    "I record sono stati marcati come analizzati."
+                )
+                logger.info(f"Email FAI fails inviata da {user_name}")
+            else:
+                messagebox.showwarning(
+                    "Nessun invio", 
+                    "Nessun FAI fail non analizzato trovato.\n\n"
+                    "L'email non è stata inviata."
+                )
+            
+            self.status_label.config(text="Pronto")
+            
+        except Exception as e:
+            logger.error(f"Errore invio email FAI fails: {e}", exc_info=True)
+            messagebox.showerror(
+                "Errore", 
+                f"Errore durante l'invio dell'email FAI fails:\n{e}"
+            )
+            self.status_label.config(text="Errore invio email")
 
 
     def open_calibrations_manager_with_login(self):
@@ -13158,6 +13329,10 @@ class App(tk.Tk):
             label=self.lang.get('storico_validazioni_fai', "Storico Validazioni FAI"),
             command=self.open_fai_reports_viewer_with_login
         )
+        self.line_validation_submenu.add_command(
+            label=self.lang.get('rapporto_fai_fails', "Rapporto FAI fails"),
+            command=self.open_fai_fails_report_with_login
+        )
 
 
     def _update_kanban_submenus(self):
@@ -13846,8 +14021,10 @@ class App(tk.Tk):
                     if (filtered if typed_text else filtered_by_client):
                         combo.event_generate('<Down>')
 
-                # Bind dell'evento di digitazione
-                combo.bind('<KeyRelease>', on_keyrelease)
+                # Bind dell'evento di digitazione - solo su Enter
+                combo.bind('<Return>', on_keyrelease)
+                # Bind anche su click della freccia dropdown
+                combo.bind('<Button-1>', lambda e: on_keyrelease(e) if combo_var.get() else None)
                 
                 # ðŸ†• Funzione per aggiornare la lista progetti quando cambia il cliente
                 def on_client_change(event):

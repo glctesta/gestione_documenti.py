@@ -1,8 +1,8 @@
 {
-    "connection_type": "DEFAULT",
+    "connection_type": "USB",
     "ip": "",
     "port": 9100,
-    "usb_printer_name": "",
-    "printer_model": "ZEBRA",
-    "last_updated": "2026-01-29 10:02:38"
+    "usb_printer_name": "ZIJIANG LABEL",
+    "printer_model": "ZJIANG",
+    "last_updated": "2026-02-05 14:57:41"
 }

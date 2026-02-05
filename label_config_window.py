@@ -144,6 +144,89 @@ class LabelConfigWindow(tk.Toplevel):
                  text=self.lang.get('position_info', 'La posizione determina l\'ordine di stampa (1=primo, 4=ultimo)'),
                  font=('Arial', 8), foreground='gray').grid(row=5, column=0, columnspan=3, sticky='w', pady=10)
         
+        # === SEZIONE TSPL (ZJIANG) ===
+        tspl_frame = ttk.LabelFrame(scrollable_frame,
+                                   text='⚙️ ' + self.lang.get('tspl_settings_section', 'Impostazioni TSPL (Stampanti ZJIANG)'),
+                                   padding="15")
+        tspl_frame.pack(fill='x', padx=10, pady=10)
+        
+        # Info TSPL
+        ttk.Label(tspl_frame, 
+                 text=self.lang.get('tspl_info', 'Parametri per stampanti ZJIANG (203 DPI: 8 dots/mm, 1mm ≈ 8 dots)'),
+                 font=('Arial', 8), foreground='blue').grid(row=0, column=0, columnspan=2, sticky='w', pady=(0,10))
+        
+        # X Offset
+        ttk.Label(tspl_frame, text=self.lang.get('tspl_x_offset', 'X Offset (dots)') + ':').grid(
+            row=1, column=0, sticky='w', padx=5, pady=5)
+        self.tspl_x_var = tk.IntVar(value=120)
+        ttk.Spinbox(tspl_frame, from_=0, to=800, increment=10,
+                   textvariable=self.tspl_x_var, width=10).grid(row=1, column=1, sticky='w', padx=5, pady=5)
+        
+        # Y Offset
+        ttk.Label(tspl_frame, text=self.lang.get('tspl_y_offset', 'Y Offset (dots)') + ':').grid(
+            row=2, column=0, sticky='w', padx=5, pady=5)
+        self.tspl_y_var = tk.IntVar(value=100)
+        ttk.Spinbox(tspl_frame, from_=0, to=400, increment=10,
+                   textvariable=self.tspl_y_var, width=10).grid(row=2, column=1, sticky='w', padx=5, pady=5)
+        
+        # Line Spacing
+        ttk.Label(tspl_frame, text=self.lang.get('tspl_line_spacing', 'Spaziatura Righe (dots)') + ':').grid(
+            row=3, column=0, sticky='w', padx=5, pady=5)
+        self.tspl_spacing_var = tk.IntVar(value=60)
+        ttk.Spinbox(tspl_frame, from_=20, to=200, increment=10,
+                   textvariable=self.tspl_spacing_var, width=10).grid(row=3, column=1, sticky='w', padx=5, pady=5)
+        
+        # Font Size
+        ttk.Label(tspl_frame, text=self.lang.get('tspl_font_size', 'Dimensione Font') + ':').grid(
+            row=4, column=0, sticky='w', padx=5, pady=5)
+        self.tspl_font_var = tk.StringVar(value="3")
+        font_combo = ttk.Combobox(tspl_frame, textvariable=self.tspl_font_var, 
+                                 values=["1", "2", "3", "4", "5"], width=8, state='readonly')
+        font_combo.grid(row=4, column=1, sticky='w', padx=5, pady=5)
+        
+        # Font Multiplier X
+        ttk.Label(tspl_frame, text=self.lang.get('tspl_font_mul_x', 'Moltiplicatore X') + ':').grid(
+            row=5, column=0, sticky='w', padx=5, pady=5)
+        self.tspl_mul_x_var = tk.IntVar(value=1)
+        ttk.Spinbox(tspl_frame, from_=1, to=5, increment=1,
+                   textvariable=self.tspl_mul_x_var, width=10).grid(row=5, column=1, sticky='w', padx=5, pady=5)
+        
+        # Font Multiplier Y
+        ttk.Label(tspl_frame, text=self.lang.get('tspl_font_mul_y', 'Moltiplicatore Y') + ':').grid(
+            row=6, column=0, sticky='w', padx=5, pady=5)
+        self.tspl_mul_y_var = tk.IntVar(value=1)
+        ttk.Spinbox(tspl_frame, from_=1, to=5, increment=1,
+                   textvariable=self.tspl_mul_y_var, width=10).grid(row=6, column=1, sticky='w', padx=5, pady=5)
+        
+        # Separatore QR Code
+        ttk.Separator(tspl_frame, orient='horizontal').grid(row=7, column=0, columnspan=2, sticky='ew', pady=10)
+        
+        # QR Code Header
+        ttk.Label(tspl_frame, text='📱 ' + self.lang.get('qr_code_settings', 'Posizione QR Code'),
+                 font=('Arial', 9, 'bold')).grid(row=8, column=0, columnspan=2, sticky='w', pady=(0,5))
+        
+        # QR Code X Position
+        ttk.Label(tspl_frame, text=self.lang.get('qr_x_position', 'QR X Position (dots)') + ':').grid(
+            row=9, column=0, sticky='w', padx=5, pady=5)
+        self.qr_x_var = tk.IntVar(value=450)
+        ttk.Spinbox(tspl_frame, from_=0, to=800, increment=10,
+                   textvariable=self.qr_x_var, width=10).grid(row=9, column=1, sticky='w', padx=5, pady=5)
+        
+        # QR Code Y Position
+        ttk.Label(tspl_frame, text=self.lang.get('qr_y_position', 'QR Y Position (dots)') + ':').grid(
+            row=10, column=0, sticky='w', padx=5, pady=5)
+        self.qr_y_var = tk.IntVar(value=100)
+        ttk.Spinbox(tspl_frame, from_=0, to=400, increment=10,
+                   textvariable=self.qr_y_var, width=10).grid(row=10, column=1, sticky='w', padx=5, pady=5)
+        
+        # QR Code Cell Width
+        ttk.Label(tspl_frame, text=self.lang.get('qr_cell_width', 'QR Dimensione Celle') + ':').grid(
+            row=11, column=0, sticky='w', padx=5, pady=5)
+        self.qr_cell_var = tk.IntVar(value=4)
+        ttk.Spinbox(tspl_frame, from_=2, to=8, increment=1,
+                   textvariable=self.qr_cell_var, width=10).grid(row=11, column=1, sticky='w', padx=5, pady=5)
+        
+        
         # Frame pulsanti
         button_frame = ttk.Frame(self, padding="10")
         button_frame.pack(fill='x', padx=10, pady=10)
@@ -168,7 +251,9 @@ class LabelConfigWindow(tk.Toplevel):
             SELECT TOP 1 
                 ConfigID, LabelWidth, LabelHeight,
                 PrintOrderNumber, PrintMaterialCode, PrintComponentQuantity, PrintReferences,
-                OrderNumberPosition, MaterialCodePosition, ComponentQuantityPosition, ReferencesPosition
+                OrderNumberPosition, MaterialCodePosition, ComponentQuantityPosition, ReferencesPosition,
+                TSPLXOffset, TSPLYOffset, TSPLLineSpacing, TSPLFontSize, TSPLFontMultiplierX, TSPLFontMultiplierY,
+                TSPLQRCodeX, TSPLQRCodeY, TSPLQRCodeCellWidth
             FROM [Traceability_RS].[dbo].[LabelConfiguration]
             WHERE IsActive = 1
             ORDER BY ConfigID DESC
@@ -180,7 +265,9 @@ class LabelConfigWindow(tk.Toplevel):
             if row:
                 (self.config_id, width, height,
                  print_order, print_material, print_qty, print_refs,
-                 order_pos, material_pos, qty_pos, refs_pos) = row
+                 order_pos, material_pos, qty_pos, refs_pos,
+                 tspl_x, tspl_y, tspl_spacing, tspl_font, tspl_mul_x, tspl_mul_y,
+                 qr_x, qr_y, qr_cell) = row
                 
                 # Imposta i valori
                 self.width_var.set(float(width) if width else 10.0)
@@ -195,6 +282,19 @@ class LabelConfigWindow(tk.Toplevel):
                 self.material_position_var.set(material_pos if material_pos else 2)
                 self.qty_position_var.set(qty_pos if qty_pos else 3)
                 self.refs_position_var.set(refs_pos if refs_pos else 4)
+                
+                # Imposta valori TSPL
+                self.tspl_x_var.set(tspl_x if tspl_x is not None else 120)
+                self.tspl_y_var.set(tspl_y if tspl_y is not None else 100)
+                self.tspl_spacing_var.set(tspl_spacing if tspl_spacing is not None else 60)
+                self.tspl_font_var.set(tspl_font if tspl_font else "3")
+                self.tspl_mul_x_var.set(tspl_mul_x if tspl_mul_x is not None else 1)
+                self.tspl_mul_y_var.set(tspl_mul_y if tspl_mul_y is not None else 1)
+                
+                # Imposta valori QR Code
+                self.qr_x_var.set(qr_x if qr_x is not None else 450)
+                self.qr_y_var.set(qr_y if qr_y is not None else 100)
+                self.qr_cell_var.set(qr_cell if qr_cell is not None else 4)
                 
                 self._on_field_toggle()
                 
@@ -252,6 +352,15 @@ class LabelConfigWindow(tk.Toplevel):
                     MaterialCodePosition = ?,
                     ComponentQuantityPosition = ?,
                     ReferencesPosition = ?,
+                    TSPLXOffset = ?,
+                    TSPLYOffset = ?,
+                    TSPLLineSpacing = ?,
+                    TSPLFontSize = ?,
+                    TSPLFontMultiplierX = ?,
+                    TSPLFontMultiplierY = ?,
+                    TSPLQRCodeX = ?,
+                    TSPLQRCodeY = ?,
+                    TSPLQRCodeCellWidth = ?,
                     ModifiedDate = GETDATE(),
                     ModifiedBy = ?
                 WHERE ConfigID = ?
@@ -264,6 +373,15 @@ class LabelConfigWindow(tk.Toplevel):
                              self.material_position_var.get() if self.print_material_var.get() else None,
                              self.qty_position_var.get() if self.print_qty_var.get() else None,
                              self.refs_position_var.get() if self.print_refs_var.get() else None,
+                             self.tspl_x_var.get(),
+                             self.tspl_y_var.get(),
+                             self.tspl_spacing_var.get(),
+                             self.tspl_font_var.get(),
+                             self.tspl_mul_x_var.get(),
+                             self.tspl_mul_y_var.get(),
+                             self.qr_x_var.get(),
+                             self.qr_y_var.get(),
+                             self.qr_cell_var.get(),
                              self.user_name,
                              self.config_id)
             else:
@@ -274,8 +392,10 @@ class LabelConfigWindow(tk.Toplevel):
                      PrintComponentQuantity, PrintReferences,
                      OrderNumberPosition, MaterialCodePosition,
                      ComponentQuantityPosition, ReferencesPosition,
+                     TSPLXOffset, TSPLYOffset, TSPLLineSpacing, TSPLFontSize, TSPLFontMultiplierX, TSPLFontMultiplierY,
+                     TSPLQRCodeX, TSPLQRCodeY, TSPLQRCodeCellWidth,
                      CreatedBy, ModifiedBy)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
                 cursor.execute(query,
                              width, height,
@@ -285,6 +405,15 @@ class LabelConfigWindow(tk.Toplevel):
                              self.material_position_var.get() if self.print_material_var.get() else None,
                              self.qty_position_var.get() if self.print_qty_var.get() else None,
                              self.refs_position_var.get() if self.print_refs_var.get() else None,
+                             self.tspl_x_var.get(),
+                             self.tspl_y_var.get(),
+                             self.tspl_spacing_var.get(),
+                             self.tspl_font_var.get(),
+                             self.tspl_mul_x_var.get(),
+                             self.tspl_mul_y_var.get(),
+                             self.qr_x_var.get(),
+                             self.qr_y_var.get(),
+                             self.qr_cell_var.get(),
                              self.user_name, self.user_name)
             
             self.db.conn.commit()
