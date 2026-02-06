@@ -264,7 +264,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.2.7'  # Versione aggiornata
+APP_VERSION = '2.3.2.8'  # Versione aggiornata
 APP_DEVELOPER = 'Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -470,14 +470,14 @@ class KanbanRulesManagementForm(tk.Toplevel):
 
         ttk.Radiobutton(r1, text=self.lang.get('rule_percent', "Percentuale"), value="percent",
                         variable=self.rule_type_var).pack(side="left", padx=(8, 8))
-        ttk.Radiobutton(r1, text=self.lang.get('rule_quantity', "QuantitÃ "), value="qty",
+        ttk.Radiobutton(r1, text=self.lang.get('rule_quantity', "Quantita"), value="qty",
                         variable=self.rule_type_var).pack(side="left", padx=(0, 8))
 
         r2 = ttk.Frame(edit); r2.pack(fill="x", padx=8, pady=6)
         ttk.Label(r2, text=self.lang.get('rule_value', "Valore")).pack(side="left")
         self.value_entry = ttk.Entry(r2, textvariable=self.rule_value_var, width=12)
         self.value_entry.pack(side="left", padx=(8, 8))
-        ttk.Label(r2, text=self.lang.get('rule_value_hint', "(% intero 1..100 o quantitÃ  > 0)")).pack(side="left")
+        ttk.Label(r2, text=self.lang.get('rule_value_hint', "(% intero 1..100 o quantita > 0)")).pack(side="left")
 
         # Pulsanti azione
         btns = ttk.Frame(root); btns.pack(fill="x", pady=(10, 0))
@@ -509,7 +509,7 @@ class KanbanRulesManagementForm(tk.Toplevel):
         for r in rows:
             is_pct = getattr(r, "MinimumProcent", None) is not None
             value = int(getattr(r, "MinimumProcent", 0) if is_pct else getattr(r, "MinimumQty", 0))
-            type_txt = self.lang.get('rule_percent', "Percentuale") if is_pct else self.lang.get('rule_quantity', "QuantitÃ ")
+            type_txt = self.lang.get('rule_percent', "Percentuale") if is_pct else self.lang.get('rule_quantity', "Quantita")
             status_txt = self.lang.get('rule_status_active', "Attiva") if getattr(r, "DateOut", None) is None else self.lang.get('rule_status_closed', "Chiusa")
             dateout_txt = "" if getattr(r, "DateOut", None) is None else str(getattr(r, "DateOut"))
             self.tree.insert("", "end", iid=str(r.KanBanRuleID),
@@ -543,7 +543,7 @@ class KanbanRulesManagementForm(tk.Toplevel):
             return True, ("percent", n)
         else:
             if n <= 0:
-                return False, self.lang.get('rules_err_qty_positive', "La quantitÃ  deve essere > 0.")
+                return False, self.lang.get('rules_err_qty_positive', "La quantita deve essere > 0.")
             return True, ("qty", n)
 
     def _on_new(self):
@@ -596,7 +596,7 @@ class KanbanRulesManagementForm(tk.Toplevel):
             self._on_new()
         else:
             # giÃ  chiusa o altro errore
-            msg = self.lang.get('rules_already_closed', "La regola Ã¨ giÃ  chiusa o non esiste.") if err == "already_closed_or_not_found" else (err or self.db.last_error_details)
+            msg = self.lang.get('rules_already_closed', "La regola e' gia chiusa o non esiste.") if err == "already_closed_or_not_found" else (err or self.db.last_error_details)
             messagebox.showerror(self.lang.get('error_title', "Errore"),
                                  self.lang.get('rules_delete_err', f"Errore eliminazione: {msg}"),
                                  parent=self)
@@ -2137,11 +2137,25 @@ class Database:
         """
         Recupera tutti i componenti (Id, Code, Desc) per popolare le combo.
         """
+        # Preferisci ComponentsMaster se esiste, altrimenti fallback su Components
         sql = """
-        SELECT IdComponent, ComponentCode, ComponentDescription
-        FROM Traceability_rs.dbo.ComponentsMaster
-        WHERE dateout IS NULL
-        ORDER BY ComponentCode;
+        IF EXISTS (
+            SELECT 1 FROM Traceability_rs.INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'ComponentsMaster'
+        )
+        BEGIN
+            SELECT IdComponent, ComponentCode, ComponentDescription
+            FROM Traceability_rs.dbo.ComponentsMaster
+            WHERE dateout IS NULL
+            ORDER BY ComponentCode;
+        END
+        ELSE
+        BEGIN
+            -- Fallback su Components, senza assumere la colonna DateOut
+            SELECT IdComponent, ComponentCode, ComponentDescription
+            FROM Traceability_rs.dbo.Components
+            ORDER BY ComponentCode;
+        END
         """
         with self._lock:
             try:
@@ -2164,6 +2178,46 @@ class Database:
         ORDER BY kbl.KanBanLocation, l.LocationCode;
         """
         self.cursor.execute(sql)
+        return self.cursor.fetchall()
+
+    def fetch_kanban_locations_for_combo(self):
+        """
+        Elenco aree KanBan: KanBanLocationId, KanBanLocation
+        """
+        sql = """
+        SELECT KanBanLocationId, KanBanLocation
+        FROM knb.KanBanLocations
+        ORDER BY KanBanLocation;
+        """
+        self.cursor.execute(sql)
+        return self.cursor.fetchall()
+
+    def fetch_locations_for_kanban_area(self, kanban_location_id):
+        """
+        Elenco locazioni per area KanBan.
+        """
+        sql = """
+        SELECT LocationId, LocationCode
+        FROM knb.Locations
+        WHERE KanBanLocationId = ?
+        ORDER BY LocationCode;
+        """
+        self.cursor.execute(sql, (kanban_location_id,))
+        return self.cursor.fetchall()
+
+    def fetch_components_for_kanban_area(self, kanban_location_id):
+        """
+        Elenco componenti presenti in KanBanRecords per una specifica area.
+        """
+        sql = """
+        SELECT DISTINCT c.IdComponent, c.ComponentCode, c.ComponentDescription
+        FROM knb.KanBanRecords r
+        INNER JOIN knb.Locations l ON l.LocationId = r.LocationId
+        INNER JOIN dbo.Components c ON c.IdComponent = r.IdComponent
+        WHERE l.KanBanLocationId = ? AND r.DateOut IS NULL
+        ORDER BY c.ComponentCode;
+        """
+        self.cursor.execute(sql, (kanban_location_id,))
         return self.cursor.fetchall()
 
     def get_component_id_by_code(self, component_code: str):
@@ -9151,7 +9205,7 @@ class KanbanLocationModifyForm(tk.Toplevel):
         self.tree.column("record_id", width=60, anchor="center")
         self.tree.heading("loc_code", text=self.lang.get('location', "Locazione"))
         self.tree.column("loc_code", width=140)
-        self.tree.heading("qty", text=self.lang.get('quantity', "Q.tÃ "))
+        self.tree.heading("qty", text=self.lang.get('quantity', "Q.ta"))
         self.tree.column("qty", width=80, anchor="e")
         self.tree.heading("desc", text=self.lang.get('description', "Descrizione"))
         self.tree.column("desc", width=360)
@@ -9186,7 +9240,7 @@ class KanbanLocationModifyForm(tk.Toplevel):
     def _load_locations(self):
         rows = self.db.fetch_locations_for_combo()
         self._locations_cache = rows
-        values = [f"{r.KanBanLocation} â€¢ {r.LocationCode}" for r in rows]
+        values = [f"{r.KanBanLocation} - {r.LocationCode}" for r in rows]
         self.dest_combo['values'] = values
         self.src_combo['values'] = values
         self.dest_combo2['values'] = values
@@ -9383,7 +9437,7 @@ class KanbanMaterialsManagementForm(tk.Toplevel):
         values = []
         self._comp_index_by_display.clear()
         for r in rows:
-            disp = f"{r.ComponentCode} â€¢ {r.ComponentDescription or ''}"
+            disp = f"{r.ComponentCode} - {r.ComponentDescription or ''}"
             values.append(disp)
             self._comp_index_by_display[disp] = r
         self.comp_combo['values'] = values
@@ -9401,7 +9455,7 @@ class KanbanMaterialsManagementForm(tk.Toplevel):
             if getattr(r, "MinimumProcent", None) is not None:
                 disp = f"Percentuale {int(r.MinimumProcent)}%"
             elif getattr(r, "MinimumQty", None) is not None:
-                disp = f"QuantitÃ  {int(r.MinimumQty)}"
+                disp = f"Quantita {int(r.MinimumQty)}"
             else:
                 disp = f"Regola {r.KanBanRuleID}"
             values.append(disp)
@@ -9444,7 +9498,7 @@ class KanbanMaterialsManagementForm(tk.Toplevel):
                 if getattr(rule, "MinimumProcent", None) is not None:
                     text = self.lang.get('current_rule_fmt_pct', "Regola attiva: {v}%").format(v=int(rule.MinimumProcent))
                 elif getattr(rule, "MinimumQty", None) is not None:
-                    text = self.lang.get('current_rule_fmt_qty', "Regola attiva: Q.tÃ  {v}").format(v=int(rule.MinimumQty))
+                    text = self.lang.get('current_rule_fmt_qty', "Regola attiva: Q.ta {v}").format(v=int(rule.MinimumQty))
                 else:
                     text = self.lang.get('current_rule_fmt_id', "Regola attiva ID {id}").format(id=rule.KanBanRuleID)
                 self.current_rule_label.configure(text=text)
@@ -9512,6 +9566,7 @@ class KanbanMoveForm(tk.Toplevel):
         self.qty_var = tk.StringVar()
         self.component_var = tk.StringVar()
         self.location_var = tk.StringVar()
+        self.area_var = tk.StringVar()
 
         # Cache liste per filtro
         self._components = []   # list of (IdComponent, code, descr)
@@ -9535,6 +9590,12 @@ class KanbanMoveForm(tk.Toplevel):
         # Selezioni
         sf = ttk.Labelframe(root, text=self.lang.get('move_selection', 'Selezione'))
         sf.pack(fill="x", pady=(10, 0))
+
+        r0 = ttk.Frame(sf); r0.pack(fill="x", padx=6, pady=6)
+        ttk.Label(r0, text=self.lang.get('kanban_area_label', 'Area KanBan'), width=16).pack(side="left")
+        self.cb_area = ttk.Combobox(r0, textvariable=self.area_var, width=50)
+        self.cb_area.pack(side="left", fill="x", expand=True)
+        self.cb_area.bind("<KeyRelease>", self._on_area_typed)
 
         r1 = ttk.Frame(sf); r1.pack(fill="x", padx=6, pady=6)
         ttk.Label(r1, text=self.lang.get('component', 'Componente'), width=16).pack(side="left")
@@ -9561,7 +9622,7 @@ class KanbanMoveForm(tk.Toplevel):
         # Quantity row (giÃ  presente)
         r3 = ttk.Frame(sf);
         r3.pack(fill="x", padx=6, pady=6)
-        ttk.Label(r3, text=self.lang.get('quantity', 'QuantitÃ '), width=16).pack(side="left")
+        ttk.Label(r3, text=self.lang.get('quantity', 'Quantita'), width=16).pack(side="left")
         ttk.Entry(r3, textvariable=self.qty_var, width=12).pack(side="left")
 
         # Etichette saldo: qui e altrove
@@ -9587,6 +9648,10 @@ class KanbanMoveForm(tk.Toplevel):
         self.cb_component.bind("<<ComboboxSelected>>", self._on_component_selected)
         self.cb_component.bind("<FocusOut>", self._on_component_focus_out)
 
+        # Area combobox bindings
+        self.cb_area.bind("<<ComboboxSelected>>", self._on_area_selected)
+        self.cb_area.bind("<FocusOut>", self._on_area_focus_out)
+
         # Location combobox bindings
         self.cb_location.bind("<<ComboboxSelected>>", self._on_location_selected)
         self.cb_location.bind("<FocusOut>", lambda e: self._update_balances())
@@ -9604,20 +9669,75 @@ class KanbanMoveForm(tk.Toplevel):
         self._refresh_component_dependent_ui()
 
     def _load_lists(self):
-        # Componenti
+        # Aree KanBan
+        self._areas = []
+        for r in self.db.fetch_kanban_locations_for_combo():
+            try:
+                area_id = r.KanBanLocationId
+                area_name = r.KanBanLocation
+            except AttributeError:
+                area_id = r[0]
+                area_name = r[1]
+            self._areas.append((area_id, area_name))
+        area_items = [a[1] for a in self._areas]
+        self.cb_area["values"] = area_items
+
+        # Default area = contiene "SMT"
+        default_idx = None
+        for i, (_, name) in enumerate(self._areas):
+            if name and "smt" in name.lower():
+                default_idx = i
+                break
+        if default_idx is not None:
+            self.cb_area.current(default_idx)
+        elif self._areas:
+            self.cb_area.current(0)
+
+        self._reload_by_area()
+
+    def _reload_by_area(self):
+        area_id, _ = self._resolve_area(self.area_var.get())
+
+        # Componenti (filtrati per area)
         self._components = []
-        for r in self.db.fetch_all_components_for_combo():
-            self._components.append((r.IdComponent, r.ComponentCode, r.ComponentDescription or ""))
-        # Stringhe combo: "CODE - Description"
+        if area_id:
+            comp_rows = self.db.fetch_components_for_kanban_area(area_id)
+        else:
+            comp_rows = self.db.fetch_all_components_for_combo()
+        for r in comp_rows:
+            try:
+                comp_id = r.IdComponent
+                comp_code = r.ComponentCode
+                comp_desc = r.ComponentDescription or ""
+            except AttributeError:
+                comp_id = r[0]
+                comp_code = r[1]
+                comp_desc = r[2] or ""
+            self._components.append((comp_id, comp_code, comp_desc))
         comp_items = [f"{c[1]} - {c[2]}" if c[2] else c[1] for c in self._components]
         self.cb_component["values"] = comp_items
 
-        # Locazioni
+        # Locazioni (filtrate per area)
         self._locations = []
-        for r in self.db.fetch_all_locations_for_combo():
-            self._locations.append((r.LocationId, r.LocationCode, r.KanBanLocation or ""))
+        if area_id:
+            loc_rows = self.db.fetch_locations_for_kanban_area(area_id)
+            for r in loc_rows:
+                try:
+                    self._locations.append((r.LocationId, r.LocationCode, self.area_var.get()))
+                except AttributeError:
+                    self._locations.append((r[0], r[1], self.area_var.get()))
+        else:
+            for r in self.db.fetch_all_locations_for_combo():
+                try:
+                    self._locations.append((r.LocationId, r.LocationCode, r.KanBanLocation or ""))
+                except AttributeError:
+                    self._locations.append((r[0], r[1], r[2] or ""))
         loc_items = [f"{x[1]} - {x[2]}" if x[2] else x[1] for x in self._locations]
         self.cb_location["values"] = loc_items
+
+        # Reset selezioni dipendenti
+        self.component_var.set("")
+        self.location_var.set("")
 
     def _on_component_typed(self, event):
         text = self.component_var.get().lower().strip()
@@ -9627,6 +9747,24 @@ class KanbanMoveForm(tk.Toplevel):
             if text in code.lower() or text in (descr or "").lower():
                 items.append(s)
         self.cb_component["values"] = items
+
+    def _on_area_typed(self, event):
+        text = self.area_var.get().lower().strip()
+        items = []
+        for (_id, name) in getattr(self, "_areas", []):
+            if text in (name or "").lower():
+                items.append(name)
+        self.cb_area["values"] = items
+
+    def _on_area_selected(self, event=None):
+        self._reload_by_area()
+
+    def _on_area_focus_out(self, event=None):
+        # Se il testo non corrisponde ad area valida, ripristina default
+        area_id, area_name = self._resolve_area(self.area_var.get())
+        if area_id is None and self._areas:
+            self.cb_area.current(0)
+        self._reload_by_area()
 
     def _on_location_typed(self, event):
         text = self.location_var.get().lower().strip()
@@ -9650,6 +9788,14 @@ class KanbanMoveForm(tk.Toplevel):
         # Fallback DB
         cid = self.db.get_component_id_by_code(code)
         return (cid, code, None) if cid else (None, None, None)
+
+    def _resolve_area(self, text: str):
+        if not text:
+            return None, None
+        for (aid, name) in getattr(self, "_areas", []):
+            if name == text:
+                return aid, name
+        return None, None
 
     def _resolve_location(self, text: str):
         if not text:
@@ -9695,7 +9841,7 @@ class KanbanMoveForm(tk.Toplevel):
         qty = self._parse_qty()
         if qty is None:
             messagebox.showwarning(self.lang.get('warn_title', 'Attenzione'),
-                                   self.lang.get('move_err_qty_positive', 'La quantitÃ  deve essere un intero > 0.'),
+                                   self.lang.get('move_err_qty_positive', 'La quantita deve essere un intero > 0.'),
                                    parent=self)
             return
 
@@ -9707,7 +9853,7 @@ class KanbanMoveForm(tk.Toplevel):
             avail = self.db.get_current_stock(comp_id, loc_id)
             if avail + delta < 0:
                 message = self.lang.get('move_err_stock_insufficient',
-                                        'QuantitÃ  non disponibile. Disponibile: {avail}').format(avail=avail)
+                                        'Quantita non disponibile. Disponibile: {avail}').format(avail=avail)
                 messagebox.showerror(self.lang.get('error_title', 'Errore'), message, parent=self)
                 return
 
@@ -9769,7 +9915,7 @@ class KanbanMoveForm(tk.Toplevel):
                 return 'Component'
             if k in ('location', 'locationcode', 'loc', 'locazione', 'codicelocazione'):
                 return 'Location'
-            if k in ('quantity', 'qty', 'quantita', 'qta', 'quantitÃ '):
+            if k in ('quantity', 'qty', 'quantita', 'qta', 'quantita'):
                 return 'Quantity'
             return key
 
@@ -9849,18 +9995,18 @@ class KanbanMoveForm(tk.Toplevel):
                                                     f'Riga {idx}: campi mancanti (Component/Location/Quantity).')
                 continue
 
-            # Parse quantitÃ 
+            # Parse quantita
             try:
                 qty = int(float(qty_text))  # accetta "10.0" -> 10
             except Exception:
                 err_count += 1
                 if first_error_msg is None:
-                    first_error_msg = self.lang.get('import_err_qty', f'Riga {idx}: QuantitÃ  non valida: {qty_text}')
+                    first_error_msg = self.lang.get('import_err_qty', f'Riga {idx}: Quantita non valida: {qty_text}')
                 continue
             if qty == 0:
                 err_count += 1
                 if first_error_msg is None:
-                    first_error_msg = self.lang.get('import_err_qty_zero', f'Riga {idx}: QuantitÃ  zero non valida.')
+                    first_error_msg = self.lang.get('import_err_qty_zero', f'Riga {idx}: Quantita zero non valida.')
                 continue
 
             # Risolvi component e location
@@ -9879,7 +10025,7 @@ class KanbanMoveForm(tk.Toplevel):
                     first_error_msg = self.lang.get('import_err_loc', f'Riga {idx}: Locazione non trovata: {loc_text}')
                 continue
 
-            # Determina l'utente da salvare, in base al segno della quantitÃ 
+            # Determina l'utente da salvare, in base al segno della quantita
             if qty < 0:
                 # Prelievo: richiede utente di sessione (maschera)
                 if not session_user:
@@ -9917,7 +10063,7 @@ class KanbanMoveForm(tk.Toplevel):
                     if first_error_msg is None:
                         first_error_msg = self.lang.get(
                             'import_err_insufficient',
-                            f'Riga {idx}: QuantitÃ  non disponibile. Disponibile: {avail}'
+                            f'Riga {idx}: Quantita non disponibile. Disponibile: {avail}'
                         )
                     continue
 
@@ -10605,6 +10751,14 @@ class App(tk.Tk):
             scrap_validation_gui.open_scrap_validation(self, self.db, self.lang, user_name)
 
         self._execute_authorized_action('validate_scrap', action)
+
+    def _not_implemented(self, section, action):
+        """Mostra un messaggio per funzionalità non implementate."""
+        try:
+            title = self.lang.get('info_title', 'Informazione') if hasattr(self, 'lang') else 'Informazione'
+        except Exception:
+            title = 'Informazione'
+        messagebox.showinfo(title, f"{section} - {action}: funzione non ancora implementata.", parent=self)
 
     def _start_product_check_background_task(self):
         """Avvia il thread per il controllo periodico dei prodotti"""
@@ -13633,10 +13787,10 @@ class App(tk.Tk):
         #     label=self.lang.get('kanban_verify', 'Verifica'),
         #     command=self._schedule_kanban_refill_check
         # )
-        self.kanban_core_submenu.add_command(
-            label=self.lang.get('submenu_manage', 'Gestione'),
-            command=self.open_kanban_manage
-        )
+        # self.kanban_core_submenu.add_command(
+        #     label=self.lang.get('submenu_manage', 'Gestione'),
+        #     command=self.open_kanban_manage
+        # )
 
         # Assembla gerarchia KanBan
         self.kanban_root_submenu.add_cascade(

@@ -1597,10 +1597,16 @@ class DefaultCatalogFrame(ttk.Frame):
                 # Azzerare i task default della categoria
                 self.npi_manager.set_default_tasks_for_category(category_id, False)
             self.npi_manager.update_category_default_flag(category_id, new_val == 1)
-            self.cat_tree.set(selection[0], column=1, value=new_val)
-            # Se disattivata, aggiorna la lista task per riflettere lo zeroing
-            if new_val == 0 and self.selected_category_id == category_id:
-                self._load_tasks_for_category(category_id)
+            # Ricarica da DB per evitare desincronizzazioni
+            current_filter = (self.category_filter.get() or "")
+            self._load_categories()
+            self.category_filter.set(current_filter)
+            self._apply_category_filter()
+            # Reseleziona categoria e ricarica task
+            if self.cat_tree.exists(str(category_id)):
+                self.cat_tree.selection_set(str(category_id))
+            self.selected_category_id = category_id
+            self._load_tasks_for_category(category_id)
         except Exception as e:
             messagebox.showerror(self.lang.get('db_error_title', 'Errore Database'),
                                  self.lang.get('db_error_generic_save', '{error}').format(error=e), parent=self)
@@ -1614,7 +1620,22 @@ class DefaultCatalogFrame(ttk.Frame):
         new_val = 0 if current_val == 1 else 1
         try:
             self.npi_manager.update_task_default_flag(task_id, new_val == 1)
-            self.task_tree.set(selection[0], column=1, value=new_val)
+            # Se un task viene marcato come default, forza la categoria a default
+            if new_val == 1 and self.selected_category_id:
+                cat_item_id = str(self.selected_category_id)
+                if self.cat_tree.exists(cat_item_id):
+                    cat_current = int(self.cat_tree.item(cat_item_id, 'values')[1])
+                    if cat_current == 0:
+                        self.npi_manager.update_category_default_flag(self.selected_category_id, True)
+            # Ricarica da DB per evitare desincronizzazioni
+            current_filter = (self.category_filter.get() or "")
+            self._load_categories()
+            self.category_filter.set(current_filter)
+            self._apply_category_filter()
+            if self.selected_category_id:
+                if self.cat_tree.exists(str(self.selected_category_id)):
+                    self.cat_tree.selection_set(str(self.selected_category_id))
+                self._load_tasks_for_category(self.selected_category_id)
         except Exception as e:
             messagebox.showerror(self.lang.get('db_error_title', 'Errore Database'),
                                  self.lang.get('db_error_generic_save', '{error}').format(error=e), parent=self)
