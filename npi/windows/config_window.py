@@ -1,6 +1,7 @@
 # File: npi/windows/config_window.py (VERSIONE DEFINITIVA E CORRETTA)
 
 import os
+import logging
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
@@ -208,6 +209,14 @@ class ProductManagementFrame(ttk.Frame):
         button_frame = ttk.Frame(form_frame)
         button_frame.grid(row=len(labels), column=0, columnspan=2, pady=10, sticky=tk.E)
         ttk.Button(button_frame, text=self.lang.get('btn_new'), command=self._clear_form).pack(side=tk.LEFT, padx=5)
+
+        # Checkbox "aggiungi defaults" (default True)
+        self.add_defaults_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            button_frame,
+            text=self.lang.get('add_defaults', 'Aggiungi defaults'),
+            variable=self.add_defaults_var
+        ).pack(side=tk.LEFT, padx=8)
         ttk.Button(button_frame, text=self.lang.get('btn_save'), command=self._save_product).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text=self.lang.get('btn_delete'), command=self._delete_product).pack(side=tk.LEFT,
                                                                                                       padx=5)
@@ -451,11 +460,13 @@ class ProductManagementFrame(ttk.Frame):
         descrizione = self.project_description_text.get('1.0', tk.END).strip() or None
         
         try:
+            add_defaults = bool(getattr(self, 'add_defaults_var', tk.BooleanVar(value=True)).get())
             progetto = self.npi_manager.create_progetto_npi_for_prodotto(
-                self.selected_product_id, 
+                self.selected_product_id,
                 version,
                 owner_id=owner_id,
-                descrizione=descrizione
+                descrizione=descrizione,
+                add_defaults=add_defaults
             )
             if progetto:
                 # Salva i documenti allegati
@@ -473,6 +484,16 @@ class ProductManagementFrame(ttk.Frame):
                 
                 messagebox.showinfo(self.lang.get('success_title'), self.lang.get('success_project_created').format(
                     product_name=progetto.prodotto.NomeProdotto), parent=self)
+                # Info defaults aggiunti (se richiesto)
+                if add_defaults:
+                    has_defaults = self.npi_manager.has_default_categories_and_tasks()
+                    if not has_defaults:
+                        messagebox.showinfo(
+                            self.lang.get('info_title', 'Informazione'),
+                            self.lang.get('msg_no_default_tasks', 'Nessuna categoria/task default configurata. Progetto creato senza task di default.'),
+                            parent=self
+                        )
+
                 # Pulisci i campi dopo la creazione
                 self.version_entry.delete(0, tk.END)
                 self.project_owner_combo.set('')
@@ -502,6 +523,17 @@ class ProductManagementFrame(ttk.Frame):
                         
                         if update_data:
                             self.npi_manager.update_progetto_npi(existing_project.ProgettoId, update_data)
+
+                        # Se checkbox attivo, aggiungi i default mancanti
+                        add_defaults = bool(getattr(self, 'add_defaults_var', tk.BooleanVar(value=True)).get())
+                        if add_defaults:
+                            added = self.npi_manager.add_default_tasks_to_project(existing_project.ProgettoId)
+                            if added == 0:
+                                messagebox.showinfo(
+                                    self.lang.get('info_title', 'Informazione'),
+                                    self.lang.get('msg_no_default_tasks', 'Nessuna categoria/task default configurata. Progetto creato senza task di default.'),
+                                    parent=self
+                                )
                         
                         # Aggiungi i documenti
                         if self.project_documents:
@@ -755,7 +787,17 @@ class TaskManagementFrame(ttk.Frame):
         self.save_button.pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text=self.lang.get('btn_delete'), command=self._delete_task).pack(side=tk.LEFT, padx=5)
 
-        self.refresh_data()
+        try:
+            self.refresh_data()
+        except Exception as e:
+            # Evita che l'intera finestra fallisca se il caricamento task ha errori di schema
+            logger = logging.getLogger(__name__)
+            logger.error(f"Errore refresh dati TaskManagementFrame: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('db_error_title', 'Errore Database'),
+                self.lang.get('db_error_generic_save', '{error}').format(error=e),
+                parent=self
+            )
 
     def refresh_data(self):
         # Salva la categoria attualmente selezionata prima del refresh
@@ -1423,6 +1465,161 @@ class CategoryManagementFrame(ttk.Frame):
 
 
 # --- Finestra Principale di Configurazione ---
+class DefaultCatalogFrame(ttk.Frame):
+    def __init__(self, master, npi_manager, lang, **kwargs):
+        super().__init__(master, **kwargs)
+        self.npi_manager = npi_manager
+        self.lang = lang
+        self.selected_category_id = None
+        self.selected_task_id = None
+        self.pack(fill=tk.BOTH, expand=True)
+
+        top_frame = ttk.Frame(self, padding=10)
+        top_frame.pack(fill=tk.X)
+
+        ttk.Label(top_frame, text=self.lang.get('filter_category', 'Filtro categoria')).pack(side=tk.LEFT)
+        self.category_filter = ttk.Combobox(top_frame, width=40)
+        self.category_filter.pack(side=tk.LEFT, padx=5)
+        self.category_filter.bind('<<ComboboxSelected>>', self._on_category_filter_change)
+        self.category_filter.bind('<KeyRelease>', self._on_category_filter_change)
+
+        paned = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Left: Categories
+        cat_frame = ttk.LabelFrame(paned, text=self.lang.get('tab_categories_title', 'Categorie'), padding=10)
+        paned.add(cat_frame, weight=1)
+
+        cat_cols = (self.lang.get('col_category', 'Categoria'),
+                    self.lang.get('col_default_category', 'DefaultCategory'))
+        self.cat_tree = ttk.Treeview(cat_frame, columns=cat_cols, show='headings', selectmode='browse')
+        for col in cat_cols:
+            self.cat_tree.heading(col, text=col)
+        self.cat_tree.column(cat_cols[0], width=200)
+        self.cat_tree.column(cat_cols[1], width=120, anchor=tk.CENTER)
+        self.cat_tree.pack(fill=tk.BOTH, expand=True)
+        self.cat_tree.bind('<<TreeviewSelect>>', self._on_category_select)
+        self.cat_tree.bind('<Double-1>', self._toggle_category_default)
+
+        # Right: Tasks
+        task_frame = ttk.LabelFrame(paned, text=self.lang.get('tab_task_catalog_title', 'Catalogo Task'), padding=10)
+        paned.add(task_frame, weight=1)
+
+        filter_row = ttk.Frame(task_frame)
+        filter_row.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(filter_row, text=self.lang.get('filter_task', 'Filtro task')).pack(side=tk.LEFT)
+        self.task_filter = ttk.Entry(filter_row, width=30)
+        self.task_filter.pack(side=tk.LEFT, padx=5)
+        self.task_filter.bind('<KeyRelease>', self._on_task_filter_change)
+
+        task_cols = (self.lang.get('col_task_name', 'Nome Task'),
+                     self.lang.get('col_default_task', 'DefaultTask'))
+        self.task_tree = ttk.Treeview(task_frame, columns=task_cols, show='headings', selectmode='browse')
+        for col in task_cols:
+            self.task_tree.heading(col, text=col)
+        self.task_tree.column(task_cols[0], width=250)
+        self.task_tree.column(task_cols[1], width=120, anchor=tk.CENTER)
+        self.task_tree.pack(fill=tk.BOTH, expand=True)
+        self.task_tree.bind('<<TreeviewSelect>>', self._on_task_select)
+        self.task_tree.bind('<Double-1>', self._toggle_task_default)
+
+        self._load_categories()
+
+    def _load_categories(self):
+        self.categories = self.npi_manager.get_categories() or []
+        self.categories = sorted(self.categories, key=lambda c: (c.Category or '').lower())
+        names = [c.Category for c in self.categories if c.Category]
+        self.category_filter['values'] = names
+        self._apply_category_filter()
+
+    def _apply_category_filter(self):
+        filter_text = (self.category_filter.get() or '').strip().lower()
+        for i in self.cat_tree.get_children():
+            self.cat_tree.delete(i)
+        for cat in self.categories:
+            if filter_text and filter_text not in (cat.Category or '').lower():
+                continue
+            default_val = 1 if getattr(cat, 'DefaultCategory', False) else 0
+            self.cat_tree.insert('', tk.END, iid=str(cat.CategoryId), values=(cat.Category, default_val))
+        for i in self.task_tree.get_children():
+            self.task_tree.delete(i)
+
+    def _on_category_filter_change(self, event=None):
+        self._apply_category_filter()
+
+    def _on_category_select(self, event=None):
+        selection = self.cat_tree.selection()
+        if not selection:
+            return
+        self.selected_category_id = int(selection[0])
+        self._load_tasks_for_category(self.selected_category_id)
+
+    def _load_tasks_for_category(self, category_id):
+        for i in self.task_tree.get_children():
+            self.task_tree.delete(i)
+        tasks = self.npi_manager.get_catalogo_task_by_category(category_id) or []
+        tasks = sorted(tasks, key=lambda t: (t.NomeTask or '').lower())
+        filter_text = (self.task_filter.get() or '').strip().lower() if hasattr(self, 'task_filter') else ''
+        for task in tasks:
+            if filter_text and filter_text not in (task.NomeTask or '').lower():
+                continue
+            default_val = 1 if getattr(task, 'DefaultTask', False) else 0
+            self.task_tree.insert('', tk.END, iid=str(task.TaskID), values=(task.NomeTask, default_val))
+
+    def _on_task_select(self, event=None):
+        selection = self.task_tree.selection()
+        if selection:
+            self.selected_task_id = int(selection[0])
+
+    def _on_task_filter_change(self, event=None):
+        if self.selected_category_id:
+            self._load_tasks_for_category(self.selected_category_id)
+
+    def _toggle_category_default(self, event=None):
+        selection = self.cat_tree.selection()
+        if not selection:
+            return
+        category_id = int(selection[0])
+        current_val = int(self.cat_tree.item(selection[0], 'values')[1])
+        new_val = 0 if current_val == 1 else 1
+        try:
+            if new_val == 0:
+                if not messagebox.askyesno(
+                        self.lang.get('confirm_title', 'Conferma'),
+                        self.lang.get(
+                            'confirm_unset_default_category',
+                            'Disattivare la categoria di default? Tutti i task di questa categoria verranno azzerati.'
+                        ),
+                        parent=self
+                ):
+                    # Non cambiare valore se l'utente annulla
+                    return
+                # Azzerare i task default della categoria
+                self.npi_manager.set_default_tasks_for_category(category_id, False)
+            self.npi_manager.update_category_default_flag(category_id, new_val == 1)
+            self.cat_tree.set(selection[0], column=1, value=new_val)
+            # Se disattivata, aggiorna la lista task per riflettere lo zeroing
+            if new_val == 0 and self.selected_category_id == category_id:
+                self._load_tasks_for_category(category_id)
+        except Exception as e:
+            messagebox.showerror(self.lang.get('db_error_title', 'Errore Database'),
+                                 self.lang.get('db_error_generic_save', '{error}').format(error=e), parent=self)
+
+    def _toggle_task_default(self, event=None):
+        selection = self.task_tree.selection()
+        if not selection:
+            return
+        task_id = int(selection[0])
+        current_val = int(self.task_tree.item(selection[0], 'values')[1])
+        new_val = 0 if current_val == 1 else 1
+        try:
+            self.npi_manager.update_task_default_flag(task_id, new_val == 1)
+            self.task_tree.set(selection[0], column=1, value=new_val)
+        except Exception as e:
+            messagebox.showerror(self.lang.get('db_error_title', 'Errore Database'),
+                                 self.lang.get('db_error_generic_save', '{error}').format(error=e), parent=self)
+
+
 class NpiConfigWindow(tk.Toplevel):
     def __init__(self, master, npi_manager, lang, authorized_user, **kwargs):
         super().__init__(master, **kwargs)
@@ -1443,11 +1640,13 @@ class NpiConfigWindow(tk.Toplevel):
         self.prod_frame = ProductManagementFrame(notebook, self.npi_manager, self.lang)
         self.cat_frame = CategoryManagementFrame(notebook, self.npi_manager, self.lang)
         self.task_frame = TaskManagementFrame(notebook, self.npi_manager, self.lang)
+        self.defaults_frame = DefaultCatalogFrame(notebook, self.npi_manager, self.lang)
 
         notebook.add(self.subj_frame, text=self.lang.get('tab_subjects_title'))
         notebook.add(self.prod_frame, text=self.lang.get('tab_products_title'))
         notebook.add(self.cat_frame, text=self.lang.get('tab_categories_title'))
         notebook.add(self.task_frame, text=self.lang.get('tab_task_catalog_title'))
+        notebook.add(self.defaults_frame, text=self.lang.get('tab_defaults_title', 'Defaults'))
 
         def on_tab_changed(event):
             try:

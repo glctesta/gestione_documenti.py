@@ -72,6 +72,30 @@ translations = {
         'de': 'Warnung: Das Bearbeiten dieser Datei kann die automatische Benachrichtigungsfunktion beeinträchtigen.',
         'sv': 'Varning: att redigera den här filen kan påverka funktionen för automatiska notiser.'
     },
+    'tab_defaults_title': {'it': 'Defaults', 'ro': 'Defaults', 'en': 'Defaults', 'de': 'Defaults', 'sv': 'Defaults'},
+    'col_default_category': {'it': 'DefaultCategory', 'ro': 'DefaultCategory', 'en': 'DefaultCategory', 'de': 'DefaultCategory', 'sv': 'DefaultCategory'},
+    'col_default_task': {'it': 'DefaultTask', 'ro': 'DefaultTask', 'en': 'DefaultTask', 'de': 'DefaultTask', 'sv': 'DefaultTask'},
+    'msg_no_default_tasks': {
+        'it': 'Nessuna categoria/task default configurata. Progetto creato senza task di default.',
+        'ro': 'Nu există categorii/task-uri default configurate. Proiect creat fără task-uri default.',
+        'en': 'No default categories/tasks configured. Project created without default tasks.',
+        'de': 'Keine Standardkategorien/-aufgaben konfiguriert. Projekt ohne Standardaufgaben erstellt.',
+        'sv': 'Inga standardkategorier/-uppgifter konfigurerade. Projekt skapat utan standarduppgifter.'
+    },
+    'confirm_unset_default_category': {
+        'it': 'Disattivare la categoria di default? Tutti i task di questa categoria verranno azzerati.',
+        'ro': 'Dezactivați categoria default? Toate task-urile din această categorie vor fi resetate.',
+        'en': 'Disable the default category? All tasks in this category will be reset.',
+        'de': 'Standardkategorie deaktivieren? Alle Aufgaben dieser Kategorie werden zurückgesetzt.',
+        'sv': 'Inaktivera standardkategori? Alla uppgifter i denna kategori kommer att nollställas.'
+    },
+    'filter_task': {
+        'it': 'Filtro task',
+        'ro': 'Filtru task',
+        'en': 'Task filter',
+        'de': 'Aufgabenfilter',
+        'sv': 'Uppgiftsfilter'
+    },
     'btn_import_tasks': {'it': 'Importa Task', 'ro': 'Importă Sarcini', 'en': 'Import Tasks', 'de': 'Aufgaben importieren', 'sv': 'Importera uppgifter'},
     'btn_new': {'it': 'Nuovo', 'ro': 'Nou', 'en': 'New', 'de': 'Neu', 'sv': 'Ny'},
     'btn_remove_dependency': {'it': 'Rimuovi', 'ro': 'Elimină', 'en': 'Remove', 'de': 'Entfernen', 'sv': 'Ta bort'},

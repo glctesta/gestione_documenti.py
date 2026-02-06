@@ -25,6 +25,8 @@ class GestoreNPI:
 
         # Crea le tabelle se non esistono
         Base.metadata.create_all(self.engine, checkfirst=True)
+        # Assicura colonne default per categorie/task
+        self._ensure_default_flags_schema()
 
         # Configura sessionmaker - NON usare scoped_session che causa problemi
         self.session_factory = sessionmaker(
@@ -35,6 +37,27 @@ class GestoreNPI:
         )
 
         logger.info("GestoreNPI pronto e tabelle NPI verificate/create.")
+
+    def _ensure_default_flags_schema(self):
+        """Assicura che le colonne DefaultCategory e DefaultTask esistano."""
+        try:
+            with self.engine.begin() as conn:
+                conn.execute(text("""
+                IF COL_LENGTH('dbo.Categories', 'DefaultCategory') IS NULL
+                BEGIN
+                    ALTER TABLE dbo.Categories
+                    ADD DefaultCategory bit NOT NULL CONSTRAINT DF_Categories_DefaultCategory DEFAULT(0);
+                END
+                """))
+                conn.execute(text("""
+                IF COL_LENGTH('dbo.TaskCatalogo', 'DefaultTask') IS NULL
+                BEGIN
+                    ALTER TABLE dbo.TaskCatalogo
+                    ADD DefaultTask bit NOT NULL CONSTRAINT DF_TaskCatalogo_DefaultTask DEFAULT(0);
+                END
+                """))
+        except Exception as e:
+            logger.error(f"Errore aggiornamento schema colonne default: {e}", exc_info=True)
 
     def _setup_connection_events(self):
         """Setup event listeners per gestione connessioni (opzionale per debugging)."""
@@ -260,6 +283,23 @@ class GestoreNPI:
         finally:
             session.close()
 
+    def update_category_default_flag(self, category_id: int, is_default: bool):
+        """Aggiorna il flag DefaultCategory per una categoria."""
+        session = self._get_session()
+        try:
+            category = session.get(Categoria, category_id)
+            if not category:
+                return False
+            category.DefaultCategory = bool(is_default)
+            session.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Errore in update_category_default_flag: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
     def get_category_by_id(self, category_id):
         """Recupera una categoria per ID."""
         session = self._get_session()
@@ -442,6 +482,58 @@ class GestoreNPI:
             return self._detach_list(session, tasks)
         except Exception as e:
             logger.error(f"Errore in get_catalogo_task: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def get_catalogo_task_by_category(self, category_id: int):
+        """Recupera i task del catalogo filtrati per categoria."""
+        session = self._get_session()
+        try:
+            tasks = session.scalars(
+                select(TaskCatalogo)
+                .where(TaskCatalogo.CategoryId == category_id)
+                .order_by(TaskCatalogo.NrOrdin)
+            ).all()
+            return self._detach_list(session, tasks)
+        except Exception as e:
+            logger.error(f"Errore in get_catalogo_task_by_category: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def update_task_default_flag(self, task_id: int, is_default: bool):
+        """Aggiorna il flag DefaultTask per un task del catalogo."""
+        session = self._get_session()
+        try:
+            task = session.get(TaskCatalogo, task_id)
+            if not task:
+                return False
+            task.DefaultTask = bool(is_default)
+            session.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Errore in update_task_default_flag: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def set_default_tasks_for_category(self, category_id: int, is_default: bool):
+        """Imposta DefaultTask per tutti i task della categoria."""
+        session = self._get_session()
+        try:
+            session.execute(
+                update(TaskCatalogo)
+                .where(TaskCatalogo.CategoryId == category_id)
+                .values(DefaultTask=bool(is_default))
+            )
+            session.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Errore in set_default_tasks_for_category: {e}")
             session.rollback()
             raise
         finally:
@@ -680,8 +772,12 @@ class GestoreNPI:
         finally:
             session.close()
 
-    def create_progetto_npi_for_prodotto(self, prodotto_id, version=None, owner_id=None, descrizione=None):
-        """Crea un progetto NPI, la sua Wave 1.0 e tutti i task associati."""
+    def create_progetto_npi_for_prodotto(self, prodotto_id, version=None, owner_id=None, descrizione=None, add_defaults: bool = False):
+        """Crea un progetto NPI, la sua Wave 1.0 e i task associati.
+        
+        Se add_defaults=True, aggiunge solo i task di default appartenenti a categorie DefaultCategory=1
+        e TaskCatalogo.DefaultTask=1.
+        """
         session = self._get_session()
         try:
             # Verifica se esiste già un progetto per questo prodotto
@@ -712,7 +808,19 @@ class GestoreNPI:
             session.flush()
 
             # Crea i task prodotto da catalogo
-            tasks_catalogo = session.scalars(select(TaskCatalogo)).all()
+            if add_defaults:
+                tasks_catalogo = session.scalars(
+                    select(TaskCatalogo)
+                    .join(Categoria, TaskCatalogo.CategoryId == Categoria.CategoryId)
+                    .where(
+                        and_(
+                            Categoria.DefaultCategory == True,
+                            TaskCatalogo.DefaultTask == True
+                        )
+                    )
+                ).all()
+            else:
+                tasks_catalogo = session.scalars(select(TaskCatalogo)).all()
             for task_cat in tasks_catalogo:
                 nuovo_task_prodotto = TaskProdotto(
                     WaveID=nuova_wave.WaveID,
@@ -770,6 +878,80 @@ class GestoreNPI:
             logger.error(f"Errore aggiornamento progetto: {e}")
             session.rollback()
             raise
+        finally:
+            session.close()
+
+    def add_default_tasks_to_project(self, progetto_id: int):
+        """
+        Aggiunge al progetto i task di default mancanti:
+        Categoria.DefaultCategory=1 e TaskCatalogo.DefaultTask=1.
+        """
+        session = self._get_session()
+        try:
+            wave = session.scalars(
+                select(WaveNPI).where(WaveNPI.ProgettoID == progetto_id)
+            ).first()
+            if not wave:
+                return 0
+
+            # Task default da catalogo
+            default_tasks = session.scalars(
+                select(TaskCatalogo)
+                .join(Categoria, TaskCatalogo.CategoryId == Categoria.CategoryId)
+                .where(
+                    and_(
+                        Categoria.DefaultCategory == True,
+                        TaskCatalogo.DefaultTask == True
+                    )
+                )
+            ).all()
+
+            if not default_tasks:
+                return 0
+
+            # Task già presenti nel progetto
+            existing_task_ids = set(
+                session.scalars(
+                    select(TaskProdotto.TaskID)
+                    .where(TaskProdotto.WaveID == wave.WaveID)
+                ).all()
+            )
+
+            added = 0
+            for task_cat in default_tasks:
+                if task_cat.TaskID in existing_task_ids:
+                    continue
+                session.add(TaskProdotto(WaveID=wave.WaveID, TaskID=task_cat.TaskID))
+                added += 1
+
+            if added:
+                session.commit()
+            return added
+        except Exception as e:
+            logger.error(f"Errore add_default_tasks_to_project: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def has_default_categories_and_tasks(self) -> bool:
+        """Verifica se esistono categorie e task marcati come default."""
+        session = self._get_session()
+        try:
+            count = session.scalar(
+                select(func.count(TaskCatalogo.TaskID))
+                .join(Categoria, TaskCatalogo.CategoryId == Categoria.CategoryId)
+                .where(
+                    and_(
+                        Categoria.DefaultCategory == True,
+                        TaskCatalogo.DefaultTask == True
+                    )
+                )
+            )
+            return (count or 0) > 0
+        except Exception as e:
+            logger.error(f"Errore has_default_categories_and_tasks: {e}")
+            return False
         finally:
             session.close()
 

@@ -41,6 +41,7 @@ class Categoria(Base):
     CategoryId = Column(Integer, primary_key=True, autoincrement=True)
     Category = Column(String(255))
     NrOrdin = Column(Integer)
+    DefaultCategory = Column(Boolean, default=False)
 
     # Relazione ai task del catalogo
     tasks_catalogo = relationship("TaskCatalogo", back_populates="categoria")
@@ -168,6 +169,7 @@ class TaskCatalogo(Base):
     CategoryId = Column(Integer, ForeignKey('dbo.Categories.CategoryId'))
     NrOrdin = Column('NrOrdin', Integer)  # Corretto nome in minuscolo
     IsTitle = Column(Boolean, default=False)
+    DefaultTask = Column(Boolean, default=False)
     # IsFinalMilestone removed as requested
 
     # Relationship
