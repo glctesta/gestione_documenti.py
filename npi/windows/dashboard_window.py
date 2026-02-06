@@ -62,6 +62,13 @@ class NpiDashboardWindow(tk.Toplevel):
         self.lbl_completed = create_stat_box(counters_frame, "Completati (Chiusi):", 'green')
         self.lbl_delayed = create_stat_box(counters_frame, "In Ritardo (vs Scadenza):", 'red')
 
+        # Stato notifiche automatiche NPI (check visivo)
+        self.lbl_notifications_status = create_stat_box(counters_frame, "Notifiche Automatiche:")
+        if hasattr(self.lbl_notifications_status, "bind"):
+            self.lbl_notifications_status.bind("<Button-1>", self._on_notifications_status_click)
+            self.lbl_notifications_status.configure(cursor="hand2")
+        self._update_notifications_status()
+
         # Separatore verticale
         ttk.Separator(stats_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
 
@@ -100,7 +107,7 @@ class NpiDashboardWindow(tk.Toplevel):
         # Popola clienti disponibili
         try:
             clients = self.npi_manager.get_all_clients()
-            client_values = ["Tutti i clienti"] + clients
+            client_values = ["Tutti i clienti"] + sorted(clients, key=lambda c: (c or "").lower())
             self.client_combo['values'] = client_values
             self.client_combo.set("Tutti i clienti")  # Default: tutti i clienti
         except Exception as e:
@@ -202,11 +209,20 @@ class NpiDashboardWindow(tk.Toplevel):
                                               command=self._export_to_excel_new)
         self.export_excel_button.pack(side=tk.LEFT, padx=5)
         
+        # Bottone Export Report Panoramico
+        self.export_overview_button = ttk.Button(
+            button_frame,
+            text=self.lang.get('btn_export_overview', 'Export Rapporto Panoramico'),
+            command=self._export_overview_report
+        )
+        self.export_overview_button.pack(side=tk.LEFT, padx=5)
+        
         ttk.Button(button_frame, text=self.lang.get('btn_close', 'Chiudi'), command=self.destroy).pack(side=tk.RIGHT)
 
     def _update_statistics(self):
         """Aggiorna la sezione delle statistiche."""
         try:
+            self._update_notifications_status()
             # Ottieni anno selezionato
             year_str = self.year_filter_var.get()
             year_filter = None if year_str == "Tutti gli anni" else int(year_str)
@@ -249,6 +265,65 @@ class NpiDashboardWindow(tk.Toplevel):
                     
         except Exception as e:
             logger.error(f"Errore aggiornamento statistiche: {e}")
+
+    def _update_notifications_status(self):
+        """Aggiorna indicatore visivo dello stato notifiche automatiche."""
+        status_text = "Sconosciuto"
+        status_color = "black"
+        try:
+            config_path = "npi_notifications_config.json"
+            if os.path.exists(config_path):
+                import json
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                enabled = bool(config.get("notification_settings", {}).get("enabled", False))
+                if enabled:
+                    status_text = "Attive"
+                    status_color = "green"
+                else:
+                    status_text = "Disattivate"
+                    status_color = "red"
+            else:
+                status_text = "Config assente"
+                status_color = "orange"
+        except Exception as e:
+            logger.error(f"Errore stato notifiche automatiche: {e}")
+            status_text = "Errore"
+            status_color = "red"
+
+        if hasattr(self, "lbl_notifications_status"):
+            self.lbl_notifications_status.config(text=status_text, foreground=status_color)
+
+    def _on_notifications_status_click(self, event=None):
+        """Apre il file di configurazione notifiche NPI con autorizzazione."""
+        try:
+            if hasattr(self.master_app, '_execute_authorized_action'):
+                self.master_app._execute_authorized_action(
+                    menu_translation_key='Gestisci json NPI',
+                    action_callback=self._open_npi_notifications_config
+                )
+            else:
+                self._open_npi_notifications_config()
+        except Exception as e:
+            logger.error(f"Errore apertura config notifiche NPI: {e}", exc_info=True)
+            messagebox.showerror("Errore", f"Impossibile aprire la configurazione NPI:\n{e}", parent=self)
+
+    def _open_npi_notifications_config(self):
+        config_path = "npi_notifications_config.json"
+        if not os.path.exists(config_path):
+            messagebox.showwarning("Config assente", "File di configurazione non trovato.", parent=self)
+            return
+        try:
+            warning_text = self.lang.get(
+                'npi_notifications_config_warning',
+                "Attenzione: la modifica di questo file può compromettere la funzionalità delle notifiche automatiche."
+            )
+            messagebox.showwarning("Attenzione", warning_text, parent=self)
+            import subprocess
+            subprocess.Popen(["notepad.exe", config_path])
+        except Exception as e:
+            logger.error(f"Errore apertura file config NPI: {e}", exc_info=True)
+            messagebox.showerror("Errore", f"Impossibile aprire il file:\n{e}", parent=self)
 
     def load_npi_projects(self):
         self._update_statistics()
@@ -603,6 +678,41 @@ class NpiDashboardWindow(tk.Toplevel):
             messagebox.showerror("Errore Export", f"Impossibile generare il file Excel:\n{e}", parent=self)
         finally:
             self.export_excel_button.config(state=tk.NORMAL)
+
+    def _export_overview_report(self):
+        """Esporta un report panoramico NPI (senza dettaglio task)."""
+        self.export_overview_button.config(state=tk.DISABLED)
+        self.update_idletasks()
+        
+        try:
+            # Ottieni filtri correnti
+            year_str = self.year_filter_var.get()
+            year_filter = None if year_str == "Tutti gli anni" else int(year_str)
+            
+            client_str = self.client_filter_var.get()
+            client_filter = None if client_str == "Tutti i clienti" else client_str
+            
+            file_path = self.npi_manager.export_npi_overview_report(
+                year_filter=year_filter,
+                client_filter=client_filter
+            )
+            
+            if messagebox.askyesno("Successo",
+                                   f"Report panoramico salvato con successo in:\n{file_path}\n\nVuoi aprirlo ora?",
+                                   parent=self):
+                os.startfile(file_path)
+                
+        except ImportError as e:
+            messagebox.showerror("Libreria Mancante",
+                               f"{str(e)}",
+                               parent=self)
+        except ValueError as e:
+            messagebox.showinfo("Info", str(e), parent=self)
+        except Exception as e:
+            logger.error(f"Errore durante l'export report panoramico: {e}", exc_info=True)
+            messagebox.showerror("Errore Export", f"Impossibile generare il report:\n{e}", parent=self)
+        finally:
+            self.export_overview_button.config(state=tk.NORMAL)
 
     def _export_summary_pdf(self):
         if not REPORTLAB_AVAILABLE:

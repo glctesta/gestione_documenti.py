@@ -77,6 +77,10 @@ class NpiAutoNotificationService:
         if not self.config['notification_settings']['enabled']:
             logger.info("Servizio notifiche disabilitato nella configurazione")
             return
+
+        if self.npi_manager is None:
+            logger.error("Servizio notifiche NPI non avviato: npi_manager non disponibile")
+            return
         
         self.running = True
         self.thread = threading.Thread(target=self._run_service, daemon=True, name="NPINotificationService")
@@ -855,6 +859,24 @@ def start_notification_service(npi_manager, config_path='npi_notifications_confi
         logger.warning("Servizio notifiche già attivo")
     
     return _notification_service
+
+
+def ensure_notification_config(config_path='npi_notifications_config.json') -> dict:
+    """
+    Garantisce l'esistenza del file di configurazione notifiche.
+    Se assente, crea il file con valori di default e ritorna la config.
+    """
+    try:
+        service = NpiAutoNotificationService(npi_manager=None, config_path=config_path)
+        config = service._load_config()
+        if not os.path.exists(config_path):
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+            logger.info(f"Creato file configurazione notifiche NPI: {config_path}")
+        return config
+    except Exception as e:
+        logger.error(f"Errore ensure config notifiche NPI: {e}", exc_info=True)
+        return {}
 
 
 def stop_notification_service():

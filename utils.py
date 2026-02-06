@@ -166,6 +166,90 @@ def send_monthly_report_email(
         raise
 
 
+def send_npi_weekly_overview_email(
+    recipients: List[str],
+    attachment_path: str,
+    summary: Optional[dict] = None,
+    chart_path: Optional[str] = None,
+    smtp_host: str = "vandewiele-com.mail.protection.outlook.com",
+    smtp_port: int = 25
+) -> None:
+    """
+    Invia l'email settimanale con il report NPI Overview in allegato.
+    Se disponibile, include un grafico a torta inline con il riepilogo.
+    """
+    if not recipients:
+        logger.error("Nessun destinatario specificato per l'email NPI settimanale")
+        return
+
+    if not os.path.exists(attachment_path):
+        logger.error(f"File allegato non trovato: {attachment_path}")
+        raise FileNotFoundError(f"File allegato non trovato: {attachment_path}")
+
+    try:
+        sender = EmailSender(smtp_host, smtp_port)
+        sender.save_credentials("Accounting@Eutron.it", "9jHgFhSs7Vf+")
+
+        summary = summary or {}
+        total = summary.get('total', 0)
+        active = summary.get('active', 0)
+        in_completion = summary.get('in_completion', 0)
+        completed = summary.get('completed', 0)
+        overdue = summary.get('overdue', 0)
+
+        chart_block = ""
+        if chart_path:
+            chart_block = """
+            <div style="margin: 20px 0; text-align: center;">
+                <img src="cid:npi_overview_pie" alt="NPI Overview Summary Chart" style="max-width: 520px; width: 100%; height: auto;">
+            </div>
+            """
+
+        html_body = f"""
+        <html>
+        <body>
+        <div style="font-family: Arial, sans-serif;">
+            <h2 style="color: #366092;">Weekly NPI Overview Report</h2>
+            <p>Please find attached the updated NPI Overview report, including the executive summary and detailed project tabs.</p>
+            <p><strong>Summary snapshot:</strong></p>
+            <ul>
+                <li>Total Projects: {total}</li>
+                <li>Active: {active}</li>
+                <li>In Completion: {in_completion}</li>
+                <li>Completed: {completed}</li>
+                <li>Overdue: {overdue}</li>
+            </ul>
+            {chart_block}
+            <p>This email is generated automatically by the NPI Project Management System.</p>
+            <br/>
+            <p style="color: #666;">
+                Kind regards,<br/>
+                <strong>NPI Project Management System</strong>
+            </p>
+        </div>
+        </body>
+        </html>
+        """
+
+        attachments = [attachment_path]
+        if chart_path and os.path.exists(chart_path):
+            attachments = [('inline', chart_path, 'npi_overview_pie')] + attachments
+
+        sender.send_email(
+            to_email=', '.join(recipients),
+            subject="Weekly NPI Overview Report",
+            body=html_body,
+            is_html=True,
+            attachments=attachments
+        )
+
+        logger.info(f"Email NPI settimanale inviata con successo a {len(recipients)} destinatari")
+        logger.info(f"Allegato: {os.path.basename(attachment_path)}")
+    except Exception as e:
+        logger.error(f"Errore nell'invio dell'email NPI settimanale: {str(e)}")
+        raise
+
+
 def get_employee_work_email(conn, employee_name: str) -> Optional[str]:
     """
     Recupera l'indirizzo email lavorativo (WorkEmail) di un dipendente in base al nome completo.

@@ -264,7 +264,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.2.6'  # Versione aggiornata
+APP_VERSION = '2.3.2.7'  # Versione aggiornata
 APP_DEVELOPER = 'Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -1626,6 +1626,76 @@ class Database:
             except Exception as e:
                 logger.error(f"Error generating monthly report data: {e}")
                 return []
+
+    def ensure_npi_weekly_email_log_table(self):
+        """
+        Crea la tabella di log per l'email settimanale NPI se non esiste.
+        """
+        query = """
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.objects
+            WHERE object_id = OBJECT_ID(N'[Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]')
+              AND type in (N'U')
+        )
+        BEGIN
+            CREATE TABLE [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog](
+                [Id] INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                [WeekStartDate] DATE NOT NULL,
+                [Attribute] NVARCHAR(100) NOT NULL,
+                [SentOn] DATETIME NOT NULL DEFAULT GETDATE()
+            );
+            CREATE UNIQUE INDEX UX_NpiWeeklyGeneralEmailLog_WeekAttribute
+            ON [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog] ([WeekStartDate], [Attribute]);
+        END
+        """
+        with self._lock:
+            try:
+                self._clear_cursor_state()
+                self.cursor.execute(query)
+                self.conn.commit()
+                return True
+            except Exception as e:
+                logger.error(f"Errore creazione tabella NpiWeeklyGeneralEmailLog: {e}")
+                self.conn.rollback()
+                return False
+
+    def check_weekly_npi_email_sent(self, week_start_date, attribute):
+        """
+        Verifica se l'email settimanale NPI è già stata inviata per la settimana.
+        """
+        query = """
+        SELECT TOP 1 1
+        FROM [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
+        WHERE WeekStartDate = ? AND Attribute = ?
+        """
+        with self._lock:
+            try:
+                self._clear_cursor_state()
+                self.cursor.execute(query, (week_start_date, attribute))
+                return self.cursor.fetchone() is not None
+            except Exception as e:
+                logger.error(f"Errore verifica invio email settimanale NPI: {e}")
+                return True  # Fail-safe: evita duplicati
+
+    def log_weekly_npi_email_sent(self, week_start_date, attribute):
+        """
+        Registra l'invio dell'email settimanale NPI.
+        """
+        query = """
+        INSERT INTO [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog] (WeekStartDate, Attribute)
+        VALUES (?, ?)
+        """
+        with self._lock:
+            try:
+                self._clear_cursor_state()
+                self.cursor.execute(query, (week_start_date, attribute))
+                self.conn.commit()
+                return True
+            except Exception as e:
+                logger.error(f"Errore log invio email settimanale NPI: {e}")
+                self.conn.rollback()
+                return False
 
     def fetch_assigned_submissions(self, employee_hire_history_id: int):
         """Carica segnalazioni assegnate all'utente"""
@@ -10436,12 +10506,22 @@ class App(tk.Tk):
             self.npi_manager = GestoreNPI(engine=self.db.npi_engine)
             logger.info(f"NPI Manager inizializzato con engine: {self.db.npi_engine}")
             logger.info(f"Pool size: {self.db.npi_engine.pool.size()}")
+            # Avvio notifiche automatiche NPI (task in ritardo/scadenza)
+            try:
+                from npi.npi_auto_notifications import start_notification_service, ensure_notification_config
+                ensure_notification_config('npi_notifications_config.json')
+                self._npi_notification_service = start_notification_service(
+                    self.npi_manager, 'npi_notifications_config.json'
+                )
+            except Exception as e:
+                logger.error(f"Errore avvio servizio notifiche automatiche NPI: {e}", exc_info=True)
         except Exception as e:
             logger.error("ERRORE CRITICO: Impossibile inizializzare il Gestore NPI: %s", e, exc_info=True)
             messagebox.showerror("Errore Modulo NPI",
                                  f"Impossibile avviare il modulo NPI.\nContattare l'assistenza.\n\nDettagli: {e}")
             self.npi_manager = None
             self.npi_menu = None
+            self._npi_notification_service = None
 
         self.traceability_manager = TraceabilityManager(self, self.db, self.lang)
         logger.debug("INIT: traceability manager OK")
@@ -10506,6 +10586,11 @@ class App(tk.Tk):
         self._fai_fails_email_stop_event = threading.Event()
         self._fai_fails_email_last_sent = None  # Track last send date
         self._start_fai_fails_email_background_task()
+
+        # Inizializza il thread per l'email settimanale NPI Overview
+        self._weekly_npi_email_thread = None
+        self._weekly_npi_email_stop_event = threading.Event()
+        self._start_weekly_npi_email_background_task()
         
         logger.info("INIT: App initialization complete.")
 
@@ -10861,6 +10946,153 @@ class App(tk.Tk):
         except Exception as e:
             logger.error(f"Errore nell'avvio del background task FAI fails email: {e}", exc_info=True)
 
+    def _start_weekly_npi_email_background_task(self):
+        """Avvia il thread per l'email settimanale NPI Overview"""
+        try:
+            if self._weekly_npi_email_thread is None or not self._weekly_npi_email_thread.is_alive():
+                self._weekly_npi_email_stop_event.clear()
+                self._weekly_npi_email_thread = threading.Thread(
+                    target=self._weekly_npi_email_worker,
+                    daemon=True,
+                    name="WeeklyNpiOverviewWorker"
+                )
+                self._weekly_npi_email_thread.start()
+                logger.info("Background task per email settimanale NPI avviato")
+        except Exception as e:
+            logger.error(f"Errore nell'avvio del background task email settimanale NPI: {e}", exc_info=True)
+
+    def _weekly_npi_email_worker(self):
+        """
+        Worker thread che invia il report NPI Overview ogni lunedì lavorativo.
+        """
+        from business_days import should_send_notification
+        from utils import get_email_recipients, send_npi_weekly_overview_email
+        from datetime import datetime, timedelta
+        import time
+
+        attribute = 'Sys_email_general_napi'
+        target_hour = 9
+        first_run = True
+
+        while not self._weekly_npi_email_stop_event.is_set():
+            try:
+                # Prima esecuzione: se oggi è lunedì lavorativo, invia subito (se non già inviato)
+                if first_run:
+                    first_run = False
+                    today = datetime.now().date()
+                    if today.weekday() == 0 and should_send_notification(country_code='IT'):
+                        week_start = today - timedelta(days=today.weekday())
+                        self.db.ensure_npi_weekly_email_log_table()
+                        if not self.db.check_weekly_npi_email_sent(week_start, attribute):
+                            recipients = get_email_recipients(self.db.conn, attribute=attribute)
+                            if recipients:
+                                report_data = self.npi_manager.get_npi_overview_report_data()
+                                report_path = self.npi_manager.export_npi_overview_report()
+                                chart_path = self._create_npi_overview_pie_chart(report_data, prefix="NPI_Overview_Pie")
+                                send_npi_weekly_overview_email(
+                                    recipients,
+                                    report_path,
+                                    summary=(report_data or {}).get('summary'),
+                                    chart_path=chart_path
+                                )
+                                self.db.log_weekly_npi_email_sent(week_start, attribute)
+                                logger.info("Email settimanale NPI inviata (prima esecuzione)")
+                            else:
+                                logger.warning("Email NPI settimanale: nessun destinatario configurato")
+
+                # Attendi fino alle 09:00 del giorno successivo
+                now = datetime.now()
+                if now.hour >= target_hour:
+                    next_check = now.replace(hour=target_hour, minute=0, second=0, microsecond=0) + timedelta(days=1)
+                else:
+                    next_check = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
+
+                wait_seconds = (next_check - now).total_seconds()
+                logger.info(f"Prossimo controllo email settimanale NPI: {next_check.strftime('%Y-%m-%d %H:%M')}")
+
+                elapsed = 0
+                while elapsed < wait_seconds and not self._weekly_npi_email_stop_event.is_set():
+                    time.sleep(60)
+                    elapsed += 60
+
+                if self._weekly_npi_email_stop_event.is_set():
+                    break
+
+                today = datetime.now().date()
+                if today.weekday() != 0:
+                    continue
+                if not should_send_notification(country_code='IT'):
+                    logger.debug("Email NPI settimanale: oggi non è un giorno lavorativo")
+                    continue
+
+                week_start = today - timedelta(days=today.weekday())
+                self.db.ensure_npi_weekly_email_log_table()
+                if self.db.check_weekly_npi_email_sent(week_start, attribute):
+                    logger.info("Email NPI settimanale già inviata per questa settimana, skip")
+                    continue
+
+                recipients = get_email_recipients(self.db.conn, attribute=attribute)
+                if not recipients:
+                    logger.warning("Email NPI settimanale: nessun destinatario configurato")
+                    continue
+
+                report_data = self.npi_manager.get_npi_overview_report_data()
+                report_path = self.npi_manager.export_npi_overview_report()
+                chart_path = self._create_npi_overview_pie_chart(report_data, prefix="NPI_Overview_Pie")
+                send_npi_weekly_overview_email(
+                    recipients,
+                    report_path,
+                    summary=(report_data or {}).get('summary'),
+                    chart_path=chart_path
+                )
+                self.db.log_weekly_npi_email_sent(week_start, attribute)
+                logger.info("Email NPI settimanale inviata con successo")
+
+            except Exception as e:
+                logger.error(f"Errore nel worker email settimanale NPI: {e}", exc_info=True)
+                time.sleep(3600)
+
+    def _create_npi_overview_pie_chart(self, report_data, prefix="NPI_Overview_Pie"):
+        """
+        Crea un grafico a torta riassuntivo e restituisce il path del file PNG.
+        """
+        if not report_data or not report_data.get('summary'):
+            return None
+        summary = report_data['summary']
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+        except Exception as e:
+            logger.warning(f"Matplotlib non disponibile per grafico NPI: {e}")
+            return None
+
+        labels = ["Active", "In Completion", "Completed", "Overdue"]
+        values = [
+            summary.get('active', 0),
+            summary.get('in_completion', 0),
+            summary.get('completed', 0),
+            summary.get('overdue', 0),
+        ]
+
+        if sum(values) == 0:
+            return None
+
+        colors = ["#4E79A7", "#F28E2B", "#59A14F", "#E15759"]
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.pie(values, labels=labels, autopct='%1.1f%%', startangle=90, colors=colors)
+        ax.set_title("NPI Overview Summary", fontsize=12)
+        ax.axis('equal')
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        temp_dir = r"C:\Temp"
+        os.makedirs(temp_dir, exist_ok=True)
+        file_path = os.path.join(temp_dir, f"{prefix}_{timestamp}.png")
+        fig.tight_layout()
+        fig.savefig(file_path, dpi=150)
+        plt.close(fig)
+        return file_path
+
     def _fai_fails_email_worker(self):
         """
         Worker thread che invia email FAI fails automaticamente una volta al giorno.
@@ -10977,6 +11209,19 @@ class App(tk.Tk):
             logger.info("Arresto background task report mensile...")
             self._monthly_report_stop_event.set()
             self._monthly_report_thread.join(timeout=5)
+
+        # Ferma anche il thread email settimanale NPI
+        if self._weekly_npi_email_thread and self._weekly_npi_email_thread.is_alive():
+            logger.info("Arresto background task email settimanale NPI...")
+            self._weekly_npi_email_stop_event.set()
+            self._weekly_npi_email_thread.join(timeout=5)
+
+        # Ferma anche il servizio notifiche automatiche NPI
+        try:
+            from npi.npi_auto_notifications import stop_notification_service
+            stop_notification_service()
+        except Exception as e:
+            logger.error(f"Errore arresto servizio notifiche automatiche NPI: {e}", exc_info=True)
 
     def _check_and_notify_pending_verifications(self):
         """Controlla se ci sono verifiche pendenti e notifica l'utente"""

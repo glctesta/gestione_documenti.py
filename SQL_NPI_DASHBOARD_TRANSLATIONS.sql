@@ -221,6 +221,68 @@ BEGIN
     VALUES (N'sv', N'npi_col_completion_pct', N'% Slutförande');
 END
 
+-- Bottone: Export Rapporto Panoramico
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'it' AND [TranslationKey] = 'btn_export_overview')
+BEGIN
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue])
+    VALUES (N'it', N'btn_export_overview', N'Export Rapporto Panoramico');
+END
+
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'en' AND [TranslationKey] = 'btn_export_overview')
+BEGIN
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue])
+    VALUES (N'en', N'btn_export_overview', N'Export Overview Report');
+END
+
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'ro' AND [TranslationKey] = 'btn_export_overview')
+BEGIN
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue])
+    VALUES (N'ro', N'btn_export_overview', N'Export Raport General');
+END
+
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'de' AND [TranslationKey] = 'btn_export_overview')
+BEGIN
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue])
+    VALUES (N'de', N'btn_export_overview', N'Übersichtsbericht exportieren');
+END
+
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'sv' AND [TranslationKey] = 'btn_export_overview')
+BEGIN
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue])
+    VALUES (N'sv', N'btn_export_overview', N'Exportera översiktsrapport');
+END
+
+-- Avviso modifica config notifiche NPI
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'it' AND [TranslationKey] = 'npi_notifications_config_warning')
+BEGIN
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue])
+    VALUES (N'it', N'npi_notifications_config_warning', N'Attenzione: la modifica di questo file può compromettere la funzionalità delle notifiche automatiche.');
+END
+
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'en' AND [TranslationKey] = 'npi_notifications_config_warning')
+BEGIN
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue])
+    VALUES (N'en', N'npi_notifications_config_warning', N'Warning: editing this file may affect the automatic notification functionality.');
+END
+
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'ro' AND [TranslationKey] = 'npi_notifications_config_warning')
+BEGIN
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue])
+    VALUES (N'ro', N'npi_notifications_config_warning', N'Atenție: modificarea acestui fișier poate afecta funcționalitatea notificărilor automate.');
+END
+
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'de' AND [TranslationKey] = 'npi_notifications_config_warning')
+BEGIN
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue])
+    VALUES (N'de', N'npi_notifications_config_warning', N'Warnung: Das Bearbeiten dieser Datei kann die automatische Benachrichtigungsfunktion beeinträchtigen.');
+END
+
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'sv' AND [TranslationKey] = 'npi_notifications_config_warning')
+BEGIN
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue])
+    VALUES (N'sv', N'npi_notifications_config_warning', N'Varning: att redigera den här filen kan påverka funktionen för automatiska notiser.');
+END
+
 GO
 
 PRINT 'Traduzioni NPI Dashboard inserite con successo!';

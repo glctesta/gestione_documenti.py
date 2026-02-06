@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 from sqlalchemy.orm import sessionmaker, joinedload, subqueryload, selectinload, scoped_session
 from sqlalchemy.engine import Engine
-from sqlalchemy import select, update, delete, func, and_, or_, event, text
+from sqlalchemy import select, update, delete, func, and_, or_, event, text, case
 from sqlalchemy.pool import QueuePool
 from npi.data_models import (ProgettoNPI, Base, Prodotto, Soggetto, TaskCatalogo,
                              Categoria, WaveNPI, TaskProdotto, NpiDocument, NpiDocumentType, TaskDependency)
@@ -2610,6 +2610,394 @@ class GestoreNPI:
             }
         finally:
             session.close()
+
+    def get_npi_overview_report_data(self, year_filter=None, client_filter=None):
+        """
+        Prepara i dati per un report di panoramica NPI (senza dettaglio task).
+        
+        Include:
+        - Stato sintetico progetto (Attivo / In Completamento / In Ritardo / Completato)
+        - Risorse coinvolte (owner progetto + owner task)
+        - Tempo impiegato per progetti chiusi (da DataInizio a ultimo completamento task)
+        """
+        progetti = self.get_dashboard_projects(year_filter=year_filter, client_filter=client_filter)
+        if not progetti:
+            return None
+        
+        project_ids = [p.ProgettoId for p in progetti]
+        owners_by_project = {}
+        session = self._get_session()
+        try:
+            from collections import defaultdict
+            owners_by_project = defaultdict(set)
+            
+            # Owner progetto
+            owner_rows = session.execute(
+                select(ProgettoNPI.ProgettoId, Soggetto.Nome)
+                .join(Soggetto, ProgettoNPI.OwnerID == Soggetto.SoggettoId, isouter=True)
+                .where(ProgettoNPI.ProgettoId.in_(project_ids))
+            ).all()
+            for proj_id, nome in owner_rows:
+                if nome:
+                    owners_by_project[proj_id].add(nome)
+            
+            # Owner task
+            task_owner_rows = session.execute(
+                select(WaveNPI.ProgettoID, Soggetto.Nome)
+                .join(TaskProdotto, TaskProdotto.WaveID == WaveNPI.WaveID)
+                .join(Soggetto, TaskProdotto.OwnerID == Soggetto.SoggettoId, isouter=True)
+                .where(WaveNPI.ProgettoID.in_(project_ids))
+            ).all()
+            for proj_id, nome in task_owner_rows:
+                if nome:
+                    owners_by_project[proj_id].add(nome)
+            
+        except Exception as e:
+            logger.error(f"Errore preparazione dati report panoramico NPI: {e}", exc_info=True)
+        finally:
+            session.close()
+        
+        today = datetime.now().date()
+        summary = {
+            'total': 0,
+            'active': 0,
+            'in_completion': 0,
+            'completed': 0,
+            'overdue': 0
+        }
+        
+        projects_data = []
+        
+        for proj in progetti:
+            stats = self.get_project_task_statistics(proj.ProgettoId)
+            completion_pct = stats.get('completion_percentage', 0)
+            
+            is_closed = proj.StatoProgetto == 'Chiuso'
+            is_overdue = False
+            
+            if not is_closed and proj.ScadenzaProgetto:
+                deadline = proj.ScadenzaProgetto.date() if hasattr(proj.ScadenzaProgetto, 'date') else proj.ScadenzaProgetto
+                is_overdue = deadline < today
+            
+            if is_closed:
+                category = "Completato"
+            elif is_overdue:
+                category = "In Ritardo"
+            elif completion_pct > 0:
+                category = "In Completamento"
+            else:
+                category = "Attivo"
+            
+            # Tempo impiegato (giorni) per progetti chiusi (usa ScadenzaProgetto)
+            duration_days = None
+            if is_closed:
+                start_date = proj.DataInizio.date() if hasattr(proj.DataInizio, 'date') else proj.DataInizio
+                end_date = proj.ScadenzaProgetto
+                end_date = end_date.date() if hasattr(end_date, 'date') else end_date
+                if start_date and end_date and end_date >= start_date:
+                    duration_days = (end_date - start_date).days
+            
+            resources = sorted(owners_by_project.get(proj.ProgettoId, set()))
+            
+            projects_data.append({
+                'project_id': proj.ProgettoId,
+                'project_name': proj.NomeProgetto,
+                'product_code': proj.CodiceProdotto or "",
+                'customer': proj.Cliente or "",
+                'status': "Chiuso" if is_closed else "Attivo",
+                'category': category,
+                'start_date': proj.DataInizio,
+                'end_date': proj.ScadenzaProgetto,
+                'completion_pct': completion_pct,
+                'resources': resources,
+                'duration_days': duration_days
+            })
+            
+            summary['total'] += 1
+            if is_closed:
+                summary['completed'] += 1
+            else:
+                summary['active'] += 1
+                if category == "In Completamento":
+                    summary['in_completion'] += 1
+                if category == "In Ritardo":
+                    summary['overdue'] += 1
+        
+        return {
+            'summary': summary,
+            'projects': projects_data
+        }
+
+    def export_npi_overview_report(self, year_filter=None, client_filter=None):
+        """
+        Esporta un report di panoramica generale NPI (senza dettaglio task).
+        
+        Include per progetto:
+        - Stato sintetico
+        - Risorse coinvolte
+        - Tempo impiegato (solo per chiusi)
+        """
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+        except ImportError:
+            raise ImportError("La libreria 'openpyxl' Ã¨ necessaria per l'export Excel. Installala con: pip install openpyxl")
+        
+        report_data = self.get_npi_overview_report_data(year_filter=year_filter, client_filter=client_filter)
+        if not report_data:
+            raise ValueError("Nessun progetto da esportare.")
+        
+        temp_dir = "C:\\Temp"
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "NPI Overview"
+        
+        # Stili
+        header_fill = PatternFill(start_color="0078D4", end_color="0078D4", fill_type="solid")
+        header_font = Font(bold=True, color="FFFFFF", size=11)
+        title_font = Font(bold=True, size=16, color="0078D4")
+        subtitle_font = Font(size=10, color="666666")
+        border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+        
+        row = 1
+        ws.merge_cells(f'A{row}:J{row}')
+        ws[f'A{row}'] = "Rapporto Panoramico NPI"
+        ws[f'A{row}'].font = title_font
+        ws[f'A{row}'].alignment = Alignment(horizontal='center')
+        row += 1
+        
+        ws.merge_cells(f'A{row}:J{row}')
+        ws[f'A{row}'] = f"Generato il: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        ws[f'A{row}'].font = subtitle_font
+        ws[f'A{row}'].alignment = Alignment(horizontal='center')
+        row += 1
+        
+        year_label = "Tutti gli anni" if not year_filter else str(year_filter)
+        client_label = "Tutti i clienti" if not client_filter else str(client_filter)
+        ws.merge_cells(f'A{row}:J{row}')
+        ws[f'A{row}'] = f"Filtri - Anno: {year_label} | Cliente: {client_label}"
+        ws[f'A{row}'].font = subtitle_font
+        ws[f'A{row}'].alignment = Alignment(horizontal='center')
+        row += 2
+        
+        # Riepilogo
+        summary = report_data['summary']
+        summary_labels = [
+            ("Totale Progetti", summary['total']),
+            ("Attivi", summary['active']),
+            ("In Completamento", summary['in_completion']),
+            ("Completati", summary['completed']),
+            ("In Ritardo", summary['overdue'])
+        ]
+        
+        ws[f'A{row}'] = "Riepilogo"
+        ws[f'A{row}'].font = Font(bold=True)
+        row += 1
+        
+        for label, value in summary_labels:
+            ws[f'A{row}'] = label
+            ws[f'B{row}'] = value
+            row += 1
+        
+        row += 1
+        
+        headers = [
+            "Cliente", "Nome Progetto", "Codice Prodotto", "Stato", "Categoria",
+            "Data Inizio", "Data Fine (Scadenza)", "% Completamento",
+            "Risorse Coinvolte", "Tempo Impiegato (gg)"
+        ]
+        header_row = row
+        for col_idx, header in enumerate(headers, start=1):
+            cell = ws.cell(row=row, column=col_idx)
+            cell.value = header
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            cell.border = border
+        
+        row += 1
+        
+        projects_sorted = sorted(
+            report_data['projects'],
+            key=lambda p: ((p.get('customer') or '').lower(), (p.get('project_name') or '').lower())
+        )
+        for proj in projects_sorted:
+            start_date = proj['start_date'].strftime('%Y-%m-%d') if proj['start_date'] else "N/A"
+            end_date = proj['end_date'].strftime('%Y-%m-%d') if proj['end_date'] else "N/A"
+            resources = ", ".join(proj['resources']) if proj['resources'] else "N/A"
+            duration = proj['duration_days'] if proj['duration_days'] is not None else ""
+            
+            row_data = [
+                proj['customer'],
+                proj['project_name'],
+                proj['product_code'],
+                proj['status'],
+                proj['category'],
+                start_date,
+                end_date,
+                f"{proj['completion_pct']}%",
+                resources,
+                duration
+            ]
+            
+            for col_idx, value in enumerate(row_data, start=1):
+                cell = ws.cell(row=row, column=col_idx)
+                cell.value = value
+                cell.border = border
+                cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+            row += 1
+        
+        # Applica filtro sulle intestazioni
+        ws.auto_filter.ref = f"A{header_row}:J{header_row}"
+        
+        # Auto-width colonne (evita celle merge)
+        from openpyxl.utils import get_column_letter
+        for col_idx in range(1, ws.max_column + 1):
+            max_length = 0
+            column_letter = get_column_letter(col_idx)
+            for row_idx in range(1, ws.max_row + 1):
+                cell = ws.cell(row=row_idx, column=col_idx)
+                if cell is None or cell.value is None:
+                    continue
+                try:
+                    value_len = len(str(cell.value))
+                    if value_len > max_length:
+                        max_length = value_len
+                except Exception:
+                    pass
+            ws.column_dimensions[column_letter].width = min(max_length + 2, 60)
+
+        # --- TAB per ogni progetto con dettaglio task ---
+        def _safe_sheet_name(name, used):
+            base = (name or "Progetto").strip()
+            invalid = ['\\', '/', '*', '[', ']', ':', '?']
+            for ch in invalid:
+                base = base.replace(ch, ' ')
+            base = base[:31] if len(base) > 31 else base
+            if not base:
+                base = "Progetto"
+            candidate = base
+            idx = 1
+            while candidate in used:
+                suffix = f"_{idx}"
+                candidate = (base[:31 - len(suffix)] + suffix) if len(base) > len(suffix) else (base + suffix)[:31]
+                idx += 1
+            used.add(candidate)
+            return candidate
+        
+        used_names = set()
+        today = datetime.now().date()
+        session = self._get_session()
+        try:
+            for proj in projects_sorted:
+                sheet_name = _safe_sheet_name(proj['project_name'], used_names)
+                ws_proj = wb.create_sheet(title=sheet_name)
+                
+                ws_proj.merge_cells("A1:E1")
+                ws_proj["A1"] = f"Dettaglio Task - {proj['project_name']}"
+                ws_proj["A1"].font = title_font
+                ws_proj["A1"].alignment = Alignment(horizontal='center')
+                
+                ws_proj.merge_cells("A2:E2")
+                ws_proj["A2"] = f"Cliente: {proj['customer']} | Codice: {proj['product_code']}"
+                ws_proj["A2"].font = subtitle_font
+                ws_proj["A2"].alignment = Alignment(horizontal='center')
+                
+                header_row_proj = 4
+                headers_proj = ["Task", "Responsabile", "Data Scadenza", "Stato", "Ritardo (gg)", "Data Completamento"]
+                for col_idx, header in enumerate(headers_proj, start=1):
+                    cell = ws_proj.cell(row=header_row_proj, column=col_idx)
+                    cell.value = header
+                    cell.font = header_font
+                    cell.fill = header_fill
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                    cell.border = border
+                
+                # Recupera task ordinati per data scadenza (solo con responsabile)
+                tasks = session.execute(
+                    select(
+                        TaskCatalogo.NomeTask,
+                        Soggetto.Nome,
+                        TaskProdotto.DataScadenza,
+                        TaskProdotto.Stato,
+                        TaskProdotto.DataCompletamento
+                    )
+                    .join(TaskProdotto, TaskProdotto.TaskID == TaskCatalogo.TaskID)
+                    .join(WaveNPI, TaskProdotto.WaveID == WaveNPI.WaveID)
+                    .join(Soggetto, TaskProdotto.OwnerID == Soggetto.SoggettoId)
+                    .where(WaveNPI.ProgettoID == proj['project_id'])
+                    .where(TaskProdotto.OwnerID.isnot(None))
+                    # SQL Server: simula NULLS LAST
+                    .order_by(
+                        case((TaskProdotto.DataScadenza.is_(None), 1), else_=0),
+                        TaskProdotto.DataScadenza.asc()
+                    )
+                ).all()
+                
+                row_idx = header_row_proj + 1
+                for task_name, owner_name, due_dt, stato, completed_dt in tasks:
+                    due_date = due_dt.date() if hasattr(due_dt, 'date') else due_dt
+                    completed_date = completed_dt.date() if hasattr(completed_dt, 'date') else completed_dt
+                    
+                    days_late = ""
+                    is_late = False
+                    if due_date:
+                        if completed_date and stato == 'Completato':
+                            if completed_date > due_date:
+                                days_late = (completed_date - due_date).days
+                                is_late = True
+                        elif due_date < today:
+                            days_late = (today - due_date).days
+                            is_late = True
+                    
+                    row_values = [
+                        task_name or "",
+                        owner_name or "",
+                        due_date.strftime('%Y-%m-%d') if due_date else "N/A",
+                        stato or "",
+                        days_late,
+                        completed_date.strftime('%Y-%m-%d') if completed_date else ""
+                    ]
+                    
+                    for col_idx, value in enumerate(row_values, start=1):
+                        cell = ws_proj.cell(row=row_idx, column=col_idx)
+                        cell.value = value
+                        cell.border = border
+                        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+                        if is_late:
+                            cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+                    row_idx += 1
+                
+                ws_proj.auto_filter.ref = f"A{header_row_proj}:F{header_row_proj}"
+                
+                # Auto-width colonne tab progetto
+                for col_idx in range(1, ws_proj.max_column + 1):
+                    max_length = 0
+                    column_letter = get_column_letter(col_idx)
+                    for r in range(1, ws_proj.max_row + 1):
+                        cell = ws_proj.cell(row=r, column=col_idx)
+                        if cell is None or cell.value is None:
+                            continue
+                        try:
+                            value_len = len(str(cell.value))
+                            if value_len > max_length:
+                                max_length = value_len
+                        except Exception:
+                            pass
+                    ws_proj.column_dimensions[column_letter].width = min(max_length + 2, 60)
+        finally:
+            session.close()
+        
+        file_path = os.path.join(temp_dir, f"NPI_Overview_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
+        wb.save(file_path)
+        return file_path
 
     def export_npi_to_excel_comprehensive(self, year_filter=None, client_filter=None):
         """
