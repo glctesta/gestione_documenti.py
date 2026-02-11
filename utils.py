@@ -53,7 +53,8 @@ def send_email(
     smtp_host: str = "vandewiele-com.mail.protection.outlook.com",
     smtp_port: int = 25,
     is_html: bool = False,  # <-- nuovo parametro opzionale, default False: compatibile
-    timeout: int= 15
+    timeout: int= 15,
+    cc_emails: Optional[List[str]] = None
 ) -> None:
     """
     Invia l'email ai destinatari specificati.
@@ -86,7 +87,8 @@ def send_email(
             to_email=', '.join(recipients),
             subject=subject,
             body=body,
-            is_html=is_html  # <-- passa il flag
+            is_html=is_html,  # <-- passa il flag
+            cc_emails=cc_emails
         )
         logger.info("Email inviata con successo a %d destinatari", len(recipients))
         print("email inviata")

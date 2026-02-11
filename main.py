@@ -264,7 +264,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.2.8'  # Versione aggiornata
+APP_VERSION = '2.3.2.9'  # Versione aggiornata
 APP_DEVELOPER = 'Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -10596,10 +10596,14 @@ class User:
 
 class App(tk.Tk):
     """Classe principale dell'applicazione."""
+    SIMPLE_LOGIN_CACHE_HOURS = 3
+    AUTHORIZED_ACTION_CACHE_MINUTES = 15
 
     def __init__(self):
         super().__init__()
         logger.debug("INIT: start __init__")
+        self._simple_login_cache_file = Path(os.getenv("LOCALAPPDATA", ".")) / "TraceabilityRS" / "simple_login_auth_cache.json"
+        self._authorized_action_cache_file = Path(os.getenv("LOCALAPPDATA", ".")) / "TraceabilityRS" / "authorized_action_cache.json"
         self.should_exit = False  # Flag to control shutdown
         self.geometry("1024x768")
         #self.project_tree = None  # Placeholder per la lista progetti NPI
@@ -12880,6 +12884,115 @@ class App(tk.Tk):
         view_form.grab_set()
         self.wait_window(view_form)
 
+    def _load_simple_login_cache(self):
+        """Legge la cache locale del simple login e restituisce il payload JSON o None."""
+        try:
+            if not self._simple_login_cache_file.exists():
+                return None
+            with self._simple_login_cache_file.open('r', encoding='utf-8') as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return None
+            return data
+        except Exception as e:
+            logger.warning("Impossibile leggere la cache simple login: %s", e)
+            return None
+
+    def _save_simple_login_cache(self, user_id, user_name):
+        """Salva timestamp + utente dell'ultima autenticazione simple login."""
+        try:
+            self._simple_login_cache_file.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "user_id": user_id,
+                "user_name": user_name,
+                "authorized_at": datetime.now().isoformat()
+            }
+            with self._simple_login_cache_file.open('w', encoding='utf-8') as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning("Impossibile salvare la cache simple login: %s", e)
+
+    def _get_cached_simple_login(self):
+        """Ritorna (user_id, user_name) se la cache simple login è valida entro 3 ore."""
+        cache_data = self._load_simple_login_cache()
+        if not cache_data:
+            return None
+
+        try:
+            user_id = cache_data.get("user_id")
+            user_name = cache_data.get("user_name")
+            authorized_at_raw = cache_data.get("authorized_at")
+            if not user_id or not user_name or not authorized_at_raw:
+                return None
+
+            authorized_at = datetime.fromisoformat(str(authorized_at_raw))
+            max_age = timedelta(hours=self.SIMPLE_LOGIN_CACHE_HOURS)
+            if datetime.now() - authorized_at > max_age:
+                return None
+            return user_id, user_name
+        except Exception as e:
+            logger.warning("Cache simple login non valida: %s", e)
+            return None
+
+    def _load_authorized_action_cache(self):
+        """Legge la cache locale delle autorizzazioni per menu key."""
+        try:
+            if not self._authorized_action_cache_file.exists():
+                return {}
+            with self._authorized_action_cache_file.open('r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+            return {}
+        except Exception as e:
+            logger.warning("Impossibile leggere la cache authorized action: %s", e)
+            return {}
+
+    def _save_authorized_action_cache_entry(self, menu_translation_key, user_id, user_name, authorized_used_id):
+        """Salva/rinnova l'autorizzazione cache per uno specifico menu key."""
+        try:
+            payload = self._load_authorized_action_cache()
+            payload[str(menu_translation_key)] = {
+                "user_id": user_id,
+                "user_name": user_name,
+                "authorized_used_id": authorized_used_id,
+                "authorized_at": datetime.now().isoformat()
+            }
+            self._authorized_action_cache_file.parent.mkdir(parents=True, exist_ok=True)
+            with self._authorized_action_cache_file.open('w', encoding='utf-8') as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning("Impossibile salvare la cache authorized action: %s", e)
+
+    def _get_cached_authorized_action(self, menu_translation_key):
+        """Ritorna cache valida per menu key entro 15 minuti, altrimenti None."""
+        payload = self._load_authorized_action_cache()
+        entry = payload.get(str(menu_translation_key))
+        if not isinstance(entry, dict):
+            return None
+
+        try:
+            user_id = entry.get("user_id")
+            user_name = entry.get("user_name")
+            authorized_used_id = entry.get("authorized_used_id")
+            authorized_at_raw = entry.get("authorized_at")
+            if not user_id or not user_name or not authorized_at_raw:
+                return None
+
+            authorized_at = datetime.fromisoformat(str(authorized_at_raw))
+            max_age = timedelta(minutes=self.AUTHORIZED_ACTION_CACHE_MINUTES)
+            if datetime.now() - authorized_at > max_age:
+                return None
+
+            return {
+                "user_id": user_id,
+                "user_name": user_name,
+                "authorized_used_id": authorized_used_id
+            }
+        except Exception as e:
+            logger.warning("Cache authorized action non valida per key=%r: %s", menu_translation_key, e)
+            return None
+
     def _execute_simple_login(self, action_callback=None, required_permission=None):
         import inspect
         # Get the caller information
@@ -12890,6 +13003,17 @@ class App(tk.Tk):
         
         logger.info("_execute_simple_login called by function '%s' at %s:%d; required_permission=%r", 
                     caller_function, caller_filename, caller_lineno, required_permission)
+
+        cached_login = self._get_cached_simple_login()
+        if cached_login:
+            cached_user_id, cached_user_name = cached_login
+            logger.info("Simple login autorizzato da cache per user_id=%r", cached_user_id)
+            self.last_authenticated_user_name = cached_user_name
+            self.last_authorized_user_id = cached_user_id
+            user = User(name=cached_user_name)
+            if isinstance(action_callback, collections.abc.Callable):
+                action_callback(cached_user_id)
+            return user
 
         login_form = LoginWindow(self, self.db, self.lang)
         self.wait_window(login_form)
@@ -12912,6 +13036,8 @@ class App(tk.Tk):
 
         logger.debug("Authenticated as %r; permissions=%s", user.name,
                      sorted(user.permissions) if hasattr(user, 'permissions') else [])
+        self.last_authenticated_user_name = user.name
+        self.last_authorized_user_id = user_id
 
         # âš ï¸ VERIFICA SCADENZA PASSWORD
         import change_password_gui
@@ -12932,6 +13058,8 @@ class App(tk.Tk):
                 logger.info(f"Utente {user_id} non ha cambiato la password. Accesso negato.")
                 return None
             logger.info(f"Utente {user_id} ha cambiato la password con successo.")
+
+        self._save_simple_login_cache(user_id=user_id, user_name=user.name)
 
         # Permessi commentati - login semplice senza controllo autorizzazioni
         # if required_permission and not user.has_permission(required_permission):
@@ -12958,9 +13086,23 @@ class App(tk.Tk):
         caller_function = caller_frame.function
         caller_filename = caller_frame.filename
         caller_lineno = caller_frame.lineno
-        login_form = LoginWindow(self, self.db, self.lang)
         logger.info("_execute_authorized_action called by function '%s' at %s:%d; menu_translation_key=%r", 
                     caller_function, caller_filename, caller_lineno, menu_translation_key)
+
+        cached_auth = self._get_cached_authorized_action(menu_translation_key)
+        if cached_auth:
+            logger.info(
+                "Autorizzazione da cache per menu=%r user_id=%r",
+                menu_translation_key,
+                cached_auth["user_id"]
+            )
+            self.last_authenticated_user_name = cached_auth["user_name"]
+            self.last_authorized_user_id = cached_auth["authorized_used_id"]
+            self._temp_authorized_user_id = cached_auth["user_id"]
+            action_callback()
+            return True
+
+        login_form = LoginWindow(self, self.db, self.lang)
         self.wait_window(login_form)
 
         if not login_form.clicked_login:
@@ -13016,6 +13158,12 @@ class App(tk.Tk):
                 self.last_authorized_user_id = None
 
             self._temp_authorized_user_id = user_id
+            self._save_authorized_action_cache_entry(
+                menu_translation_key=menu_translation_key,
+                user_id=user_id,
+                user_name=self.last_authenticated_user_name,
+                authorized_used_id=self.last_authorized_user_id
+            )
 
             action_callback()
             return True
