@@ -753,7 +753,7 @@ class FaiTemplateManagerWindow(tk.Toplevel):
         tree_frame = ttk.Frame(self.step_details_frame)
         tree_frame.pack(fill=tk.BOTH, expand=True)
         
-        columns = ('detail_id', 'ordine', 'step', 'step_detail', 'equipment')
+        columns = ('detail_id', 'ordine', 'step', 'step_detail', 'response_type', 'equipment')
         self.step_details_tree = ttk.Treeview(tree_frame, columns=columns, show='headings')
         
         # Configura stile per righe più alte (permette testo su più righe)
@@ -764,13 +764,15 @@ class FaiTemplateManagerWindow(tk.Toplevel):
         self.step_details_tree.heading('ordine', text=self.lang.get('col_ordine', 'Ordine'))
         self.step_details_tree.heading('step', text=self.lang.get('col_step', 'Step'))
         self.step_details_tree.heading('step_detail', text=self.lang.get('col_step_detail', 'Dettaglio'))
+        self.step_details_tree.heading('response_type', text=self.lang.get('col_response_type', 'Tipo Risposta'))
         self.step_details_tree.heading('equipment', text=self.lang.get('col_equipment', 'Equipment'))
         
         self.step_details_tree.column('detail_id', width=80)
         self.step_details_tree.column('ordine', width=70)
         self.step_details_tree.column('step', width=280)
-        self.step_details_tree.column('step_detail', width=380)
-        self.step_details_tree.column('equipment', width=230)
+        self.step_details_tree.column('step_detail', width=300)
+        self.step_details_tree.column('response_type', width=120)
+        self.step_details_tree.column('equipment', width=210)
         
         scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.step_details_tree.yview)
         self.step_details_tree.configure(yscroll=scrollbar.set)
@@ -803,10 +805,18 @@ class FaiTemplateManagerWindow(tk.Toplevel):
         self.all_step_details = []
         self.sd_templates_data = {}
         self.sd_steps_data = {}
+        self._step_details_sort_state = {}
         
         # Carica dati iniziali
         self._load_sd_templates()
         self._load_step_details()
+
+        # Intestazioni cliccabili per ordinamento
+        for col in columns:
+            self.step_details_tree.heading(
+                col,
+                command=lambda c=col: self._sort_step_details_tree(c)
+            )
     
     def _create_equipments_tab(self):
         """Crea il tab Equipments con filtro e CRUD completo."""
@@ -921,7 +931,7 @@ class FaiTemplateManagerWindow(tk.Toplevel):
             for item in self.step_details_tree.get_children():
                 self.step_details_tree.delete(item)
             
-            # Query con JOIN includendo OrdineList e KeepOnsameLine
+            # Query con JOIN includendo OrdineList, KeepOnsameLine e tipo risposta
             query = """
             SELECT [FaiStepDetailId]
                   ,D.[OrdineList]
@@ -931,6 +941,7 @@ class FaiTemplateManagerWindow(tk.Toplevel):
                   ,D.FatStepId
                   ,D.FaiEquipmentid
                   ,D.[KeepOnsameLine]
+                  ,ISNULL(D.[ResponceYesNo], 1) as ResponceYesNo
             FROM [Traceability_RS].[fai].[FaiStepDetails] D
             INNER JOIN [Traceability_RS].[fai].FaiSteps S on D.FatStepId=S.FatStepId and S.DateOut is null
             LEFT JOIN [Traceability_RS].[fai].FaiEquipments E on d.FaiEquipmentId = e.FaiEquipmentid
@@ -954,10 +965,12 @@ class FaiTemplateManagerWindow(tk.Toplevel):
                 fat_step_id = row.FatStepId
                 equipment_id = row.FaiEquipmentid
                 keep_on_same_line = row.KeepOnsameLine or False
+                response_yes_no = bool(row.ResponceYesNo)
+                response_type = self.lang.get('response_type_yes_no', 'SI/NO') if response_yes_no else self.lang.get('response_type_text', 'TESTO/DATA')
                 
                 # Aggiungi alla treeview
                 self.step_details_tree.insert('', tk.END, iid=str(detail_id),
-                                             values=(detail_id, ordine_list, step, step_detail, equipment))
+                                             values=(detail_id, ordine_list, step, step_detail, response_type, equipment))
                 
                 # Salva per filtro
                 detail_data = {
@@ -968,7 +981,9 @@ class FaiTemplateManagerWindow(tk.Toplevel):
                     'equipment': equipment,
                     'fat_step_id': fat_step_id,
                     'equipment_id': equipment_id,
-                    'keep_on_same_line': keep_on_same_line
+                    'keep_on_same_line': keep_on_same_line,
+                    'response_yes_no': response_yes_no,
+                    'response_type': response_type
                 }
                 self.all_step_details.append(detail_data)
             
@@ -1063,7 +1078,7 @@ class FaiTemplateManagerWindow(tk.Toplevel):
             
             self.step_details_tree.insert('', tk.END, iid=str(detail['detail_id']),
                                          values=(detail['detail_id'], detail['ordine_list'], detail['step'], 
-                                               detail['step_detail'], detail['equipment']))
+                                               detail['step_detail'], detail['response_type'], detail['equipment']))
         
         # Aggiorna combo filtro details
         self._update_sd_detail_filter_combo()
@@ -1109,9 +1124,34 @@ class FaiTemplateManagerWindow(tk.Toplevel):
                 if detail:
                     self.step_details_tree.insert('', tk.END, iid=str(detail['detail_id']),
                                                  values=(detail['detail_id'], detail['ordine_list'], detail['step'],
-                                                       detail['step_detail'], detail['equipment']))
+                                                       detail['step_detail'], detail['response_type'], detail['equipment']))
             except (ValueError, IndexError):
                 pass
+
+    def _sort_step_details_tree(self, col):
+        """Ordina il tree Step Details cliccando sull'intestazione."""
+        items = [(self.step_details_tree.set(item, col), item) for item in self.step_details_tree.get_children('')]
+        if not items:
+            return
+
+        # Toggle direzione per colonna
+        descending = self._step_details_sort_state.get(col, False)
+
+        def sort_key(row):
+            value = row[0]
+            if col in ('detail_id', 'ordine'):
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    return 0
+            return (value or '').lower()
+
+        items.sort(key=sort_key, reverse=descending)
+
+        for idx, (_, item) in enumerate(items):
+            self.step_details_tree.move(item, '', idx)
+
+        self._step_details_sort_state[col] = not descending
     
     def _clear_step_details_filter(self):
         """Pulisce tutti i filtri e ricarica."""
@@ -1216,10 +1256,11 @@ class FaiTemplateManagerWindow(tk.Toplevel):
                 return
             
             # Crea il testo del tooltip con tutte le info
-            detail_id, ordine, step, step_detail, equipment = values[:5] if len(values) >= 5 else (*values, '')
+            detail_id, ordine, step, step_detail, response_type, equipment = values[:6] if len(values) >= 6 else (*values, '', '')
             
             tooltip_text = f"ID: {detail_id} | Ordine: {ordine}\n"
             tooltip_text += f"Step: {step}\n"
+            tooltip_text += f"Tipo risposta: {response_type}\n"
             tooltip_text += f"Dettaglio: {step_detail}\n"
             if equipment:
                 tooltip_text += f"Equipment: {equipment}"
@@ -1883,7 +1924,7 @@ class StepDetailEditorDialog(tk.Toplevel):
         # Configura finestra
         title = lang.get('edit_step_detail', 'Modifica Step Detail') if detail_id else lang.get('new_step_detail', 'Nuovo Step Detail')
         self.title(title)
-        self.geometry("600x350")
+        self.geometry("650x420")
         self.transient(parent)
         self.grab_set()
         
@@ -1949,6 +1990,16 @@ class StepDetailEditorDialog(tk.Toplevel):
             variable=self.keep_on_same_line_var
         )
         chk_keep_same_line.grid(row=row, column=1, sticky=tk.W, pady=5)
+        row += 1
+
+        # Tipo risposta (SI/NO o testo/data)
+        self.response_yes_no_var = tk.BooleanVar(value=True)
+        chk_response_yes_no = ttk.Checkbutton(
+            main_frame,
+            text=self.lang.get('response_yes_no', 'Risposta SI/NO (deseleziona per testo/data)'),
+            variable=self.response_yes_no_var
+        )
+        chk_response_yes_no.grid(row=row, column=1, sticky=tk.W, pady=5)
         row += 1
         
         # Configura grid
@@ -2070,7 +2121,7 @@ class StepDetailEditorDialog(tk.Toplevel):
         """Carica i dati del detail esistente."""
         try:
             query = """
-            SELECT FatStepId, OrdineList, StepDetail, FaiEquipmentid, KeepOnsameLine
+            SELECT FatStepId, OrdineList, StepDetail, FaiEquipmentid, KeepOnsameLine, ISNULL(ResponceYesNo, 1) AS ResponceYesNo
             FROM [Traceability_RS].[fai].[FaiStepDetails]
             WHERE FaiStepDetailId = ?
             """
@@ -2099,6 +2150,9 @@ class StepDetailEditorDialog(tk.Toplevel):
                 
                 # KeepOnsameLine
                 self.keep_on_same_line_var.set(bool(row.KeepOnsameLine))
+
+                # Tipo risposta
+                self.response_yes_no_var.set(bool(row.ResponceYesNo))
                     
         except Exception as e:
             logger.error(f"Errore caricamento step detail {self.detail_id}: {e}", exc_info=True)
@@ -2164,20 +2218,21 @@ class StepDetailEditorDialog(tk.Toplevel):
                     OrdineList = ?,
                     StepDetail = ?,
                     FaiEquipmentid = ?,
-                    KeepOnsameLine = ?
+                    KeepOnsameLine = ?,
+                    ResponceYesNo = ?
                 WHERE FaiStepDetailId = ?
                 """
                 params = (step_id, ordine_list, step_detail, equipment_id, 
-                         self.keep_on_same_line_var.get(), self.detail_id)
+                         self.keep_on_same_line_var.get(), self.response_yes_no_var.get(), self.detail_id)
             else:
                 # Insert
                 query = """
                 INSERT INTO [Traceability_RS].[fai].[FaiStepDetails]
-                (FatStepId, OrdineList, StepDetail, FaiEquipmentid, KeepOnsameLine)
-                VALUES (?, ?, ?, ?, ?)
+                (FatStepId, OrdineList, StepDetail, FaiEquipmentid, KeepOnsameLine, ResponceYesNo)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """
                 params = (step_id, ordine_list, step_detail, equipment_id, 
-                         self.keep_on_same_line_var.get())
+                         self.keep_on_same_line_var.get(), self.response_yes_no_var.get())
             
             cursor.execute(query, params)
             self.db.conn.commit()

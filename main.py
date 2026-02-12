@@ -264,7 +264,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.2.9'  # Versione aggiornata
+APP_VERSION = '2.3.3.1'  # Versione aggiornata
 APP_DEVELOPER = 'Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -6395,6 +6395,7 @@ Accedi al sistema per visualizzare i dettagli completi.
                 SELECT u.NomeUser, \
                        ISNULL(e.EmployeeName + ' ' + e.EmployeeSurname, '#ND') as EmployeeName, \
                        u.pass, \
+                       h.EmployeeHireHistoryId AS AuthorizedEmployeeHireHistoryId, \
                        a.AuthorizedUsedId
                 FROM resetservices.dbo.tbuserkey as U
                          INNER JOIN employee.dbo.employees as e ON e.EmployeeId = u.idanga
@@ -13152,7 +13153,10 @@ class App(tk.Tk):
             
             try:
                 self.last_authenticated_user_name = auth_result.EmployeeName
-                self.last_authorized_user_id = auth_result.AuthorizedUsedId  # Salva l'EmployeeHireHistoryId
+                self.last_authorized_user_id = auth_result.AuthorizedEmployeeHireHistoryId
+                if not self.last_authorized_user_id:
+                    # Fallback legacy: usa AuthorizedUsedId se l'alias non e' disponibile.
+                    self.last_authorized_user_id = auth_result.AuthorizedUsedId
             except Exception:
                 self.last_authenticated_user_name = None
                 self.last_authorized_user_id = None
@@ -13562,7 +13566,7 @@ class App(tk.Tk):
         self.language_menu = tk.Menu(self.help_menu, tearoff=0)
         self.language_menu.add_command(label="Italiano", command=lambda: self._change_language('it'))
         self.language_menu.add_command(label="English", command=lambda: self._change_language('en'))
-        self.language_menu.add_command(label="RomÃ¢nÄƒ", command=lambda: self._change_language('ro'))
+        self.language_menu.add_command(label="Română", command=lambda: self._change_language('ro'))
         self.language_menu.add_command(label="Deutsch", command=lambda: self._change_language('de'))
         self.language_menu.add_command(label="Svenska", command=lambda: self._change_language('sv'))
 
@@ -13586,6 +13590,7 @@ class App(tk.Tk):
         self._update_document_menu()
         self._update_general_docs_menu()
         self._update_operations_menu()
+        self._update_reports_submenu()  # Aggiunto per menu Personale → Straordinari
         self._update_maintenance_menu()
         self._update_submissions_menu()
         self._update_tools_menu()
@@ -13707,6 +13712,26 @@ class App(tk.Tk):
         self.personnel_menu.add_command(
             label=self.lang.get('submenu_news', 'Messaggi'),
             command=self.open_news_management_with_login
+        )
+
+        # Straordinari
+        self.personnel_menu.add_separator()
+        overtime_submenu = tk.Menu(self.personnel_menu, tearoff=0)
+        self.personnel_menu.add_cascade(
+            label=self.lang.get('submenu_overtime', 'Straordinari'),
+            menu=overtime_submenu
+        )
+        overtime_submenu.add_command(
+            label=self.lang.get('overtime_requests', 'Richieste'),
+            command=self.open_overtime_requests_with_auth
+        )
+        overtime_submenu.add_command(
+            label=self.lang.get('overtime_approval', 'Autorizzazione'),
+            command=self.open_overtime_approval_with_auth
+        )
+        overtime_submenu.add_command(
+            label=self.lang.get('overtime_reports', 'Rapporti'),
+            command=self.open_overtime_reports_with_auth
         )
 
         self.operations_menu.add_separator()
@@ -15625,6 +15650,32 @@ class App(tk.Tk):
         """Apre la finestra per aggiungere una macchina dopo un login semplice."""
         self._execute_simple_login(
             action_callback=lambda user_name: maintenance_gui.open_add_machine(self, self.db, self.lang)
+        )
+
+    # ==================== OVERTIME MANAGEMENT ====================
+    
+    def open_overtime_requests_with_auth(self):
+        """Apre la finestra richieste straordinario con autorizzazione."""
+        from overtime import open_overtime_request_window
+        self._execute_authorized_action(
+            menu_translation_key='overtime_requests',
+            action_callback=lambda: open_overtime_request_window(self, self.db, self.lang, self.last_authenticated_user_name, getattr(self, 'last_authorized_user_id', 0))
+        )
+    
+    def open_overtime_approval_with_auth(self):
+        """Apre la finestra autorizzazione straordinari con autorizzazione."""
+        from overtime import open_overtime_approval_window
+        self._execute_authorized_action(
+            menu_translation_key='overtime_approval',
+            action_callback=lambda: open_overtime_approval_window(self, self.db, self.lang, self.last_authenticated_user_name, getattr(self, 'last_authorized_user_id', 0))
+        )
+    
+    def open_overtime_reports_with_auth(self):
+        """Apre la finestra rapporti straordinari con autorizzazione."""
+        from overtime import open_overtime_reports_window
+        self._execute_authorized_action(
+            menu_translation_key='overtime_reports',
+            action_callback=lambda: open_overtime_reports_window(self, self.db, self.lang, self.last_authenticated_user_name)
         )
 
     # =========================================================================

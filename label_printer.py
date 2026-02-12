@@ -306,10 +306,20 @@ def generate_escpos_label(label_data: Dict[str, Any], label_config: Dict[str, An
         # Unisci tutti i comandi con \r\n (TSPL richiede CRLF)
         tspl_commands = "\r\n".join(commands) + "\r\n"
         
-        logger.info(f"Comandi TSPL generati per {model}")
-        logger.info(f"Contenuto etichetta: {[f[1] for f in fields]}")
-        logger.info(f"Dimensioni etichetta: {width_mm}x{height_mm} mm")
-        logger.info(f"Comandi TSPL:\n{tspl_commands}")
+        logger.info("=" * 80)
+        logger.info(f"✅ COMANDI TSPL GENERATI PER {model}")
+        logger.info("=" * 80)
+        logger.info(f"📦 Contenuto etichetta: {[f[1] for f in fields]}")
+        logger.info(f"📏 Dimensioni etichetta: {width_mm}x{height_mm} mm")
+        logger.info(f"📝 Numero comandi TSPL: {len(commands)}")
+        logger.info("=" * 80)
+        logger.info("🔍 COMANDI TSPL COMPLETI:")
+        logger.info("-" * 80)
+        for i, cmd in enumerate(commands, 1):
+            logger.info(f"  {i:2d}. {cmd}")
+        logger.info("-" * 80)
+        logger.info("=" * 80)
+        
         return tspl_commands
     
     # Per BROTHER, usa comandi ESC/POS standard
@@ -404,18 +414,38 @@ def print_label(label_data: Dict[str, Any], db) -> Tuple[bool, Optional[str]]:
         logger.info(f"🔧 PRINT_LABEL: Modello stampante: {printer_model}")
         
         # Genera comandi stampante
-        logger.info("📝 PRINT_LABEL: Generazione comandi stampante...")
+        logger.info("=" * 80)
+        logger.info("📝 PRINT_LABEL: GENERAZIONE COMANDI STAMPANTE")
+        logger.info("=" * 80)
+        logger.info(f"🔧 PRINT_LABEL: MODELLO STAMPANTE CONFIGURATO: '{printer_model}'")
+        logger.info(f"🔧 PRINT_LABEL: TIPO CONNESSIONE: '{connection_type}'")
+        
         if printer_model == 'ZEBRA':
+            logger.info("📝 PRINT_LABEL: ➡️ Generazione comandi ZPL per stampante ZEBRA...")
             label_commands = generate_zpl_label(label_data, label_config)
-            logger.info("📝 PRINT_LABEL: ✓ Comandi ZPL generati")
+            logger.info("📝 PRINT_LABEL: ✓ Comandi ZPL generati con successo")
+            logger.info("📝 PRINT_LABEL: Tipo comandi: ZPL (Zebra Programming Language)")
         elif printer_model in ['BROTHER', 'ZJIANG']:
+            if printer_model == 'ZJIANG':
+                logger.info("📝 PRINT_LABEL: ➡️ Generazione comandi TSPL per stampante ZJIANG ZJ-9210...")
+                logger.info("📝 PRINT_LABEL: Tipo comandi: TSPL (TSC Printer Language)")
+            else:
+                logger.info("📝 PRINT_LABEL: ➡️ Generazione comandi ESC/POS per stampante BROTHER...")
+                logger.info("📝 PRINT_LABEL: Tipo comandi: ESC/POS")
+            
             label_commands = generate_escpos_label(label_data, label_config, printer_model)
-            logger.info(f"📝 PRINT_LABEL: ✓ Comandi ESC/POS generati per {printer_model}")
+            logger.info(f"📝 PRINT_LABEL: ✓ Comandi generati con successo per {printer_model}")
         else:
             # Default a ZPL per stampanti sconosciute
-            logger.warning(f"📝 PRINT_LABEL: ⚠️ Modello stampante sconosciuto: {printer_model}, uso ZPL")
+            logger.warning("=" * 80)
+            logger.warning(f"⚠️ PRINT_LABEL: ATTENZIONE - MODELLO STAMPANTE SCONOSCIUTO: '{printer_model}'")
+            logger.warning("⚠️ PRINT_LABEL: Uso comandi ZPL come default")
+            logger.warning("⚠️ PRINT_LABEL: Se la stampante non è Zebra, la stampa potrebbe NON funzionare!")
+            logger.warning("=" * 80)
             label_commands = generate_zpl_label(label_data, label_config)
             logger.info("📝 PRINT_LABEL: ✓ Comandi ZPL generati (default)")
+        
+        logger.info("=" * 80)
         
         logger.info(f"📝 PRINT_LABEL: Lunghezza comandi generati: {len(label_commands)} caratteri")
         

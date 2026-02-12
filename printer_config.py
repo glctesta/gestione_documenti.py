@@ -90,10 +90,25 @@ class PrinterConfigManager:
     
     def update_usb_config(self, printer_name: str, printer_model: str = 'ZEBRA') -> bool:
         """Aggiorna la configurazione USB"""
+        logger.info("=" * 80)
+        logger.info("💾 SALVATAGGIO CONFIGURAZIONE STAMPANTE USB")
+        logger.info("=" * 80)
+        logger.info(f"🖨️  Nome stampante USB: '{printer_name}'")
+        logger.info(f"🔧 Modello stampante: '{printer_model}'")
+        logger.info("=" * 80)
+        
         self.config['connection_type'] = 'USB'
         self.config['usb_printer_name'] = printer_name
         self.config['printer_model'] = printer_model
-        return self.save_config(self.config)
+        
+        result = self.save_config(self.config)
+        
+        if result:
+            logger.info("✅ Configurazione USB salvata con successo")
+        else:
+            logger.error("❌ Errore durante il salvataggio della configurazione USB")
+        
+        return result
     
     def update_default_config(self) -> bool:
         """Imposta la stampante di default di Windows"""

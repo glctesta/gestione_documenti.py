@@ -54,7 +54,8 @@ def send_email(
     smtp_port: int = 25,
     is_html: bool = False,  # <-- nuovo parametro opzionale, default False: compatibile
     timeout: int= 15,
-    cc_emails: Optional[List[str]] = None
+    cc_emails: Optional[List[str]] = None,
+    attachments: Optional[List] = None
 ) -> None:
     """
     Invia l'email ai destinatari specificati.
@@ -88,7 +89,8 @@ def send_email(
             subject=subject,
             body=body,
             is_html=is_html,  # <-- passa il flag
-            cc_emails=cc_emails
+            cc_emails=cc_emails,
+            attachments=attachments
         )
         logger.info("Email inviata con successo a %d destinatari", len(recipients))
         print("email inviata")

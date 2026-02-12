@@ -17,6 +17,14 @@ import logging
 
 logger = logging.getLogger("TraceabilityRS")
 
+DEFAULT_DECLARATION_LABELS = {
+    'NPI': 'NPI (PRESERIE)',
+    'Test': 'TEST',
+    'PRODUCTION': 'PRODUCȚIE',
+    'StandardProcessDeviation': 'VARIAȚIA STANDARD A PROCESULUI',
+    'Others': 'ALTELE'
+}
+
 # Registra font per caratteri speciali rumeni
 try:
     # Cerca font DejaVu nella directory corrente
@@ -123,43 +131,48 @@ class FAIReportGenerator:
         self.elements.append(header_table)
         self.elements.append(Spacer(1, 5*mm))
     
-    def add_validation_types(self, validation_data, product_code='', order_number='', quantity=''):
-        """Aggiunge la sezione dei tipi di validazione"""
-        
-        # Font da usare
+    def add_validation_types(self, validation_data, declaration_labels=None, product_code='', order_number='', quantity=''):
+        """Aggiunge la sezione dei tipi di validazione."""
+
         base_font = 'DejaVu' if USE_DEJAVU else 'Helvetica'
         bold_font = 'DejaVu-Bold' if USE_DEJAVU else 'Helvetica-Bold'
-        
-        # 🆕 Style per word wrap
+
         text_style = ParagraphStyle(
             'ValidationText',
             fontName=base_font,
             fontSize=8,
             leading=10,
-            alignment=0  # LEFT
+            alignment=0
         )
-        
+
+        labels = dict(DEFAULT_DECLARATION_LABELS)
+        if declaration_labels:
+            labels.update(declaration_labels)
+
+        def mark(value, label):
+            return Paragraph(f"{'[x]' if value else '[ ]'} {label}", text_style)
+
         types_data = [
-            [Paragraph(f'Cod: {product_code}', text_style), 
-             Paragraph('', text_style), 
-             Paragraph('Comanda SL:', text_style), 
-             Paragraph(order_number, text_style), 
-             Paragraph('Interval SN per panel:', text_style), 
+            [Paragraph(f'Cod: {product_code}', text_style),
+             Paragraph('', text_style),
+             Paragraph('Comanda SL:', text_style),
+             Paragraph(order_number, text_style),
+             Paragraph('Interval SN per panel:', text_style),
              Paragraph('', text_style)],
-            [Paragraph(f'Cantitate: {quantity}', text_style), 
-             Paragraph('☑ NPI (PRESERIE)' if validation_data.get('NPI') else '☐ NPI (PRESERIE)', text_style),
-             Paragraph('☑ PRODUCȚIE' if validation_data.get('PRODUCTION') else '☐ PRODUCȚIE', text_style),
-             Paragraph('☑ VARIAȚIA STANDARD A PROCESULUI' if validation_data.get('StandardProcessDeviation') else '☐ VARIAȚIA STANDARD A PROCESULUI', text_style),
-             Paragraph('', text_style), 
+            [Paragraph(f'Cantitate: {quantity}', text_style),
+             mark(validation_data.get('NPI'), labels['NPI']),
+             mark(validation_data.get('PRODUCTION'), labels['PRODUCTION']),
+             mark(validation_data.get('StandardProcessDeviation'), labels['StandardProcessDeviation']),
+             Paragraph('', text_style),
              Paragraph('', text_style)],
-            [Paragraph('☑ TEST' if validation_data.get('Test') else '☐ TEST', text_style),
-             Paragraph('☑ ALTELE' if validation_data.get('Others') else '☐ ALTELE', text_style),
-             Paragraph('', text_style), 
-             Paragraph('', text_style), 
-             Paragraph('', text_style), 
+            [mark(validation_data.get('Test'), labels['Test']),
+             mark(validation_data.get('Others'), labels['Others']),
+             Paragraph('', text_style),
+             Paragraph('', text_style),
+             Paragraph('', text_style),
              Paragraph('', text_style)]
         ]
-        
+
         types_table = Table(types_data, colWidths=[26*mm, 26*mm, 20*mm, 28*mm, 33*mm, 27*mm])
         types_table.setStyle(TableStyle([
             ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
@@ -171,7 +184,7 @@ class FAIReportGenerator:
             ('LEFTPADDING', (0, 0), (-1, -1), 1),
             ('RIGHTPADDING', (0, 0), (-1, -1), 1),
         ]))
-        
+
         self.elements.append(types_table)
         self.elements.append(Spacer(1, 3*mm))
     
@@ -323,12 +336,12 @@ class FAIReportGenerator:
         self.elements.append(Spacer(1, 3*mm))
         self.elements.append(proprieta)
     
-    def generate(self, template_data, validation_data, steps_data, operator_name, 
+    def generate(self, template_data, validation_data, steps_data, operator_name, declaration_labels=None,
                 product_code='', order_number='', quantity=''):
         """Genera il PDF completo"""
         try:
             self.add_header(template_data, validation_data)
-            self.add_validation_types(validation_data, product_code, order_number, quantity)
+            self.add_validation_types(validation_data, declaration_labels, product_code, order_number, quantity)
             self.add_steps_table(steps_data)
             self.add_footer(operator_name)
             
@@ -351,10 +364,38 @@ def generate_fai_report(fai_log_id, db, output_path):
         db: Connessione database
         output_path: Percorso file PDF output
     """
+    def _load_validation_labels_for_template(template_id):
+        labels = dict(DEFAULT_DECLARATION_LABELS)
+        if not template_id:
+            return labels
+
+        try:
+            labels_query = """
+            SELECT FaiTemplateId, DeclarationKey, DeclarationLabel
+            FROM [Traceability_RS].[fai].[FaiTemplateDeclarations]
+            WHERE DateOut IS NULL
+              AND (FaiTemplateId = ? OR FaiTemplateId IS NULL)
+            ORDER BY CASE WHEN FaiTemplateId = ? THEN 0 ELSE 1 END, DisplayOrder, FaiTemplateDeclarationId
+            """
+            db.cursor.execute(labels_query, (template_id, template_id))
+            rows = db.cursor.fetchall()
+            loaded_keys = set()
+
+            for row in rows:
+                key = (row.DeclarationKey or '').strip()
+                value = (row.DeclarationLabel or '').strip()
+                if key in labels and value and key not in loaded_keys:
+                    labels[key] = value
+                    loaded_keys.add(key)
+        except Exception as e:
+            logger.warning(f"Impossibile leggere fai.FaiTemplateDeclarations per template {template_id}: {e}")
+
+        return labels
+
     try:
         # Recupera dati template
         template_query = """
-        SELECT t.NrDocument, t.Revision, t.RevisionDate, t.FaiTitle
+        SELECT t.FaiTemplateId, t.NrDocument, t.Revision, t.RevisionDate, t.FaiTitle
         FROM Traceability_RS.fai.FaiLogHeathers h
         INNER JOIN Traceability_RS.fai.FaiLogs l ON h.FaiLogId = l.FaiLogId
         INNER JOIN Traceability_RS.fai.FaiStepDetails d ON l.FaiStepDetailId = d.FaiStepDetailId
@@ -376,6 +417,7 @@ def generate_fai_report(fai_log_id, db, output_path):
             'RevisionDate': template_row.RevisionDate.strftime('%d/%m/%Y') if template_row.RevisionDate else '',
             'FaiTitle': template_row.FaiTitle
         }
+        declaration_labels = _load_validation_labels_for_template(template_row.FaiTemplateId)
         
         # Recupera dati ordine (OrderNumber, ProductCode, Quantity)
         order_query = """
@@ -458,9 +500,10 @@ def generate_fai_report(fai_log_id, db, output_path):
         
         # Genera PDF
         generator = FAIReportGenerator(output_path)
-        return generator.generate(template_data, validation_data, steps_data, operator_name, 
+        return generator.generate(template_data, validation_data, steps_data, operator_name, declaration_labels,
                                  product_code, order_number, quantity)
         
     except Exception as e:
         logger.error(f"Errore generazione report FAI: {e}", exc_info=True)
         return False
+

@@ -154,39 +154,53 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
         close_btn.pack(side=tk.RIGHT, padx=5)
         
     def _load_pending_requests(self):
-        """Carica le richieste di assenza pendenti per le quali l'utente è autorizzato"""
+        """Carica le richieste di assenza pendenti autorizzabili dal capo loggato."""
         try:
-            logger.info(f"Caricamento richieste per utente con AuthorizedUsedId: {self.authorized_user_id}")
-            
-            # STEP 1: Converte AuthorizedUsedId in EmployeeHireHistoryId
+            logger.info(f"Caricamento richieste per ID login: {self.authorized_user_id}")
+
+            # STEP 1: risolve EmployeeHireHistoryId del capo loggato.
+            # Compatibilita':
+            # - nuovo flusso: ID login e' gia' EmployeeHireHistoryId
+            # - flusso legacy: ID login = AuthorizedUsedId, quindi conversione
+            employee_hire_history_id = None
+            direct_id_query = """
+                SELECT TOP 1 EmployeeHireHistoryId
+                FROM Employee.dbo.EmployeeHireHistory
+                WHERE EmployeeHireHistoryId = ?
+            """
             conversion_query = """
-                SELECT employeehirehistoryid 
-                FROM traceability_rs.dbo.AutorizedUsers 
+                SELECT EmployeeHireHistoryId
+                FROM traceability_rs.dbo.AutorizedUsers
                 WHERE AuthorizedUsedId = ?
             """
-            
+
             with self.db._lock:
-                self.db.cursor.execute(conversion_query, self.authorized_user_id)
-                conversion_result = self.db.cursor.fetchone()
-            
-            if not conversion_result or not conversion_result.employeehirehistoryid:
-                logger.error(f"❌ Nessun EmployeeHireHistoryId trovato per AuthorizedUsedId {self.authorized_user_id}")
+                self.db.cursor.execute(direct_id_query, self.authorized_user_id)
+                direct_match = self.db.cursor.fetchone()
+                if direct_match and direct_match.EmployeeHireHistoryId:
+                    employee_hire_history_id = direct_match.EmployeeHireHistoryId
+                else:
+                    self.db.cursor.execute(conversion_query, self.authorized_user_id)
+                    conversion_result = self.db.cursor.fetchone()
+                    if conversion_result and conversion_result.EmployeeHireHistoryId:
+                        employee_hire_history_id = conversion_result.EmployeeHireHistoryId
+
+            if not employee_hire_history_id:
                 messagebox.showerror(
                     self.lang.get('error', 'Errore'),
-                    f"Utente non trovato nella tabella AutorizedUsers (ID: {self.authorized_user_id})",
+                    (
+                        f"Impossibile determinare EmployeeHireHistoryId per l'utente loggato "
+                        f"(ID: {self.authorized_user_id})"
+                    ),
                     parent=self
                 )
                 self.pending_requests = []
                 self._populate_tree([])
                 return
-            
-            # Questo è l'EmployeeHireHistoryId reale da usare per il filtro
-            employee_hire_history_id = conversion_result.employeehirehistoryid
-            logger.info(f"✓ Conversione: AuthorizedUsedId {self.authorized_user_id} → EmployeeHireHistoryId {employee_hire_history_id}")
-            
+
             # STEP 2: Query semplice per ottenere tutte le richieste pendenti
             query = """
-                SELECT  
+                SELECT
                     AR.[AbsenceRequestId],
                     R.RequestName + ' [' + R.Abbreviation + ']' AS RequestType,
                     E.EmployeeSurname + ' ' + E.EmployeeName AS Employee,
@@ -195,84 +209,102 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
                     AR.[DateEnd],
                     DATEDIFF(DAY, AR.[DateStart], AR.[DateEnd]) + 1 AS NrDays,
                     DATEDIFF(HOUR, AR.[DateStart], AR.[DateEnd]) AS NrHours,
-                    ar.FromTime,
-                    ar.ToTime,
+                    AR.FromTime,
+                    AR.ToTime,
                     H.EmployeeHireHistoryId,
                     R.IDRequestType
-                FROM 
-                    [Employee].[dbo].[AbsenceRequestes] AR 
-                INNER JOIN 
+                FROM
+                    [Employee].[dbo].[AbsenceRequestes] AR
+                INNER JOIN
                     Employee.dbo.EmployeeHireHistory H ON H.EmployeeHireHistoryId = AR.EmployrrHireHistoryId
-                INNER JOIN 
+                INNER JOIN
                     Employee.dbo.Employees E ON E.EmployeeId = H.EmployeeId
-                INNER JOIN 
+                INNER JOIN
                     Timeclocking.dbo.RequestType R ON R.IDRequestType = AR.IDRequestType
-                INNER JOIN 
+                INNER JOIN
                     Employee.dbo.Registry RE ON RE.RegistroId = AR.RegistroId
-                WHERE 
-                    AR.Approved = '1900-01-01 00:00:00.000' 
-                ORDER BY 
-                    AR.[DateStart], 
+                WHERE
+                    AR.Approved = '1900-01-01 00:00:00.000'
+                ORDER BY
+                    AR.[DateStart],
                     E.EmployeeSurname + ' ' + E.EmployeeName
             """
-            
+
             with self.db._lock:
                 self.db.cursor.execute(query)
                 all_requests = self.db.cursor.fetchall()
-                
+
             logger.info(f"Trovate {len(all_requests) if all_requests else 0} richieste pendenti totali")
-            
+
             if not all_requests:
                 self.pending_requests = []
                 self._populate_tree([])
                 return
-            
-            # Per ogni richiesta, chiama GetManagerID per ottenere i manager autorizzati
+
+            # STEP 3: filtro gerarchico con SP Employee.dbo.GetManagerID
             filtered_requests = []
-            authorized_user_id_str = str(employee_hire_history_id)  # Usa l'EmployeeHireHistoryId convertito
-            
-            logger.info(f"Filtro richieste per EmployeeHireHistoryId: {employee_hire_history_id}")
-            
-            # Chiama la stored procedure helper che gestisce il tipo EmployeeIdTableType
+            authorized_user_id_str = str(employee_hire_history_id)
+            authorized_request_ids = []
+            unauthorized_request_ids = []
+
+            logger.info(f"Filtro richieste per EmployeeHireHistoryId manager: {employee_hire_history_id}")
+
             get_managers_query = """
-                SET NOCOUNT ON;
-                EXEC Employee.dbo.GetManagerForSingleEmployee @EmployeeHireHistoryId = ?;
+                DECLARE @Ids dbo.EmployeeIdTableType;
+                INSERT INTO @Ids (EmployeeHireHistoryId) VALUES (?);
+                EXEC Employee.dbo.GetManagerID @Ids;
             """
-            
+
             for request in all_requests:
                 try:
                     with self.db._lock:
                         self.db.cursor.execute(get_managers_query, request.EmployeeHireHistoryId)
                         manager_results = self.db.cursor.fetchall()
-                    
-                    # Estrae gli ID dei manager
-                    manager_ids = [str(row.EmployeeHireHistoryId) for row in manager_results if row.EmployeeHireHistoryId]
-                    
-                    # Controlla se l'utente autorizzato è tra i manager
+
+                    manager_ids = [str(row[0]) for row in manager_results if row and row[0] is not None]
+
                     if authorized_user_id_str in manager_ids:
                         filtered_requests.append(request)
-                        logger.info(f"✓ Richiesta {request.AbsenceRequestId} (dipendente {request.EmployeeHireHistoryId}) → Manager: {', '.join(manager_ids)} → AUTORIZZATA")
+                        authorized_request_ids.append(request.AbsenceRequestId)
+                        logger.info(
+                            f"Richiesta {request.AbsenceRequestId} (dipendente {request.EmployeeHireHistoryId}) "
+                            f"AUTORIZZATA. Manager: {', '.join(manager_ids)}"
+                        )
                     else:
-                        logger.debug(f"✗ Richiesta {request.AbsenceRequestId} (dipendente {request.EmployeeHireHistoryId}) → Manager: {', '.join(manager_ids) if manager_ids else 'NESSUNO'} → NON AUTORIZZATA")
-                        
+                        unauthorized_request_ids.append(request.AbsenceRequestId)
+                        logger.debug(
+                            f"Richiesta {request.AbsenceRequestId} (dipendente {request.EmployeeHireHistoryId}) "
+                            f"NON autorizzata. Manager: {', '.join(manager_ids) if manager_ids else 'NESSUNO'}"
+                        )
+
                 except Exception as e:
                     logger.error(f"Errore nel controllo manager per richiesta {request.AbsenceRequestId}: {e}")
-                    # Continua con le altre richieste
                     continue
-            
-            logger.info(f"✅ Richieste filtrate per EmployeeHireHistoryId {employee_hire_history_id} (AuthorizedUsedId {self.authorized_user_id}): {len(filtered_requests)}/{len(all_requests)}")
-            
+
+            logger.info(
+                f"Richieste filtrate per EmployeeHireHistoryId {employee_hire_history_id}: "
+                f"{len(filtered_requests)}/{len(all_requests)}"
+            )
+            logger.info(
+                "Dettaglio filtro richieste assenza - incluse: %s",
+                ", ".join(map(str, authorized_request_ids)) if authorized_request_ids else "nessuna"
+            )
+            logger.info(
+                "Dettaglio filtro richieste assenza - escluse: %s",
+                ", ".join(map(str, unauthorized_request_ids)) if unauthorized_request_ids else "nessuna"
+            )
+
             self.pending_requests = filtered_requests
             self._populate_tree(filtered_requests)
-                
+
         except Exception as e:
-            logger.error(f"❌ Errore nel caricamento richieste assenza: {e}", exc_info=True)
+            logger.error(f"Errore nel caricamento richieste assenza: {e}", exc_info=True)
             messagebox.showerror(
                 self.lang.get('error', 'Errore'),
                 f"Impossibile caricare le richieste: {str(e)}",
                 parent=self
             )
-            
+
     def _populate_tree(self, requests):
         """Popola il Treeview con le richieste"""
         # Pulisce il tree

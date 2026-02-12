@@ -64,6 +64,23 @@ class LineValidationWindow(tk.Toplevel):
         self.templates_map = {}  # Dizionario per mappare i template
         self.orders_map = {}  # Dizionario per mappare gli ordini
         self.all_orders = []  # Lista completa ordini per filtro
+        self.validation_keys = [
+            'NPI',
+            'Test',
+            'PRODUCTION',
+            'StandardProcessDeviation',
+            'Others'
+        ]
+        self.default_validation_labels = {
+            'NPI': 'NPI (PRESERIE)',
+            'Test': 'TEST',
+            'PRODUCTION': 'PRODUCÈšIE',
+            'StandardProcessDeviation': 'VARIAÈšIA STANDARD A PROCESULUI',
+            'Others': 'Others'
+        }
+        self.current_validation_labels = dict(self.default_validation_labels)
+        self.validation_vars = {}
+        self.validation_checkbuttons = {}
         self._create_widgets()
         self._load_initial_data()
     
@@ -145,17 +162,9 @@ class LineValidationWindow(tk.Toplevel):
         row4 = ttk.Frame(header_frame)
         row4.pack(fill=tk.X, pady=10)
         
-        self.npi_var = tk.BooleanVar()
-        self.test_var = tk.BooleanVar()
-        self.production_var = tk.BooleanVar()
-        self.std_deviation_var = tk.BooleanVar()
-        self.others_var = tk.BooleanVar()
+        self.validation_checks_frame = row4
+        self._build_validation_checkboxes()
         
-        ttk.Checkbutton(row4, text="☐ NPI (PRESERIE)", variable=self.npi_var).pack(side=tk.LEFT, padx=10)
-        ttk.Checkbutton(row4, text="☐ TEST", variable=self.test_var).pack(side=tk.LEFT, padx=10)
-        ttk.Checkbutton(row4, text="☐ PRODUCȚIE", variable=self.production_var).pack(side=tk.LEFT, padx=10)
-        ttk.Checkbutton(row4, text="☐ VARIAȚIA STANDARD A PROCESULUI", variable=self.std_deviation_var).pack(side=tk.LEFT, padx=10)
-        ttk.Checkbutton(row4, text="☐ Others", variable=self.others_var).pack(side=tk.LEFT, padx=10)
         
         # Quinta riga - Cod prodotto e Quantità e Ordine
         row5 = ttk.Frame(header_frame)
@@ -190,6 +199,63 @@ class LineValidationWindow(tk.Toplevel):
         
         # Flag per tracciare validazione
         self.labelcode_validated = False
+
+    def _build_validation_checkboxes(self):
+        """Crea o ricrea le checkbox dichiarazioni operatore."""
+        if not hasattr(self, 'validation_checks_frame'):
+            return
+
+        for widget in self.validation_checks_frame.winfo_children():
+            widget.destroy()
+
+        if not self.validation_vars:
+            for key in self.validation_keys:
+                self.validation_vars[key] = tk.BooleanVar()
+
+        self.validation_checkbuttons = {}
+        for key in self.validation_keys:
+            label = self.current_validation_labels.get(key, self.default_validation_labels.get(key, key))
+            check = ttk.Checkbutton(
+                self.validation_checks_frame,
+                text=label,
+                variable=self.validation_vars[key]
+            )
+            check.pack(side=tk.LEFT, padx=10)
+            self.validation_checkbuttons[key] = check
+
+    def _load_validation_labels_for_template(self, template_id):
+        """
+        Carica etichette dichiarazioni per template.
+        Precedenza: righe specifiche template > righe default (FaiTemplateId NULL) > fallback hardcoded.
+        """
+        labels = dict(self.default_validation_labels)
+
+        try:
+            query = """
+            SELECT FaiTemplateId, DeclarationKey, DeclarationLabel
+            FROM [Traceability_RS].[fai].[FaiTemplateDeclarations]
+            WHERE DateOut IS NULL
+              AND (FaiTemplateId = ? OR FaiTemplateId IS NULL)
+            ORDER BY CASE WHEN FaiTemplateId = ? THEN 0 ELSE 1 END, DisplayOrder, FaiTemplateDeclarationId
+            """
+
+            self.db.cursor.execute(query, (template_id, template_id))
+            rows = self.db.cursor.fetchall()
+            loaded_keys = set()
+
+            for row in rows:
+                key = (row.DeclarationKey or '').strip()
+                value = (row.DeclarationLabel or '').strip()
+                if key in labels and value and key not in loaded_keys:
+                    labels[key] = value
+                    loaded_keys.add(key)
+
+        except Exception as e:
+            logger.warning(
+                f"Tabella fai.FaiTemplateDeclarations non disponibile o errore query: {e}. Uso etichette default."
+            )
+
+        return labels
     
     def _create_checklist_section(self, parent):
         """Crea la sezione con la checklist degli step FAI"""
@@ -362,6 +428,8 @@ class LineValidationWindow(tk.Toplevel):
             
             # Carica gli step per questo template
             self.current_template_id = template_data['FaiTemplateId']
+            self.current_validation_labels = self._load_validation_labels_for_template(self.current_template_id)
+            self._build_validation_checkboxes()
             self._load_fai_steps()
     
     def _load_orders(self):
@@ -477,7 +545,8 @@ class LineValidationWindow(tk.Toplevel):
                 d.OrdineList,
                 ''DateIn,
                 ISNULL(d.KeepOnsameLine, 0) as KeepOnsameLine,
-                ISNULL(d.NoteMandatory, 0) as NoteMandatory
+                ISNULL(d.NoteMandatory, 0) as NoteMandatory,
+                ISNULL(d.ResponceYesNo, 1) as ResponceYesNo
             FROM [Traceability_RS].[fai].[FaiStepDetails] d
             INNER JOIN [Traceability_RS].[fai].FaiSteps s ON d.FatStepId = s.FatStepId AND s.DateOut IS NULL
             LEFT JOIN [Traceability_RS].[fai].FaiEquipments e ON d.FaiEquipmentId = e.FaiEquipmentid
@@ -571,19 +640,30 @@ class LineValidationWindow(tk.Toplevel):
                                background=bg_color, anchor='w', font=('Arial', 9))
             eq_label.grid(row=idx, column=2, sticky='ew', padx=2, pady=1)
             
-            # OK checkbox
+            # Tipo risposta: True = SI/NO, False = testo libero
+            response_yes_no = True
+            if hasattr(step, 'ResponceYesNo'):
+                response_yes_no = bool(step.ResponceYesNo)
+
             ok_var = tk.BooleanVar()
-            ok_check = ttk.Checkbutton(self.steps_container, variable=ok_var)
-            ok_check.grid(row=idx, column=3, padx=2, pady=1)
-            
-            # Not OK checkbox
             not_ok_var = tk.BooleanVar()
-            not_ok_check = ttk.Checkbutton(self.steps_container, variable=not_ok_var)
-            not_ok_check.grid(row=idx, column=4, padx=2, pady=1)
-            
-            # Configura i command ora che entrambe le variabili esistono
-            ok_check.configure(command=lambda ok=ok_var, nok=not_ok_var, st=step: self._on_ok_check(ok, nok, st))
-            not_ok_check.configure(command=lambda ok=ok_var, nok=not_ok_var, st=step: self._on_not_ok_check(ok, nok, st))
+
+            if response_yes_no:
+                # OK checkbox
+                ok_check = ttk.Checkbutton(self.steps_container, variable=ok_var)
+                ok_check.grid(row=idx, column=3, padx=2, pady=1)
+
+                # Not OK checkbox
+                not_ok_check = ttk.Checkbutton(self.steps_container, variable=not_ok_var)
+                not_ok_check.grid(row=idx, column=4, padx=2, pady=1)
+
+                # Configura i command ora che entrambe le variabili esistono
+                ok_check.configure(command=lambda ok=ok_var, nok=not_ok_var, st=step: self._on_ok_check(ok, nok, st))
+                not_ok_check.configure(command=lambda ok=ok_var, nok=not_ok_var, st=step: self._on_not_ok_check(ok, nok, st))
+            else:
+                # Per step a testo/data non mostriamo la logica OK/Not OK
+                tk.Label(self.steps_container, text='-', width=3, background=bg_color, anchor='center', font=('Arial', 9)).grid(row=idx, column=3, padx=2, pady=1)
+                tk.Label(self.steps_container, text='-', width=6, background=bg_color, anchor='center', font=('Arial', 9)).grid(row=idx, column=4, padx=2, pady=1)
             
             # Note entry
             note_entry = ttk.Entry(self.steps_container, width=35, font=('Arial', 9))
@@ -593,7 +673,8 @@ class LineValidationWindow(tk.Toplevel):
             self.step_widgets[step.FaiStepDetailId] = {
                 'ok_var': ok_var,
                 'not_ok_var': not_ok_var,
-                'note_entry': note_entry
+                'note_entry': note_entry,
+                'response_yes_no': response_yes_no
             }
     
     def _on_ok_check(self, ok_var, not_ok_var, step_detail):
@@ -828,8 +909,12 @@ class LineValidationWindow(tk.Toplevel):
                 is_ok = widgets['ok_var'].get()
                 is_not_ok = widgets['not_ok_var'].get()
                 notes = widgets['note_entry'].get().strip()
-                
-                has_answer = (is_ok == True) or (is_not_ok == True)
+                is_logical_response = widgets.get('response_yes_no', True)
+
+                if is_logical_response:
+                    has_answer = (is_ok == True) or (is_not_ok == True)
+                else:
+                    has_answer = bool(notes)
                 
                 # 🆕 Validazione NoteMandatory
                 if has_answer and hasattr(step, 'NoteMandatory') and step.NoteMandatory:
@@ -837,7 +922,7 @@ class LineValidationWindow(tk.Toplevel):
                         missing_steps.append(step.Step + " - ⚠️ Codice Stencil obbligatorio")
                         logger.warning(f"⚠️ Step {step.Step}: NoteMandatory=true ma note vuote")
                 
-                if step.KeepOnsameLine:
+                if step.KeepOnsameLine and is_logical_response:
                     # Raggruppa per FatStepId (step principale)
                     group_key = step.OrderinList  # Usato come gruppo
                     if group_key not in keep_on_same_line_groups:
@@ -993,8 +1078,7 @@ class LineValidationWindow(tk.Toplevel):
                 return
             
             # Verifica almeno un tipo di validazione selezionato
-            if not any([self.npi_var.get(), self.test_var.get(), self.production_var.get(), 
-                       self.std_deviation_var.get(), self.others_var.get()]):
+            if not any(self.validation_vars[key].get() for key in self.validation_keys):
                 messagebox.showwarning(
                     self.lang.get('warning', 'Attenzione'),
                     self.lang.get('select_validation_type', 'Seleziona almeno un tipo di validazione'),
@@ -1008,7 +1092,13 @@ class LineValidationWindow(tk.Toplevel):
                 step_id = step.FaiStepDetailId
                 if step_id in self.step_widgets:
                     widgets = self.step_widgets[step_id]
-                    if widgets['ok_var'].get() or widgets['not_ok_var'].get():
+                    is_logical_response = widgets.get('response_yes_no', True)
+                    if is_logical_response:
+                        has_answer = widgets['ok_var'].get() or widgets['not_ok_var'].get()
+                    else:
+                        has_answer = bool(widgets['note_entry'].get().strip())
+
+                    if has_answer:
                         first_step_with_answer = step
                         break
             
@@ -1022,10 +1112,11 @@ class LineValidationWindow(tk.Toplevel):
             
             # Inserisci il PRIMO record in FaiLogs per ottenere il FaiLogId auto-generato
             first_widgets = self.step_widgets[first_step_with_answer.FaiStepDetailId]
-            is_ok = first_widgets['ok_var'].get()
-            is_not_ok = first_widgets['not_ok_var'].get()
+            first_is_logical = first_widgets.get('response_yes_no', True)
+            is_ok = first_widgets['ok_var'].get() if first_is_logical else True
+            is_not_ok = first_widgets['not_ok_var'].get() if first_is_logical else False
             notes = first_widgets['note_entry'].get().strip()
-            problem_desc = notes if is_not_ok else None
+            problem_desc = notes if (first_is_logical and is_not_ok) else None
             
             # Usa OUTPUT per recuperare l'ID generato direttamente
             first_log_query = """
@@ -1036,8 +1127,8 @@ class LineValidationWindow(tk.Toplevel):
             """
             
             # Recupera dettagli problema se NOT OK
-            root_cause = first_widgets.get('root_cause', None) if is_not_ok else None
-            corrective = first_widgets.get('corrective_action', None) if is_not_ok else None
+            root_cause = first_widgets.get('root_cause', None) if (first_is_logical and is_not_ok) else None
+            corrective = first_widgets.get('corrective_action', None) if (first_is_logical and is_not_ok) else None
             
             first_log_params = (
                 first_step_with_answer.FaiStepDetailId,
@@ -1078,21 +1169,23 @@ class LineValidationWindow(tk.Toplevel):
                 step_id = step.FaiStepDetailId
                 if step_id in self.step_widgets:
                     widgets = self.step_widgets[step_id]
-                    is_ok = widgets['ok_var'].get()
-                    is_not_ok = widgets['not_ok_var'].get()
+                    is_logical_response = widgets.get('response_yes_no', True)
+                    is_ok = widgets['ok_var'].get() if is_logical_response else True
+                    is_not_ok = widgets['not_ok_var'].get() if is_logical_response else False
                     notes = widgets['note_entry'].get().strip()
                     
-                    # Inserisci nel log solo se è stato checkato qualcosa
-                    if is_ok or is_not_ok:
+                    # Inserisci nel log se c'è una risposta
+                    has_answer = (is_ok or is_not_ok) if is_logical_response else bool(notes)
+                    if has_answer:
                         log_query = """
                         INSERT INTO Traceability_RS.fai.FaiLogs 
                         (FaiStepDetailId, Operator, IsOk, ProblemDescription, RoutCauseProblem, CorrectiveAction, Dati, OrderId, DateIn, LabelCode)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), ?)
                         """
                         
-                        problem_desc = notes if is_not_ok else None
-                        root_cause = widgets.get('root_cause', None) if is_not_ok else None
-                        corrective = widgets.get('corrective_action', None) if is_not_ok else None
+                        problem_desc = notes if (is_logical_response and is_not_ok) else None
+                        root_cause = widgets.get('root_cause', None) if (is_logical_response and is_not_ok) else None
+                        corrective = widgets.get('corrective_action', None) if (is_logical_response and is_not_ok) else None
                         
                         log_params = (
                             step_id,
@@ -1117,11 +1210,11 @@ class LineValidationWindow(tk.Toplevel):
             
             header_params = (
                 fai_log_id,
-                1 if self.npi_var.get() else 0,
-                1 if self.test_var.get() else 0,
-                1 if self.production_var.get() else 0,
-                1 if self.std_deviation_var.get() else 0,
-                1 if self.others_var.get() else 0,
+                1 if self.validation_vars['NPI'].get() else 0,
+                1 if self.validation_vars['Test'].get() else 0,
+                1 if self.validation_vars['PRODUCTION'].get() else 0,
+                1 if self.validation_vars['StandardProcessDeviation'].get() else 0,
+                1 if self.validation_vars['Others'].get() else 0,
                 labelcode_value  # 🆕 Salva LabelCode validato in SerialNumberInterval
             )
             
@@ -1387,3 +1480,4 @@ class LineValidationWindow(tk.Toplevel):
 def open_line_validation_window(parent, db, lang, user_name):
     """Apre la finestra di validazione linea"""
     LineValidationWindow(parent, db, lang, user_name)
+
