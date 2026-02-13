@@ -348,6 +348,28 @@ class OvertimeRequestWindow(tk.Toplevel):
             )
             return
         
+        # VALIDAZIONE: La richiesta non può essere retroattiva
+        now = datetime.now()
+        if start_dt < now:
+            messagebox.showerror(
+                self.lang.get('validation_error', 'Errore Validazione'),
+                self.lang.get('no_retroactive_requests', 
+                    'Le richieste di straordinario non possono essere retroattive.\n'
+                    'La data/ora di inizio deve essere nel futuro.'),
+                parent=self
+            )
+            return
+        
+        # Valida che fine sia dopo inizio
+        if end_dt <= start_dt:
+            messagebox.showerror(
+                self.lang.get('validation_error', 'Errore Validazione'),
+                self.lang.get('end_before_start', 
+                    'La data/ora di fine deve essere successiva alla data/ora di inizio.'),
+                parent=self
+            )
+            return
+        
         employee_name = self.employee_var.get()
         employee_id = self.employees_data[employee_name]
         reason_text = self.reason_var.get()

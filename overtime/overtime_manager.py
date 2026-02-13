@@ -834,3 +834,217 @@ class OvertimeManager:
         except Exception as e:
             logger.error(f"Error sending approval notification: {e}", exc_info=True)
             return False
+    
+    def send_weekly_overtime_analysis_email(self):
+        """
+        Invia email settimanale con analisi straordinari non autorizzati.
+        Da chiamare ogni lunedì per il periodo della settimana precedente.
+        
+        Returns:
+            bool: True se email inviata con successo
+        """
+        try:
+            from datetime import timedelta
+            import openpyxl
+            from openpyxl.styles import Font, PatternFill, Alignment
+            
+            # Calcola date settimana precedente (lunedì-domenica)
+            today = date.today()
+            days_since_monday = today.weekday()  # 0 = Monday
+            last_monday = today - timedelta(days=days_since_monday + 7)
+            last_sunday = last_monday + timedelta(days=6)
+            
+            logger.info(f"Generating weekly overtime analysis for period: {last_monday} to {last_sunday}")
+            
+            # Query analisi con filtro OVER APPROVED
+            query = """
+            DECLARE @dateStart DATE = ?;
+            DECLARE @DateStop DATE = ?;
+            DECLARE @Filter AS NVARCHAR(30) = 'OVER APPROVED';
+
+            WITH
+            CTE_DailyState_Employee AS (
+                SELECT 
+                    ds.IDDailyState,
+                    ds.DailyStateDate,
+                    e.IDEmployee,
+                    UPPER(e.EmployeeSurname + ' ' + e.EmployeeName) AS Name, 
+                    e.UniqueID
+                FROM Timeclocking.dbo.DailyState ds
+                INNER JOIN Timeclocking.dbo.Employee e
+                    ON e.IDEmployee = ds.IDEmployee AND ds.DailyStateDate BETWEEN @dateStart AND @DateStop
+            ),
+            CTE_Done AS (
+                SELECT
+                    fd.IDDailyState,
+                    fd.NoMin AS MinSuplimentarDone,
+                    r.RequestName
+                FROM Timeclocking.dbo.EmployeeRequestFractionalDay fd
+                INNER JOIN Timeclocking.dbo.RequestType r
+                    ON r.IDRequestType = fd.IDRequestType
+                WHERE r.IDRequestType = 8
+            ),
+            CTE_HireHistory AS (
+                SELECT
+                    h.EmployeeHireHistoryId AS EmployeeHireId,
+                    ee.EmployeeNID COLLATE DATABASE_DEFAULT AS UniqueID
+                FROM employee.dbo.employees ee
+                INNER JOIN employee.dbo.employeehirehistory h
+                    ON ee.EmployeeId = h.EmployeeId
+                    AND h.employeerid = 2
+                    AND h.EndWorkDate IS NULL
+            ),
+            CTE_ExtraTimeApprovalStory AS (
+                SELECT
+                    es.IdEmployee AS EmployeeHireHistoryId,
+                    CAST(es.DateStart AS DATE) AS DateStart,
+                    ISNULL(DATEDIFF(MINUTE, es.DateStart, es.DateEnd), 0) AS MinExtraTimeApproved
+                FROM [ResetServices].[dbo].ExtraTimeApprovalStory es
+                WHERE CAST(es.DateStart AS DATE) BETWEEN @dateStart AND @dateStop
+            ),
+            CTE_Combined AS (
+                SELECT 
+                    ROW_NUMBER() OVER (ORDER BY dse.DailyStateDate, dse.Name) AS Nr,
+                    dse.Name,
+                    dse.DailyStateDate AS OvertimeDate,
+                    req.MinSuplimentarDone,
+                    req.RequestName,
+                    ISNULL(eta.MinExtraTimeApproved, 0) AS MinExtraTimeApproved,
+                    CASE
+                        WHEN ISNULL(req.MinSuplimentarDone, 0) > ISNULL(eta.MinExtraTimeApproved, 0) THEN
+                            'OVER APPROVED'
+                        ELSE
+                            'Time approved = time presence'
+                    END AS Notes
+                FROM CTE_DailyState_Employee dse
+                INNER JOIN CTE_Done req ON dse.IDDailyState = req.IDDailyState
+                INNER JOIN CTE_HireHistory hh ON dse.UniqueID COLLATE DATABASE_DEFAULT = hh.UniqueID
+                LEFT JOIN CTE_ExtraTimeApprovalStory eta ON hh.EmployeeHireId = eta.EmployeeHireHistoryId
+                    AND eta.DateStart = dse.DailyStateDate
+            )
+            SELECT DISTINCT *
+            FROM CTE_Combined
+            WHERE Notes LIKE @Filter
+            ORDER BY OvertimeDate, Name;
+            """
+            
+            cursor = self.db.conn.cursor()
+            cursor.execute(query, (last_monday, last_sunday))
+            results = cursor.fetchall()
+            cursor.close()
+            
+            if not results:
+                logger.info("No unauthorized overtime found for last week. Email not sent.")
+                return True
+            
+            # Crea Excel
+            output_dir = tempfile.gettempdir()
+            filename = f"Unauthorized_Overtime_{last_monday.strftime('%Y%m%d')}_{last_sunday.strftime('%Y%m%d')}.xlsx"
+            file_path = os.path.join(output_dir, filename)
+            
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Unauthorized Overtime"
+            
+            # Header
+            headers = ['Nr', 'Employee', 'Date', 'Min Presence', 'Min Approved', 'Notes']
+            for col, header in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col, value=header)
+                cell.font = Font(bold=True, color="FFFFFF")
+                cell.fill = PatternFill(start_color="C00000", end_color="C00000", fill_type="solid")
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+            
+            # Dati
+            for row_idx, row in enumerate(results, 2):
+                ws.cell(row=row_idx, column=1, value=row[0]).alignment = Alignment(horizontal='center')
+                ws.cell(row=row_idx, column=2, value=row[1])
+                ws.cell(row=row_idx, column=3, value=row[2].strftime('%d/%m/%Y') if row[2] else 'N/D').alignment = Alignment(horizontal='center')
+                ws.cell(row=row_idx, column=4, value=row[3]).alignment = Alignment(horizontal='center')
+                ws.cell(row=row_idx, column=5, value=row[5]).alignment = Alignment(horizontal='center')
+                ws.cell(row=row_idx, column=6, value=row[6])
+                
+                # Evidenzia in rosso
+                for col in range(1, 7):
+                    ws.cell(row=row_idx, column=col).fill = PatternFill(
+                        start_color="FFE0E0", end_color="FFE0E0", fill_type="solid"
+                    )
+            
+            # Adatta larghezza colonne
+            ws.column_dimensions['A'].width = 8
+            ws.column_dimensions['B'].width = 35
+            ws.column_dimensions['C'].width = 12
+            ws.column_dimensions['D'].width = 15
+            ws.column_dimensions['E'].width = 15
+            ws.column_dimensions['F'].width = 30
+            
+            wb.save(file_path)
+            
+            # Recupera destinatari
+            cursor = self.db.conn.cursor()
+            cursor.execute("""
+                SELECT AttributeValue 
+                FROM Traceability_RS.dbo.Settings 
+                WHERE AttributeName = 'Sys_email_overtime_issues'
+            """)
+            result = cursor.fetchone()
+            cursor.close()
+            
+            if not result or not result[0]:
+                logger.warning("No email recipients configured in Settings.Sys_email_overtime_issues")
+                return False
+            
+            recipients = [email.strip() for email in result[0].split(',')]
+            
+            # Prepara email
+            subject = f"⚠️ Unauthorized Overtime Report - Week {last_monday.strftime('%d/%m/%Y')} to {last_sunday.strftime('%d/%m/%Y')}"
+            
+            body = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif;">
+                <h2 style="color: #C00000;">⚠️ Unauthorized Overtime Alert</h2>
+                <p>Dear Team,</p>
+                <p>The attached report summarizes <strong style="color: #C00000;">{len(results)} unauthorized overtime entries</strong> 
+                for the period <strong>{last_monday.strftime('%d/%m/%Y')} to {last_sunday.strftime('%d/%m/%Y')}</strong>.</p>
+                
+                <p>These entries indicate cases where the actual overtime presence exceeded the approved overtime hours.</p>
+                
+                <p style="margin-top: 20px;">
+                    <strong>Action Required:</strong><br>
+                    Please review the attached Excel file and take appropriate action.
+                </p>
+                
+                <p style="margin-top: 30px;">
+                    Best regards,<br>
+                    <strong>TraceabilityRS System</strong>
+                </p>
+            </body>
+            </html>
+            """
+            
+            # Importa funzione send_email
+            import sys
+            sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+            from utils import send_email
+            
+            # Invia email con allegato
+            send_email(
+                recipients=recipients,
+                subject=subject,
+                body=body,
+                is_html=True,
+                attachments=[file_path]
+            )
+            
+            logger.info(f"Weekly overtime analysis email sent to: {recipients}")
+            
+            # Rimuovi file temporaneo
+            try:
+                os.remove(file_path)
+            except:
+                pass
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error sending weekly overtime analysis email: {e}", exc_info=True)
+            return False

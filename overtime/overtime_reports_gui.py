@@ -173,7 +173,7 @@ class OvertimeReportsWindow(tk.Toplevel):
         
         # Query base
         query = """
-        SELECT 
+        SELECT DISTINCT
             e.EmployeeSurname + ' ' + e.EmployeeName AS EmployeeName,
             s.Descriptionreasons,
             s.DateStart,
@@ -316,7 +316,7 @@ PERCENTUALI:
             )
     
     def _export_to_pdf(self):
-        """Esporta i risultati in PDF."""
+        """Esporta i risultati in PDF con calcolo costi."""
         if not self.tree.get_children():
             messagebox.showwarning(
                 self.lang.get('warning', 'Attenzione'),
@@ -325,62 +325,363 @@ PERCENTUALI:
             )
             return
         
-        file_path = filedialog.asksaveasfilename(
-            defaultextension=".pdf",
-            filetypes=[("PDF files", "*.pdf")],
-            title=self.lang.get('save_pdf', 'Salva PDF')
-        )
-        
-        if not file_path:
-            return
-        
         try:
+            import os
             from reportlab.pdfgen import canvas
             from reportlab.lib.pagesizes import A4, landscape
             from reportlab.lib.units import cm
-            from reportlab.platypus import Table, TableStyle
+            from reportlab.platypus import Table, TableStyle, Image as ReportLabImage
             from reportlab.lib import colors
+            from collections import defaultdict
+            from datetime import datetime
+            
+            # Recupera prezzi straordinari
+            pricing_query = """
+            SELECT t.[Description], d.ValueITem [Value], v.[DESC] Currency,
+                  case
+                    when t.[Description] = 'WeekendCost' then
+                        1
+                    else
+                        0
+                end
+                as IsWeekend            
+              FROM 
+              ResetServices.dbo.OverTimeDefaults D inner join 
+              [ResetServices].[dbo].[OverTimeDescriptions] T on t.DescpriptionId=d.DescriptionId inner join 
+              ResetServices.dbo.TbValute v on v.IdValuta =d.CurrencyId
+              where t.DateOut is null and d.DateOut is null
+            """
+            
+            cursor = self.db.conn.cursor()
+            cursor.execute(pricing_query)
+            pricing_results = cursor.fetchall()
+            
+            # Estrai prezzi
+            weekday_cost = 0
+            weekend_cost = 0
+            currency = "EUR"
+            
+            for row in pricing_results:
+                if row[3] == 1:  # IsWeekend
+                    weekend_cost = float(row[1])
+                else:
+                    weekday_cost = float(row[1])
+                currency = row[2] if row[2] else "EUR"
+            
+            # Recupera dati straordinari con date complete
+            overtime_query = """
+            SELECT 
+                e.EmployeeSurname + ' ' + e.EmployeeName AS EmployeeName,
+                s.Descriptionreasons,
+                s.DateStart,
+                s.DateEnd,
+                DATEDIFF(HOUR, s.DateStart, s.DateEnd) AS Hours,
+                CASE 
+                    WHEN s.SuperVisorId IS NULL THEN 'Pending'
+                    WHEN s.SuperVisorId > 0 THEN 'Approved'
+                    ELSE 'Rejected'
+                END AS Status
+            FROM ResetServices.dbo.ExtraTimeApprovalStory s
+            INNER JOIN Employee.dbo.EmployeeHireHistory h ON s.IdEmployee = h.EmployeeHireHistoryId
+            INNER JOIN Employee.dbo.Employees e ON h.EmployeeId = e.EmployeeId
+            WHERE s.DateStart >= ? AND s.DateStart <= ?
+            ORDER BY s.DateStart DESC
+            """
+            
+            start_date = self.start_date.get_date()
+            end_date = self.end_date.get_date()
+            
+            cursor.execute(overtime_query, (start_date, end_date))
+            overtime_results = cursor.fetchall()
+            cursor.close()
+            
+            # Calcola costi per mese e anno
+            monthly_costs = defaultdict(lambda: {'hours': 0, 'cost': 0})
+            yearly_costs = defaultdict(lambda: {'hours': 0, 'cost': 0})
+            total_cost = 0
+            total_hours = 0
+            
+            overtime_data = []
+            
+            for row in overtime_results:
+                employee = row[0]
+                reason = row[1]
+                date_start = row[2]
+                date_end = row[3]
+                hours = row[4] if row[4] else 0
+                status = row[5]
+                
+                # Determina se è weekend (sabato=5, domenica=6)
+                is_weekend = date_start.weekday() >= 5
+                cost_per_hour = weekend_cost if is_weekend else weekday_cost
+                cost = hours * cost_per_hour
+                
+                # Aggrega per mese e anno
+                month_key = date_start.strftime('%Y-%m')
+                year_key = date_start.strftime('%Y')
+                
+                monthly_costs[month_key]['hours'] += hours
+                monthly_costs[month_key]['cost'] += cost
+                yearly_costs[year_key]['hours'] += hours
+                yearly_costs[year_key]['cost'] += cost
+                
+                total_hours += hours
+                total_cost += cost
+                
+                overtime_data.append({
+                    'employee': employee,
+                    'reason': reason,
+                    'date': date_start.strftime('%d/%m/%Y %H:%M'),
+                    'date_obj': date_start,  # Per ordinamento
+                    'month_key': month_key,
+                    'hours': hours,
+                    'status': status,
+                    'is_weekend': is_weekend,
+                    'cost': cost
+                })
+            
+            # Ordina per data
+            overtime_data.sort(key=lambda x: x['date_obj'])
+            
+            # Crea directory C:\Temp se non esiste
+            output_dir = r"C:\Temp"
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            
+            # Genera nome file automatico basato sulle date
+            filename = f"report_overtime_from_{start_date.strftime('%d-%m-%Y')}_to_{end_date.strftime('%d-%m-%Y')}.pdf"
+            file_path = os.path.join(output_dir, filename)
             
             c = canvas.Canvas(file_path, pagesize=landscape(A4))
             width, height = landscape(A4)
             
+            # Logo aziendale (in alto a destra)
+            logo_path = "Logo.png"
+            if os.path.exists(logo_path):
+                try:
+                    logo = ReportLabImage(logo_path, width=1.5 * cm, height=1.5 * cm)
+                    logo.drawOn(c, width - 2.5 * cm, height - 2.5 * cm)
+                except Exception as e:
+                    logger.warning(f"Cannot load logo: {e}")
+            
             # Titolo
-            c.setFont("Helvetica-Bold", 16)
+            c.setFont("Helvetica-Bold", 18)
             c.drawString(2 * cm, height - 2 * cm, "RAPPORTO STRAORDINARI")
             
             c.setFont("Helvetica", 10)
             c.drawString(2 * cm, height - 2.5 * cm, 
-                f"Periodo: {self.start_date.get_date().strftime('%d/%m/%Y')} - {self.end_date.get_date().strftime('%d/%m/%Y')}")
+                f"Periodo: {start_date.strftime('%d/%m/%Y')} - {end_date.strftime('%d/%m/%Y')}")
+            c.drawString(2 * cm, height - 3 * cm, 
+                f"Data generazione: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
             
-            # Tabella
-            table_data = [['Dipendente', 'Motivo', 'Data', 'Ore', 'Stato']]
+            y_pos = height - 4 * cm
             
-            for item in self.tree.get_children():
-                values = self.tree.item(item)['values']
-                table_data.append(values)
+            # === TABELLA RIEPILOGO COSTI PER MESE ===
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(2 * cm, y_pos, "RIEPILOGO COSTI PER MESE")
+            y_pos -= 0.5 * cm
             
-            table = Table(table_data, colWidths=[5*cm, 5*cm, 4*cm, 2*cm, 3*cm])
-            table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            monthly_table_data = [['Mese', 'Ore', f'Costo ({currency})']]
+            for month in sorted(monthly_costs.keys()):
+                month_name = datetime.strptime(month, '%Y-%m').strftime('%B %Y')
+                monthly_table_data.append([
+                    month_name,
+                    f"{monthly_costs[month]['hours']:.1f}",
+                    f"{monthly_costs[month]['cost']:.2f}"
+                ])
+            
+            monthly_table = Table(monthly_table_data, colWidths=[4*cm, 2*cm, 3*cm])
+            monthly_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#2E5090")),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 10),
+                ('FONTSIZE', (0, 0), (-1, 0), 9),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
                 ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
                 ('FONTSIZE', (0, 1), (-1, -1), 8),
             ]))
             
-            table.wrapOn(c, width, height)
-            table.drawOn(c, 2 * cm, height - 8 * cm)
+            monthly_table.wrapOn(c, width, height)
+            monthly_table_height = monthly_table._height
+            monthly_table.drawOn(c, 2 * cm, y_pos - monthly_table_height)
+            y_pos -= (monthly_table_height + 0.8 * cm)
+            
+            # === TABELLA RIEPILOGO COSTI PER ANNO ===
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(11 * cm, height - 4 * cm, "RIEPILOGO COSTI PER ANNO")
+            
+            yearly_table_data = [['Anno', 'Ore', f'Costo ({currency})']]
+            for year in sorted(yearly_costs.keys()):
+                yearly_table_data.append([
+                    year,
+                    f"{yearly_costs[year]['hours']:.1f}",
+                    f"{yearly_costs[year]['cost']:.2f}"
+                ])
+            
+            # Aggiungi riga totale
+            yearly_table_data.append([
+                'TOTALE',
+                f"{total_hours:.1f}",
+                f"{total_cost:.2f}"
+            ])
+            
+            yearly_table = Table(yearly_table_data, colWidths=[3*cm, 2*cm, 3*cm])
+            yearly_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#2E5090")),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 9),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 1), (-1, -1), 8),
+                # Evidenzia riga totale
+                ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor("#FFD700")),
+                ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+            ]))
+            
+            yearly_table.wrapOn(c, width, height)
+            yearly_table.drawOn(c, 11 * cm, height - 4 * cm - 0.5 * cm - yearly_table._height)
+            
+            # === TABELLA DETTAGLIO STRAORDINARI ===
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(2 * cm, y_pos, "DETTAGLIO STRAORDINARI")
+            y_pos -= 0.5 * cm
+            
+            detail_table_data = [['Dipendente', 'Motivo', 'Data', 'Ore', 'Tipo', 'Stato', f'Costo ({currency})']]
+            
+            # Raggruppa per mese e aggiungi subtotali
+            current_month = None
+            month_hours = 0
+            month_cost = 0
+            subtotal_rows = []  # Traccia le righe di subtotale per lo styling
+            month_header_rows = []  # Traccia le righe di intestazione mese
+            
+            for item in overtime_data:
+                item_month = item['month_key']
+                
+                # Se cambia il mese, aggiungi subtotale del mese precedente
+                if current_month is not None and item_month != current_month:
+                    month_name = datetime.strptime(current_month, '%Y-%m').strftime('%B %Y')
+                    subtotal_rows.append(len(detail_table_data))
+                    detail_table_data.append([
+                        f'Subtotale {month_name}', '', '', 
+                        f'{month_hours:.1f}', '', '', 
+                        f'{month_cost:.2f}'
+                    ])
+                    month_hours = 0
+                    month_cost = 0
+                
+                # Se è un nuovo mese, aggiungi intestazione mese
+                if item_month != current_month:
+                    month_name = datetime.strptime(item_month, '%Y-%m').strftime('%B %Y')
+                    month_header_rows.append(len(detail_table_data))
+                    detail_table_data.append([
+                        month_name.upper(), '', '', '', '', '', ''
+                    ])
+                    current_month = item_month
+                
+                # Aggiungi riga dettaglio
+                detail_table_data.append([
+                    item['employee'],
+                    item['reason'],
+                    item['date'],
+                    f"{item['hours']:.1f}",
+                    'Weekend' if item['is_weekend'] else 'Weekday',
+                    item['status'],
+                    f"{item['cost']:.2f}"
+                ])
+                
+                month_hours += item['hours']
+                month_cost += item['cost']
+            
+            # Aggiungi subtotale dell'ultimo mese
+            if current_month is not None:
+                month_name = datetime.strptime(current_month, '%Y-%m').strftime('%B %Y')
+                subtotal_rows.append(len(detail_table_data))
+                detail_table_data.append([
+                    f'Subtotale {month_name}', '', '', 
+                    f'{month_hours:.1f}', '', '', 
+                    f'{month_cost:.2f}'
+                ])
+            
+            # Aggiungi riga GRAN TOTALE
+            grand_total_row = len(detail_table_data)
+            detail_table_data.append([
+                'GRAN TOTALE', '', '', 
+                f'{total_hours:.1f}', '', '', 
+                f'{total_cost:.2f}'
+            ])
+            
+            detail_table = Table(detail_table_data, colWidths=[4*cm, 3.5*cm, 3*cm, 1.5*cm, 2*cm, 2*cm, 2.5*cm])
+            
+            # Stile base
+            table_style = [
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 8),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 1), (-1, -1), 7),
+            ]
+            
+            # Stile per intestazioni mese
+            for row_idx in month_header_rows:
+                table_style.extend([
+                    ('BACKGROUND', (0, row_idx), (-1, row_idx), colors.HexColor("#2E5090")),
+                    ('TEXTCOLOR', (0, row_idx), (-1, row_idx), colors.whitesmoke),
+                    ('FONTNAME', (0, row_idx), (-1, row_idx), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, row_idx), (-1, row_idx), 9),
+                    ('SPAN', (0, row_idx), (-1, row_idx)),  # Unisci tutte le colonne
+                ])
+            
+            # Stile per subtotali mensili
+            for row_idx in subtotal_rows:
+                table_style.extend([
+                    ('BACKGROUND', (0, row_idx), (-1, row_idx), colors.HexColor("#E0E0E0")),
+                    ('FONTNAME', (0, row_idx), (-1, row_idx), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, row_idx), (-1, row_idx), 8),
+                ])
+            
+            # Stile per gran totale
+            table_style.extend([
+                ('BACKGROUND', (0, grand_total_row), (-1, grand_total_row), colors.HexColor("#FFD700")),
+                ('FONTNAME', (0, grand_total_row), (-1, grand_total_row), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, grand_total_row), (-1, grand_total_row), 9),
+            ])
+            
+            detail_table.setStyle(TableStyle(table_style))
+
+            
+            detail_table.wrapOn(c, width, height)
+            detail_table_height = detail_table._height
+            detail_table.drawOn(c, 2 * cm, y_pos - detail_table_height)
+            
+            # Footer
+            c.setFont("Helvetica", 8)
+            c.drawCentredString(width / 2, 1.5 * cm, 
+                "Document automatically generated by TraceabilityRS system")
+            c.setFont("Helvetica", 7)
+            c.drawString(2 * cm, 1 * cm, 
+                f"Tariffe applicate: Weekday={weekday_cost:.2f} {currency}/h | Weekend={weekend_cost:.2f} {currency}/h")
             
             c.save()
             
-            messagebox.showinfo(
+            # Chiedi se aprire il file
+            open_file = messagebox.askyesno(
                 self.lang.get('success', 'Successo'),
-                self.lang.get('pdf_exported', 'File PDF esportato con successo'),
+                f"File PDF salvato con successo:\n{file_path}\n\nVuoi aprire il file?",
                 parent=self
             )
+            
+            if open_file:
+                os.startfile(file_path)
             
         except Exception as e:
             logger.error(f"Errore export PDF: {e}", exc_info=True)
@@ -389,3 +690,4 @@ PERCENTUALI:
                 f"Errore export PDF:\n{str(e)}",
                 parent=self
             )
+

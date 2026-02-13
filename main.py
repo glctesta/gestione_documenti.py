@@ -264,7 +264,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.3.1'  # Versione aggiornata
+APP_VERSION = '2.3.3.2'  # Versione aggiornata
 APP_DEVELOPER = 'Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -13733,6 +13733,10 @@ class App(tk.Tk):
             label=self.lang.get('overtime_reports', 'Rapporti'),
             command=self.open_overtime_reports_with_auth
         )
+        overtime_submenu.add_command(
+            label=self.lang.get('overtime_analysis', 'Analisi'),
+            command=self.open_overtime_analysis_with_auth
+        )
 
         self.operations_menu.add_separator()
 
@@ -15676,6 +15680,14 @@ class App(tk.Tk):
         self._execute_authorized_action(
             menu_translation_key='overtime_reports',
             action_callback=lambda: open_overtime_reports_window(self, self.db, self.lang, self.last_authenticated_user_name)
+        )
+    
+    def open_overtime_analysis_with_auth(self):
+        """Apre la finestra analisi straordinari con autorizzazione."""
+        from overtime import open_overtime_analysis_window
+        self._execute_authorized_action(
+            menu_translation_key='overtime_analysis',
+            action_callback=lambda: open_overtime_analysis_window(self, self.db, self.lang, self.last_authenticated_user_name)
         )
 
     # =========================================================================
