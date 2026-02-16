@@ -264,7 +264,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.3.4'  # Versione aggiornata
+APP_VERSION = '2.3.3.5'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -2077,15 +2077,21 @@ class Database:
         """
         Inserisce la richiesta di refill.
         """
-        sql = """
-        INSERT INTO knb.KanBanMaterialRequestes (KanBanRecordId, QtyToRefill, RequestedOn)
-        VALUES (?, ?, GETDATE());
-        """
         with self._lock:
             try:
-                self.cursor.execute(sql, (kanban_record_id, qty_to_refill))
+                # Genera prossimo ID
+                sql_max = "SELECT ISNULL(MAX(KanBanMaterialRequestId), 0) + 1 FROM knb.KanBanMaterialRequestes"
+                self.cursor.execute(sql_max)
+                next_id = self.cursor.fetchone()[0]
+                
+                # INSERT con ID esplicito
+                sql = """
+                INSERT INTO knb.KanBanMaterialRequestes (KanBanMaterialRequestId, KanBanRecordId, QtyToRefill, RequestedOn)
+                VALUES (?, ?, ?, GETDATE());
+                """
+                self.cursor.execute(sql, (next_id, kanban_record_id, qty_to_refill))
                 self.conn.commit()
-                logger.info('Richiesta materiali KanBan, registrata in DB')
+                logger.info(f'Richiesta materiali KanBan registrata in DB con ID={next_id}')
                 return True
             except Exception as e:
                 self.conn.rollback()
@@ -9549,19 +9555,35 @@ class KanbanMaterialsManagementForm(tk.Toplevel):
                                  parent=self)
 
 class KanbanMoveForm(tk.Toplevel):
-    def __init__(self, master, db_handler, lang_manager):
+    def __init__(self, master, db_handler, lang_manager, mode='both'):
+        """
+        mode: 'both' (default), 'load', 'unload'
+        - 'both': mostra radio buttons per scegliere operazione
+        - 'load': solo carico, nasconde radio buttons
+        - 'unload': solo prelievo, nasconde radio buttons
+        """
         super().__init__(master)
         self.db = db_handler
         self.lang = lang_manager
+        self.mode = mode  # 'both', 'load', 'unload'
 
-        self.title(self.lang.get('kanban_move_title', 'KanBan - Movimenta'))
+        # Titolo basato su mode
+        if mode == 'load':
+            title = self.lang.get('kanban_load_title', 'KanBan - Carico Materiali')
+        elif mode == 'unload':
+            title = self.lang.get('kanban_unload_title', 'KanBan - Prelievo Materiali')
+        else:
+            title = self.lang.get('kanban_move_title', 'KanBan - Movimenta')
+        
+        self.title(title)
         self.geometry("720x420")
         self.resizable(False, False)
         self.transient(master)
         self.grab_set()
 
         # Stato
-        self.op_var = tk.StringVar(value="unload")  # default: Withdrawal
+        default_op = 'load' if mode == 'load' else 'unload'
+        self.op_var = tk.StringVar(value=default_op)
         self._session_user = self._get_app_username()  # utente loggato alla maschera (se esiste)
         self._load_user = None  # utente che fa login quando passa a Load
         self.qty_var = tk.StringVar()
@@ -9573,6 +9595,18 @@ class KanbanMoveForm(tk.Toplevel):
         self._components = []   # list of (IdComponent, code, descr)
         self._locations = []    # list of (LocationId, code, area)
         self._in_use_location_ids = set()  # locazioni dove il componente ha stock > 0
+        
+        # Se mode='load', richiedi login subito
+        if mode == 'load':
+            if not self._ensure_load_login():
+                messagebox.showwarning(
+                    self.lang.get('warn_title', 'Attenzione'),
+                    self.lang.get('load_requires_login', 'Per eseguire un carico è necessario effettuare il login.'),
+                    parent=master
+                )
+                self.destroy()
+                return
+        
         self._build_ui()
         self._load_lists()
 
@@ -9580,13 +9614,14 @@ class KanbanMoveForm(tk.Toplevel):
         root = ttk.Frame(self, padding=12)
         root.pack(fill="both", expand=True)
 
-        # Operazione
-        opf = ttk.Labelframe(root, text=self.lang.get('move_operation', 'Operazione'))
-        opf.pack(fill="x")
-        ttk.Radiobutton(opf, text=self.lang.get('move_load', 'Carico'),
-                        variable=self.op_var, value="load", command=self._on_op_changed).pack(side="left", padx=(10, 10), pady=6)
-        ttk.Radiobutton(opf, text=self.lang.get('move_unload', 'Prelievo'),
-                        variable=self.op_var, value="unload", command=self._on_op_changed).pack(side="left", padx=(0, 10), pady=6)
+        # Operazione (solo se mode='both')
+        if self.mode == 'both':
+            opf = ttk.Labelframe(root, text=self.lang.get('move_operation', 'Operazione'))
+            opf.pack(fill="x")
+            ttk.Radiobutton(opf, text=self.lang.get('move_load', 'Carico'),
+                            variable=self.op_var, value="load", command=self._on_op_changed).pack(side="left", padx=(10, 10), pady=6)
+            ttk.Radiobutton(opf, text=self.lang.get('move_unload', 'Prelievo'),
+                            variable=self.op_var, value="unload", command=self._on_op_changed).pack(side="left", padx=(0, 10), pady=6)
 
         # Selezioni
         sf = ttk.Labelframe(root, text=self.lang.get('move_selection', 'Selezione'))
@@ -9636,6 +9671,12 @@ class KanbanMoveForm(tk.Toplevel):
         bf = ttk.Frame(root); bf.pack(fill="x", pady=(12, 0))
         ttk.Button(bf, text=self.lang.get('button_execute', 'Esegui'),
                    command=self._on_execute).pack(side="left")
+        
+        # Pulsante "Genera Template Excel" solo per mode='load'
+        if self.mode == 'load':
+            ttk.Button(bf, text=self.lang.get('btn_generate_template', 'Genera Template Excel'),
+                       command=self._generate_excel_template).pack(side="left", padx=(8,0))
+        
         ttk.Button(bf, text=self.lang.get('button_import_excel', 'Importa da Excel'),
                    command=self._on_import_excel).pack(side="left", padx=(8,0))
         ttk.Button(bf, text=self.lang.get('button_close', 'Chiudi'),
@@ -9883,6 +9924,157 @@ class KanbanMoveForm(tk.Toplevel):
         else:
             messagebox.showerror(self.lang.get('error_title', 'Errore'),
                                  err or self.db.last_error_details, parent=self)
+
+    def _generate_excel_template(self):
+        """Genera template Excel per caricamento bulk materiali KanBan."""
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+        from openpyxl.worksheet.datavalidation import DataValidation
+        import os
+        from datetime import datetime
+        from tkinter import messagebox
+        
+        # Verifica che sia selezionata un'area
+        area_id, area_name = self._resolve_area(self.area_var.get())
+        if not area_id:
+            messagebox.showwarning(
+                self.lang.get('warn_title', 'Attenzione'),
+                self.lang.get('select_area_first', 'Seleziona prima un\'area KanBan per generare il template.'),
+                parent=self
+            )
+            return
+        
+        
+        try:
+            # Recupera locazioni per l'area selezionata usando metodo database esistente
+            locations = []
+            try:
+                logger.info(f"Template Excel: recupero locazioni per area_id={area_id}, area_name='{area_name}'")
+                # Usa lo stesso metodo che popola il combo nel form
+                loc_rows = self.db.fetch_locations_for_kanban_area(area_id)
+                logger.info(f"Template Excel: query restituita {len(loc_rows)} righe")
+                for r in loc_rows:
+                    try:
+                        loc_code = r.LocationCode if hasattr(r, 'LocationCode') else r[1]
+                        locations.append(loc_code)
+                        logger.debug(f"Template Excel: aggiunta locazione '{loc_code}'")
+                    except (AttributeError, IndexError, TypeError) as e:
+                        logger.warning(f"Template Excel: errore parsing row: {e}")
+                        continue
+                logger.info(f"Template Excel: recuperate {len(locations)} locazioni per area_id={area_id}")
+            except Exception as e:
+                logger.warning(f"Errore recupero locazioni da DB: {e}. Uso cache.")
+                # Fallback: usa cache _locations
+                for (lid, lcode, larea) in self._locations:
+                    if larea == area_name:
+                        locations.append(lcode)
+            
+            if not locations:
+                messagebox.showwarning(
+                    self.lang.get('warn_title', 'Attenzione'),
+                    f'Nessuna locazione trovata per l\'area "{area_name}".',
+                    parent=self
+                )
+                return
+            
+            # Crea workbook
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Kanban Load Template"
+            
+            # Headers
+            headers = ["Location", "Component", "Quantity"]
+            ws.append(headers)
+            
+            # Header style
+            header_font = Font(bold=True, color="FFFFFF")
+            header_fill = PatternFill(fill_type="solid", start_color="4F81BD", end_color="4F81BD")
+            center = Alignment(horizontal="center", vertical="center")
+            thin = Side(style='thin', color='B7CCE1')
+            header_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+            
+            for c in range(1, len(headers) + 1):
+                cell = ws.cell(row=1, column=c)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = center
+                cell.border = header_border
+            
+            
+            # Aggiungi righe vuote PRIMA di creare foglio nascosto
+            for i in range(2, 52):  # 50 righe vuote
+                ws.cell(row=i, column=1).value = ""  # Location
+                ws.cell(row=i, column=2).value = ""  # Component
+                ws.cell(row=i, column=3).value = ""  # Quantity
+            
+            # Crea foglio nascosto per lista locazioni
+            logger.info(f"Template Excel: creazione foglio nascosto con {len(locations)} locazioni")
+            ws_locations = wb.create_sheet("Locations")  # Nome semplice senza underscore
+            for idx, loc in enumerate(locations, start=1):
+                ws_locations.cell(row=idx, column=1).value = str(loc)  # Converti a stringa
+            
+            # NON nascondere il foglio per debug - l'utente può nasconderlo manualmente dopo
+            # ws_locations.sheet_state = 'hidden'
+            logger.info(f"Template Excel: foglio 'Locations' creato con {len(locations)} righe")
+            
+            # Data validation con riferimento diretto al foglio (senza Named Range)
+            try:
+                dv = DataValidation(
+                    type="list",
+                    formula1=f"=Locations!$A$1:$A${len(locations)}",  # Riferimento diretto
+                    allow_blank=True
+                )
+                dv.error = 'Seleziona una locazione valida'
+                dv.errorTitle = 'Locazione non valida'
+                ws.add_data_validation(dv)
+                dv.add('A2:A51')
+                logger.info("Template Excel: data validation aggiunta")
+            except Exception as e:
+                logger.error(f"Template Excel: ERRORE aggiunta data validation: {e}")
+                # Continua comunque - almeno il foglio con le locazioni sarà visibile
+            
+            # Autofit columns
+            ws.column_dimensions['A'].width = 30
+            ws.column_dimensions['B'].width = 40
+            ws.column_dimensions['C'].width = 15
+            
+            # Freeze header
+            ws.freeze_panes = "A2"
+            
+            # Salva file
+            temp_dir = r"C:\Temp"
+            os.makedirs(temp_dir, exist_ok=True)
+            filename = f"KanBan_Load_Template_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            fullpath = os.path.join(temp_dir, filename)
+            wb.save(fullpath)
+            
+            # Verifica che il file sia stato salvato
+            if os.path.exists(fullpath):
+                file_size = os.path.getsize(fullpath)
+                logger.info(f"Template Excel: file salvato correttamente: {fullpath} ({file_size} bytes)")
+            else:
+                logger.error(f"Template Excel: ERRORE - file non trovato dopo save: {fullpath}")
+            
+            # Chiedi se aprire
+            msg = self.lang.get('template_generated_msg', 'Template generato: {path}\nAprirlo ora?').format(path=fullpath)
+            if messagebox.askyesno(self.lang.get('info_title', 'Informazione'), msg, parent=self):
+                try:
+                    if hasattr(os, 'startfile'):
+                        os.startfile(fullpath)
+                except Exception as e:
+                    messagebox.showerror(
+                        self.lang.get('error_title', 'Errore'),
+                        f'Impossibile aprire il file: {e}',
+                        parent=self
+                    )
+        
+        except Exception as e:
+            messagebox.showerror(
+                self.lang.get('error_title', 'Errore'),
+                self.lang.get('template_generation_error', 'Errore generazione template: {error}').format(error=e),
+                parent=self
+            )
 
     def _on_import_excel(self):
         """
@@ -11489,9 +11681,24 @@ class App(tk.Tk):
                 if manual:
                     self.after(0, lambda: messagebox.showerror(
                         self.lang.get('error_title', 'Errore'),
-                        "Connessione al database non disponibile. Riprovare piÃ¹ tardi."
+                        "Connessione al database non disponibile. Riprovare più tardi."
                     ))
                 return
+            
+            # Verifica se è già stata inviata una richiesta oggi (solo per esecuzioni automatiche)
+            if not manual:
+                try:
+                    sql_check = """
+                    SELECT COUNT(*) FROM knb.KanBanMaterialRequestes
+                    WHERE CAST(RequestedOn AS DATE) = CAST(GETDATE() AS DATE)
+                    """
+                    self.db.cursor.execute(sql_check)
+                    count_today = self.db.cursor.fetchone()[0]
+                    if count_today > 0:
+                        log.info(f"KanbanRefill: già inviate {count_today} richieste oggi. Skip esecuzione automatica.")
+                        return
+                except Exception as e:
+                    log.warning(f"KanbanRefill: errore verifica richieste giornaliere: {e}. Procedo comunque.")
         
             # 1. Stock corrente per componente
             log.info("Recupero stock corrente...")
@@ -11908,12 +12115,23 @@ class App(tk.Tk):
         logger.info("open_kanban_load chiamata - richiesta apertura form caricamento KanBan")
         ok = self._execute_authorized_action(
             menu_translation_key='kanban_load',
-            action_callback=lambda: KanbanMoveForm(self, self.db, self.lang)
+            action_callback=lambda: KanbanMoveForm(self, self.db, self.lang, mode='load')
         )
         if not ok:
             logger.warning("open_kanban_load - autorizzazione negata o annullata")
             return
         logger.info("open_kanban_load - form aperta con successo")
+    def open_kanban_move(self):
+        """Apre la maschera per il prelievo materiali KanBan con autorizzazione."""
+        logger.info("open_kanban_move chiamata - richiesta apertura form prelievo KanBan")
+        ok = self._execute_authorized_action(
+            menu_translation_key='kanban_move',
+            action_callback=lambda: KanbanMoveForm(self, self.db, self.lang, mode='unload')
+        )
+        if not ok:
+            logger.warning("open_kanban_move - autorizzazione negata o annullata")
+            return
+        logger.info("open_kanban_move - form aperta con successo")
 
     # Alias per compatibilitÃ  con diverse configurazioni menu
     def open_kanban_refill(self):
