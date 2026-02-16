@@ -115,6 +115,18 @@ class NpiDashboardWindow(tk.Toplevel):
             self.client_combo['values'] = ["Tutti i clienti"]
             self.client_combo.set("Tutti i clienti")
         
+        # Filtro Stato
+        ttk.Label(header_frame, text="Stato:", font=('Helvetica', 8)).pack(side=tk.LEFT, padx=(20, 5))
+        self.status_filter_var = tk.StringVar()
+        self.status_combo = ttk.Combobox(header_frame, textvariable=self.status_filter_var,
+                                        state="readonly", width=15)
+        self.status_combo.pack(side=tk.LEFT)
+        self.status_combo.bind('<<ComboboxSelected>>', lambda e: self.load_npi_projects())
+        
+        status_options = ["Tutti i progetti", "Solo in ritardo", "Solo chiusi", "Solo on track"]
+        self.status_combo['values'] = status_options
+        self.status_combo.set("Tutti i progetti")
+        
         # Canvas scrollabile orizzontalmente per le statistiche clienti
         canvas_frame = ttk.Frame(customer_frame)
         canvas_frame.pack(fill=tk.BOTH, expand=True)
@@ -180,6 +192,7 @@ class NpiDashboardWindow(tk.Toplevel):
 
         # Definizione dei tag
         self.project_tree.tag_configure('overdue', foreground='red', font=('Helvetica', 9, 'bold'))
+        self.project_tree.tag_configure('closed', foreground='green', font=('Helvetica', 9, 'bold'))  # Verde per progetti chiusi
         self.project_tree.tag_configure('selected_client', background='#E3F2FD')  # Light blue per cliente selezionato
         self.project_tree.tag_configure('high_completion', foreground='green', font=('Helvetica', 9, 'bold'))
         self.project_tree.tag_configure('medium_completion', foreground='orange', font=('Helvetica', 9, 'bold'))
@@ -346,7 +359,50 @@ class NpiDashboardWindow(tk.Toplevel):
                                                                         "", "", ""))
                 return
 
+            # Applica filtro stato
+            status_filter = self.status_filter_var.get() if hasattr(self, 'status_filter_var') else "Tutti i progetti"
+            
+            filtered_count = 0
             for proj in progetti:
+                # Recupera statistiche task PRIMA di applicare il filtro
+                # (necessario per determinare se il progetto è in ritardo)
+                try:
+                    stats = self.npi_manager.get_project_task_statistics(proj.ProgettoId)
+                    # I progetti chiusi hanno sempre 100% di completamento
+                    if proj.StatoProgetto == 'Chiuso':
+                        stats['completion_percentage'] = 100
+                except Exception as e:
+                    logger.error(f"Errore nel recupero statistiche task per progetto {proj.ProgettoId}: {e}")
+                    stats = {
+                        'total_tasks': 0,
+                        'completed_on_time': 0,
+                        'completed_late': 0,
+                        'pending_late': 0,
+                        'completion_percentage': 0
+                    }
+                
+                # Applica filtro stato basato sui task
+                if status_filter == "Solo chiusi":
+                    if proj.StatoProgetto != 'Chiuso':
+                        continue
+                elif status_filter == "Solo in ritardo":
+                    # Progetti con task in ritardo (pending_late > 0)
+                    if proj.StatoProgetto == 'Chiuso':
+                        continue
+                    if stats['pending_late'] == 0:
+                        logger.debug(f"Progetto {proj.ProgettoId} '{proj.NomeProgetto}' saltato: nessun task in ritardo")
+                        continue
+                    logger.debug(f"Progetto {proj.ProgettoId} '{proj.NomeProgetto}' IN RITARDO: {stats['pending_late']} task in ritardo")
+                elif status_filter == "Solo on track":
+                    # Progetti attivi senza task in ritardo
+                    if proj.StatoProgetto == 'Chiuso':
+                        continue
+                    if stats['pending_late'] > 0:
+                        continue
+                # "Tutti i progetti" - no filtering
+                
+                filtered_count += 1
+                
                 # Recupera la data fine progetto dall'oggetto progetto
                 project_end_date = getattr(proj, 'ScadenzaProgetto', None)
                 display_date = project_end_date.strftime('%d/%m/%Y') if project_end_date else "N/D"
@@ -354,7 +410,8 @@ class NpiDashboardWindow(tk.Toplevel):
                 row_tags = []
 
                 # Gestisce sia datetime.date che datetime.datetime
-                if project_end_date:
+                # I progetti chiusi non sono mai "in ritardo"
+                if project_end_date and proj.StatoProgetto != 'Chiuso':
                     # Converti in date se necessario
                     end_date = project_end_date.date() if hasattr(project_end_date, 'date') else project_end_date
                     is_overdue = end_date < datetime.now().date()
@@ -365,18 +422,11 @@ class NpiDashboardWindow(tk.Toplevel):
                     status_icon = 'X'
                     row_tags.append('overdue')
                 
-                # Recupera statistiche task per il progetto
-                try:
-                    stats = self.npi_manager.get_project_task_statistics(proj.ProgettoId)
-                except Exception as e:
-                    logger.error(f"Errore nel recupero statistiche task per progetto {proj.ProgettoId}: {e}")
-                    stats = {
-                        'total_tasks': 0,
-                        'completed_on_time': 0,
-                        'completed_late': 0,
-                        'pending_late': 0,
-                        'completion_percentage': 0
-                    }
+                # Progetti chiusi in verde
+                if proj.StatoProgetto == 'Chiuso':
+                    row_tags.append('closed')
+                
+                # Le statistiche sono già state recuperate sopra per il filtro
                 
                 # Evidenzia cliente selezionato
                 if client_filter and proj.Cliente == client_filter:
@@ -404,6 +454,10 @@ class NpiDashboardWindow(tk.Toplevel):
                     ),
                     tags=tuple(row_tags)
                 )
+            
+            # Log risultati filtro
+            if status_filter != "Tutti i progetti":
+                logger.info(f"Filtro '{status_filter}': {filtered_count} progetti su {len(progetti)} totali")
         except Exception as e:
             logger.error(f"Errore nel caricamento progetti dashboard: {e}", exc_info=True)
             self.project_tree.insert('', tk.END, text="-1",
@@ -450,11 +504,37 @@ class NpiDashboardWindow(tk.Toplevel):
         project_id, _ = self._get_selected_project_info()
         if project_id is None: return
 
+        # Recupera info progetto per determinare se è chiuso
+        try:
+            from npi.data_models import ProgettoNPI
+            session = self.npi_manager._get_session()
+            try:
+                project_obj = session.get(ProgettoNPI, project_id)
+                is_closed = project_obj and project_obj.StatoProgetto == 'Chiuso'
+                logger.debug(f"Progetto {project_id}: StatoProgetto = {project_obj.StatoProgetto if project_obj else 'NOT FOUND'}, is_closed = {is_closed}")
+            finally:
+                session.close()
+        except Exception as e:
+            logger.error(f"Errore nel recupero stato progetto {project_id}: {e}")
+            is_closed = False
+        
         context_menu = tk.Menu(self, tearoff=0)
         context_menu.add_command(label=self.lang.get('manage_project', "Gestisci Dettagli Task..."),
                                  command=self._launch_project_window)
         context_menu.add_command(label=self.lang.get('npi_view_gantt', "Visualizza Gantt..."),
                                  command=self._launch_gantt_window)
+        
+        # Aggiungi opzione "Riapri Progetto" solo per progetti chiusi
+        if is_closed:
+            logger.debug(f"Aggiunta opzione 'Riapri Progetto' al menu per progetto {project_id}")
+            context_menu.add_separator()
+            context_menu.add_command(
+                label=self.lang.get('npi_reopen_project', "Riapri Progetto"),
+                command=self._reopen_project_from_dashboard
+            )
+        else:
+            logger.debug(f"Opzione 'Riapri Progetto' NON aggiunta (progetto non chiuso)")
+        
         context_menu.post(event.x_root, event.y_root)
 
     def _launch_project_window(self):
@@ -473,6 +553,50 @@ class NpiDashboardWindow(tk.Toplevel):
             )
         else:  # Fallback
             ProjectWindow(self, self.npi_manager, self.lang, project_id, self.master_app, logged_user)
+
+    def _reopen_project_from_dashboard(self):
+        """Riapre un progetto chiuso dal menu contestuale del dashboard."""
+        project_id, project_name = self._get_selected_project_info()
+        if project_id is None:
+            return
+        
+        # Conferma dall'utente
+        confirm = messagebox.askyesno(
+            self.lang.get('npi_reopen_project', "Riapri Progetto"),
+            self.lang.get('npi_reopen_project_confirm', 
+                         f"Sei sicuro di voler riaprire il progetto '{project_name}'?\n\n"
+                         f"Il progetto tornerà allo stato 'Attivo'."),
+            parent=self
+        )
+        
+        if not confirm:
+            return
+        
+        try:
+            success = self.npi_manager.reopen_project(project_id)
+            if success:
+                messagebox.showinfo(
+                    self.lang.get('success', "Successo"),
+                    self.lang.get('npi_reopen_project_success', 
+                                 f"Progetto '{project_name}' riaperto con successo."),
+                    parent=self
+                )
+                # Ricarica la lista progetti per aggiornare la visualizzazione
+                self.load_npi_projects()
+            else:
+                messagebox.showerror(
+                    self.lang.get('error', "Errore"),
+                    self.lang.get('npi_reopen_project_failed', 
+                                 "Impossibile riaprire il progetto."),
+                    parent=self
+                )
+        except Exception as e:
+            logger.error(f"Errore nella riapertura del progetto {project_id}: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', "Errore"),
+                f"Errore: {str(e)}",
+                parent=self
+            )
 
     def _launch_gantt_window(self):
         """Apre la finestra Gantt per il progetto selezionato."""

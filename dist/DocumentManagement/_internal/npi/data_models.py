@@ -321,3 +321,42 @@ class TaskDependency(Base):
     
     def __repr__(self):
         return f"<TaskDependency(ID={self.DependencyID}, Task={self.TaskProdottoID} depends on {self.DependsOnTaskProdottoID})>"
+
+
+
+# ========================================
+# 12. FamilyNpi
+# ========================================
+class FamilyNpi(Base):
+    __tablename__ = 'FamilyNpis'
+    __table_args__ = {'schema': 'dbo'}
+    
+    FamilyNpiID = Column(Integer, primary_key=True, autoincrement=True)
+    NpiFamily = Column(String(255), nullable=False)
+    DateEnd = Column(DateTime, nullable=True)
+    
+    # Relationship to logs (family-task links)
+    logs = relationship("FamilyNpiLog", back_populates="family", cascade="all, delete-orphan")
+    
+    def __repr__(self):
+        return f"<FamilyNpi(FamilyNpiID={self.FamilyNpiID}, NpiFamily='{self.NpiFamily}')>"
+
+
+# ========================================
+# 13. FamilyNpiLog (serves as both link table and audit log)
+# ========================================
+class FamilyNpiLog(Base):
+    __tablename__ = 'FamilyNpiLogs'
+    __table_args__ = {'schema': 'dbo'}
+    
+    FamilyNpiLogID = Column(Integer, primary_key=True, autoincrement=True)
+    FamilyNpiID = Column(Integer, ForeignKey('dbo.FamilyNpis.FamilyNpiID'), nullable=False)
+    TaskID = Column(Integer, ForeignKey('dbo.TaskCatalogo.TaskID'), nullable=False)
+    DateEnd = Column(DateTime, nullable=True)
+    
+    # Relationships
+    family = relationship("FamilyNpi", back_populates="logs")
+    task = relationship("TaskCatalogo")
+    
+    def __repr__(self):
+        return f"<FamilyNpiLog(FamilyNpiLogID={self.FamilyNpiLogID}, FamilyNpiID={self.FamilyNpiID}, TaskID={self.TaskID})>"

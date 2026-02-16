@@ -176,7 +176,8 @@ class ProductManagementFrame(ttk.Frame):
         paned_window.add(list_frame, weight=1)
 
         cols = (self.lang.get('col_id'), self.lang.get('col_product_code'), self.lang.get('col_product_name'),
-                self.lang.get('col_customer'), self.lang.get('label_version', 'Versione'))
+                self.lang.get('col_customer'), self.lang.get('label_version', 'Versione'),
+                self.lang.get('npi_project_owner_label', 'Owner Progetto'))
         self.column_names = cols
         self.tree = ttk.Treeview(list_frame, columns=cols, show='headings', selectmode='browse')
         
@@ -188,6 +189,7 @@ class ProductManagementFrame(ttk.Frame):
         self.tree.column(cols[2], width=200)
         self.tree.column(cols[3], width=150)
         self.tree.column(cols[4], width=80)
+        self.tree.column(cols[5], width=120)
         self.tree.pack(fill=tk.BOTH, expand=True)
         self.tree.bind('<<TreeviewSelect>>', self._on_product_select)
 
@@ -280,9 +282,17 @@ class ProductManagementFrame(ttk.Frame):
         # Inizializza lista documenti temporanea
         self.project_documents = []
         
-        self.create_project_button = ttk.Button(project_frame, text=self.lang.get('btn_create_npi_project'),
+        # Frame per i pulsanti progetto
+        project_buttons_frame = ttk.Frame(project_frame)
+        project_buttons_frame.pack(pady=10)
+        
+        self.create_project_button = ttk.Button(project_buttons_frame, text=self.lang.get('btn_create_npi_project'),
                                                 command=self._create_npi_project, state=tk.DISABLED)
-        self.create_project_button.pack(pady=10)
+        self.create_project_button.pack(side=tk.LEFT, padx=5)
+        
+        self.update_project_button = ttk.Button(project_buttons_frame, text=self.lang.get('btn_update_npi_project', 'Aggiorna Progetto'),
+                                                command=self._update_npi_project, state=tk.DISABLED)
+        self.update_project_button.pack(side=tk.LEFT, padx=5)
 
         self._load_products()
 
@@ -293,6 +303,7 @@ class ProductManagementFrame(ttk.Frame):
         # Carica i soggetti per il combobox owner
         soggetti = self.npi_manager.get_soggetti()
         self.soggetti_map = {s.Nome: s.SoggettoId for s in soggetti}
+        self.soggetti_map_rev = {v: k for k, v in self.soggetti_map.items()}
         self.project_owner_combo['values'] = [''] + list(self.soggetti_map.keys())
         
         # Reset cache dati e stato ordinamento
@@ -300,14 +311,21 @@ class ProductManagementFrame(ttk.Frame):
         self.sort_state = {}
         
         if products:
-            # Recupera i progetti NPI per ottenere le versioni
+            # Recupera i progetti NPI per ottenere versioni e owner
             progetti = self.npi_manager.get_progetti_attivi()
-            # Crea una mappa prodotto_id -> versione (progetti ora sono dizionari)
-            version_map = {p['ProdottoID']: p['Version'] for p in progetti if p.get('Version')}
+            
+            # Crea mappe prodotto_id -> (versione, owner_name)
+            version_map = {p['ProdottoID']: p.get('Version', '') for p in progetti}
+            owner_map = {}
+            for p in progetti:
+                owner_id = p.get('OwnerID')
+                owner_name = self.soggetti_map_rev.get(owner_id, '') if owner_id else ''
+                owner_map[p['ProdottoID']] = owner_name
             
             for p in products:
                 version = version_map.get(p.ProdottoID, "")
-                row_data = (p.ProdottoID, p.CodiceProdotto or "", p.NomeProdotto, p.Cliente or "", version)
+                owner = owner_map.get(p.ProdottoID, "")
+                row_data = (p.ProdottoID, p.CodiceProdotto or "", p.NomeProdotto, p.Cliente or "", version, owner)
                 self.current_data.append(row_data)
                 self.tree.insert('', tk.END, values=row_data)
         
@@ -322,6 +340,13 @@ class ProductManagementFrame(ttk.Frame):
         if prodotto:
             self._populate_form(prodotto)
             self.create_project_button.config(state=tk.NORMAL)
+            
+            # Abilita pulsante Aggiorna solo se il progetto esiste
+            progetto = self.npi_manager.get_progetto_by_prodotto(self.selected_product_id)
+            if progetto:
+                self.update_project_button.config(state=tk.NORMAL)
+            else:
+                self.update_project_button.config(state=tk.DISABLED)
 
     def _populate_form(self, prodotto):
         self._clear_form(clear_selection=False)
@@ -329,12 +354,31 @@ class ProductManagementFrame(ttk.Frame):
         self.fields['CodiceProdotto'].insert(0, prodotto.CodiceProdotto or "")
         self.fields['NomeProdotto'].insert(0, prodotto.NomeProdotto or "")
         self.fields['Cliente'].insert(0, prodotto.Cliente or "")
+        
+        # Carica i dati del progetto associato (versione e owner)
+        progetto = self.npi_manager.get_progetto_by_prodotto(prodotto.ProdottoID)
+        if progetto:
+            # Popola campo Versione
+            if progetto.Version:
+                self.version_entry.delete(0, tk.END)
+                self.version_entry.insert(0, progetto.Version)
+            
+            # Popola campo Owner
+            if progetto.OwnerID and progetto.OwnerID in self.soggetti_map_rev:
+                owner_name = self.soggetti_map_rev[progetto.OwnerID]
+                self.project_owner_combo.set(owner_name)
 
     def _clear_form(self, clear_selection=True):
         self.selected_product_id = None
         if clear_selection and self.tree.selection(): self.tree.selection_remove(self.tree.selection())
         self.create_project_button.config(state=tk.DISABLED)
+        self.update_project_button.config(state=tk.DISABLED)
         for field in self.fields.values(): field.delete(0, tk.END)
+        # Pulisci anche i campi del progetto
+        self.version_entry.delete(0, tk.END)
+        self.project_owner_combo.set('')
+        self.project_description_text.delete('1.0', tk.END)
+        self._clear_project_documents()
 
     def _save_product(self):
         data = {key: widget.get() for key, widget in self.fields.items()}
@@ -459,6 +503,18 @@ class ProductManagementFrame(ttk.Frame):
         owner_id = self.soggetti_map.get(owner_name) if owner_name else None
         descrizione = self.project_description_text.get('1.0', tk.END).strip() or None
         
+        # 🆕 VALIDAZIONE OWNER OBBLIGATORIO
+        if not owner_id:
+            messagebox.showerror(
+                self.lang.get('npi_owner_required_title', 'Owner Obbligatorio'),
+                self.lang.get('npi_owner_required_message',
+                             '⚠️ OWNER PROGETTO OBBLIGATORIO\n\n'
+                             'Non è possibile creare un progetto senza un Owner.\n\n'
+                             'Seleziona un Owner dal menu a tendina prima di salvare.'),
+                parent=self
+            )
+            return
+        
         try:
             add_defaults = bool(getattr(self, 'add_defaults_var', tk.BooleanVar(value=True)).get())
             progetto = self.npi_manager.create_progetto_npi_for_prodotto(
@@ -563,6 +619,87 @@ class ProductManagementFrame(ttk.Frame):
         except Exception as e:
             messagebox.showerror(self.lang.get('error_title'), self.lang.get('error_create_project').format(error=e),
                                  parent=self)
+    
+    def _update_npi_project(self):
+        """Aggiorna i dati di un progetto esistente (Owner, Versione, Descrizione)."""
+        if self.selected_product_id is None:
+            messagebox.showwarning(
+                self.lang.get('warning_no_selection_title'),
+                self.lang.get('warning_select_product_to_update_project', 'Seleziona un prodotto per aggiornare il progetto'),
+                parent=self
+            )
+            return
+        
+        # Verifica che il progetto esista
+        progetto = self.npi_manager.get_progetto_by_prodotto(self.selected_product_id)
+        if not progetto:
+            messagebox.showerror(
+                self.lang.get('error_title'),
+                self.lang.get('error_no_project_to_update', 'Nessun progetto trovato per questo prodotto'),
+                parent=self
+            )
+            return
+        
+        # Ottieni i dati dal form
+        version = self.version_entry.get().strip() or None
+        owner_name = self.project_owner_combo.get().strip()
+        owner_id = self.soggetti_map.get(owner_name) if owner_name else None
+        descrizione = self.project_description_text.get('1.0', tk.END).strip() or None
+        
+        # 🆕 VALIDAZIONE OWNER OBBLIGATORIO
+        if not owner_id:
+            messagebox.showerror(
+                self.lang.get('npi_owner_required_title', 'Owner Obbligatorio'),
+                self.lang.get('npi_owner_required_message',
+                             '⚠️ OWNER PROGETTO OBBLIGATORIO\n\n'
+                             'Non è possibile salvare un progetto senza un Owner.\n\n'
+                             'Seleziona un Owner dal menu a tendina prima di salvare.'),
+                parent=self
+            )
+            return
+        
+        try:
+            # Prepara i dati da aggiornare
+            update_data = {}
+            if version is not None:
+                update_data['Version'] = version
+            if owner_id is not None:
+                update_data['OwnerID'] = owner_id
+            if descrizione is not None:
+                update_data['Descrizione'] = descrizione
+            
+            # Aggiorna il progetto
+            if update_data:
+                self.npi_manager.update_progetto_npi(progetto.ProgettoId, update_data)
+            
+            # Aggiungi documenti se presenti
+            if self.project_documents:
+                for doc_data in self.project_documents:
+                    self.npi_manager.add_progetto_documento(
+                        progetto_id=progetto.ProgettoId,
+                        nome_file=doc_data['nome'],
+                        tipo_file=doc_data['tipo'],
+                        dimensione=doc_data['dimensione'],
+                        contenuto=doc_data['contenuto'],
+                        descrizione=None,
+                        caricato_da=None
+                    )
+            
+            messagebox.showinfo(
+                self.lang.get('success_title', 'Successo'),
+                self.lang.get('msg_project_updated', 'Progetto aggiornato con successo'),
+                parent=self
+            )
+            
+            # Ricarica la lista per mostrare le modifiche
+            self._load_products()
+            
+        except Exception as e:
+            messagebox.showerror(
+                self.lang.get('error_title'),
+                self.lang.get('error_update_project', 'Errore aggiornamento progetto').format(error=e),
+                parent=self
+            )
     
     def _add_project_document(self):
         """Aggiunge un documento alla lista temporanea."""
@@ -1662,12 +1799,16 @@ class NpiConfigWindow(tk.Toplevel):
         self.cat_frame = CategoryManagementFrame(notebook, self.npi_manager, self.lang)
         self.task_frame = TaskManagementFrame(notebook, self.npi_manager, self.lang)
         self.defaults_frame = DefaultCatalogFrame(notebook, self.npi_manager, self.lang)
+        self.family_frame = FamilyManagementFrame(notebook, self.npi_manager, self.lang)
+        self.family_links_frame = FamilyLinksManagementFrame(notebook, self.npi_manager, self.lang)
 
         notebook.add(self.subj_frame, text=self.lang.get('tab_subjects_title'))
         notebook.add(self.prod_frame, text=self.lang.get('tab_products_title'))
         notebook.add(self.cat_frame, text=self.lang.get('tab_categories_title'))
         notebook.add(self.task_frame, text=self.lang.get('tab_task_catalog_title'))
         notebook.add(self.defaults_frame, text=self.lang.get('tab_defaults_title', 'Defaults'))
+        notebook.add(self.family_frame, text=self.lang.get('tab_families_title', 'Famiglie'))
+        notebook.add(self.family_links_frame, text=self.lang.get('tab_family_links_title', 'Collegamenti Famiglie'))
 
         def on_tab_changed(event):
             try:
@@ -1994,7 +2135,7 @@ class TaskCatalogManagementFrame(ttk.Frame):
                 parent=self
             )
             return
-
+        
         if messagebox.askyesno(
                 self.lang.get('confirm_delete_title'),
                 self.lang.get('confirm_delete_task_text'),
@@ -2024,5 +2165,379 @@ class TaskCatalogManagementFrame(ttk.Frame):
                 messagebox.showerror(
                     self.lang.get('db_error_title'),
                     self.lang.get('db_error_delete_task').format(error=e),
+                    parent=self
+                )
+
+
+# --- Frame per la gestione delle Famiglie NPI ---
+class FamilyManagementFrame(ttk.Frame):
+    
+    def __init__(self, master, npi_manager, lang, **kwargs):
+        super().__init__(master, **kwargs)
+        self.npi_manager = npi_manager
+        self.lang = lang
+        self.selected_family_id = None
+        self.pack(fill=tk.BOTH, expand=True)
+        
+        # Paned window per lista e form
+        paned_window = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
+        paned_window.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Lista famiglie
+        list_frame = ttk.Frame(paned_window, padding=10)
+        paned_window.add(list_frame, weight=1)
+        
+        ttk.Label(list_frame, text=self.lang.get('family_list_title', 'Famiglie'), font=('Arial', 12, 'bold')).pack(pady=5)
+        
+        cols = (self.lang.get('col_id', 'ID'), self.lang.get('col_family_name', 'Nome Famiglia'))
+        self.tree = ttk.Treeview(list_frame, columns=cols, show='headings', selectmode='browse')
+        for col in cols:
+            self.tree.heading(col, text=col)
+        self.tree.column(cols[0], width=50)
+        self.tree.column(cols[1], width=250)
+        self.tree.pack(fill=tk.BOTH, expand=True)
+        self.tree.bind('<<TreeviewSelect>>', self._on_family_select)
+        
+        # Form dettagli famiglia
+        form_frame = ttk.LabelFrame(paned_window, text=self.lang.get('family_details_title', 'Dettagli Famiglia'), padding=10)
+        paned_window.add(form_frame, weight=2)
+        
+        ttk.Label(form_frame, text=self.lang.get('label_family_name', 'Nome Famiglia:')).grid(row=0, column=0, sticky=tk.W, pady=5)
+        self.family_name_entry = ttk.Entry(form_frame, width=40)
+        self.family_name_entry.grid(row=0, column=1, sticky=tk.EW, padx=5, pady=5)
+        form_frame.columnconfigure(1, weight=1)
+        
+        # Pulsanti
+        btn_frame = ttk.Frame(form_frame)
+        btn_frame.grid(row=1, column=0, columnspan=2, pady=10)
+        
+        ttk.Button(btn_frame, text=self.lang.get('btn_new', 'Nuovo'), command=self._new_family).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text=self.lang.get('btn_save', 'Salva'), command=self._save_family).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text=self.lang.get('btn_delete', 'Elimina'), command=self._delete_family).pack(side=tk.LEFT, padx=5)
+        
+        self._load_families()
+    
+    def _load_families(self):
+        """Carica tutte le famiglie attive."""
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        
+        try:
+            families = self.npi_manager.get_families()
+            for family in families:
+                self.tree.insert('', tk.END, values=(family.FamilyNpiID, family.NpiFamily))
+        except Exception as e:
+            messagebox.showerror(
+                self.lang.get('db_error_title', 'Errore Database'),
+                f"Errore caricamento famiglie: {e}",
+                parent=self
+            )
+    
+    def _on_family_select(self, event=None):
+        """Gestisce la selezione di una famiglia."""
+        selection = self.tree.selection()
+        if not selection:
+            return
+        
+        item = self.tree.item(selection[0])
+        self.selected_family_id = item['values'][0]
+        
+        try:
+            family = self.npi_manager.get_family_by_id(self.selected_family_id)
+            if family:
+                self.family_name_entry.delete(0, tk.END)
+                self.family_name_entry.insert(0, family.NpiFamily)
+        except Exception as e:
+            messagebox.showerror(
+                self.lang.get('db_error_title', 'Errore Database'),
+                f"Errore caricamento famiglia: {e}",
+                parent=self
+            )
+    
+    def _new_family(self):
+        """Pulisce il form per creare una nuova famiglia."""
+        self.selected_family_id = None
+        self.family_name_entry.delete(0, tk.END)
+        self.tree.selection_remove(*self.tree.selection())
+    
+    def _save_family(self):
+        """Salva (crea o aggiorna) una famiglia."""
+        family_name = self.family_name_entry.get().strip()
+        
+        if not family_name:
+            messagebox.showwarning(
+                self.lang.get('validation_error_title', 'Validazione'),
+                self.lang.get('family_name_required', 'Il nome della famiglia è obbligatorio'),
+                parent=self
+            )
+            return
+        
+        try:
+            if self.selected_family_id:
+                # Aggiorna famiglia esistente
+                self.npi_manager.update_family(self.selected_family_id, {'NpiFamily': family_name})
+                messagebox.showinfo(
+                    self.lang.get('success_title', 'Successo'),
+                    self.lang.get('family_updated', 'Famiglia aggiornata con successo'),
+                    parent=self
+                )
+            else:
+                # Crea nuova famiglia
+                self.npi_manager.create_family({'NpiFamily': family_name})
+                messagebox.showinfo(
+                    self.lang.get('success_title', 'Successo'),
+                    self.lang.get('family_created', 'Famiglia creata con successo'),
+                    parent=self
+                )
+            
+            self._load_families()
+            self._new_family()
+        except ValueError as e:
+            messagebox.showwarning(
+                self.lang.get('validation_error_title', 'Validazione'),
+                str(e),
+                parent=self
+            )
+        except Exception as e:
+            messagebox.showerror(
+                self.lang.get('db_error_title', 'Errore Database'),
+                f"Errore salvataggio famiglia: {e}",
+                parent=self
+            )
+    
+    def _delete_family(self):
+        """Elimina (soft delete) una famiglia."""
+        if not self.selected_family_id:
+            messagebox.showwarning(
+                self.lang.get('validation_error_title', 'Validazione'),
+                self.lang.get('select_family_first', 'Seleziona prima una famiglia'),
+                parent=self
+            )
+            return
+        
+        if messagebox.askyesno(
+                self.lang.get('confirm_delete_title', 'Conferma Eliminazione'),
+                self.lang.get('confirm_delete_family', 'Sei sicuro di voler eliminare questa famiglia?'),
+                parent=self
+        ):
+            try:
+                self.npi_manager.delete_family(self.selected_family_id)
+                messagebox.showinfo(
+                    self.lang.get('success_title', 'Successo'),
+                    self.lang.get('family_deleted', 'Famiglia eliminata con successo'),
+                    parent=self
+                )
+                self._load_families()
+                self._new_family()
+            except Exception as e:
+                messagebox.showerror(
+                    self.lang.get('db_error_title', 'Errore Database'),
+                    f"Errore eliminazione famiglia: {e}",
+                    parent=self
+                )
+
+
+# --- Frame per la gestione dei Collegamenti Famiglie-Task ---
+class FamilyLinksManagementFrame(ttk.Frame):
+    
+    def __init__(self, master, npi_manager, lang, **kwargs):
+        super().__init__(master, **kwargs)
+        self.npi_manager = npi_manager
+        self.lang = lang
+        self.selected_family_id = None
+        self.pack(fill=tk.BOTH, expand=True)
+        
+        main_frame = ttk.Frame(self, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Selezione famiglia
+        selector_frame = ttk.LabelFrame(main_frame, text=self.lang.get('select_family_title', 'Seleziona Famiglia'), padding=10)
+        selector_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(selector_frame, text=self.lang.get('label_family', 'Famiglia:')).pack(side=tk.LEFT, padx=5)
+        self.family_combo = ttk.Combobox(selector_frame, state='readonly', width=40)
+        self.family_combo.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        self.family_combo.bind('<<ComboboxSelected>>', self._on_family_change)
+        
+        # Paned window per task collegati e disponibili
+        paned_window = ttk.PanedWindow(main_frame, orient=tk.HORIZONTAL)
+        paned_window.pack(fill=tk.BOTH, expand=True)
+        
+        # Task collegati
+        linked_frame = ttk.LabelFrame(paned_window, text=self.lang.get('linked_tasks_title', 'Task Collegati'), padding=10)
+        paned_window.add(linked_frame, weight=1)
+        
+        cols_linked = (self.lang.get('col_id', 'ID'), self.lang.get('col_task_name', 'Nome Task'), self.lang.get('col_category', 'Categoria'))
+        self.linked_tree = ttk.Treeview(linked_frame, columns=cols_linked, show='headings', selectmode='browse')
+        for col in cols_linked:
+            self.linked_tree.heading(col, text=col)
+        self.linked_tree.column(cols_linked[0], width=50)
+        self.linked_tree.column(cols_linked[1], width=200)
+        self.linked_tree.column(cols_linked[2], width=150)
+        self.linked_tree.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
+        
+        ttk.Button(linked_frame, text=self.lang.get('btn_unlink', 'Scollega'), command=self._unlink_task).pack()
+        
+        # Task disponibili
+        available_frame = ttk.LabelFrame(paned_window, text=self.lang.get('available_tasks_title', 'Task Disponibili'), padding=10)
+        paned_window.add(available_frame, weight=1)
+        
+        cols_available = (self.lang.get('col_id', 'ID'), self.lang.get('col_task_name', 'Nome Task'), self.lang.get('col_category', 'Categoria'))
+        self.available_tree = ttk.Treeview(available_frame, columns=cols_available, show='headings', selectmode='browse')
+        for col in cols_available:
+            self.available_tree.heading(col, text=col)
+        self.available_tree.column(cols_available[0], width=50)
+        self.available_tree.column(cols_available[1], width=200)
+        self.available_tree.column(cols_available[2], width=150)
+        self.available_tree.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
+        
+        ttk.Button(available_frame, text=self.lang.get('btn_link', 'Collega'), command=self._link_task).pack()
+        
+        self._load_families()
+    
+    def _load_families(self):
+        """Carica la lista delle famiglie nel combobox."""
+        try:
+            families = self.npi_manager.get_families()
+            self.family_data = {f.NpiFamily: f.FamilyNpiID for f in families}
+            self.family_combo['values'] = list(self.family_data.keys())
+            if self.family_combo['values']:
+                self.family_combo.current(0)
+                self._on_family_change()
+        except Exception as e:
+            messagebox.showerror(
+                self.lang.get('db_error_title', 'Errore Database'),
+                f"Errore caricamento famiglie: {e}",
+                parent=self
+            )
+    
+    def _on_family_change(self, event=None):
+        """Gestisce il cambio di famiglia selezionata."""
+        selected_name = self.family_combo.get()
+        if not selected_name:
+            return
+        
+        self.selected_family_id = self.family_data.get(selected_name)
+        if self.selected_family_id:
+            self._load_linked_tasks()
+            self._load_available_tasks()
+    
+    def _load_linked_tasks(self):
+        """Carica i task collegati alla famiglia selezionata."""
+        for item in self.linked_tree.get_children():
+            self.linked_tree.delete(item)
+        
+        if not self.selected_family_id:
+            return
+        
+        try:
+            links = self.npi_manager.get_family_links(self.selected_family_id)
+            for link in links:
+                task = link.task
+                category_name = task.categoria.Category if task.categoria else 'N/A'
+                self.linked_tree.insert('', tk.END, values=(link.FamilyNpiLogID, task.NomeTask, category_name))
+        except Exception as e:
+            messagebox.showerror(
+                self.lang.get('db_error_title', 'Errore Database'),
+                f"Errore caricamento task collegati: {e}",
+                parent=self
+            )
+    
+    def _load_available_tasks(self):
+        """Carica i task disponibili (non collegati) per la famiglia selezionata."""
+        for item in self.available_tree.get_children():
+            self.available_tree.delete(item)
+        
+        if not self.selected_family_id:
+            return
+        
+        try:
+            tasks = self.npi_manager.get_available_tasks_for_family(self.selected_family_id)
+            for task in tasks:
+                category_name = task.categoria.Category if task.categoria else 'N/A'
+                self.available_tree.insert('', tk.END, values=(task.TaskID, task.NomeTask, category_name))
+        except Exception as e:
+            messagebox.showerror(
+                self.lang.get('db_error_title', 'Errore Database'),
+                f"Errore caricamento task disponibili: {e}",
+                parent=self
+            )
+    
+    def _link_task(self):
+        """Collega un task alla famiglia selezionata."""
+        if not self.selected_family_id:
+            messagebox.showwarning(
+                self.lang.get('validation_error_title', 'Validazione'),
+                self.lang.get('select_family_first', 'Seleziona prima una famiglia'),
+                parent=self
+            )
+            return
+        
+        selection = self.available_tree.selection()
+        if not selection:
+            messagebox.showwarning(
+                self.lang.get('validation_error_title', 'Validazione'),
+                self.lang.get('select_task_first', 'Seleziona prima un task'),
+                parent=self
+            )
+            return
+        
+        item = self.available_tree.item(selection[0])
+        task_id = item['values'][0]
+        
+        try:
+            self.npi_manager.create_family_link(self.selected_family_id, task_id)
+            messagebox.showinfo(
+                self.lang.get('success_title', 'Successo'),
+                self.lang.get('link_created', 'Collegamento creato con successo'),
+                parent=self
+            )
+            self._load_linked_tasks()
+            self._load_available_tasks()
+        except ValueError as e:
+            messagebox.showwarning(
+                self.lang.get('validation_error_title', 'Validazione'),
+                str(e),
+                parent=self
+            )
+        except Exception as e:
+            messagebox.showerror(
+                self.lang.get('db_error_title', 'Errore Database'),
+                f"Errore creazione collegamento: {e}",
+                parent=self
+            )
+    
+    def _unlink_task(self):
+        """Scollega un task dalla famiglia selezionata."""
+        selection = self.linked_tree.selection()
+        if not selection:
+            messagebox.showwarning(
+                self.lang.get('validation_error_title', 'Validazione'),
+                self.lang.get('select_link_first', 'Seleziona prima un collegamento'),
+                parent=self
+            )
+            return
+        
+        item = self.linked_tree.item(selection[0])
+        link_id = item['values'][0]
+        
+        if messagebox.askyesno(
+                self.lang.get('confirm_delete_title', 'Conferma Eliminazione'),
+                self.lang.get('confirm_unlink_task', 'Sei sicuro di voler scollegare questo task?'),
+                parent=self
+        ):
+            try:
+                self.npi_manager.delete_family_link(link_id)
+                messagebox.showinfo(
+                    self.lang.get('success_title', 'Successo'),
+                    self.lang.get('link_deleted', 'Collegamento eliminato con successo'),
+                    parent=self
+                )
+                self._load_linked_tasks()
+                self._load_available_tasks()
+            except Exception as e:
+                messagebox.showerror(
+                    self.lang.get('db_error_title', 'Errore Database'),
+                    f"Errore eliminazione collegamento: {e}",
                     parent=self
                 )

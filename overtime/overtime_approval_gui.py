@@ -312,14 +312,8 @@ WHERE s.ApprovelDate IS NULL
             if requester_id:
                 from .overtime_manager import OvertimeManager
                 manager = OvertimeManager(self.db)
-                manager.send_approval_notification(
-                    request_id=request_id,
-                    request_number=request_number,
-                    requester_id=requester_id,
-                    approved=approve,
-                    approver_name=self.user_name
-                )
-                
+                approval_pdf = None
+
                 # Genera PDF di conferma approvazione (solo se approvato)
                 if approve:
                     approval_pdf = manager.generate_approval_confirmation_pdf(
@@ -328,6 +322,15 @@ WHERE s.ApprovelDate IS NULL
                     )
                     if approval_pdf:
                         logger.info(f"Approval confirmation PDF generated: {approval_pdf}")
+
+                manager.send_approval_notification(
+                    request_id=request_id,
+                    request_number=request_number,
+                    requester_id=requester_id,
+                    approved=approve,
+                    approver_name=self.user_name,
+                    attachment_path=approval_pdf
+                )
             
             messagebox.showinfo(
                 self.lang.get('success', 'Successo'),

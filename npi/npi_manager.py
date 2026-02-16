@@ -7,7 +7,8 @@ from sqlalchemy.engine import Engine
 from sqlalchemy import select, update, delete, func, and_, or_, event, text, case
 from sqlalchemy.pool import QueuePool
 from npi.data_models import (ProgettoNPI, Base, Prodotto, Soggetto, TaskCatalogo,
-                             Categoria, WaveNPI, TaskProdotto, NpiDocument, NpiDocumentType, TaskDependency)
+                             Categoria, WaveNPI, TaskProdotto, NpiDocument, NpiDocumentType, TaskDependency,
+                             FamilyNpi, FamilyNpiLog)
 import urllib
 
 logger = logging.getLogger(__name__)
@@ -732,7 +733,8 @@ class GestoreNPI:
                        p.CodiceProdotto,
                        p.NomeProdotto,
                        n.[Version],
-                       n.ProdottoID
+                       n.ProdottoID,
+                       n.OwnerID
                 FROM [Traceability_RS].[dbo].[ProgettiNPI] n 
                 INNER JOIN Prodotti p ON p.ProdottoID = n.ProdottoID
                 INNER JOIN WaveNPI w ON w.ProgettoID = n.ProgettoID
@@ -744,7 +746,8 @@ class GestoreNPI:
                          p.CodiceProdotto,
                          p.NomeProdotto,
                          n.[Version],
-                         n.ProdottoID
+                         n.ProdottoID,
+                         n.OwnerID
                 ORDER BY p.Cliente + ' -> ' + p.CodiceProdotto + ' (Version: ' + ISNULL(n.[version],'#N/D') + ') ' + p.NomeProdotto, n.[Version]
             """
             
@@ -761,7 +764,8 @@ class GestoreNPI:
                     'CodiceProdotto': row[3],
                     'NomeProdotto': row[4],
                     'Version': row[5],
-                    'ProdottoID': row[6]
+                    'ProdottoID': row[6],
+                    'OwnerID': row[7]
                 })
             
             return progetti
@@ -1500,6 +1504,16 @@ class GestoreNPI:
 
             session.commit()
             session.refresh(task)
+            
+            # Auto-chiudi il progetto se tutti i task sono completati
+            if 'DataCompletamento' in data and data['DataCompletamento'] is not None:
+                # Recupera il ProgettoID dal task
+                wave = session.get(WaveNPI, task.WaveID)
+                if wave:
+                    try:
+                        self.auto_update_project_status(wave.ProgettoID)
+                    except Exception as e:
+                        logger.warning(f"Errore auto-chiusura progetto {wave.ProgettoID}: {e}")
 
             return self._detach_object(session, task)
         except Exception as e:
@@ -2727,11 +2741,12 @@ class GestoreNPI:
         try:
             today = datetime.now().date()
             
-            # Recupera tutti i task del progetto
+            # Recupera tutti i task ASSEGNATI del progetto (OwnerID NOT NULL)
             tasks = session.scalars(
                 select(TaskProdotto)
-                .join(WaveNPI)
+                .join(WaveNPI, TaskProdotto.WaveID == WaveNPI.WaveID)
                 .where(WaveNPI.ProgettoID == project_id)
+                .where(TaskProdotto.OwnerID.isnot(None))  # Solo task assegnati
             ).all()
             
             if not tasks:
@@ -4406,3 +4421,508 @@ class GestoreNPI:
                 'has_hierarchy': False,
                 'projects': []
             }
+
+    # ========================================
+    # FAMILY MANAGEMENT METHODS
+    # ========================================
+    
+    def get_families(self, filter_text=None):
+        """
+        Recupera tutte le famiglie attive (DateEnd IS NULL).
+        
+        Args:
+            filter_text: Filtro opzionale sul nome della famiglia
+            
+        Returns:
+            Lista di FamilyNpi ordinati per NpiFamily
+        """
+        from npi.data_models import FamilyNpi
+        from sqlalchemy import select
+        
+        session = self._get_session()
+        try:
+            stmt = select(FamilyNpi).where(FamilyNpi.DateEnd.is_(None))
+            
+            if filter_text:
+                stmt = stmt.where(FamilyNpi.NpiFamily.like(f'%{filter_text}%'))
+            
+            stmt = stmt.order_by(FamilyNpi.NpiFamily)
+            families = session.scalars(stmt).all()
+            
+            return self._detach_list(session, families)
+        except Exception as e:
+            logger.error(f"Errore in get_families: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+    
+    def get_family_by_id(self, family_id):
+        """Recupera una famiglia per ID."""
+        from npi.data_models import FamilyNpi
+        
+        session = self._get_session()
+        try:
+            family = session.get(FamilyNpi, family_id)
+            return self._detach_object(session, family)
+        except Exception as e:
+            logger.error(f"Errore in get_family_by_id: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+    
+    def is_family_name_unique(self, name, exclude_id=None):
+        """
+        Verifica se il nome della famiglia è unico tra le famiglie attive.
+        
+        Args:
+            name: Nome della famiglia da verificare
+            exclude_id: ID famiglia da escludere (per update)
+            
+        Returns:
+            True se il nome è unico, False altrimenti
+        """
+        from npi.data_models import FamilyNpi
+        from sqlalchemy import select, and_
+        
+        session = self._get_session()
+        try:
+            stmt = select(FamilyNpi).where(
+                and_(
+                    FamilyNpi.NpiFamily == name,
+                    FamilyNpi.DateEnd.is_(None)
+                )
+            )
+            
+            if exclude_id:
+                stmt = stmt.where(FamilyNpi.FamilyNpiID != exclude_id)
+            
+            existing = session.scalars(stmt).first()
+            return existing is None
+        except Exception as e:
+            logger.error(f"Errore in is_family_name_unique: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+    
+    def create_family(self, data):
+        """
+        Crea una nuova famiglia con validazione unicità nome.
+        
+        Args:
+            data: Dizionario con i dati della famiglia (NpiFamily)
+            
+        Returns:
+            FamilyNpi creato
+        """
+        from npi.data_models import FamilyNpi
+        
+        session = self._get_session()
+        try:
+            # Validazione unicità nome
+            family_name = data.get('NpiFamily', '').strip()
+            if not family_name:
+                raise ValueError("Il nome della famiglia è obbligatorio")
+            
+            if not self.is_family_name_unique(family_name):
+                raise ValueError(f"Esiste già una famiglia con il nome '{family_name}'")
+            
+            new_family = FamilyNpi(NpiFamily=family_name, DateEnd=None)
+            session.add(new_family)
+            session.commit()
+            session.refresh(new_family)
+            
+            logger.info(f"Famiglia creata: {family_name} (ID: {new_family.FamilyNpiID})")
+            return self._detach_object(session, new_family)
+        except Exception as e:
+            logger.error(f"Errore in create_family: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+    
+    def update_family(self, family_id, data):
+        """
+        Aggiorna una famiglia esistente con validazione unicità nome.
+        
+        Args:
+            family_id: ID della famiglia da aggiornare
+            data: Dizionario con i nuovi dati
+            
+        Returns:
+            FamilyNpi aggiornato o None se non trovato
+        """
+        from npi.data_models import FamilyNpi
+        
+        session = self._get_session()
+        try:
+            family = session.get(FamilyNpi, family_id)
+            if not family or family.DateEnd is not None:
+                return None
+            
+            # Validazione unicità nome
+            new_name = data.get('NpiFamily', '').strip()
+            if not new_name:
+                raise ValueError("Il nome della famiglia è obbligatorio")
+            
+            if not self.is_family_name_unique(new_name, exclude_id=family_id):
+                raise ValueError(f"Esiste già una famiglia con il nome '{new_name}'")
+            
+            family.NpiFamily = new_name
+            session.commit()
+            session.refresh(family)
+            
+            logger.info(f"Famiglia aggiornata: ID {family_id} -> '{new_name}'")
+            return self._detach_object(session, family)
+        except Exception as e:
+            logger.error(f"Errore in update_family: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+    
+    def delete_family(self, family_id):
+        """
+        Soft delete di una famiglia (imposta DateEnd).
+        Rimuove anche tutti i collegamenti attivi con i task.
+        
+        Args:
+            family_id: ID della famiglia da eliminare
+            
+        Returns:
+            True se eliminata, False se non trovata
+        """
+        from npi.data_models import FamilyNpi, FamilyNpiLog
+        from datetime import datetime
+        from sqlalchemy import update, and_
+        
+        session = self._get_session()
+        try:
+            family = session.get(FamilyNpi, family_id)
+            if not family or family.DateEnd is not None:
+                return False
+            
+            # Soft delete della famiglia
+            now = datetime.now()
+            family.DateEnd = now
+            
+            # Soft delete di tutti i collegamenti attivi
+            session.execute(
+                update(FamilyNpiLog)
+                .where(
+                    and_(
+                        FamilyNpiLog.FamilyNpiID == family_id,
+                        FamilyNpiLog.DateEnd.is_(None)
+                    )
+                )
+                .values(DateEnd=now)
+            )
+            
+            session.commit()
+            logger.info(f"Famiglia eliminata (soft delete): ID {family_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Errore in delete_family: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+    
+    def get_family_links(self, family_id=None):
+        """
+        Recupera i collegamenti famiglia-task attivi.
+        
+        Args:
+            family_id: Filtra per famiglia specifica (opzionale)
+            
+        Returns:
+            Lista di FamilyNpiLog con task e categoria caricati
+        """
+        from npi.data_models import FamilyNpiLog, TaskCatalogo
+        from sqlalchemy import select
+        from sqlalchemy.orm import joinedload
+        
+        session = self._get_session()
+        try:
+            stmt = select(FamilyNpiLog).options(
+                joinedload(FamilyNpiLog.task).joinedload(TaskCatalogo.categoria),
+                joinedload(FamilyNpiLog.family)
+            ).where(FamilyNpiLog.DateEnd.is_(None))
+            
+            if family_id:
+                stmt = stmt.where(FamilyNpiLog.FamilyNpiID == family_id)
+            
+            links = session.scalars(stmt).all()
+            return self._detach_list(session, links)
+        except Exception as e:
+            logger.error(f"Errore in get_family_links: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+    
+    def get_available_tasks_for_family(self, family_id):
+        """
+        Recupera i task del catalogo non ancora collegati alla famiglia specificata.
+        
+        Args:
+            family_id: ID della famiglia
+            
+        Returns:
+            Lista di TaskCatalogo non collegati
+        """
+        from npi.data_models import FamilyNpiLog, TaskCatalogo
+        from sqlalchemy import select, and_
+        from sqlalchemy.orm import joinedload
+        
+        session = self._get_session()
+        try:
+            # Ottieni gli ID dei task già collegati
+            linked_task_ids = session.scalars(
+                select(FamilyNpiLog.TaskID).where(
+                    and_(
+                        FamilyNpiLog.FamilyNpiID == family_id,
+                        FamilyNpiLog.DateEnd.is_(None)
+                    )
+                )
+            ).all()
+            
+            # Recupera tutti i task non collegati
+            stmt = select(TaskCatalogo).options(
+                joinedload(TaskCatalogo.categoria)
+            ).order_by(TaskCatalogo.NrOrdin)
+            
+            if linked_task_ids:
+                stmt = stmt.where(TaskCatalogo.TaskID.not_in(linked_task_ids))
+            
+            tasks = session.scalars(stmt).all()
+            return self._detach_list(session, tasks)
+        except Exception as e:
+            logger.error(f"Errore in get_available_tasks_for_family: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+    
+    def is_family_link_duplicate(self, family_id, task_id):
+        """
+        Verifica se esiste già un collegamento attivo tra famiglia e task.
+        
+        Args:
+            family_id: ID della famiglia
+            task_id: ID del task
+            
+        Returns:
+            True se il collegamento esiste già, False altrimenti
+        """
+        from npi.data_models import FamilyNpiLog
+        from sqlalchemy import select, and_
+        
+        session = self._get_session()
+        try:
+            existing = session.scalars(
+                select(FamilyNpiLog).where(
+                    and_(
+                        FamilyNpiLog.FamilyNpiID == family_id,
+                        FamilyNpiLog.TaskID == task_id,
+                        FamilyNpiLog.DateEnd.is_(None)
+                    )
+                )
+            ).first()
+            
+            return existing is not None
+        except Exception as e:
+            logger.error(f"Errore in is_family_link_duplicate: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+    
+    def create_family_link(self, family_id, task_id):
+        """
+        Crea un collegamento tra famiglia e task con validazione duplicati.
+        
+        Args:
+            family_id: ID della famiglia
+            task_id: ID del task
+            
+        Returns:
+            FamilyNpiLog creato
+        """
+        from npi.data_models import FamilyNpiLog
+        
+        session = self._get_session()
+        try:
+            # Validazione duplicati
+            if self.is_family_link_duplicate(family_id, task_id):
+                raise ValueError("Questo task è già collegato alla famiglia")
+            
+            new_link = FamilyNpiLog(
+                FamilyNpiID=family_id,
+                TaskID=task_id,
+                DateEnd=None
+            )
+            session.add(new_link)
+            session.commit()
+            session.refresh(new_link)
+            
+            logger.info(f"Collegamento creato: Famiglia {family_id} <-> Task {task_id}")
+            return self._detach_object(session, new_link)
+        except Exception as e:
+            logger.error(f"Errore in create_family_link: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+    
+    def delete_family_link(self, link_id):
+        """
+        Soft delete di un collegamento famiglia-task.
+        
+        Args:
+            link_id: ID del FamilyNpiLog
+            
+        Returns:
+            True se eliminato, False se non trovato
+        """
+        from npi.data_models import FamilyNpiLog
+        from datetime import datetime
+        
+        session = self._get_session()
+        try:
+            link = session.get(FamilyNpiLog, link_id)
+            if not link or link.DateEnd is not None:
+                return False
+            
+            link.DateEnd = datetime.now()
+            session.commit()
+            
+            logger.info(f"Collegamento eliminato (soft delete): ID {link_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Errore in delete_family_link: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    # ========================================
+    # Auto-Close Project Methods
+    # ========================================
+    
+    def auto_update_project_status(self, project_id):
+        """
+        Auto-chiude un progetto se tutti i task sono completati.
+        
+        Args:
+            project_id: ID del progetto da verificare
+            
+        Returns:
+            True se il progetto è stato chiuso, False altrimenti
+        """
+        from npi.data_models import ProgettoNPI, TaskProdotto, WaveNPI
+        from sqlalchemy import select
+        from datetime import datetime
+        
+        session = self._get_session()
+        try:
+            # Recupera tutti i task ASSEGNATI del progetto (OwnerID NOT NULL)
+            stmt = (
+                select(TaskProdotto)
+                .join(WaveNPI, TaskProdotto.WaveID == WaveNPI.WaveID)
+                .where(WaveNPI.ProgettoID == project_id)
+                .where(TaskProdotto.OwnerID.isnot(None))  # Solo task assegnati
+            )
+            
+            # Log della query SQL per debug
+            logger.info(f"🔍 Progetto {project_id}: Esecuzione query SQL (solo task assegnati):")
+            logger.info(f"  {stmt}")
+            
+            tasks = session.scalars(stmt).all()
+            
+            if not tasks:
+                logger.info(f"Progetto {project_id}: nessun task trovato")
+                return False
+            
+            # Debug: mostra stato di ogni task
+            logger.info(f"🔍 Progetto {project_id}: Analisi {len(tasks)} task")
+            for i, task in enumerate(tasks, 1):
+                wave_id = task.WaveID
+                # Recupera ProgettoID dalla wave per verifica
+                wave = session.get(WaveNPI, wave_id) if wave_id else None
+                prog_id = wave.ProgettoID if wave else None
+                logger.info(f"  Task {i}/{len(tasks)}: TaskID={task.TaskProdottoID}, "
+                           f"WaveID={wave_id}, ProgettoID={prog_id}, "
+                           f"DataCompletamento={task.DataCompletamento}, "
+                           f"Completato={'SI' if task.DataCompletamento is not None else 'NO'}")
+            
+            # Verifica se tutti i task sono completati
+            all_completed = all(task.DataCompletamento is not None for task in tasks)
+            
+            logger.info(f"Progetto {project_id}: Tutti completati = {all_completed}")
+            
+            if all_completed:
+                # Aggiorna lo stato del progetto
+                project = session.get(ProgettoNPI, project_id)
+                if project:
+                    if project.StatoProgetto != 'Chiuso':
+                        logger.info(f"Progetto {project_id}: Cambio stato da '{project.StatoProgetto}' a 'Chiuso'")
+                        project.StatoProgetto = 'Chiuso'
+                        session.commit()
+                        logger.info(f"✅ Progetto {project_id} auto-chiuso: tutti i {len(tasks)} task completati")
+                    else:
+                        logger.debug(f"Progetto {project_id}: già chiuso (StatoProgetto='{project.StatoProgetto}')")
+                    
+                    # Ritorna True se tutti i task sono completati, anche se già chiuso
+                    return True
+                else:
+                    logger.warning(f"Progetto {project_id}: NON TROVATO nel database!")
+                    return False
+            else:
+                completed_count = sum(1 for task in tasks if task.DataCompletamento is not None)
+                logger.info(f"Progetto {project_id}: {completed_count}/{len(tasks)} task completati - NON CHIUDO")
+            
+            return False
+        except Exception as e:
+            logger.error(f"Errore in auto_update_project_status per progetto {project_id}: {e}", exc_info=True)
+            session.rollback()
+            raise
+        finally:
+            session.close()
+    
+    def reopen_project(self, project_id):
+        """
+        Riapre manualmente un progetto chiuso.
+        
+        Args:
+            project_id: ID del progetto da riaprire
+            
+        Returns:
+            True se riaperto con successo, False altrimenti
+        """
+        from npi.data_models import ProgettoNPI
+        
+        session = self._get_session()
+        try:
+            project = session.get(ProgettoNPI, project_id)
+            if not project:
+                logger.warning(f"Progetto {project_id} non trovato")
+                return False
+            
+            if project.StatoProgetto == 'Chiuso':
+                project.StatoProgetto = 'Attivo'
+                session.commit()
+                
+                logger.info(f"Progetto {project_id} riaperto manualmente: '{project.NomeProgetto}'")
+                return True
+            else:
+                logger.debug(f"Progetto {project_id} non è chiuso (stato: {project.StatoProgetto})")
+                return False
+        except Exception as e:
+            logger.error(f"Errore in reopen_project per progetto {project_id}: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()

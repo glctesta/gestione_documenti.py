@@ -47,6 +47,7 @@ class OvertimeRequestWindow(tk.Toplevel):
         self.reasons_data = {}    # {reason_text: (reason_id, requires_order, requires_justify)}
         self.orders_data = {}     # {display_text: order_id}
         self.selected_employees = []  # Lista di dict con dati dipendenti selezionati
+        self.all_employee_values = []
         
         # Setup finestra
         self.title(self.lang.get('overtime_request_title', 'Richiesta Straordinario'))
@@ -78,10 +79,14 @@ class OvertimeRequestWindow(tk.Toplevel):
         self.employee_combo = ttk.Combobox(
             selection_frame, 
             textvariable=self.employee_var,
-            state='readonly',
+            state='normal',
             width=40
         )
         self.employee_combo.grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
+        self.employee_combo.bind('<Return>', self._filter_employee_combo)
+        self.employee_combo.bind('<FocusOut>', self._filter_employee_combo)
+        self.employee_combo.bind('<FocusIn>', self._reset_employee_filter)
+        self.employee_combo.bind('<<ComboboxSelected>>', self._sync_employee_display_name)
         
         # Riga 2: Motivo
         ttk.Label(selection_frame, text=self.lang.get('reason', 'Motivo:')).grid(
@@ -259,7 +264,8 @@ class OvertimeRequestWindow(tk.Toplevel):
             self.employees_data = {
                 f"{row[1]} {row[2]}": row[0] for row in employees
             }
-            self.employee_combo['values'] = sorted(list(self.employees_data.keys()))
+            self.all_employee_values = sorted(list(self.employees_data.keys()))
+            self.employee_combo['values'] = self.all_employee_values
             logger.info(f"Combobox popolata con {len(self.employees_data)} dipendenti")
         else:
             logger.warning("Nessun dipendente eligibile trovato")
@@ -310,6 +316,54 @@ class OvertimeRequestWindow(tk.Toplevel):
         else:
             self.justify_text.config(state='disabled')
             self.justify_text.delete('1.0', tk.END)
+
+    def _filter_employee_combo(self, event=None):
+        """Filtra dinamicamente i dipendenti nel combobox in base al testo digitato."""
+        query = self.employee_var.get().strip().lower()
+        all_values = self.all_employee_values or sorted(list(self.employees_data.keys()))
+
+        if not query:
+            filtered_values = all_values
+        else:
+            starts_with = [name for name in all_values if name.lower().startswith(query)]
+            contains = [name for name in all_values if query in name.lower() and name not in starts_with]
+            filtered_values = starts_with + contains
+
+        self.employee_combo['values'] = filtered_values
+
+        if event and event.keysym in ('Up', 'Down', 'Escape', 'Tab'):
+            return
+        if event and event.keysym == 'Return' and filtered_values and query:
+            self.employee_combo.event_generate('<Down>')
+
+    def _reset_employee_filter(self, event=None):
+        """Ripristina elenco completo nel combobox dipendenti."""
+        if self.all_employee_values:
+            self.employee_combo['values'] = self.all_employee_values
+
+    def _sync_employee_display_name(self, event=None):
+        """Normalizza il nome selezionato nel formato esatto presente in lista."""
+        employee_name = self.employee_var.get().strip()
+        if not employee_name:
+            return
+        for name in self.employees_data.keys():
+            if name.lower() == employee_name.lower():
+                self.employee_var.set(name)
+                return
+
+    def _resolve_employee_name(self):
+        """Risolvi il nome dipendente digitato/selecionato contro la lista valida."""
+        employee_name = self.employee_var.get().strip()
+        if not employee_name:
+            return None
+        if employee_name in self.employees_data:
+            return employee_name
+
+        matches = [name for name in self.employees_data.keys() if name.lower() == employee_name.lower()]
+        if len(matches) == 1:
+            self.employee_var.set(matches[0])
+            return matches[0]
+        return None
     
     def _add_employee_to_list(self):
         """Aggiunge dipendente selezionato alla lista."""
@@ -370,7 +424,15 @@ class OvertimeRequestWindow(tk.Toplevel):
             )
             return
         
-        employee_name = self.employee_var.get()
+        employee_name = self._resolve_employee_name()
+        if not employee_name:
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('select_employee_warning', 'Selezionare un dipendente valido dalla lista'),
+                parent=self
+            )
+            return
+
         employee_id = self.employees_data[employee_name]
         reason_text = self.reason_var.get()
         reason_id, requires_order, requires_justify = self.reasons_data[reason_text]

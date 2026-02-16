@@ -80,8 +80,10 @@ class ManagePermissionsWindow(tk.Toplevel):
 
         self.employees_data = {}
         self.available_perms_data = {}
+        self.all_available_perms_data = {}
         self.assigned_perms_data = {}
         self.employee_var = tk.StringVar()
+        self.menuvalue_filter_var = tk.StringVar()
 
         # --- NUOVO: Lista per conservare tutti i nomi dei dipendenti per la ricerca ---
         self.all_employee_names = []
@@ -118,6 +120,20 @@ class ManagePermissionsWindow(tk.Toplevel):
         available_frame = ttk.LabelFrame(lists_frame,
                                          text=self.lang.get('available_perms_label', "Permessi Disponibili"))
         available_frame.grid(row=0, column=0, sticky="nsew")
+
+        menuvalue_filter_frame = ttk.Frame(available_frame)
+        menuvalue_filter_frame.pack(fill="x", padx=5, pady=(5, 0))
+        ttk.Label(
+            menuvalue_filter_frame,
+            text=self.lang.get('menuvalue_filter_label', "Filtro MenuValue:")
+        ).pack(side=tk.LEFT, padx=(0, 5))
+        self.menuvalue_filter_entry = ttk.Entry(
+            menuvalue_filter_frame,
+            textvariable=self.menuvalue_filter_var
+        )
+        self.menuvalue_filter_entry.pack(side=tk.LEFT, fill="x", expand=True)
+        self.menuvalue_filter_entry.bind('<KeyRelease>', self._apply_menuvalue_filter)
+
         self.available_list = tk.Listbox(available_frame, selectmode="extended")
         self.available_list.pack(fill="both", expand=True, padx=5, pady=5)
 
@@ -149,8 +165,10 @@ class ManagePermissionsWindow(tk.Toplevel):
             self.employee_combo['values'] = self.all_employee_names
             # Se l'utente cancella il testo, pulisce anche le liste dei permessi
             self.available_list.delete(0, tk.END)
-            self.available_tree.delete(*self.available_tree.get_children())
             self.assigned_list.delete(0, tk.END)
+            self.available_perms_data.clear()
+            self.all_available_perms_data.clear()
+            self.menuvalue_filter_var.set("")
             return
 
         filtered_list = [name for name in self.all_employee_names if typed_text in name.lower()]
@@ -160,6 +178,7 @@ class ManagePermissionsWindow(tk.Toplevel):
         self.available_list.delete(0, tk.END)
         self.assigned_list.delete(0, tk.END)
         self.available_perms_data.clear()
+        self.all_available_perms_data.clear()
         self.assigned_perms_data.clear()
 
         employee_name = self.employee_var.get()
@@ -169,14 +188,30 @@ class ManagePermissionsWindow(tk.Toplevel):
 
         available = self.db.fetch_available_permissions(employee_id)
         for perm in available:
-            self.available_list.insert(tk.END, perm.translationvalue)
-            self.available_perms_data[perm.translationvalue] = perm.Translationkey
+            self.all_available_perms_data[perm.translationvalue] = perm.Translationkey
+
+        self._apply_menuvalue_filter()
 
         assigned = self.db.fetch_user_permissions(employee_id)
         for perm in assigned:
             if perm.MenuKey:
                 self.assigned_list.insert(tk.END, perm.MenuKey)
                 self.assigned_perms_data[perm.MenuKey] = perm.AuthorizedUsedId
+
+    def _apply_menuvalue_filter(self, event=None):
+        """Filtra la lista dei permessi disponibili per il campo MenuValue."""
+        filter_text = self.menuvalue_filter_var.get().strip().lower()
+        self.available_list.delete(0, tk.END)
+        self.available_perms_data.clear()
+
+        if not self.all_available_perms_data:
+            return
+
+        for menu_value, translation_key in self.all_available_perms_data.items():
+            menu_value_str = str(menu_value) if menu_value is not None else ""
+            if not filter_text or filter_text in menu_value_str.lower():
+                self.available_list.insert(tk.END, menu_value_str)
+                self.available_perms_data[menu_value_str] = translation_key
 
     def _grant_permission(self):
         selections = self.available_list.curselection()

@@ -365,8 +365,9 @@ class OvertimeManager:
             from reportlab.pdfgen import canvas
             from reportlab.lib.pagesizes import A4
             from reportlab.lib.units import cm
-            from reportlab.platypus import Image as ReportLabImage, Table, TableStyle
+            from reportlab.platypus import Image as ReportLabImage, Table, TableStyle, Paragraph
             from reportlab.lib import colors
+            from reportlab.lib.styles import ParagraphStyle
             
             # Recupera numero richiesta formattato da TbRegistro
             request_number_query = """
@@ -398,28 +399,60 @@ class OvertimeManager:
                 c.setFont(font, size)
                 c.drawString(2 * cm, y, text)
             
-            # Logo aziendale (dimezzato: 1.5cm invece di 3cm)
-            logo_path = "logo.png"
-            if os.path.exists(logo_path):
+            def resolve_logo_path():
+                base_dir = os.path.dirname(os.path.dirname(__file__))
+                for candidate in (
+                    os.path.join(base_dir, "Logo.png"),
+                    os.path.join(base_dir, "logo.png"),
+                    "Logo.png",
+                    "logo.png",
+                ):
+                    if os.path.exists(candidate):
+                        return candidate
+                return None
+
+            # Logo aziendale
+            logo_path = resolve_logo_path()
+            if logo_path and os.path.exists(logo_path):
                 try:
-                    logo = ReportLabImage(logo_path, width=1.5 * cm, height=1.5 * cm)
-                    logo.drawOn(c, width - 2.5 * cm, height - 2.5 * cm)
+                    logo = ReportLabImage(logo_path, width=1.8 * cm, height=1.8 * cm)
+                    logo.drawOn(c, width - 3.0 * cm, height - 2.4 * cm)
                 except Exception as e:
                     logger.warning(f"Cannot load logo: {e}")
             
-            # Titolo in inglese
-            draw_text(height - 2 * cm, "OVERTIME AGREEMENT", 18, True)
-            draw_text(height - 2.5 * cm, f"Date: {datetime.now().strftime('%d/%m/%Y %H:%M')}", 8)
+            # Header professionale
+            c.setFillColor(colors.HexColor("#1F3A5F"))
+            c.rect(0, height - 3 * cm, width, 3 * cm, stroke=0, fill=1)
+            c.setFillColor(colors.white)
+            c.setFont("Helvetica-Bold", 18)
+            c.drawString(2 * cm, height - 1.8 * cm, "OVERTIME AGREEMENT")
+            c.setFont("Helvetica", 8.5)
+            c.drawString(2 * cm, height - 2.35 * cm, f"Generated on {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+            c.setFillColor(colors.black)
             
-            y_pos = height - 4 * cm
+            y_pos = height - 4.0 * cm
             
-            # Dettagli richiesta in inglese
-            draw_text(y_pos, "REQUEST DETAILS", 14, True)
-            y_pos -= 0.8 * cm
-            draw_text(y_pos, f"Request Number: {formatted_request_number}")
-            y_pos -= 0.5 * cm
-            draw_text(y_pos, f"Requested by: {supervisor_name}")
-            y_pos -= 1 * cm
+            # Dettagli richiesta in riquadro con wrapping
+            c.setFillColor(colors.HexColor("#F3F6FB"))
+            c.setStrokeColor(colors.HexColor("#C5D1E0"))
+            c.roundRect(1.8 * cm, y_pos - 2.2 * cm, width - 3.6 * cm, 2.0 * cm, 6, stroke=1, fill=1)
+            c.setFillColor(colors.HexColor("#1F3A5F"))
+            c.setFont("Helvetica-Bold", 11)
+            c.drawString(2.2 * cm, y_pos - 0.65 * cm, "REQUEST DETAILS")
+            detail_style = ParagraphStyle(
+                name='overtime_detail_style',
+                fontName='Helvetica',
+                fontSize=9,
+                leading=10.8,
+                wordWrap='CJK'
+            )
+            req_line = Paragraph(f"<b>Request Number:</b> {formatted_request_number}", detail_style)
+            req_line.wrapOn(c, width - 4.4 * cm, 0.5 * cm)
+            req_line.drawOn(c, 2.2 * cm, y_pos - 1.3 * cm)
+            by_line = Paragraph(f"<b>Requested by:</b> {supervisor_name}", detail_style)
+            by_line.wrapOn(c, width - 4.4 * cm, 0.5 * cm)
+            by_line.drawOn(c, 2.2 * cm, y_pos - 1.8 * cm)
+            y_pos -= 2.8 * cm
             
             # Disclaimer box
             c.setStrokeColor(colors.red)
@@ -433,17 +466,46 @@ class OvertimeManager:
             c.drawCentredString(width / 2, y_pos - 0.6 * cm, "IMPORTANT NOTICE")
             c.setFont("Helvetica", 8)
             c.setFillColor(colors.black)
-            c.drawCentredString(width / 2, y_pos - 1 * cm, 
-                "This is a REQUEST. Overtime work cannot be performed until explicitly approved.")
+            notice_style = ParagraphStyle(
+                name='overtime_notice_style',
+                fontName='Helvetica',
+                fontSize=8,
+                leading=9.2,
+                alignment=1,
+                wordWrap='CJK'
+            )
+            notice = Paragraph(
+                "This is a REQUEST. Overtime work cannot be performed until explicitly approved.",
+                notice_style
+            )
+            notice_width = width - 4.6 * cm
+            _, notice_height = notice.wrap(notice_width, 0.8 * cm)
+            notice.drawOn(c, 2.3 * cm, y_pos - 0.8 * cm - notice_height)
             y_pos -= 2 * cm
             
             # Tabella dipendenti con ore già effettuate
             draw_text(y_pos, "EMPLOYEES INVOLVED", 14, True)
             y_pos -= 0.8 * cm
             
-            # Header con colonna ore già effettuate e ordine
-            table_data = [['Employee', 'Start Date/Time', 'End Date/Time', 'Hours', 'Current\nMonth Hrs', 'Reason', 'Order\n(Target Qty)']]
-            
+            # Header con word-wrap reale tramite Paragraph
+            cell_style = ParagraphStyle(
+                name='overtime_cell_style',
+                fontName='Helvetica',
+                fontSize=7,
+                leading=8.2,
+                alignment=1,
+                wordWrap='CJK'
+            )
+            table_data = [[
+                Paragraph('Employee', cell_style),
+                Paragraph('Start Date/Time', cell_style),
+                Paragraph('End Date/Time', cell_style),
+                Paragraph('Hours', cell_style),
+                Paragraph('Current Month Hrs', cell_style),
+                Paragraph('Reason', cell_style),
+                Paragraph('Order (Target Qty)', cell_style)
+            ]]
+
             for emp in employees_data:
                 hours = (emp['end'] - emp['start']).total_seconds() / 3600
                 
@@ -461,41 +523,42 @@ class OvertimeManager:
                 order_info = 'N/A'
                 if emp.get('order_id') and emp.get('order_number'):
                     qty = emp.get('qty_target', 0)
-                    order_info = f"{emp['order_number']}\n({qty} pcs)"
+                    order_info = f"{emp['order_number']} ({qty} pcs)"
                 
                 table_data.append([
-                    emp['name'],
-                    emp['start'].strftime('%d/%m/%Y\n%H:%M'),
-                    emp['end'].strftime('%d/%m/%Y\n%H:%M'),
-                    f"{hours:.1f}",
-                    f"{current_hours:.1f}",
-                    emp['reason'],
-                    order_info
+                    Paragraph(str(emp.get('name', '')), cell_style),
+                    Paragraph(emp['start'].strftime('%d/%m/%Y %H:%M'), cell_style),
+                    Paragraph(emp['end'].strftime('%d/%m/%Y %H:%M'), cell_style),
+                    Paragraph(f"{hours:.1f}", cell_style),
+                    Paragraph(f"{current_hours:.1f}", cell_style),
+                    Paragraph(str(emp.get('reason', '')), cell_style),
+                    Paragraph(order_info, cell_style)
                 ])
             
             # Tabella con larghezze adattate
-            table = Table(table_data, colWidths=[3*cm, 2.5*cm, 2.5*cm, 1.2*cm, 1.5*cm, 3.5*cm, 2*cm])
+            table = Table(table_data, colWidths=[3.0*cm, 2.4*cm, 2.4*cm, 1.3*cm, 1.8*cm, 3.8*cm, 2.6*cm], repeatRows=1)
             table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#1F3A5F")),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 7),
-                ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-                ('FONTSIZE', (0, 1), (-1, -1), 7),
-                ('WORDWRAP', (0, 0), (-1, -1), True),  # Abilita word wrap
+                ('GRID', (0, 0), (-1, -1), 0.6, colors.HexColor("#A9B9CF")),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor("#F9FBFD")]),
             ]))
             
             table.wrapOn(c, width, height)
             table_height = table._height
-            table.drawOn(c, 1.5 * cm, y_pos - table_height)
+            table.drawOn(c, 1.4 * cm, y_pos - table_height)
             y_pos -= (table_height + 1 * cm)
             
             # Footer in inglese
+            c.setStrokeColor(colors.HexColor("#D7DFEB"))
+            c.line(1.5 * cm, 2.1 * cm, width - 1.5 * cm, 2.1 * cm)
+            c.setFillColor(colors.HexColor("#4D5E73"))
             c.setFont("Helvetica", 8)
-            c.drawCentredString(width / 2, 1.5 * cm, 
+            c.drawCentredString(width / 2, 1.6 * cm, 
                 "Document automatically generated by TraceabilityRS system")
             
             c.save()
@@ -521,8 +584,9 @@ class OvertimeManager:
             from reportlab.pdfgen import canvas
             from reportlab.lib.pagesizes import A4
             from reportlab.lib.units import cm
-            from reportlab.platypus import Image as ReportLabImage
+            from reportlab.platypus import Image as ReportLabImage, Table, TableStyle, Paragraph
             from reportlab.lib import colors
+            from reportlab.lib.styles import ParagraphStyle
             
             # Recupera numeri richiesta e approvazione da TbRegistro
             numbers_query = """
@@ -541,6 +605,31 @@ class OvertimeManager:
                 return None
             
             request_number, approval_number = result[0], result[1]
+
+            # Recupera dettaglio dipendenti/ore autorizzate e ordini collegati
+            employees_query = """
+            SELECT
+                e.EmployeeSurname + ' ' + e.EmployeeName AS EmployeeName,
+                s.DateStart,
+                s.DateEnd,
+                CAST(DATEDIFF(MINUTE, s.DateStart, s.DateEnd) / 60.0 AS DECIMAL(10,2)) AS AuthorizedHours,
+                s.IdOrder,
+                o.OrderNumber,
+                s.QtyTarget
+            FROM ResetServices.dbo.ExtraTimeApprovalStory s
+            INNER JOIN Employee.dbo.EmployeeHireHistory h
+                ON s.IdEmployee = h.EmployeeHireHistoryId
+            INNER JOIN Employee.dbo.Employees e
+                ON h.EmployeeId = e.EmployeeId
+            LEFT JOIN traceability_rs.dbo.orders o
+                ON o.IDOrder = s.IdOrder
+            WHERE s.ExtraHourApprovalId = ?
+            ORDER BY e.EmployeeSurname, e.EmployeeName, s.DateStart
+            """
+            cursor = self.db.conn.cursor()
+            cursor.execute(employees_query, (request_id,))
+            employee_rows = cursor.fetchall()
+            cursor.close()
             
             # Crea file temporaneo
             temp_file = tempfile.NamedTemporaryFile(
@@ -561,20 +650,38 @@ class OvertimeManager:
                 c.setFont(font, size)
                 c.drawString(2 * cm, y, text)
             
+            def resolve_logo_path():
+                base_dir = os.path.dirname(os.path.dirname(__file__))
+                for candidate in (
+                    os.path.join(base_dir, "Logo.png"),
+                    os.path.join(base_dir, "logo.png"),
+                    "Logo.png",
+                    "logo.png",
+                ):
+                    if os.path.exists(candidate):
+                        return candidate
+                return None
+
             # Logo aziendale
-            logo_path = "logo.png"
-            if os.path.exists(logo_path):
+            logo_path = resolve_logo_path()
+            if logo_path and os.path.exists(logo_path):
                 try:
-                    logo = ReportLabImage(logo_path, width=1.5 * cm, height=1.5 * cm)
-                    logo.drawOn(c, width - 2.5 * cm, height - 2.5 * cm)
+                    logo = ReportLabImage(logo_path, width=1.8 * cm, height=1.8 * cm)
+                    logo.drawOn(c, width - 3.0 * cm, height - 2.4 * cm)
                 except Exception as e:
                     logger.warning(f"Cannot load logo: {e}")
             
-            # Titolo
-            draw_text(height - 2 * cm, "OVERTIME APPROVAL CONFIRMATION", 18, True)
-            draw_text(height - 2.5 * cm, f"Date: {datetime.now().strftime('%d/%m/%Y %H:%M')}", 8)
+            # Header
+            c.setFillColor(colors.HexColor("#1F3A5F"))
+            c.rect(0, height - 3 * cm, width, 3 * cm, stroke=0, fill=1)
+            c.setFillColor(colors.white)
+            c.setFont("Helvetica-Bold", 18)
+            c.drawString(2 * cm, height - 1.8 * cm, "OVERTIME APPROVAL CONFIRMATION")
+            c.setFont("Helvetica", 8.5)
+            c.drawString(2 * cm, height - 2.35 * cm, f"Generated on {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+            c.setFillColor(colors.black)
             
-            y_pos = height - 4 * cm
+            y_pos = height - 4.0 * cm
             
             # Box di conferma verde
             c.setFillColor(colors.HexColor("#28A745"))
@@ -584,25 +691,146 @@ class OvertimeManager:
             
             c.setFillColor(colors.black)
             c.setFont("Helvetica-Bold", 14)
-            c.drawCentredString(width / 2, y_pos - 0.8 * cm, "✓ APPROVED")
+            c.drawCentredString(width / 2, y_pos - 0.8 * cm, "APPROVED")
             c.setFont("Helvetica", 10)
             
             y_pos -= 2.5 * cm
             
-            # Dettagli
+            # Dettagli con tabella (word-wrap sicuro)
             draw_text(y_pos, "APPROVAL DETAILS", 14, True)
             y_pos -= 0.8 * cm
-            draw_text(y_pos, f"Request Number: {request_number}")
-            y_pos -= 0.5 * cm
-            draw_text(y_pos, f"Approval Number: {approval_number}")
-            y_pos -= 0.5 * cm
-            draw_text(y_pos, f"Approved by: {approver_name}")
-            y_pos -= 0.5 * cm
-            draw_text(y_pos, f"Approval Date: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+
+            details_style = ParagraphStyle(
+                name='approval_details_style',
+                fontName='Helvetica',
+                fontSize=9,
+                leading=11,
+                wordWrap='CJK'
+            )
+
+            details_data = [
+                [Paragraph('<b>Request Number</b>', details_style), Paragraph(str(request_number), details_style)],
+                [Paragraph('<b>Approval Number</b>', details_style), Paragraph(str(approval_number), details_style)],
+                [Paragraph('<b>Approved by</b>', details_style), Paragraph(str(approver_name), details_style)],
+                [Paragraph('<b>Approval Date</b>', details_style), Paragraph(datetime.now().strftime('%d/%m/%Y %H:%M'), details_style)],
+            ]
+
+            details_table = Table(details_data, colWidths=[5.0 * cm, width - 9.0 * cm])
+            details_table.setStyle(TableStyle([
+                ('GRID', (0, 0), (-1, -1), 0.7, colors.HexColor('#A9B9CF')),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('BACKGROUND', (0, 0), (-1, -1), colors.white),
+                ('ROWBACKGROUNDS', (0, 0), (-1, -1), [colors.white, colors.HexColor('#F9FBFD')]),
+                ('LEFTPADDING', (0, 0), (-1, -1), 8),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+                ('TOPPADDING', (0, 0), (-1, -1), 5),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ]))
+            details_table.wrapOn(c, width, height)
+            details_table.drawOn(c, 2 * cm, y_pos - details_table._height)
+
+            y_pos = y_pos - details_table._height - 0.9 * cm
+
+            # Sezione dipendenti/ore autorizzate + ordini (se presenti)
+            c.setFillColor(colors.HexColor("#1F3A5F"))
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(2 * cm, y_pos, "AUTHORIZED EMPLOYEES")
+            y_pos -= 0.6 * cm
+
+            employee_cell_style = ParagraphStyle(
+                name='approval_employee_cell_style',
+                fontName='Helvetica',
+                fontSize=8,
+                leading=9.4,
+                alignment=1,
+                wordWrap='CJK'
+            )
+
+            has_orders = any((row[4] is not None) or (row[5] is not None) for row in employee_rows)
+
+            if has_orders:
+                employee_table_data = [[
+                    Paragraph("Employee", employee_cell_style),
+                    Paragraph("Time Window", employee_cell_style),
+                    Paragraph("Authorized Hours", employee_cell_style),
+                    Paragraph("Order / Target Qty", employee_cell_style),
+                ]]
+            else:
+                employee_table_data = [[
+                    Paragraph("Employee", employee_cell_style),
+                    Paragraph("Time Window", employee_cell_style),
+                    Paragraph("Authorized Hours", employee_cell_style),
+                ]]
+
+            for row in employee_rows:
+                employee_name = row[0] or "N/A"
+                date_start = row[1]
+                date_end = row[2]
+                authorized_hours = row[3] if row[3] is not None else 0
+                order_number = row[5]
+                qty_target = row[6]
+
+                time_window = "N/A"
+                if date_start and date_end:
+                    time_window = f"{date_start.strftime('%d/%m/%Y %H:%M')} - {date_end.strftime('%d/%m/%Y %H:%M')}"
+
+                if has_orders:
+                    if order_number:
+                        order_info = f"{order_number} / {int(qty_target) if qty_target is not None else 0}"
+                    else:
+                        order_info = "N/A"
+                    employee_table_data.append([
+                        Paragraph(str(employee_name), employee_cell_style),
+                        Paragraph(time_window, employee_cell_style),
+                        Paragraph(f"{float(authorized_hours):.2f}", employee_cell_style),
+                        Paragraph(order_info, employee_cell_style),
+                    ])
+                else:
+                    employee_table_data.append([
+                        Paragraph(str(employee_name), employee_cell_style),
+                        Paragraph(time_window, employee_cell_style),
+                        Paragraph(f"{float(authorized_hours):.2f}", employee_cell_style),
+                    ])
+
+            if has_orders:
+                employee_col_widths = [5.0 * cm, 4.0 * cm, 2.8 * cm, width - 2 * cm - 2 * cm - 5.0 * cm - 4.0 * cm - 2.8 * cm]
+            else:
+                employee_col_widths = [5.5 * cm, 5.0 * cm, width - 2 * cm - 2 * cm - 5.5 * cm - 5.0 * cm]
+
+            employee_table = Table(employee_table_data, colWidths=employee_col_widths, repeatRows=1)
+            employee_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#1F3A5F")),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('GRID', (0, 0), (-1, -1), 0.7, colors.HexColor('#A9B9CF')),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F9FBFD')]),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ]))
+            employee_table.wrapOn(c, width, height)
+
+            # Evita overflow verticale
+            if y_pos - employee_table._height < 2.5 * cm:
+                c.showPage()
+                c.setFillColor(colors.HexColor("#1F3A5F"))
+                c.rect(0, height - 2.5 * cm, width, 2.5 * cm, stroke=0, fill=1)
+                c.setFillColor(colors.white)
+                c.setFont("Helvetica-Bold", 14)
+                c.drawString(2 * cm, height - 1.6 * cm, "OVERTIME APPROVAL CONFIRMATION - DETAILS")
+                c.setFillColor(colors.black)
+                y_pos = height - 3.2 * cm
+
+            employee_table.drawOn(c, 2 * cm, y_pos - employee_table._height)
             
-            # Footer
+            # Footer uniforme al report richiesta
+            c.setStrokeColor(colors.HexColor("#D7DFEB"))
+            c.line(1.5 * cm, 2.1 * cm, width - 1.5 * cm, 2.1 * cm)
+            c.setFillColor(colors.HexColor("#4D5E73"))
             c.setFont("Helvetica", 8)
-            c.drawCentredString(width / 2, 1.5 * cm, 
+            c.drawCentredString(width / 2, 1.6 * cm, 
                 "Document automatically generated by TraceabilityRS system")
             
             c.save()
@@ -700,7 +928,7 @@ class OvertimeManager:
             logger.error(f"Error sending email: {e}", exc_info=True)
             return False
     
-    def send_approval_notification(self, request_id, request_number, requester_id, approved, approver_name):
+    def send_approval_notification(self, request_id, request_number, requester_id, approved, approver_name, attachment_path=None):
         """
         Invia email di notifica approvazione/rifiuto al richiedente.
         
@@ -710,6 +938,7 @@ class OvertimeManager:
             requester_id: ID richiedente (EmployeeHireHistoryId)
             approved: True se approvata, False se rifiutata
             approver_name: Nome di chi ha approvato/rifiutato
+            attachment_path: PDF da allegare (opzionale, usato quando approved=True)
             
         Returns:
             bool: True se invio riuscito
@@ -820,12 +1049,17 @@ class OvertimeManager:
             sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
             from utils import send_email
             
+            attachments = None
+            if approved and attachment_path and os.path.exists(attachment_path):
+                attachments = [attachment_path]
+
             # Invia email
             send_email(
                 recipients=[requester_email],
                 subject=subject,
                 body=body,
-                is_html=True
+                is_html=True,
+                attachments=attachments
             )
             
             logger.info(f"Approval notification sent to: {requester_email}")

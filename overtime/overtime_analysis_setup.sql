@@ -8,7 +8,7 @@ BEGIN
     INSERT INTO Traceability_RS.dbo.Settings (AttributeName, AttributeValue, Description)
     VALUES (
         'Sys_email_overtime_issues',
-        'your.email@company.com',  -- REPLACE WITH ACTUAL EMAIL(S), comma-separated
+        'Gianluca.Testa@Vandeviele.com;Cornelia.Ormenisan@vandewiele.com;Michael.Gasperini@Vandewiele.com;',  -- REPLACE WITH ACTUAL EMAIL(S), comma-separated
         'Email recipients for weekly unauthorized overtime reports'
     )
     PRINT 'Setting Sys_email_overtime_issues created'

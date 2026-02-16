@@ -14,6 +14,57 @@ class TraceabilityManager:
             return f"{product_name} [{version}]"
         return product_name
 
+    def _row_get_value(self, row, *field_names, default=None, index=None):
+        """Recupera un valore da pyodbc.Row in modo robusto (case-insensitive + fallback indice)."""
+        for field in field_names:
+            if hasattr(row, field):
+                value = getattr(row, field)
+                if value is not None:
+                    return value
+            lower_field = field.lower()
+            if hasattr(row, lower_field):
+                value = getattr(row, lower_field)
+                if value is not None:
+                    return value
+            upper_field = field.upper()
+            if hasattr(row, upper_field):
+                value = getattr(row, upper_field)
+                if value is not None:
+                    return value
+
+        if index is not None:
+            try:
+                value = row[index]
+                return default if value is None else value
+            except Exception:
+                pass
+
+        return default
+
+    def _product_row_to_tree_values(self, product):
+        """Converte una riga prodotto in tuple pronta per la Treeview."""
+        product_id = self._row_get_value(product, 'idproduct', 'IDProduct', index=0)
+        product_code = self._row_get_value(product, 'ProductCode', 'productcode', default='', index=1)
+        product_name = self._row_get_value(product, 'ProductName', 'productname', default='', index=2)
+        is_final_flag = self._row_get_value(product, 'IsFinalProduct', 'isfinalproduct', default=False)
+        product_customer_code = self._row_get_value(product, 'ProductCodClienteFinal', 'productcodclientefinal', default='')
+        final_client_name = self._row_get_value(product, 'FinalClientName', 'finalclientname', default='')
+        acronim = self._row_get_value(product, 'AcronimForCode', 'acronimforcode', default='')
+        version = self._row_get_value(product, 'Version', 'version', default='')
+
+        is_final = "Sì" if bool(is_final_flag) else "No"
+        customer_code = product_customer_code if product_customer_code and product_customer_code != '#ND' else ""
+        return (
+            product_id,
+            product_code,
+            product_name,
+            is_final,
+            customer_code,
+            final_client_name or "",
+            acronim or "",
+            version or ""
+        )
+
     def open_manage_customers(self, user_name=None):
         """Apre la finestra per gestire i clienti finali"""
         window = tk.Toplevel(self.parent)
@@ -321,19 +372,7 @@ class TraceabilityManager:
 
         # Popola la tabella
         for product in self.all_products:
-            is_final = "Sì" if product.IsFinalProduct else "No"
-            customer_code = product.ProductCodClienteFinal if product.ProductCodClienteFinal != '#ND' else ""
-
-            self.products_tree.insert('', tk.END, values=(
-                product.idproduct,
-                product.ProductCode,
-                product.ProductName,
-                is_final,
-                customer_code,
-                product.FinalClientName or "",
-                product.AcronimForCode or "",
-                product.Version or ""
-            ))
+            self.products_tree.insert('', tk.END, values=self._product_row_to_tree_values(product))
 
     def _filter_products(self, filter_text):
         """Filtra i prodotti in base al testo inserito"""
@@ -341,9 +380,13 @@ class TraceabilityManager:
             self._load_products()
             return
 
-        filtered_products = [p for p in self.all_products
-                             if filter_text.lower() in p.ProductCode.lower()
-                             or filter_text.lower() in (p.ProductName or '').lower()]
+        filter_text = filter_text.lower()
+        filtered_products = []
+        for p in self.all_products:
+            product_code = str(self._row_get_value(p, 'ProductCode', 'productcode', default=''))
+            product_name = str(self._row_get_value(p, 'ProductName', 'productname', default=''))
+            if filter_text in product_code.lower() or filter_text in product_name.lower():
+                filtered_products.append(p)
 
         # Pulisci la tabella
         for item in self.products_tree.get_children():
@@ -351,19 +394,7 @@ class TraceabilityManager:
 
         # Popola con i prodotti filtrati
         for product in filtered_products:
-            is_final = "Sì" if product.IsFinalProduct else "No"
-            customer_code = product.ProductCodClienteFinal if product.ProductCodClienteFinal != '#ND' else ""
-
-            self.products_tree.insert('', tk.END, values=(
-                product.idproduct,
-                product.ProductCode,
-                product.ProductName,
-                is_final,
-                customer_code,
-                product.FinalClientName or "",
-                product.AcronimForCode or "",
-                product.Version or ""
-            ))
+            self.products_tree.insert('', tk.END, values=self._product_row_to_tree_values(product))
 
     def _edit_product_final_info(self):
         """Modifica le informazioni di prodotto finale"""
@@ -377,7 +408,10 @@ class TraceabilityManager:
         product_values = item['values']
 
         # Trova il prodotto completo nella lista
-        product = next((p for p in self.all_products if p.idproduct == product_values[0]), None)
+        product = next(
+            (p for p in self.all_products if self._row_get_value(p, 'idproduct', 'IDProduct', index=0) == product_values[0]),
+            None
+        )
 
         if product:
             self._open_product_final_form(self.products_tree.winfo_toplevel(), product)
@@ -394,16 +428,25 @@ class TraceabilityManager:
         form_frame.pack(fill=tk.BOTH, expand=True)
 
         # Informazioni prodotto
-        ttk.Label(form_frame, text=f"Codice: {product.ProductCode}", font=("Helvetica", 10, "bold")).grid(row=0,
+        product_id = self._row_get_value(product, 'idproduct', 'IDProduct', index=0)
+        product_code = self._row_get_value(product, 'ProductCode', 'productcode', default='')
+        product_name = self._row_get_value(product, 'ProductName', 'productname', default='')
+        is_final_flag = self._row_get_value(product, 'IsFinalProduct', 'isfinalproduct', default=False)
+        final_client_name = self._row_get_value(product, 'FinalClientName', 'finalclientname', default='')
+        product_acronim = self._row_get_value(product, 'AcronimForCode', 'acronimforcode', default='')
+        product_customer_code = self._row_get_value(product, 'ProductCodClienteFinal', 'productcodclientefinal', default='')
+        product_version = self._row_get_value(product, 'Version', 'version', default='')
+
+        ttk.Label(form_frame, text=f"Codice: {product_code}", font=("Helvetica", 10, "bold")).grid(row=0,
                                                                                                           column=0,
                                                                                                           columnspan=2,
                                                                                                           sticky=tk.W,
                                                                                                           pady=(0, 10))
-        ttk.Label(form_frame, text=f"Nome: {product.ProductName}").grid(row=1, column=0, columnspan=2, sticky=tk.W,
+        ttk.Label(form_frame, text=f"Nome: {product_name}").grid(row=1, column=0, columnspan=2, sticky=tk.W,
                                                                         pady=(0, 20))
 
         # Checkbox prodotto finale
-        is_final_var = tk.BooleanVar(value=bool(product.IsFinalProduct))
+        is_final_var = tk.BooleanVar(value=bool(is_final_flag))
         ttk.Checkbutton(form_frame, text="Prodotto Finale", variable=is_final_var).grid(row=2, column=0, columnspan=2,
                                                                                         sticky=tk.W, pady=5)
 
@@ -420,21 +463,21 @@ class TraceabilityManager:
         client_combo.grid(row=3, column=1, sticky=tk.W, pady=5, padx=(10, 0))
 
         # Seleziona il cliente corrente se presente
-        if product.FinalClientName and product.AcronimForCode:
-            current_client = f"{product.FinalClientName} ({product.AcronimForCode})"
+        if final_client_name and product_acronim:
+            current_client = f"{final_client_name} ({product_acronim})"
             if current_client in client_names:
                 client_var.set(current_client)
 
         # Codice cliente
         ttk.Label(form_frame, text="Codice Cliente:").grid(row=4, column=0, sticky=tk.W, pady=5)
         customer_code_var = tk.StringVar(
-            value=product.ProductCodClienteFinal if product.ProductCodClienteFinal != '#ND' else "")
+            value=product_customer_code if product_customer_code != '#ND' else "")
         ttk.Entry(form_frame, textvariable=customer_code_var, width=30).grid(row=4, column=1, sticky=tk.W, pady=5,
                                                                              padx=(10, 0))
 
         # Versione
         ttk.Label(form_frame, text="Versione:").grid(row=5, column=0, sticky=tk.W, pady=5)
-        version_var = tk.StringVar(value=product.Version if hasattr(product, 'Version') and product.Version else "")
+        version_var = tk.StringVar(value=product_version if product_version else "")
         ttk.Entry(form_frame, textvariable=version_var, width=30).grid(row=5, column=1, sticky=tk.W, pady=5,
                                                                        padx=(10, 0))
 
@@ -449,7 +492,7 @@ class TraceabilityManager:
             version = version_var.get().strip() or None
 
             success, message = self.db.update_product_final_info(
-                product.idproduct, is_final_var.get(), final_client_id, customer_code, version
+                product_id, is_final_var.get(), final_client_id, customer_code, version
             )
 
             if success:
@@ -585,27 +628,35 @@ class TraceabilityManager:
 
             # Carica prodotti finali per questo cliente
             final_products = self.db.fetch_final_products_by_client(client_id)
-            final_options = [
-                f"{p.ProductCode} - {self._format_product_name_with_version(p.ProductName, p.Version)}" 
-                for p in final_products
-            ]
+            final_options = []
+            self.final_product_dict = {}
+            for p in final_products:
+                product_id = self._row_get_value(p, 'idproduct', 'IDProduct', index=0)
+                product_code = self._row_get_value(p, 'ProductCode', 'productcode', default='N/A', index=1)
+                product_name = self._row_get_value(p, 'ProductName', 'productname', default='', index=2)
+                product_version = self._row_get_value(p, 'Version', 'version', default='', index=3)
+                display_name = f"{product_code} - {self._format_product_name_with_version(product_name, product_version)}"
+                final_options.append(display_name)
+                if product_id is not None:
+                    self.final_product_dict[display_name] = product_id
+
             self.final_product_combo['values'] = final_options
-            self.final_product_dict = {
-                f"{p.ProductCode} - {self._format_product_name_with_version(p.ProductName, p.Version)}": p.idproduct 
-                for p in final_products
-            }
 
             # Carica semilavorati per questo cliente
             semi_products = self.db.fetch_semi_products_by_client(client_id)
-            semi_options = [
-                f"{p.ProductCode} - {self._format_product_name_with_version(p.ProductName, p.Version)}" 
-                for p in semi_products
-            ]
+            semi_options = []
+            self.semi_product_dict = {}
+            for p in semi_products:
+                product_id = self._row_get_value(p, 'idproduct', 'IDProduct', index=0)
+                product_code = self._row_get_value(p, 'ProductCode', 'productcode', default='N/A', index=1)
+                product_name = self._row_get_value(p, 'ProductName', 'productname', default='', index=2)
+                product_version = self._row_get_value(p, 'Version', 'version', default='', index=3)
+                display_name = f"{product_code} - {self._format_product_name_with_version(product_name, product_version)}"
+                semi_options.append(display_name)
+                if product_id is not None:
+                    self.semi_product_dict[display_name] = product_id
+
             self.semi_product_combo['values'] = semi_options
-            self.semi_product_dict = {
-                f"{p.ProductCode} - {self._format_product_name_with_version(p.ProductName, p.Version)}": p.idproduct 
-                for p in semi_products
-            }
 
             # Carica i collegamenti per questo cliente
             self._load_links_for_client(client_id)
@@ -629,15 +680,21 @@ class TraceabilityManager:
         # Popola la tabella
         for link in links:
             # Format product names with versions
-            final_name = self._format_product_name_with_version(link.FinalName, link.FinalVersion)
-            semi_name = self._format_product_name_with_version(link.SemiName, link.SemiVersion)
+            final_name = self._format_product_name_with_version(
+                self._row_get_value(link, 'FinalName', 'finalname', default=''),
+                self._row_get_value(link, 'FinalVersion', 'finalversion', default='')
+            )
+            semi_name = self._format_product_name_with_version(
+                self._row_get_value(link, 'SemiName', 'seminame', default=''),
+                self._row_get_value(link, 'SemiVersion', 'semiversion', default='')
+            )
             
             self.links_tree.insert('', tk.END, values=(
-                link.ProductLInkedTableId,
-                link.FinalClientName,
-                link.FinalCode,
+                self._row_get_value(link, 'ProductLInkedTableId', 'productlinkedtableid', index=0),
+                self._row_get_value(link, 'FinalClientName', 'finalclientname', default=''),
+                self._row_get_value(link, 'FinalCode', 'finalcode', default=''),
                 final_name,
-                link.SemiCode,
+                self._row_get_value(link, 'SemiCode', 'semicode', default=''),
                 semi_name,
                 "Elimina"
             ))
@@ -816,13 +873,23 @@ class TraceabilityManager:
             client_id = self.client_dict.get(selected_client)
 
         orders = self.db.fetch_orders_by_year_and_client(year, client_id)
-        order_options = [f"{o.OrderNumber} - {o.productcode} - {o.FinalClientName}" for o in orders]
+        order_options = [
+            f"{self._row_get_value(o, 'OrderNumber', 'ordernumber', default='')} - "
+            f"{self._row_get_value(o, 'productcode', 'ProductCode', default='')} - "
+            f"{self._row_get_value(o, 'FinalClientName', 'finalclientname', default='')}"
+            for o in orders
+        ]
         self.order_combo['values'] = order_options
 
         # Dizionario per mapping ordini
         self.order_dict = {}
         for o in orders:
-            self.order_dict[f"{o.OrderNumber} - {o.productcode} - {o.FinalClientName}"] = o.idorder
+            key = (
+                f"{self._row_get_value(o, 'OrderNumber', 'ordernumber', default='')} - "
+                f"{self._row_get_value(o, 'productcode', 'ProductCode', default='')} - "
+                f"{self._row_get_value(o, 'FinalClientName', 'finalclientname', default='')}"
+            )
+            self.order_dict[key] = self._row_get_value(o, 'idorder', 'IDOrder', default=None)
 
     def _verify_label(self, event=None):
         """Verifica l'associazione dell'etichetta"""
@@ -849,7 +916,7 @@ class TraceabilityManager:
 
         # Controlla se l'ordine corrisponde
         selected_order_id = self.order_dict.get(selected_order)
-        order_numbers = [r.OrderNumber for r in results]
+        order_numbers = [str(self._row_get_value(r, 'OrderNumber', 'ordernumber', default='')) for r in results]
 
         if selected_order_id and str(selected_order_id) not in order_numbers:
             messagebox.showerror("Errore", "Ordine relativo alla scheda NON corrisponde con l'ordine in lavoro")
@@ -868,10 +935,10 @@ class TraceabilityManager:
         if results:
             result = results[0]  # Prendi il primo risultato
             text = f"✓ VERIFICA COMPLETATA CON SUCCESSO\n\n"
-            text += f"Codice Etichetta: {result.LabelCod}\n"
-            text += f"Numero Ordine: {result.OrderNumber}\n"
-            text += f"Codice Prodotto: {result.ProductCode}\n"
-            text += f"ID Scheda: {result.IDBoard}\n\n"
+            text += f"Codice Etichetta: {self._row_get_value(result, 'LabelCod', 'labelcod', default='N/D')}\n"
+            text += f"Numero Ordine: {self._row_get_value(result, 'OrderNumber', 'ordernumber', default='N/D')}\n"
+            text += f"Codice Prodotto: {self._row_get_value(result, 'ProductCode', 'productcode', default='N/D')}\n"
+            text += f"ID Scheda: {self._row_get_value(result, 'IDBoard', 'idboard', default='N/D')}\n\n"
             text += f"L'etichetta è correttamente associata all'ordine selezionato."
         else:
             text = "Nessun risultato trovato."

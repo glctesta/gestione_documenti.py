@@ -168,6 +168,10 @@ class ProjectWindow(tk.Toplevel):
         self.sync_button = ttk.Button(toolbar_row1, text=self.lang.get('btn_sync_catalog', 'Sincronizza Catalogo'), command=self._sync_catalog_tasks)
         self.sync_button.pack(side=tk.LEFT, padx=5)
         
+        # Bottone per riaprire progetto chiuso
+        self.reopen_button = ttk.Button(toolbar_row1, text=self.lang.get('btn_reopen_project', 'Riapri Progetto'), command=self._reopen_project)
+        self.reopen_button.pack(side=tk.LEFT, padx=5)
+        
         self.export_button = ttk.Button(toolbar_row1, text=self.lang.get('btn_export_excel', 'Export Excel'), command=self._export_cost_report, state=tk.DISABLED)
         self.export_button.pack(side=tk.LEFT, padx=5)
 
@@ -486,6 +490,23 @@ class ProjectWindow(tk.Toplevel):
 
             self.progetto = self.npi_manager.get_dettagli_progetto(self.project_id)
             if not self.progetto: raise ValueError("Progetto non trovato.")
+        
+            # 🆕 VALIDAZIONE OWNER OBBLIGATORIO
+            if not self.progetto.OwnerID:
+                messagebox.showerror(
+                    self.lang.get('npi_missing_owner_title', 'Owner Progetto Mancante'),
+                    self.lang.get('npi_missing_owner_message', 
+                                 '⚠️ OWNER PROGETTO MANCANTE\n\n'
+                                 'Questo progetto non può essere gestito perché non ha un Owner assegnato.\n\n'
+                                 'Per risolvere:\n'
+                                 '1. Vai alla configurazione progetti NPI\n'
+                                 '2. Assegna un Owner al progetto\n'
+                                 '3. Riprova ad aprire il progetto'),
+                    parent=self
+                )
+                logger.warning(f"Tentativo di aprire progetto {self.project_id} senza Owner. Accesso negato.")
+                self.destroy()
+                return
 
             # Costruisci il titolo con versione se presente
             version_str = f" (v{self.progetto.Version})" if self.progetto.Version else ""
@@ -551,6 +572,12 @@ class ProjectWindow(tk.Toplevel):
             
             # 🆕 Popola gerarchia progetti
             self._populate_project_hierarchy()
+            
+            # Mostra/nascondi pulsante riapri progetto in base allo stato
+            if self.progetto.StatoProgetto == 'Chiuso':
+                self.reopen_button.config(state=tk.NORMAL)
+            else:
+                self.reopen_button.config(state=tk.DISABLED)
 
             if openpyxl: self.export_button.config(state=tk.NORMAL)
 
@@ -726,6 +753,13 @@ class ProjectWindow(tk.Toplevel):
                     continue
             
             filtered_tasks.append(task)
+        
+        # Log del filtro applicato
+        if filter_owner_id is not None:
+            logger.info(f"🔍 Filtro owner attivo: {selected_owner} (ID={filter_owner_id}). "
+                       f"Task filtrati: {len(filtered_tasks)}/{len(wave.tasks)}")
+        else:
+            logger.info(f"🔍 Nessun filtro owner. Task totali: {len(filtered_tasks)}")
         
         # Ordina i task in base alla modalità selezionata
         if self.sort_column is None:
@@ -1345,6 +1379,47 @@ class ProjectWindow(tk.Toplevel):
             logger.error(f"Errore salvataggio date progetto: {e}", exc_info=True)
             messagebox.showerror("Errore", f"Impossibile salvare le date:\n{e}", parent=self)
 
+    def _reopen_project(self):
+        """Riapre manualmente un progetto chiuso."""
+        try:
+            # Conferma dall'utente
+            if not messagebox.askyesno(
+                self.lang.get('confirm_reopen_title', 'Conferma Riapertura'),
+                self.lang.get('confirm_reopen_project', 'Sei sicuro di voler riaprire questo progetto?'),
+                parent=self
+            ):
+                return
+            
+            # Chiama il metodo backend
+            success = self.npi_manager.reopen_project(self.project_id)
+            
+            if success:
+                messagebox.showinfo(
+                    self.lang.get('success_title', 'Successo'),
+                    self.lang.get('project_reopened', 'Progetto riaperto con successo'),
+                    parent=self
+                )
+                
+                # Ricarica i dati e aggiorna la UI
+                self._load_data_and_populate_ui()
+                
+                # Aggiorna anche il dashboard se disponibile
+                if hasattr(self.master_app, 'dashboard_window') and self.master_app.dashboard_window:
+                    self.master_app.dashboard_window.load_npi_projects()
+            else:
+                messagebox.showwarning(
+                    self.lang.get('warning_title', 'Attenzione'),
+                    self.lang.get('error_reopen_project', 'Errore durante la riapertura del progetto'),
+                    parent=self
+                )
+        except Exception as e:
+            logger.error(f"Errore riapertura progetto: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error_title', 'Errore'),
+                f"{self.lang.get('error_reopen_project', 'Errore durante la riapertura del progetto')}:\n{e}",
+                parent=self
+            )
+
     def _save_task_details(self):
         """Salva i dettagli del task con validazione per milestone finale."""
         if not self.current_task_id:
@@ -1523,12 +1598,36 @@ class ProjectWindow(tk.Toplevel):
                         logger.warning(f"Email completamento progetto non inviata: {msg}")
                 except Exception as e:
                     logger.error(f"Errore invio email completamento progetto: {e}", exc_info=True)
+            
+            # 🆕 Auto-chiudi il progetto se tutti i task sono completati
+            auto_closed = False
+            try:
+                auto_closed = self.npi_manager.auto_update_project_status(self.project_id)
+                if auto_closed:
+                    logger.info(f"Progetto {self.project_id} auto-chiuso dopo completamento task")
+            except Exception as e:
+                logger.warning(f"Errore auto-chiusura progetto {self.project_id}: {e}")
 
-            messagebox.showinfo(
-                self.lang.get('success_title', 'Successo'),
-                self.lang.get('success_task_updated', 'Task aggiornato con successo.'),
-                parent=self
-            )
+            # Messaggio di successo con notifica auto-chiusura
+            if auto_closed:
+                logger.info(f"🎉 Mostro messaggio auto-chiusura progetto {self.project_id}")
+                messagebox.showinfo(
+                    self.lang.get('success_title', 'Successo'),
+                    self.lang.get('npi_project_auto_closed', 
+                                 'Task aggiornato con successo.\n\n'
+                                 '✅ PROGETTO COMPLETATO!\n\n'
+                                 'Tutti i task assegnati sono stati completati.\n'
+                                 'Il progetto è stato automaticamente chiuso.\n\n'
+                                 'Per riaprire il progetto usa il Dashboard.'),
+                    parent=self
+                )
+                logger.info(f"✅ Messaggio auto-chiusura mostrato per progetto {self.project_id}")
+            else:
+                messagebox.showinfo(
+                    self.lang.get('success_title', 'Successo'),
+                    self.lang.get('success_task_updated', 'Task aggiornato con successo.'),
+                    parent=self
+                )
 
             # Salva il filtro categoria e lo stato di ordinamento prima di ricaricare
             current_category_filter = self.category_filter_var.get()

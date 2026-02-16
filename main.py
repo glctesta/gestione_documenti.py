@@ -264,8 +264,8 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.3.2'  # Versione aggiornata
-APP_DEVELOPER = 'Gianluca Testa'
+APP_VERSION = '2.3.3.4'  # Versione aggiornata
+APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
 DB_DRIVER = '{SQL Server Native Client 11.0}'
