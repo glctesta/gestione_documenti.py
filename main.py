@@ -264,17 +264,43 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.3.5'  # Versione aggiornata
+APP_VERSION = '2.3.3.6'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
-DB_DRIVER = '{SQL Server Native Client 11.0}'
-DB_SERVER = 'roghipsql01.vandewiele.local\\emsreset'
-DB_DATABASE = 'Traceability_rs'
-DB_UID = "emsreset"
-DB_PWD = 'E6QhqKUxHFXTbkB7eA8c9ya'
-DB_CONN_STR = (f'DRIVER={DB_DRIVER};SERVER={DB_SERVER};DATABASE={DB_DATABASE};'
-               f'UID={DB_UID};PWD={DB_PWD};MARS_Connection=Yes;TrustServerCertificate=Yes')
+# Carica le credenziali dal sistema criptato
+from config_manager import ConfigManager
+
+try:
+    config_mgr = ConfigManager(key_file='encryption_key.key', config_file='db_config.enc')
+    db_credentials = config_mgr.load_config()
+    
+    # Manteniamo i nomi delle variabili per compatibilità con tutto il codice esistente
+    DB_DRIVER = db_credentials['driver']
+    DB_SERVER = db_credentials['server']
+    DB_DATABASE = db_credentials['database']
+    DB_UID = db_credentials['username']
+    DB_PWD = db_credentials['password']
+    DB_CONN_STR = (f'DRIVER={DB_DRIVER};SERVER={DB_SERVER};DATABASE={DB_DATABASE};'
+                   f'UID={DB_UID};PWD={DB_PWD};MARS_Connection=Yes;TrustServerCertificate=Yes')
+    
+    logger.info("Credenziali database caricate dal sistema criptato")
+except FileNotFoundError:
+    logger.error("File db_config.enc non trovato. Esegui prima setup_db_credentials.py")
+    messagebox.showerror(
+        "Errore Configurazione",
+        "File di configurazione database non trovato.\n\n"
+        "Esegui prima lo script setup_db_credentials.py per configurare le credenziali."
+    )
+    sys.exit(1)
+except Exception as e:
+    logger.error(f"Errore nel caricamento delle credenziali criptate: {e}")
+    messagebox.showerror(
+        "Errore Configurazione",
+        f"Impossibile caricare le credenziali del database:\n{e}\n\n"
+        "Verifica che encryption_key.key e db_config.enc siano presenti."
+    )
+    sys.exit(1)
 
 
 def is_update_needed(current_ver_str, db_ver_str):
