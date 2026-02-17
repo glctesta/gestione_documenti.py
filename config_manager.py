@@ -7,13 +7,25 @@ import sys
 
 def get_base_path():
     """
-    Restituisce il percorso base dell'applicazione.
-    Funziona sia in sviluppo che quando compilato con PyInstaller.
+    Restituisce il percorso base dell'applicazione per i file di configurazione.
+    
+    - In sviluppo: usa la directory corrente dello script
+    - Compilato con PyInstaller: usa la directory _internal
+    
+    Questo permette all'updater di sovrascrivere le credenziali centralizzate.
     """
     if getattr(sys, 'frozen', False):
         # Se l'app è compilata con PyInstaller
-        # sys.executable punta all'exe, quindi prendiamo la directory
-        return os.path.dirname(sys.executable)
+        # sys._MEIPASS punta alla directory _internal temporanea
+        # ma vogliamo la directory _internal permanente accanto all'exe
+        exe_dir = os.path.dirname(sys.executable)
+        internal_dir = os.path.join(exe_dir, '_internal')
+        
+        # Usa _internal se esiste, altrimenti fallback alla directory exe
+        if os.path.exists(internal_dir):
+            return internal_dir
+        else:
+            return exe_dir
     else:
         # Se in sviluppo, usa la directory corrente
         return os.path.dirname(os.path.abspath(__file__))

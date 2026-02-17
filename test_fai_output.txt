@@ -1,0 +1,34 @@
+======================================================================
+TEST INVIO EMAIL FAI - ULTIMA VALIDAZIONE
+======================================================================
+
+1. Caricamento credenziali database...
+   ✅ Server: roghipsql01.vandewiele.local\emsreset
+   ✅ Database: Traceability_rs
+
+2. Connessione al database...
+   ✅ Connesso!
+
+3. Recupero ultima validazione FAI...
+   ✅ FaiLogId: 2733
+   ✅ Order: PR0000161
+   ✅ Product: Order PR0000161
+   ✅ Operator: Lacrimioara-Petronela Rusu
+   ✅ Result: PASSED ✓
+   ✅ Date: 2026-02-17
+
+4. Generazione PDF report...
+   ⚠️ Impossibile generare PDF
+
+5. Preparazione email...
+   ✅ Subject: [TEST] FAI Validation Report - Order PR0000161 - Order PR0000161 - PASSED ✓
+
+6. Invio email...
+   ✅ Email inviata con successo!
+
+======================================================================
+✅ TEST COMPLETATO CON SUCCESSO!
+======================================================================
+
+📧 Controlla la casella email: gianluca.testa@vandewiele.com
+📊 Dati validazione: FaiLogId=2733, Order=PR0000161

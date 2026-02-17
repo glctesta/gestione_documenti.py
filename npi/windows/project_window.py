@@ -28,6 +28,9 @@ class ProjectWindow(tk.Toplevel):
 
     def __init__(self, master, npi_manager, lang, project_id, master_app, logged_in_user: str,
                  final_customers: list = None):
+        # 🆕 Traccia task scaduti per effetto lampeggiante
+        self.overdue_task_items = []  # Lista di item IDs nella treeview che sono scaduti
+        self.blink_state = False  # Stato corrente del lampeggio (True=rosso, False=bianco)
         super().__init__(master)
         if project_id is None:
             self.destroy()
@@ -239,7 +242,7 @@ class ProjectWindow(tk.Toplevel):
         
         
         # 🆕 GERARCHIA PROGETTI (Parent-Child) - VERSIONE SEMPLIFICATA
-        hierarchy_frame = ttk.LabelFrame(header_frame, text="🔗 Gerarchia")
+        hierarchy_frame = ttk.LabelFrame(header_frame, text=self.lang.get('hierarchy_title', '🔗 Gerarchia'))
         hierarchy_frame.pack(side=tk.LEFT, padx=10, after=toolbar_row2)
         
         # Info gerarchia
@@ -248,14 +251,14 @@ class ProjectWindow(tk.Toplevel):
         
         ttk.Label(
             hierarchy_info,
-            text="Questo progetto è il PADRE",
+            text=self.lang.get('hierarchy_parent_label', 'Questo progetto è il PADRE'),
             foreground="blue",
             font=('Helvetica', 9, 'bold')
         ).pack(side=tk.LEFT, padx=5)
         
         self.children_count_label = ttk.Label(
             hierarchy_info,
-            text="Figli: 0",
+            text=self.lang.get('hierarchy_children_count', 'Figli: {count}').format(count=0),
             foreground="green",
             font=('Helvetica', 8)
         )
@@ -264,7 +267,7 @@ class ProjectWindow(tk.Toplevel):
         # Bottone per gestire gerarchia
         ttk.Button(
             hierarchy_info,
-            text="⚙️ Gestisci Figli",
+            text=self.lang.get('hierarchy_manage_children', '⚙️ Gestisci Figli'),
             command=self._open_hierarchy_window,
             width=15
         ).pack(side=tk.LEFT, padx=5)
@@ -295,7 +298,9 @@ class ProjectWindow(tk.Toplevel):
         self.tree.column('DueDate', width=100)
         
         self.tree.tag_configure('special_task', foreground='#0078d4')  # BLU per Target NPI
-        self.tree.tag_configure('late_task', foreground='red')  # ROSSO per task in ritardo
+        self.tree.tag_configure('late_task', foreground='red')  # ROSSO per task scaduti o 0-1 giorni
+        self.tree.tag_configure('warning_task', foreground='orange')  # ARANCIONE per 2-3 giorni
+        self.tree.tag_configure('upcoming_task', foreground='#FFD700')  # GIALLO per >4 giorni
         self.tree.tag_configure('bold_task', font=('Segoe UI', 9, 'bold'))
         self.tree.bind('<<TreeviewSelect>>', self._on_task_select)
         
@@ -437,6 +442,9 @@ class ProjectWindow(tk.Toplevel):
 
         # Initial call to load data
         self.after(100, self._load_data_and_populate_ui)
+        
+        # 🆕 Avvia timer per lampeggio task scaduti (ogni 500ms)
+        self._start_blink_timer()
 
     def log_status(self, message):
         """Aggiorna la barra di stato e il log di sistema."""
@@ -504,8 +512,25 @@ class ProjectWindow(tk.Toplevel):
                                  '3. Riprova ad aprire il progetto'),
                     parent=self
                 )
-                logger.warning(f"Tentativo di aprire progetto {self.project_id} senza Owner. Accesso negato.")
-                self.destroy()
+                logger.warning(f"Tentativo di aprire progetto {self.project_id} senza Owner. Apertura config NPI...")
+                
+                # 🆕 Apri automaticamente la configurazione NPI filtrata sul prodotto
+                self.destroy()  # Chiudi prima questa finestra
+                
+                try:
+                    from npi.windows.config_window import NpiConfigWindow
+                    # Apri la config NPI con il prodotto pre-selezionato
+                    config_window = NpiConfigWindow(
+                        self.master_app,
+                        self.npi_manager,
+                        self.lang,
+                        authorized_user=self.logged_in_user,
+                        product_id_to_select=self.progetto.ProdottoID  # 🆕 Parametro per auto-selezione
+                    )
+                    logger.info(f"Config NPI aperta per prodotto {self.progetto.ProdottoID}")
+                except Exception as e:
+                    logger.error(f"Errore apertura config NPI: {e}", exc_info=True)
+                
                 return
 
             # Costruisci il titolo con versione se presente
@@ -531,6 +556,27 @@ class ProjectWindow(tk.Toplevel):
             else:
                 # Nessun owner assegnato al progetto, l'utente ha accesso completo
                 self.is_project_owner = True
+
+            # 🆕 CONTROLLO ACCESSO COMPLETO DA SETTINGS
+            # Verifica se l'utente è nella lista Npi_full_access
+            if not self.is_project_owner:
+                try:
+                    logger.info(f"🔍 Checking full access for user '{self.logged_in_user}'")
+                    full_access_user_ids = self.npi_manager.get_full_access_user_ids()
+                    logger.info(f"🔍 Full access user IDs from settings: {full_access_user_ids}")
+                    
+                    # Trova l'UserID dell'utente loggato
+                    logged_user_id = self.soggetti_map.get(self.logged_in_user)
+                    logger.info(f"🔍 Logged user '{self.logged_in_user}' has ID: {logged_user_id}")
+                    logger.info(f"🔍 Available soggetti_map keys: {list(self.soggetti_map.keys())[:5]}...")  # First 5 for debug
+                    
+                    if logged_user_id and logged_user_id in full_access_user_ids:
+                        self.is_project_owner = True
+                        logger.info(f"✅ Full access granted to '{self.logged_in_user}' (UserID={logged_user_id}) via Npi_full_access setting")
+                    else:
+                        logger.info(f"❌ User '{self.logged_in_user}' (ID={logged_user_id}) NOT in full access list")
+                except Exception as e:
+                    logger.error(f"Error checking full access users: {e}", exc_info=True)
             
             # Raccoglie tutte le persone che hanno task assegnati
             assigned_owners = set()
@@ -555,15 +601,25 @@ class ProjectWindow(tk.Toplevel):
                     self.owner_filter_combo.config(state='disabled')
                     logger.info(f"Filtro persone impostato su '{self.logged_in_user}' e bloccato (non è l'owner del progetto)")
                 else:
-                    # L'utente loggato non ha task assegnati, mostra tutti ma blocca il combo
-                    self.owner_filter_var.set(all_owners_label)
-                    self.owner_filter_combo.config(state='disabled')
-                    logger.info(f"Utente '{self.logged_in_user}' non ha task assegnati. Filtro bloccato su 'Tutte le persone'")
+                    # 🆕 L'utente loggato NON ha task assegnati → BLOCCA ACCESSO
+                    messagebox.showerror(
+                        self.lang.get('npi_no_tasks_title', 'Accesso Negato'),
+                        self.lang.get('npi_no_tasks_message',
+                                     f'⚠️ ACCESSO NEGATO AL PROGETTO\n\n'
+                                     f'L\'utente "{self.logged_in_user}" non ha task assegnati in questo progetto.\n\n'
+                                     f'Non è possibile accedere alle risorse del progetto senza task assegnati.\n\n'
+                                     f'Contatta il Project Owner per richiedere l\'assegnazione di task.'),
+                        parent=self
+                    )
+                    logger.warning(f"Accesso negato per utente '{self.logged_in_user}': nessun task assegnato nel progetto {self.project_id}")
+                    self.destroy()
+                    return
             else:
                 # L'utente È l'owner del progetto, combo abilitato
                 self.owner_filter_var.set(all_owners_label)
                 self.owner_filter_combo.config(state='readonly')
                 logger.info(f"Utente '{self.logged_in_user}' è l'owner del progetto. Filtro persone abilitato")
+
 
             self._populate_treeview()
             
@@ -715,6 +771,10 @@ class ProjectWindow(tk.Toplevel):
 
     def _populate_treeview(self):
         for i in self.tree.get_children(): self.tree.delete(i)
+        
+        # 🆕 Reset lista task scaduti prima di ripopolare
+        self.overdue_task_items = []
+        
         if not self.progetto or not self.progetto.waves: return
         wave = self.progetto.waves[0]
         self.import_button.config(state=tk.DISABLED if any(t.OwnerID is not None for t in wave.tasks) else tk.NORMAL)
@@ -781,33 +841,94 @@ class ProjectWindow(tk.Toplevel):
 
             status = self.status_map_display.get(task.Stato, task.Stato)
             
-            # 🆕 Logica tag con priorità: Target NPI > Task in Ritardo
+            # 🆕 Logica tag con priorità: Target NPI > Colore basato su giorni rimanenti
             tags = []
+            is_overdue = False
             
-            # Verifica se in ritardo (data scadenza passata e non completato)
+            # Calcola giorni rimanenti alla scadenza
             from datetime import datetime
             today = datetime.now().date()
             
-            # Converti DataScadenza a date per il confronto
-            if task.DataScadenza:
-                task_due_date = task.DataScadenza.date() if hasattr(task.DataScadenza, 'date') else task.DataScadenza
-                is_late = (task_due_date < today and task.Stato != 'Completato')
-            else:
-                is_late = False
-            
             if task.IsPostFinalMilestone:
-                # Task Target NPI = BLU (anche se in ritardo)
+                # Task Target NPI = BLU (priorità massima, ignora colori scadenza)
                 tags.append('special_task')
                 tags.append('bold_task')
-            elif is_late:
-                # Task in ritardo = ROSSO
-                tags.append('late_task')
-                tags.append('bold_task')
+            elif task.DataScadenza and task.Stato != 'Completato':
+                # Converti DataScadenza a date per il confronto
+                task_due_date = task.DataScadenza.date() if hasattr(task.DataScadenza, 'date') else task.DataScadenza
+                days_until_due = (task_due_date - today).days
+                
+                # Applica colore in base ai giorni rimanenti
+                if days_until_due < 0:
+                    # Scaduto = ROSSO (verrà fatto lampeggiare)
+                    tags.append('late_task')
+                    tags.append('bold_task')
+                    is_overdue = True
+                elif days_until_due <= 1:
+                    # 0-1 giorni = ROSSO
+                    tags.append('late_task')
+                    tags.append('bold_task')
+                elif days_until_due <= 3:
+                    # 2-3 giorni = ARANCIONE
+                    tags.append('warning_task')
+                    tags.append('bold_task')
+                elif days_until_due <= 4:
+                    # 4 giorni = GIALLO
+                    tags.append('upcoming_task')
+                    tags.append('bold_task')
             
             cat = task.task_catalogo.categoria.Category if task.task_catalogo and task.task_catalogo.categoria else ""
             name = task.task_catalogo.NomeTask if task.task_catalogo else "Catalogo non trovato"
-            self.tree.insert('', tk.END, text=task.TaskProdottoID, values=(cat, name, owner, status, start_date, due_date),
+            item_id = self.tree.insert('', tk.END, text=task.TaskProdottoID, values=(cat, name, owner, status, start_date, due_date),
                              tags=tuple(tags))
+            
+            # 🆕 Traccia task scaduti per lampeggio
+            if is_overdue:
+                self.overdue_task_items.append(item_id)
+                logger.debug(f"🔴 Task scaduto aggiunto per lampeggio: {name} (ID: {task.TaskProdottoID})")
+        
+        # Log finale
+        logger.info(f"📊 Treeview popolata: {len(sorted_tasks)} task totali, {len(self.overdue_task_items)} scaduti (lampeggianti)")
+    
+    def _start_blink_timer(self):
+        """Avvia il timer per far lampeggiare i task scaduti."""
+        self._blink_overdue_tasks()
+    
+    def _blink_overdue_tasks(self):
+        """Fa lampeggiare i task scaduti alternando rosso e bianco."""
+        try:
+            if not hasattr(self, 'tree') or not self.tree.winfo_exists():
+                return  # Finestra chiusa, ferma il timer
+            
+            # Alterna lo stato del lampeggio
+            self.blink_state = not self.blink_state
+            
+            # Log per debug (solo ogni 10 cicli per non intasare)
+            if not hasattr(self, '_blink_counter'):
+                self._blink_counter = 0
+            self._blink_counter += 1
+            
+            if self._blink_counter % 10 == 0:
+                logger.debug(f"💡 Lampeggio attivo: {len(self.overdue_task_items)} task scaduti, stato={'ON' if self.blink_state else 'OFF'}")
+            
+            # Applica il colore in base allo stato
+            for item_id in self.overdue_task_items:
+                try:
+                    if self.blink_state:
+                        # Stato ON: rosso brillante
+                        self.tree.item(item_id, tags=('late_task', 'bold_task'))
+                    else:
+                        # Stato OFF: bianco (nessun tag colore)
+                        self.tree.item(item_id, tags=('bold_task',))
+                except tk.TclError:
+                    # Item non esiste più (filtrato o eliminato)
+                    pass
+            
+            # Riprogramma il timer (500ms = 0.5 secondi)
+            self.after(500, self._blink_overdue_tasks)
+            
+        except Exception as e:
+            logger.error(f"Errore nel lampeggio task scaduti: {e}", exc_info=True)
     
     def _check_milestone_status(self):
         """Controlla se esiste un task definito come milestone finale e mostra avviso se mancante."""
@@ -1203,31 +1324,46 @@ class ProjectWindow(tk.Toplevel):
         # Gestisci le date in modo sicuro - se None, usa una data default
         from datetime import date
         if task.DataScadenza:
-            self.fields['DataScadenza'].set_date(task.DataScadenza);
+            self.fields['DataScadenza'].set_date(task.DataScadenza)
         else:
             self.fields['DataScadenza'].set_date(date.today())
+        self.fields['DataScadenza'].update_idletasks()  # Forza aggiornamento visivo
             
         if task.DataInizio:
             self.fields['DataInizio'].set_date(task.DataInizio)
         else:
             self.fields['DataInizio'].set_date(date.today())
+        self.fields['DataInizio'].update_idletasks()  # Forza aggiornamento visivo
             
         if task.DataCompletamento:
             self.fields['DataCompletamento'].set_date(task.DataCompletamento)
         else:
             self.fields['DataCompletamento'].set_date(None)  # Può rimanere None
+        self.fields['DataCompletamento'].update_idletasks()  # Forza aggiornamento visivo
             
         if 'IsPostFinalMilestone' in self.fields:
              self.fields['IsPostFinalMilestone'].var.set(task.IsPostFinalMilestone or False)
 
     def _on_status_change(self, event=None):
         """Gestisce il cambio di stato per abilitare/disabilitare il campo DataCompletamento."""
+        from datetime import datetime
+        
         stato_display = self.fields['Stato'].get()
         stato_db = self.status_map_db.get(stato_display, 'Da Fare')
         
         # Abilita DataCompletamento solo se lo stato è "Completato"
         if stato_db == 'Completato':
             self.fields['DataCompletamento'].config(state='readonly')
+            # 🆕 CORREZIONE: Imposta automaticamente DataCompletamento = oggi se non è già impostata
+            try:
+                current_date = self.fields['DataCompletamento'].get_date()
+                if not current_date:
+                    self.fields['DataCompletamento'].set_date(datetime.now())
+                    logger.info(f"DataCompletamento impostata automaticamente a {datetime.now().strftime('%d/%m/%Y')}")
+            except:
+                # Se get_date() fallisce, imposta comunque la data odierna
+                self.fields['DataCompletamento'].set_date(datetime.now())
+                logger.info(f"DataCompletamento impostata automaticamente a {datetime.now().strftime('%d/%m/%Y')}")
         else:
             self.fields['DataCompletamento'].config(state='disabled')
             # Resetta la data se non è completato
@@ -1240,6 +1376,19 @@ class ProjectWindow(tk.Toplevel):
     def _enable_form(self):
         for name, child in self.fields.items():
             if name in ['task_name', 'task_category']: continue
+            
+            # 🆕 CONTROLLO PERMESSI: Solo project owner può modificare OwnerID
+            if name == 'OwnerID':
+                if self.is_project_owner:
+                    # Project owner: può modificare il responsabile
+                    child.config(state='readonly')
+                    logger.debug(f"Campo OwnerID abilitato per project owner '{self.logged_in_user}'")
+                else:
+                    # Task owner: NON può modificare il responsabile
+                    child.config(state='disabled')
+                    logger.info(f"Campo OwnerID disabilitato per utente '{self.logged_in_user}' (non è project owner)")
+                continue
+            
             # DataCompletamento viene gestito separatamente in base allo stato
             if name == 'DataCompletamento':
                 # Lascia disabilitato, verrà abilitato da _on_status_change se necessario
@@ -1336,7 +1485,11 @@ class ProjectWindow(tk.Toplevel):
                 #IdFinalClient=self.final_clients_map.get(final_client_name)
                 IDSite=self.final_clients_map.get(final_client_name)
             )
-            messagebox.showinfo("Successo", "Documento salvato.", parent=self)
+            messagebox.showinfo(
+                self.lang.get('hierarchy_title', 'Gerarchia Progetti'),
+                self.lang.get('hierarchy_no_children', 'Nessun progetto figlio trovato.'),
+                parent=self
+            )
             self._on_task_select()  # Ricarica i dati del task
         except Exception as e:
             logger.error(f"Errore salvataggio documento: {e}", exc_info=True)
@@ -1560,13 +1713,36 @@ class ProjectWindow(tk.Toplevel):
                 return
 
         # ===== SALVATAGGIO =====
+        # 🆕 GESTIONE DATA COMPLETAMENTO IN BASE ALLO STATO
+        data_completamento_to_save = self.fields['DataCompletamento'].get()
+        
+        if nuovo_stato_db != 'Completato':
+            # Se il task NON è completato:
+            # 1. DataCompletamento non viene validata
+            # 2. Se esiste e è antecedente a DataScadenza, viene impostata = DataScadenza
+            data_scadenza = self.fields['DataScadenza'].get()
+            
+            if data_completamento_to_save and data_scadenza:
+                try:
+                    # datetime è già importato all'inizio del file (linea 10)
+                    dt_completamento = datetime.strptime(data_completamento_to_save, '%d/%m/%Y')
+                    dt_scadenza = datetime.strptime(data_scadenza, '%d/%m/%Y')
+                    
+                    if dt_completamento < dt_scadenza:
+                        # DataCompletamento antecedente a DataScadenza: imposta = DataScadenza
+                        data_completamento_to_save = data_scadenza
+                        logger.info(f"DataCompletamento antecedente a DataScadenza per task non completato. "
+                                   f"Impostata = DataScadenza ({data_scadenza})")
+                except Exception as e:
+                    logger.warning(f"Errore parsing date per correzione DataCompletamento: {e}")
+        
         data = {
             'OwnerID': self.soggetti_map.get(self.fields['OwnerID'].get()),
             'Stato': nuovo_stato_db,
             'Note': self.fields['Note'].get('1.0', tk.END).strip(),
             'DataScadenza': self.fields['DataScadenza'].get(),
             'DataInizio': self.fields['DataInizio'].get(),
-            'DataCompletamento': self.fields['DataCompletamento'].get(),
+            'DataCompletamento': data_completamento_to_save,  # 🆕 Usa la data corretta
             'IsPostFinalMilestone': self.fields['IsPostFinalMilestone'].var.get()
         }
 
@@ -1884,10 +2060,14 @@ class ProjectWindow(tk.Toplevel):
         """Aggiorna il conteggio dei progetti figli."""
         try:
             children = self.npi_manager.get_child_projects(self.project_id)
-            self.children_count_label.config(text=f"Figli: {len(children)}")
+            self.children_count_label.config(
+                text=self.lang.get('hierarchy_children_count', 'Figli: {count}').format(count=len(children))
+            )
         except Exception as e:
             logger.error(f"Errore aggiornamento conteggio figli: {e}", exc_info=True)
-            self.children_count_label.config(text="Figli: ?")
+            self.children_count_label.config(
+                text=self.lang.get('hierarchy_children_count', 'Figli: {count}').format(count='?')
+            )
     
     def _populate_project_hierarchy(self):
         """🔄 Popola i widget della gerarchia progetti (versione semplificata)."""
@@ -1901,7 +2081,11 @@ class ProjectWindow(tk.Toplevel):
                 
         except Exception as e:
             logger.error(f"Errore popolamento gerarchia: {e}", exc_info=True)
-            messagebox.showerror("Errore", f"Errore caricamento gerarchia:\n{e}", parent=self)
+            messagebox.showerror(
+                self.lang.get('error_title', 'Errore'),
+                self.lang.get('hierarchy_error_load', 'Errore caricamento gerarchia:\n{error}').format(error=e),
+                parent=self
+            )
     
     def _get_all_descendant_ids(self, project_id, visited=None):
         """
@@ -1993,7 +2177,11 @@ class ProjectWindow(tk.Toplevel):
             
         except Exception as e:
             logger.error(f"Errore salvataggio padre: {e}", exc_info=True)
-            messagebox.showerror("Errore", f"Impossibile salvare:\\n{e}", parent=self)
+            messagebox.showerror(
+                self.lang.get('error_title', 'Errore'),
+                self.lang.get('hierarchy_error_save', 'Impossibile salvare:\n{error}').format(error=e),
+                parent=self
+            )
             self._populate_project_hierarchy()
     
     def _show_child_projects_dialog(self):
@@ -2002,12 +2190,16 @@ class ProjectWindow(tk.Toplevel):
             children = self.npi_manager.get_child_projects(self.project_id)
             
             if not children:
-                messagebox.showinfo("Progetti Figli", "Questo progetto non ha progetti figli.", parent=self)
+                messagebox.showinfo(
+                    self.lang.get('hierarchy_children_title', 'Progetti Figli'),
+                    self.lang.get('hierarchy_no_children', 'Questo progetto non ha progetti figli.'),
+                    parent=self
+                )
                 return
             
             # Crea dialog
             dialog = tk.Toplevel(self)
-            dialog.title("Progetti Figli")
+            dialog.title(self.lang.get('hierarchy_children_title', 'Progetti Figli'))
             dialog.geometry("600x400")
             dialog.transient(self)
             dialog.grab_set()
@@ -2015,7 +2207,7 @@ class ProjectWindow(tk.Toplevel):
             # Titolo
             ttk.Label(
                 dialog,
-                text=f"Progetti Figli di: {self.progetto.NomeProgetto}",
+                text=self.lang.get('hierarchy_children_of', 'Progetti Figli di: {project}').format(project=self.progetto.NomeProgetto),
                 font=('Helvetica', 12, 'bold')
             ).pack(pady=10)
             
@@ -2030,10 +2222,10 @@ class ProjectWindow(tk.Toplevel):
             )
             
             tree.heading('#0', text='ID')
-            tree.heading('Nome', text='Nome Progetto')
-            tree.heading('Stato', text='Stato')
-            tree.heading('Livello', text='Livello')
-            tree.heading('Tipo', text='Tipo')
+            tree.heading('Nome', text=self.lang.get('project_name', 'Nome Progetto'))
+            tree.heading('Stato', text=self.lang.get('status', 'Stato'))
+            tree.heading('Livello', text=self.lang.get('hierarchy_level', 'Livello'))
+            tree.heading('Tipo', text=self.lang.get('type', 'Tipo'))
             
             tree.column('#0', width=60)
             tree.column('Nome', width=300)
@@ -2079,4 +2271,8 @@ class ProjectWindow(tk.Toplevel):
             
         except Exception as e:
             logger.error(f"Errore visualizzazione figli: {e}", exc_info=True)
-            messagebox.showerror("Errore", f"Impossibile visualizzare i progetti figli:\\n{e}", parent=self)
+            messagebox.showerror(
+                self.lang.get('error_title', 'Errore'),
+                self.lang.get('hierarchy_error_view_children', 'Impossibile visualizzare i progetti figli:\n{error}').format(error=e),
+                parent=self
+            )

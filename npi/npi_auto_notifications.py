@@ -391,13 +391,13 @@ class NpiAutoNotificationService:
         """
         Costruisce la lista CC per notifiche:
         - owner progetto
-        - email da setting Sys_email_general_napi
+        - email da setting Sys_email_potential_npi_delay
         Deduplica e rimuove eventuale duplicato con TO.
         """
         cc_raw: List[str] = []
         if project_owner_email and '@' in project_owner_email:
             cc_raw.append(project_owner_email.strip())
-        cc_raw.extend(self._get_setting_email_list('Sys_email_general_napi'))
+        cc_raw.extend(self._get_setting_email_list('Sys_email_potential_npi_delay'))
 
         to_key = (to_email or '').strip().lower()
         cc_clean: List[str] = []
@@ -959,7 +959,8 @@ class NpiAutoNotificationService:
         if not notification_type:
             return sent, skipped, failed
         
-        # Invia email al task owner
+        # ✅ CORREZIONE: Invia UNA SOLA email al task owner
+        # Il project owner sarà automaticamente in CC tramite _build_notification_cc_list
         if task.owner:
             s, sk, f = self._send_notification_email(
                 task, progetto, task.owner, 'TaskOwner', notification_type, session
@@ -967,15 +968,15 @@ class NpiAutoNotificationService:
             sent += s
             skipped += sk
             failed += f
-        
-        # Invia email al project owner se diverso dal task owner
-        if progetto.owner and progetto.owner.SoggettoId != (task.OwnerID if task.owner else None):
-            s, sk, f = self._send_notification_email(
-                task, progetto, progetto.owner, 'ProjectOwner', notification_type, session
-            )
-            sent += s
-            skipped += sk
-            failed += f
+        else:
+            # Se il task non ha owner, invia al project owner come fallback
+            if progetto.owner:
+                s, sk, f = self._send_notification_email(
+                    task, progetto, progetto.owner, 'ProjectOwner', notification_type, session
+                )
+                sent += s
+                skipped += sk
+                failed += f
         
         return sent, skipped, failed
     

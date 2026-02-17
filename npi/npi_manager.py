@@ -128,6 +128,49 @@ class GestoreNPI:
         finally:
             session.close()
 
+    def get_full_access_user_ids(self):
+        """
+        Recupera lista UserID con accesso completo NPI da settings.
+        
+        Query: SELECT [value] FROM settings WHERE atribute = 'Npi_full_access'
+        Formato value: UserID separati da ';' o ',' (es: "123;456;789")
+        
+        Returns:
+            List[int]: Lista di UserID (SoggettoId) con accesso completo
+        """
+        session = self._get_session()
+        try:
+            from sqlalchemy import text
+            result = session.execute(
+                text("SELECT [value] FROM [dbo].[settings] WHERE atribute = :attr"),
+                {"attr": "Npi_full_acces"}  # Nota: typo nel DB, manca la 's' finale
+            ).first()
+            
+            if not result or not result[0]:
+                logger.debug("Nessun valore trovato per Npi_full_access in settings")
+                return []
+            
+            # Parse string: "123;456,789" -> [123, 456, 789]
+            user_ids_str = result[0]
+            user_ids = []
+            
+            # Split by ';' and ','
+            for token in user_ids_str.replace(';', ',').split(','):
+                token = token.strip()
+                if token.isdigit():
+                    user_ids.append(int(token))
+                elif token:
+                    logger.warning(f"Valore non numerico ignorato in Npi_full_access: '{token}'")
+            
+            logger.info(f"Full access users from settings: {user_ids}")
+            return user_ids
+            
+        except Exception as e:
+            logger.error(f"Error retrieving full access users: {e}", exc_info=True)
+            return []
+        finally:
+            session.close()
+
     def create_soggetto(self, data):
         """Crea un nuovo soggetto."""
         session = self._get_session()
@@ -4828,7 +4871,8 @@ class GestoreNPI:
         
         session = self._get_session()
         try:
-            # Recupera tutti i task ASSEGNATI del progetto (OwnerID NOT NULL)
+            # 🔧 REGOLA: Recupera SOLO i task ASSEGNATI del progetto (OwnerID NOT NULL)
+            # Il progetto si chiude SOLO se TUTTI i task ASSEGNATI sono completati
             stmt = (
                 select(TaskProdotto)
                 .join(WaveNPI, TaskProdotto.WaveID == WaveNPI.WaveID)
@@ -4837,29 +4881,37 @@ class GestoreNPI:
             )
             
             # Log della query SQL per debug
-            logger.info(f"🔍 Progetto {project_id}: Esecuzione query SQL (solo task assegnati):")
+            logger.info(f"🔍 Progetto {project_id}: Esecuzione query SQL (solo task ASSEGNATI con OwnerID):")
             logger.info(f"  {stmt}")
             
             tasks = session.scalars(stmt).all()
             
             if not tasks:
-                logger.info(f"Progetto {project_id}: nessun task trovato")
+                logger.info(f"Progetto {project_id}: nessun task ASSEGNATO trovato - NON CHIUDO")
                 return False
             
             # Debug: mostra stato di ogni task
-            logger.info(f"🔍 Progetto {project_id}: Analisi {len(tasks)} task")
+            logger.info(f"🔍 Progetto {project_id}: Analisi {len(tasks)} task ASSEGNATI")
             for i, task in enumerate(tasks, 1):
                 wave_id = task.WaveID
                 # Recupera ProgettoID dalla wave per verifica
                 wave = session.get(WaveNPI, wave_id) if wave_id else None
                 prog_id = wave.ProgettoID if wave else None
+                owner_id = task.OwnerID
+                stato = task.Stato or "NULL"
+                data_comp = task.DataCompletamento
                 logger.info(f"  Task {i}/{len(tasks)}: TaskID={task.TaskProdottoID}, "
-                           f"WaveID={wave_id}, ProgettoID={prog_id}, "
-                           f"DataCompletamento={task.DataCompletamento}, "
-                           f"Completato={'SI' if task.DataCompletamento is not None else 'NO'}")
+                           f"OwnerID={owner_id}, Stato={stato}, "
+                           f"DataCompletamento={data_comp}, "
+                           f"Completato={'SI' if data_comp is not None else 'NO'}")
             
-            # Verifica se tutti i task sono completati
-            all_completed = all(task.DataCompletamento is not None for task in tasks)
+            # ✅ VERIFICA CORRETTA: Tutti i task ASSEGNATI devono avere:
+            # 1. Stato = 'Completato' (non solo DataCompletamento)
+            # 2. DataCompletamento NOT NULL
+            all_completed = all(
+                task.Stato == 'Completato' and task.DataCompletamento is not None 
+                for task in tasks
+            )
             
             logger.info(f"Progetto {project_id}: Tutti completati = {all_completed}")
             

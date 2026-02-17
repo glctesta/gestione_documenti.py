@@ -331,6 +331,32 @@ class ProductManagementFrame(ttk.Frame):
         
         # Reset indicatori ordinamento nelle intestazioni
         self._update_column_headers()
+    
+    def select_product_by_id(self, product_id):
+        """🆕 Seleziona automaticamente un prodotto per ID."""
+        logger.info(f"Tentativo di selezionare prodotto ID={product_id}")
+        
+        # Cerca il prodotto nel treeview
+        for item in self.tree.get_children():
+            try:
+                values = self.tree.item(item)['values']
+                if values and values[0] == product_id:
+                    # Seleziona l'item
+                    self.tree.selection_set(item)
+                    self.tree.see(item)  # Scroll per renderlo visibile
+                    self.tree.focus(item)
+                    
+                    # Trigger manuale dell'evento di selezione
+                    self._on_product_select()
+                    
+                    logger.info(f"Prodotto {product_id} selezionato automaticamente")
+                    return True
+            except (IndexError, KeyError) as e:
+                logger.warning(f"Errore durante selezione prodotto: {e}")
+                continue
+        
+        logger.warning(f"Prodotto {product_id} non trovato nel treeview")
+        return False
 
     def _on_product_select(self, event=None):
         if not self.tree.selection(): return
@@ -1288,7 +1314,7 @@ class TaskManagementFrame(ttk.Frame):
                                      self.lang.get('db_error_delete_task').format(error=e), parent=self)
 
 
-# --- Frame per la gestione delle Categorie ---
+
 # --- Frame per la gestione delle Categorie ---
 class CategoryManagementFrame(ttk.Frame):
     """Frame per la gestione delle categorie dei task NPI."""
@@ -1779,12 +1805,13 @@ class DefaultCatalogFrame(ttk.Frame):
 
 
 class NpiConfigWindow(tk.Toplevel):
-    def __init__(self, master, npi_manager, lang, authorized_user, **kwargs):
+    def __init__(self, master, npi_manager, lang, authorized_user, product_id_to_select=None, **kwargs):
         super().__init__(master, **kwargs)
         self.npi_manager = npi_manager
         self.lang = lang
         self.authorized_user = authorized_user
         self.app_master = master  # Salviamo un riferimento alla finestra principale App
+        self.product_id_to_select = product_id_to_select  # 🆕 ID prodotto da selezionare automaticamente
 
         self.title(self.lang.get('config_window_title'))
         self.geometry("1200x900")
@@ -1818,6 +1845,12 @@ class NpiConfigWindow(tk.Toplevel):
                 pass
 
         notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
+        
+        # 🆕 Se specificato, seleziona automaticamente il prodotto e apri il tab Prodotti
+        if self.product_id_to_select:
+            notebook.select(self.prod_frame)  # Apri il tab Prodotti
+            # Schedula la selezione dopo che la UI è stata renderizzata
+            self.after(100, lambda: self.prod_frame.select_product_by_id(self.product_id_to_select))
 
 
 # File: npi/windows/config_window.py
