@@ -14,6 +14,8 @@ files_to_include = [
     'config.ini',
     'email_credentials.enc',
     'email_key.key',
+    'db_config.enc',  # Configurazione database criptata
+    'encryption_key.key',  # Chiave per decriptare db_config.enc
     'lang.conf',
     'zebra_printer_config.json',
     'Complains_numeration.json',  # File per numerazione reclami
