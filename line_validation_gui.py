@@ -1276,6 +1276,9 @@ class LineValidationWindow(tk.Toplevel):
                     
                     except Exception as pdf_error:
                         logger.error(f"Errore salvataggio PDF nel database: {pdf_error}", exc_info=True)
+                else:
+                    logger.warning(f"Impossibile generare PDF per FaiLogId {fai_log_id}")
+                    pdf_path = None  # Reset se la generazione fallisce
                 
                 # Recupera destinatari email
                 recipients = get_email_recipients(self.db.conn, 'Sys_verifica_linea')
@@ -1374,13 +1377,21 @@ class LineValidationWindow(tk.Toplevel):
                     sender = EmailSender("vandewiele-com.mail.protection.outlook.com", 25)
                     sender.save_credentials("Accounting@Eutron.it", "9jHgFhSs7Vf+")
                     
-                    # Invia con allegato PDF
+                    # Prepara allegati (solo se PDF esiste)
+                    attachments = []
+                    if pdf_path and os.path.exists(pdf_path):
+                        attachments.append(pdf_path)
+                        logger.info(f"PDF allegato: {pdf_path}")
+                    else:
+                        logger.warning("PDF non disponibile, email inviata senza allegato")
+                    
+                    # Invia email con allegato PDF (se disponibile)
                     sender.send_email(
                         to_email=', '.join(recipients),
                         subject=subject,
                         body=html_body,
                         is_html=True,
-                        attachments=[pdf_path]  # ✅ Lista di allegati
+                        attachments=attachments if attachments else None
                     )
                     
                     logger.info(f"Email FAI inviata a: {', '.join(recipients)}")
