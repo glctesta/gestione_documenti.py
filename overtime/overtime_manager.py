@@ -883,7 +883,45 @@ class OvertimeManager:
                 logger.warning(f"generate_approval_excel: no employees found for request_id={request_id}")
                 return None
 
-            # ── Stili ─────────────────────────────────────────────────────
+            # ── Query costo per dipendente/data ────────────────────────────
+            cost_query = """
+            SELECT s.IdEmployee,
+                   SUM(DATEDIFF(MINUTE, s.DateStart, s.DateEnd)) / 60.0 AS OvertimeHours,
+                   SUM(DATEDIFF(MINUTE, s.DateStart, s.DateEnd)) / 60.0 * x.ValueITem AS OvertimeCost,
+                   x.Currency
+            FROM [ResetServices].[dbo].[ExtraTimeApprovalStory] s
+            INNER JOIN [ResetServices].[dbo].[ExtraTimeApproval] a
+                ON a.ExtraHourApprovalId = s.ExtraHourApprovalId
+            OUTER APPLY (
+                SELECT ot.ValueITem, t.[DESC] AS Currency
+                FROM [ResetServices].[dbo].[OverTimeDefaults] ot
+                INNER JOIN [ResetServices].[dbo].[OverTimeDescriptions] od
+                    ON ot.DescriptionId = od.DescpriptionId
+                INNER JOIN ResetServices.dbo.TbValute t
+                    ON t.IdValuta = ot.CurrencyId
+                WHERE ot.DateOut IS NULL
+                  AND od.DescpriptionId = 1
+            ) AS x
+            WHERE CAST(s.DateStart AS DATE) = ?
+            GROUP BY s.IdEmployee, x.ValueITem, x.Currency
+            """
+            # Dict lookup: (hire_id, date_str) -> (cost, currency)
+            unique_dates = list({r[2].date() for r in rows if r[2]})
+            cost_lookup = {}
+            for udate in unique_dates:
+                try:
+                    cur2 = self.db.conn.cursor()
+                    cur2.execute(cost_query, (udate.strftime('%Y-%m-%d'),))
+                    for crow in cur2.fetchall():
+                        key = (crow[0], udate.strftime('%Y-%m-%d'))
+                        cost_lookup[key] = (
+                            float(crow[2]) if crow[2] is not None else 0.0,
+                            crow[3] or ''
+                        )
+                    cur2.close()
+                except Exception as _ce:
+                    logger.warning(f"Cost query failed for date {udate}: {_ce}")
+
             header_fill   = PatternFill(start_color="1F3A5F", end_color="1F3A5F", fill_type="solid")
             header_font   = Font(bold=True, color="FFFFFF", size=10)
             alt_fill      = PatternFill(start_color="F0F4FA", end_color="F0F4FA", fill_type="solid")
@@ -908,8 +946,10 @@ class OvertimeManager:
                 "End Time",
                 "Authorized Hours",
                 "Monthly Hours (already done)",
+                "Overtime Cost",
+                "Currency",
             ]
-            col_widths = [32, 14, 12, 12, 18, 28]
+            col_widths = [32, 14, 12, 12, 18, 28, 16, 10]
 
             for col_idx, (header, width) in enumerate(zip(headers, col_widths), start=1):
                 cell = ws.cell(row=1, column=col_idx, value=header)
@@ -934,14 +974,18 @@ class OvertimeManager:
                 ref_year  = date_start.year  if date_start else datetime.now().year
                 monthly_hours = self.get_employee_monthly_hours(hire_id, ref_month, ref_year)
 
+                # Costo da lookup
+                date_key = date_start.date().strftime('%Y-%m-%d') if date_start else ''
+                ot_cost, ot_currency = cost_lookup.get((hire_id, date_key), (0.0, ''))
+
                 fill = alt_fill if row_idx % 2 == 0 else None
 
-                def _cell(col, value, align=center_align):
+                def _cell(col, value, align=center_align, _fill=fill):
                     c = ws.cell(row=row_idx, column=col, value=value)
                     c.border    = thin_border
                     c.alignment = align
-                    if fill:
-                        c.fill = fill
+                    if _fill:
+                        c.fill = _fill
                     return c
 
                 _cell(1, emp_name,    align=left_align)
@@ -950,20 +994,23 @@ class OvertimeManager:
                 _cell(4, date_end.strftime("%H:%M")         if date_end   else "N/A")
                 _cell(5, round(auth_hours, 2))
                 _cell(6, round(float(monthly_hours), 2))
+                _cell(7, round(ot_cost, 2))
+                _cell(8, ot_currency, align=left_align)
 
             # ── Totale ────────────────────────────────────────────────────
             total_row = len(rows) + 2
             total_font = Font(bold=True, size=10)
-            for col in range(1, 7):
+            for col in range(1, 9):
                 c = ws.cell(row=total_row, column=col)
                 c.border    = thin_border
                 c.font      = total_font
                 c.fill      = PatternFill(start_color="D7DFEB", end_color="D7DFEB", fill_type="solid")
                 c.alignment = center_align
             ws.cell(row=total_row, column=1, value="TOTAL").alignment = left_align
-            ws.cell(row=total_row, column=5,
-                    value=f"=SUM(E2:E{total_row - 1})")
+            ws.cell(row=total_row, column=5, value=f"=SUM(E2:E{total_row - 1})")
             ws.cell(row=total_row, column=6).value = ""
+            ws.cell(row=total_row, column=7, value=f"=SUM(G2:G{total_row - 1})")
+            ws.cell(row=total_row, column=8).value = ""
 
             # ── Salva file temporaneo ─────────────────────────────────────
             temp_file = tempfile.NamedTemporaryFile(
@@ -1170,6 +1217,133 @@ class OvertimeManager:
                 </tr>
             """
             
+            # ── Sezione costi nell'email (solo se approvato) ──────────────
+            cost_section = ""
+            if approved:
+                try:
+                    # Recupera la data della richiesta (DateStart del primo story record)
+                    date_row = self.db.fetch_one(
+                        "SELECT TOP 1 CAST(DateStart AS DATE) FROM ResetServices.dbo.ExtraTimeApprovalStory "
+                        "WHERE ExtraHourApprovalId = ? ORDER BY DateStart",
+                        (request_id,)
+                    )
+                    req_date = date_row[0].strftime('%Y-%m-%d') if date_row and date_row[0] else None
+
+                    cost_query_day = """
+                    SELECT CAST(s.DateStart AS DATE) AS OverTimeDate,
+                           SUM(DATEDIFF(MINUTE, s.DateStart, s.DateEnd)) / 60.0 AS OvertimeHours,
+                           SUM(DATEDIFF(MINUTE, s.DateStart, s.DateEnd)) / 60.0 * x.ValueITem AS OvertimeCost,
+                           x.Currency
+                    FROM [ResetServices].[dbo].[ExtraTimeApprovalStory] s
+                    INNER JOIN [ResetServices].[dbo].[ExtraTimeApproval] a
+                        ON a.ExtraHourApprovalId = s.ExtraHourApprovalId
+                    OUTER APPLY (
+                        SELECT ot.ValueITem, t.[DESC] AS Currency
+                        FROM [ResetServices].[dbo].[OverTimeDefaults] ot
+                        INNER JOIN [ResetServices].[dbo].[OverTimeDescriptions] od
+                            ON ot.DescriptionId = od.DescpriptionId
+                        INNER JOIN ResetServices.dbo.TbValute t
+                            ON t.IdValuta = ot.CurrencyId
+                        WHERE ot.DateOut IS NULL AND od.DescpriptionId = 1
+                    ) AS x
+                    WHERE CAST(s.DateStart AS DATE) = ?
+                    GROUP BY CAST(s.DateStart AS DATE), x.ValueITem, x.Currency
+                    """
+                    cost_monthly_query = """
+                    SELECT MONTH(s.DateStart) AS Month, YEAR(s.DateStart) AS Year,
+                           SUM(DATEDIFF(MINUTE, s.DateStart, s.DateEnd)) / 60.0 AS OvertimeHours,
+                           SUM(DATEDIFF(MINUTE, s.DateStart, s.DateEnd)) / 60.0 * x.ValueITem AS OvertimeCost,
+                           x.Currency
+                    FROM [ResetServices].[dbo].[ExtraTimeApprovalStory] s
+                    INNER JOIN [ResetServices].[dbo].[ExtraTimeApproval] a
+                        ON a.ExtraHourApprovalId = s.ExtraHourApprovalId
+                    OUTER APPLY (
+                        SELECT ot.ValueITem, t.[DESC] AS Currency
+                        FROM [ResetServices].[dbo].[OverTimeDefaults] ot
+                        INNER JOIN [ResetServices].[dbo].[OverTimeDescriptions] od
+                            ON ot.DescriptionId = od.DescpriptionId
+                        INNER JOIN ResetServices.dbo.TbValute t
+                            ON t.IdValuta = ot.CurrencyId
+                        WHERE ot.DateOut IS NULL AND od.DescpriptionId = 1
+                    ) AS x
+                    WHERE YEAR(s.DateStart) = YEAR(GETDATE())
+                    GROUP BY MONTH(s.DateStart), YEAR(s.DateStart), x.ValueITem, x.Currency
+                    ORDER BY YEAR(s.DateStart), MONTH(s.DateStart)
+                    """
+
+                    _MONTHS = ['Jan','Feb','Mar','Apr','May','Jun',
+                               'Jul','Aug','Sep','Oct','Nov','Dec']
+
+                    # Totale del giorno
+                    day_result = self.db.fetch_one(cost_query_day, (req_date,)) if req_date else None
+                    if day_result:
+                        day_hours    = round(float(day_result[1]), 2) if day_result[1] else 0.0
+                        day_cost     = round(float(day_result[2]), 2) if day_result[2] else 0.0
+                        day_currency = day_result[3] or ''
+                        cost_section += f"""
+                        <h3 style="color:#1F3A5F; margin-top:24px;">&#128200; Request Cost Summary ({req_date})</h3>
+                        <table style="border-collapse:collapse; margin:10px 0;">
+                          <tr style="background:#1F3A5F; color:#fff;">
+                            <th style="padding:8px 14px;">Date</th>
+                            <th style="padding:8px 14px;">Total Hours</th>
+                            <th style="padding:8px 14px;">Total Cost</th>
+                            <th style="padding:8px 14px;">Currency</th>
+                          </tr>
+                          <tr>
+                            <td style="padding:8px 14px;">{req_date}</td>
+                            <td style="padding:8px 14px; text-align:center;">{day_hours}</td>
+                            <td style="padding:8px 14px; text-align:right; font-weight:bold;">{day_cost:,.2f}</td>
+                            <td style="padding:8px 14px;">{day_currency}</td>
+                          </tr>
+                        </table>
+                        """
+
+                    # Tabella mensile YTD
+                    cur3 = self.db.conn.cursor()
+                    cur3.execute(cost_monthly_query)
+                    monthly_rows = cur3.fetchall()
+                    cur3.close()
+                    if monthly_rows:
+                        ytd_currency = monthly_rows[0][4] if monthly_rows[0][4] else ''
+                        ytd_rows_html = ""
+                        ytd_total_cost = 0.0
+                        ytd_total_hours = 0.0
+                        for i, mr in enumerate(monthly_rows):
+                            m_name = _MONTHS[int(mr[0]) - 1] if mr[0] else '?'
+                            m_hours = round(float(mr[2]), 2) if mr[2] else 0.0
+                            m_cost  = round(float(mr[3]), 2) if mr[3] else 0.0
+                            ytd_total_hours += m_hours
+                            ytd_total_cost  += m_cost
+                            bg = ' background:#F0F4FA;' if i % 2 == 0 else ''
+                            ytd_rows_html += f"""
+                          <tr style="{bg}">
+                            <td style="padding:6px 14px;">{m_name} {mr[1]}</td>
+                            <td style="padding:6px 14px; text-align:center;">{m_hours}</td>
+                            <td style="padding:6px 14px; text-align:right;">{m_cost:,.2f}</td>
+                            <td style="padding:6px 14px;">{ytd_currency}</td>
+                          </tr>"""
+                        ytd_rows_html += f"""
+                          <tr style="background:#D7DFEB; font-weight:bold;">
+                            <td style="padding:6px 14px;">TOTAL YTD</td>
+                            <td style="padding:6px 14px; text-align:center;">{round(ytd_total_hours,2)}</td>
+                            <td style="padding:6px 14px; text-align:right;">{ytd_total_cost:,.2f}</td>
+                            <td style="padding:6px 14px;">{ytd_currency}</td>
+                          </tr>"""
+                        cost_section += f"""
+                        <h3 style="color:#1F3A5F; margin-top:24px;">&#128197; Monthly YTD Overtime Cost ({int(datetime.now().year)})</h3>
+                        <table style="border-collapse:collapse; margin:10px 0;">
+                          <tr style="background:#1F3A5F; color:#fff;">
+                            <th style="padding:8px 14px;">Month</th>
+                            <th style="padding:8px 14px;">Total Hours</th>
+                            <th style="padding:8px 14px;">Total Cost</th>
+                            <th style="padding:8px 14px;">Currency</th>
+                          </tr>
+                          {ytd_rows_html}
+                        </table>
+                        """
+                except Exception as _cost_exc:
+                    logger.warning(f"Could not build cost section for email: {_cost_exc}")
+
             body = f"""
             <html>
             <body style="font-family: Arial, sans-serif;">
@@ -1179,6 +1353,7 @@ class OvertimeManager:
                 <table style="border-collapse: collapse; margin: 20px 0;">
                     {details_rows}
                 </table>
+                {cost_section}
                 <p style="margin-top: 30px;">
                     Best regards,<br>
                     <strong>TraceabilityRS System</strong>
