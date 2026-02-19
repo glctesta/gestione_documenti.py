@@ -1249,7 +1249,6 @@ class LineValidationWindow(tk.Toplevel):
             try:
                 from fai_report_generator import generate_fai_report
                 from utils import get_email_recipients, send_email
-                from email_connector import EmailSender
                 import tempfile
                 import os # Aggiunto per os.path.join
                 from datetime import datetime # Aggiunto per datetime.now()
@@ -1373,10 +1372,6 @@ class LineValidationWindow(tk.Toplevel):
                     </html>
                     """
                     
-                    # Usa EmailSender direttamente per gestire allegati
-                    sender = EmailSender("vandewiele-com.mail.protection.outlook.com", 25)
-                    sender.save_credentials("Accounting@Eutron.it", "9jHgFhSs7Vf+")
-                    
                     # Prepara allegati (solo se PDF esiste)
                     attachments = []
                     if pdf_path and os.path.exists(pdf_path):
@@ -1385,9 +1380,9 @@ class LineValidationWindow(tk.Toplevel):
                     else:
                         logger.warning("PDF non disponibile, email inviata senza allegato")
                     
-                    # Invia email con allegato PDF (se disponibile)
-                    sender.send_email(
-                        to_email=', '.join(recipients),
+                    # Invia email usando utils.send_email (stesso metodo usato per Kanban, NPI, ecc.)
+                    send_email(
+                        recipients=recipients,
                         subject=subject,
                         body=html_body,
                         is_html=True,

@@ -264,7 +264,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.4.2'  # Versione aggiornata
+APP_VERSION = '2.3.4.5'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -2025,12 +2025,16 @@ class Database:
 
     def fetch_active_rules_by_component(self):
         """
-        Ritorna {KanBanRuleID: {'min_qty':..., 'min_pct':...}} per le regole attive
+        Ritorna {IdComponent: {'min_qty':..., 'min_pct':...}} per le regole attive assegnate
+        ai componenti tramite la tabella di associazione knb.KanBanRecodRules.
         """
         sql = """
-              SELECT KanBanRuleID, MinimumProcent, MinimumQty
-              FROM [Traceability_RS].[knb].[KanBanRules]
-              WHERE DateOut IS NULL
+              SELECT cr.IdComponent, r.MinimumProcent, r.MinimumQty
+              FROM [Traceability_RS].[knb].[KanBanRecodRules] cr
+              INNER JOIN [Traceability_RS].[knb].[KanBanRules] r
+                  ON r.KanBanRuleID = cr.KanBanRuleId
+              WHERE cr.DateOut IS NULL
+                AND r.DateOut IS NULL
               """
         with self._lock:
             try:
@@ -2039,8 +2043,8 @@ class Database:
                 rows = self.cursor.fetchall()
                 result = {}
                 for row in rows:
-                    rule_id = int(row[0])
-                    result[rule_id] = {
+                    id_component = int(row[0])
+                    result[id_component] = {
                         'min_pct': row[1] if row[1] is not None else None,
                         'min_qty': row[2] if row[2] is not None else None
                     }
