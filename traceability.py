@@ -290,6 +290,162 @@ class TraceabilityManager:
             else:
                 messagebox.showerror("Errore", message, parent=self.tree.winfo_toplevel())
 
+    def _load_customers(self):
+        """Carica i clienti nella tabella"""
+        # Pulisci la tabella
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        # Recupera i clienti dal database
+        customers = self.db.fetch_final_customers()
+
+        # Popola la tabella
+        for customer in customers:
+            self.tree.insert('', tk.END, values=(
+                customer.IDFinalClient,
+                customer.FinalClientName,
+                customer.FinalClientFullName,
+                customer.AcronimForCode,
+                customer.ClientCity,
+                customer.ClientCountry,
+                customer.VatCode
+            ))
+
+    def _open_customer_form(self, parent, customer_data=None):
+        """Apre il form per aggiungere/modificare un cliente"""
+        form_window = tk.Toplevel(parent)
+        form_window.title(self.lang.get('customer_form_title', "Dettaglio Cliente"))
+        form_window.geometry("500x500")
+        form_window.grab_set()
+
+        # Frame principale
+        form_frame = ttk.Frame(form_window, padding="20")
+        form_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Variabili per i campi
+        name_var = tk.StringVar(value=customer_data[1] if customer_data else "")
+        full_name_var = tk.StringVar(value=customer_data[2] if customer_data else "")
+        acronim_var = tk.StringVar(value=customer_data[3] if customer_data else "")
+        address_var = tk.StringVar(value=customer_data[4] if customer_data else "")
+        city_var = tk.StringVar(value=customer_data[5] if customer_data else "")
+        zip_var = tk.StringVar(value=customer_data[6] if customer_data else "")
+        country_var = tk.StringVar(value=customer_data[7] if customer_data else "")
+        vat_var = tk.StringVar(value=customer_data[8] if customer_data else "")
+
+        # Campi del form
+        ttk.Label(form_frame, text=self.lang.get('customer_name', "Nome *")).grid(row=0, column=0, sticky=tk.W, pady=5)
+        ttk.Entry(form_frame, textvariable=name_var, width=40).grid(row=0, column=1, sticky=tk.W, pady=5, padx=(10, 0))
+
+        ttk.Label(form_frame, text=self.lang.get('customer_full_name', "Nome Completo")).grid(row=1, column=0,
+                                                                                              sticky=tk.W, pady=5)
+        ttk.Entry(form_frame, textvariable=full_name_var, width=40).grid(row=1, column=1, sticky=tk.W, pady=5,
+                                                                         padx=(10, 0))
+
+        ttk.Label(form_frame, text=self.lang.get('customer_acronim', "Acronimo")).grid(row=2, column=0, sticky=tk.W,
+                                                                                       pady=5)
+        ttk.Entry(form_frame, textvariable=acronim_var, width=40).grid(row=2, column=1, sticky=tk.W, pady=5,
+                                                                       padx=(10, 0))
+
+        ttk.Label(form_frame, text=self.lang.get('customer_address', "Indirizzo")).grid(row=3, column=0, sticky=tk.W,
+                                                                                        pady=5)
+        ttk.Entry(form_frame, textvariable=address_var, width=40).grid(row=3, column=1, sticky=tk.W, pady=5,
+                                                                       padx=(10, 0))
+
+        ttk.Label(form_frame, text=self.lang.get('customer_city', "Città")).grid(row=4, column=0, sticky=tk.W, pady=5)
+        ttk.Entry(form_frame, textvariable=city_var, width=40).grid(row=4, column=1, sticky=tk.W, pady=5, padx=(10, 0))
+
+        ttk.Label(form_frame, text=self.lang.get('customer_zip', "CAP")).grid(row=5, column=0, sticky=tk.W, pady=5)
+        ttk.Entry(form_frame, textvariable=zip_var, width=40).grid(row=5, column=1, sticky=tk.W, pady=5, padx=(10, 0))
+
+        ttk.Label(form_frame, text=self.lang.get('customer_country', "Paese")).grid(row=6, column=0, sticky=tk.W,
+                                                                                    pady=5)
+        ttk.Entry(form_frame, textvariable=country_var, width=40).grid(row=6, column=1, sticky=tk.W, pady=5,
+                                                                       padx=(10, 0))
+
+        ttk.Label(form_frame, text=self.lang.get('customer_vat', "P.IVA")).grid(row=7, column=0, sticky=tk.W, pady=5)
+        ttk.Entry(form_frame, textvariable=vat_var, width=40).grid(row=7, column=1, sticky=tk.W, pady=5, padx=(10, 0))
+
+        # Pulsanti
+        button_frame = ttk.Frame(form_frame)
+        button_frame.grid(row=8, column=0, columnspan=2, pady=20)
+
+        def save_customer():
+            # Validazione
+            if not name_var.get().strip():
+                messagebox.showerror("Errore", "Il campo Nome è obbligatorio", parent=form_window)
+                return
+
+            if customer_data:  # Modifica
+                success, message = self.db.update_final_customer(
+                    customer_data[0], name_var.get(), full_name_var.get(), acronim_var.get(),
+                    address_var.get(), city_var.get(), zip_var.get(), country_var.get(), vat_var.get()
+                )
+            else:  # Nuovo cliente
+                success, message = self.db.add_final_customer(
+                    name_var.get(), full_name_var.get(), acronim_var.get(),
+                    address_var.get(), city_var.get(), zip_var.get(), country_var.get(), vat_var.get()
+                )
+
+            if success:
+                messagebox.showinfo("Successo", message, parent=form_window)
+                self._load_customers()
+                form_window.destroy()
+            else:
+                messagebox.showerror("Errore", message, parent=form_window)
+
+        ttk.Button(button_frame, text=self.lang.get('button_save', "Salva"),
+                   command=save_customer).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(button_frame, text=self.lang.get('button_cancel', "Annulla"),
+                   command=form_window.destroy).pack(side=tk.LEFT)
+
+    def _edit_customer(self):
+        """Modifica il cliente selezionato"""
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("Attenzione", "Seleziona un cliente da modificare",
+                                   parent=self.tree.winfo_toplevel())
+            return
+
+        item = self.tree.item(selection[0])
+        customer_data = item['values']
+
+        # Recupera tutti i dati del cliente (la tabella mostra solo alcuni campi)
+        customers = self.db.fetch_final_customers()
+        full_customer_data = next((c for c in customers if c.IDFinalClient == customer_data[0]), None)
+
+        if full_customer_data:
+            self._open_customer_form(self.tree.winfo_toplevel(), [
+                full_customer_data.IDFinalClient,
+                full_customer_data.FinalClientName,
+                full_customer_data.FinalClientFullName,
+                full_customer_data.AcronimForCode,
+                full_customer_data.ClientAddress,
+                full_customer_data.ClientCity,
+                full_customer_data.ClientZIP,
+                full_customer_data.ClientCountry,
+                full_customer_data.VatCode
+            ])
+
+    def _delete_customer(self):
+        """Elimina il cliente selezionato"""
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("Attenzione", "Seleziona un cliente da eliminare", parent=self.tree.winfo_toplevel())
+            return
+
+        item = self.tree.item(selection[0])
+        customer_name = item['values'][1]
+
+        if messagebox.askyesno("Conferma",
+                               f"Sei sicuro di voler eliminare il cliente '{customer_name}'?",
+                               parent=self.tree.winfo_toplevel()):
+            success, message = self.db.delete_final_customer(item['values'][0])
+            if success:
+                messagebox.showinfo("Successo", message, parent=self.tree.winfo_toplevel())
+                self._load_customers()
+            else:
+                messagebox.showerror("Errore", message, parent=self.tree.winfo_toplevel())
+
     def open_define_products(self, user_name=None):
         """Apre la finestra per definire i prodotti finali"""
         window = tk.Toplevel(self.parent)
@@ -322,19 +478,30 @@ class TraceabilityManager:
         filter_entry.pack(side=tk.LEFT, padx=(0, 10))
         filter_entry.bind('<KeyRelease>', lambda e: self._filter_products(filter_var.get()))
 
+        # Stato ordinamento (colonna corrente e direzione)
+        self._products_sort_col = None
+        self._products_sort_rev = False
+
         # Tabella prodotti
         columns = ('id', 'code', 'name', 'is_final', 'customer_code', 'client_name', 'acronim', 'version')
         self.products_tree = ttk.Treeview(main_frame, columns=columns, show='headings', height=20)
 
-        # Intestazioni colonne
-        self.products_tree.heading('id', text='ID')
-        self.products_tree.heading('code', text='Codice Prodotto')
-        self.products_tree.heading('name', text='Nome Prodotto')
-        self.products_tree.heading('is_final', text='Prodotto Finale')
-        self.products_tree.heading('customer_code', text='Codice Cliente')
-        self.products_tree.heading('client_name', text='Cliente Finale')
-        self.products_tree.heading('acronim', text='Acronimo')
-        self.products_tree.heading('version', text='Versione')
+        # Intestazioni colonne cliccabili per l'ordinamento
+        col_headers = {
+            'id':            'ID',
+            'code':          'Codice Prodotto',
+            'name':          'Nome Prodotto',
+            'is_final':      'Prodotto Finale',
+            'customer_code': 'Codice Cliente',
+            'client_name':   'Cliente Finale',
+            'acronim':       'Acronimo',
+            'version':       'Versione',
+        }
+        for col, label in col_headers.items():
+            self.products_tree.heading(
+                col, text=label,
+                command=lambda c=col: self._sort_products_by_column(c)
+            )
 
         # Dimensioni colonne
         self.products_tree.column('id', width=50)
@@ -364,6 +531,56 @@ class TraceabilityManager:
         self.all_products = self.db.fetch_final_products()
         self._load_products()
 
+
+    def _sort_products_by_column(self, col):
+        """Ordina la products_tree per la colonna cliccata (asc/desc alternati)."""
+        # Colonna→indice nella tupla values della treeview
+        col_index = {
+            'id': 0, 'code': 1, 'name': 2, 'is_final': 3,
+            'customer_code': 4, 'client_name': 5, 'acronim': 6, 'version': 7
+        }
+        # Intestazioni base (senza freccia)
+        col_labels = {
+            'id':            'ID',
+            'code':          'Codice Prodotto',
+            'name':          'Nome Prodotto',
+            'is_final':      'Prodotto Finale',
+            'customer_code': 'Codice Cliente',
+            'client_name':   'Cliente Finale',
+            'acronim':       'Acronimo',
+            'version':       'Versione',
+        }
+
+        # Inverti direzione se stessa colonna, altrimenti reset a ascendente
+        if self._products_sort_col == col:
+            self._products_sort_rev = not self._products_sort_rev
+        else:
+            self._products_sort_col = col
+            self._products_sort_rev = False
+
+        idx = col_index[col]
+
+        # Recupera tutte le righe visibili nella treeview
+        rows = [(self.products_tree.set(item, col), item) for item in self.products_tree.get_children('')]
+
+        # Ordina: prova conversione numerica, altrimenti stringa case-insensitive
+        def sort_key(val):
+            try:
+                return (0, float(val[0])) if val[0] else (1, '')
+            except (TypeError, ValueError):
+                return (0, (val[0] or '').lower())
+
+        rows.sort(key=sort_key, reverse=self._products_sort_rev)
+
+        # Riposiziona le righe nell'ordine calcolato
+        for position, (_, item) in enumerate(rows):
+            self.products_tree.move(item, '', position)
+
+        # Aggiorna tutte le intestazioni: freccia solo sulla colonna attiva
+        arrow = ' ▼' if self._products_sort_rev else ' ▲'
+        for c, label in col_labels.items():
+            self.products_tree.heading(c, text=label + (arrow if c == col else ''))
+
     def _load_products(self):
         """Carica i prodotti nella tabella"""
         # Pulisci la tabella
@@ -373,6 +590,19 @@ class TraceabilityManager:
         # Popola la tabella
         for product in self.all_products:
             self.products_tree.insert('', tk.END, values=self._product_row_to_tree_values(product))
+
+        # Reimposta lo stato ordinamento al caricamento completo
+        self._products_sort_col = None
+        self._products_sort_rev = False
+        # Ripristina le intestazioni senza freccia
+        col_labels = {
+            'id': 'ID', 'code': 'Codice Prodotto', 'name': 'Nome Prodotto',
+            'is_final': 'Prodotto Finale', 'customer_code': 'Codice Cliente',
+            'client_name': 'Cliente Finale', 'acronim': 'Acronimo', 'version': 'Versione'
+        }
+        for c, label in col_labels.items():
+            self.products_tree.heading(c, text=label,
+                                       command=lambda x=c: self._sort_products_by_column(x))
 
     def _filter_products(self, filter_text):
         """Filtra i prodotti in base al testo inserito"""
