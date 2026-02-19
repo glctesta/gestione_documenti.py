@@ -1053,16 +1053,31 @@ class OvertimeManager:
             if approved and attachment_path and os.path.exists(attachment_path):
                 attachments = [attachment_path]
 
-            # Invia email
+            # Recupera indirizzi CC da Settings
+            cc_emails = None
+            try:
+                cc_result = self.db.fetch_one(
+                    "SELECT [Value] FROM traceability_rs.dbo.Settings WHERE Atribute = 'Sys_email_Overtami_responce'"
+                )
+                if cc_result and cc_result[0]:
+                    cc_emails = [e.strip() for e in cc_result[0].replace(';', ',').split(',') if e.strip()]
+                    logger.info(f"Approval notification CC: {cc_emails}")
+                else:
+                    logger.warning("Sys_email_Overtami_responce not configured in Settings – sending without CC")
+            except Exception as _cc_exc:
+                logger.warning(f"Could not read CC setting: {_cc_exc}")
+
+            # Invia email: TO = richiedente, CC = indirizzi da Settings
             send_email(
                 recipients=[requester_email],
                 subject=subject,
                 body=body,
                 is_html=True,
-                attachments=attachments
+                attachments=attachments,
+                cc_emails=cc_emails
             )
-            
-            logger.info(f"Approval notification sent to: {requester_email}")
+
+            logger.info(f"Approval notification sent to: {requester_email} | CC: {cc_emails}")
             return True
             
         except Exception as e:
