@@ -2,6 +2,7 @@
 """
 Finestra per il caricamento ordini da Excel
 """
+import json
 import logging
 import os
 import tkinter as tk
@@ -10,6 +11,9 @@ from datetime import datetime
 import openpyxl
 
 logger = logging.getLogger(__name__)
+
+# Chiave usata nel file JSON di configurazione per ricordare l'ultima cartella Excel
+_LAST_PATH_KEY = "orders_excel_last_path"
 
 
 class LoadOrdersWindow(tk.Toplevel):
@@ -50,6 +54,44 @@ class LoadOrdersWindow(tk.Toplevel):
         
         self._create_widgets()
         self._load_orders()
+
+    # ------------------------------------------------------------------
+    # Helper: percorso del file JSON di configurazione
+    # ------------------------------------------------------------------
+    def _get_config_path(self) -> str:
+        """Restituisce il percorso assoluto di printer_config.json."""
+        # Il file si trova nella root del progetto, due livelli sopra questo file
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(base_dir, "printer_config.json")
+
+    def _load_last_excel_path(self) -> str:
+        """Legge l'ultima cartella Excel salvata nel file JSON di configurazione."""
+        try:
+            config_path = self._get_config_path()
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                saved = cfg.get(_LAST_PATH_KEY, "")
+                if saved and os.path.isdir(saved):
+                    return saved
+        except Exception as e:
+            logger.warning(f"Impossibile leggere l'ultimo percorso Excel dalla configurazione: {e}")
+        return ""
+
+    def _save_last_excel_path(self, file_path: str):
+        """Salva la cartella del file Excel scelto nel file JSON di configurazione."""
+        try:
+            config_path = self._get_config_path()
+            cfg = {}
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+            cfg[_LAST_PATH_KEY] = os.path.dirname(file_path)
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=4, ensure_ascii=False)
+            logger.info(f"Salvato percorso Excel in configurazione: {cfg[_LAST_PATH_KEY]}")
+        except Exception as e:
+            logger.warning(f"Impossibile salvare il percorso Excel nella configurazione: {e}")
     
     def _create_widgets(self):
         """Crea i widget della finestra"""
@@ -319,17 +361,24 @@ class LoadOrdersWindow(tk.Toplevel):
     
     def _import_from_excel(self):
         """Importa ordini da file Excel"""
+        # Leggi l'ultima cartella usata per pre-aprire il dialog nella giusta posizione
+        last_dir = self._load_last_excel_path()
+
         file_path = filedialog.askopenfilename(
             title=self.lang.get('select_excel_file', 'Seleziona file Excel'),
             filetypes=[
                 ('Excel files', '*.xlsx *.xls'),
                 ('All files', '*.*')
             ],
+            initialdir=last_dir if last_dir else None,
             parent=self
         )
         
         if not file_path:
             return
+
+        # Salva la cartella scelta per la prossima volta
+        self._save_last_excel_path(file_path)
         
         try:
             # Leggi il file Excel

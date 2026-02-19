@@ -22,21 +22,25 @@ class OrdersManager:
             db_connection: Oggetto Database con engine SQLAlchemy
         """
         self.db = db_connection
-        # Crea session factory
+        # Usa npi_engine che ha pool_pre_ping=True e connection pooling corretto.
+        # db.engine è basato su una singola connessione pyodbc raw che può
+        # diventare stale dopo periodi di inattività (SQL Server chiude la connessione).
+        engine = getattr(self.db, 'npi_engine', None) or self.db.engine
         self.session_factory = sessionmaker(
-            bind=self.db.engine,
+            bind=engine,
             expire_on_commit=False,
             autoflush=True,
             autocommit=False
         )
-    
+
     def _get_session(self):
-        """Crea una nuova sessione per ogni operazione"""
+        """Crea una nuova sessione per ogni operazione.
+        
+        pool_pre_ping=True sull'engine gestisce automaticamente le connessioni
+        stale/chiuse dal server, quindi non è necessario un SELECT 1 manuale.
+        """
         try:
-            session = self.session_factory()
-            # Test connessione
-            session.execute(text("SELECT 1"))
-            return session
+            return self.session_factory()
         except Exception as e:
             logger.error(f"Errore nella creazione della sessione: {e}")
             raise
@@ -150,7 +154,9 @@ class OrdersManager:
         Returns:
             ID del nuovo ordine inserito
         """
-        # Query INSERT + SCOPE_IDENTITY in una sola chiamata
+        # Usa OUTPUT INSERTED per recuperare il nuovo ID nello stesso result set
+        # (SCOPE_IDENTITY con due statement separati non funziona con pyodbc/SQLAlchemy:
+        #  il driver chiude il result dopo l'INSERT e non arriva alla SELECT)
         insert_query = text("""
             INSERT INTO [Traceability_RS].[dyn].[DynamicSaleOrders]
             (
@@ -165,6 +171,7 @@ class OrdersManager:
                 Currency,
                 UnitPrice
             )
+            OUTPUT INSERTED.DynamicSaleOrderId
             VALUES
             (
                 :so_number,
@@ -177,13 +184,11 @@ class OrdersManager:
                 :qty_stock,
                 :currency,
                 :unit_price
-            );
-            SELECT CAST(SCOPE_IDENTITY() AS INT) as new_id;
+            )
         """)
         
         session = self._get_session()
         try:
-            # Esegui INSERT e recupera ID in una sola query
             result = session.execute(insert_query, {
                 'so_number': order_data.get('SONumber'),
                 'customer_name': order_data.get('CustomerName'),
@@ -197,9 +202,9 @@ class OrdersManager:
                 'unit_price': order_data.get('UnitPrice')
             })
             
-            # Prendi l'ID
+            # OUTPUT INSERTED restituisce l'ID direttamente nel result set
             row = result.fetchone()
-            new_id = int(row.new_id) if row and row.new_id else None
+            new_id = int(row[0]) if row else None
             
             session.commit()
             logger.info(f"Ordine {order_data.get('SONumber')} inserito con successo (ID: {new_id})")
