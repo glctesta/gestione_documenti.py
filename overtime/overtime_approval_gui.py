@@ -312,7 +312,7 @@ WHERE s.ApprovelDate IS NULL
             if requester_id:
                 from .overtime_manager import OvertimeManager
                 manager = OvertimeManager(self.db)
-                approval_pdf = None
+                extra_attachments = []
 
                 # Genera PDF di conferma approvazione (solo se approvato)
                 if approve:
@@ -322,6 +322,13 @@ WHERE s.ApprovelDate IS NULL
                     )
                     if approval_pdf:
                         logger.info(f"Approval confirmation PDF generated: {approval_pdf}")
+                        extra_attachments.append(approval_pdf)
+
+                    # Genera Excel con lista dipendenti, ore e totale mensile
+                    approval_excel = manager.generate_approval_excel(request_id=request_id)
+                    if approval_excel:
+                        logger.info(f"Approval Excel generated: {approval_excel}")
+                        extra_attachments.append(approval_excel)
 
                 manager.send_approval_notification(
                     request_id=request_id,
@@ -329,7 +336,7 @@ WHERE s.ApprovelDate IS NULL
                     requester_id=requester_id,
                     approved=approve,
                     approver_name=self.user_name,
-                    attachment_path=approval_pdf
+                    extra_attachments=extra_attachments if extra_attachments else None
                 )
             
             messagebox.showinfo(

@@ -840,8 +840,151 @@ class OvertimeManager:
         except Exception as e:
             logger.error(f"Error generating approval PDF: {e}", exc_info=True)
             return None
-    
+
+    def generate_approval_excel(self, request_id):
+        """
+        Genera un file Excel con il dettaglio dei dipendenti autorizzati allo
+        straordinario: nome, data, ore autorizzate e totale ore già effettuate
+        nel mese corrente da ciascun dipendente.
+
+        Args:
+            request_id: ID richiesta (ExtraHourApprovalId)
+
+        Returns:
+            str: Path del file Excel generato, None in caso di errore
+        """
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+            from openpyxl.utils import get_column_letter
+
+            # ── Query dati dipendenti della richiesta ──────────────────────
+            query = """
+            SELECT
+                h.EmployeeHireHistoryId,
+                e.EmployeeSurname + ' ' + e.EmployeeName AS EmployeeName,
+                s.DateStart,
+                s.DateEnd,
+                CAST(DATEDIFF(MINUTE, s.DateStart, s.DateEnd) / 60.0 AS DECIMAL(10,2)) AS AuthorizedHours
+            FROM ResetServices.dbo.ExtraTimeApprovalStory s
+            INNER JOIN Employee.dbo.EmployeeHireHistory h
+                ON s.IdEmployee = h.EmployeeHireHistoryId
+            INNER JOIN Employee.dbo.Employees e
+                ON h.EmployeeId = e.EmployeeId
+            WHERE s.ExtraHourApprovalId = ?
+            ORDER BY e.EmployeeSurname, e.EmployeeName, s.DateStart
+            """
+            cursor = self.db.conn.cursor()
+            cursor.execute(query, (request_id,))
+            rows = cursor.fetchall()
+            cursor.close()
+
+            if not rows:
+                logger.warning(f"generate_approval_excel: no employees found for request_id={request_id}")
+                return None
+
+            # ── Stili ─────────────────────────────────────────────────────
+            header_fill   = PatternFill(start_color="1F3A5F", end_color="1F3A5F", fill_type="solid")
+            header_font   = Font(bold=True, color="FFFFFF", size=10)
+            alt_fill      = PatternFill(start_color="F0F4FA", end_color="F0F4FA", fill_type="solid")
+            center_align  = Alignment(horizontal="center", vertical="center")
+            left_align    = Alignment(horizontal="left",   vertical="center")
+            thin_border   = Border(
+                left=Side(style="thin", color="A9B9CF"),
+                right=Side(style="thin", color="A9B9CF"),
+                top=Side(style="thin", color="A9B9CF"),
+                bottom=Side(style="thin", color="A9B9CF")
+            )
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Overtime Approved"
+
+            # ── Intestazione colonne ──────────────────────────────────────
+            headers = [
+                "Employee",
+                "Date",
+                "Start Time",
+                "End Time",
+                "Authorized Hours",
+                "Monthly Hours (already done)",
+            ]
+            col_widths = [32, 14, 12, 12, 18, 28]
+
+            for col_idx, (header, width) in enumerate(zip(headers, col_widths), start=1):
+                cell = ws.cell(row=1, column=col_idx, value=header)
+                cell.font      = header_font
+                cell.fill      = header_fill
+                cell.alignment = center_align
+                cell.border    = thin_border
+                ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+            ws.row_dimensions[1].height = 20
+
+            # ── Righe dati ────────────────────────────────────────────────
+            for row_idx, row in enumerate(rows, start=2):
+                hire_id        = row[0]
+                emp_name       = row[1]
+                date_start     = row[2]   # datetime
+                date_end       = row[3]   # datetime
+                auth_hours     = float(row[4]) if row[4] is not None else 0.0
+
+                # Ore mensili già effettuate (mese del giorno di straordinario)
+                ref_month = date_start.month if date_start else datetime.now().month
+                ref_year  = date_start.year  if date_start else datetime.now().year
+                monthly_hours = self.get_employee_monthly_hours(hire_id, ref_month, ref_year)
+
+                fill = alt_fill if row_idx % 2 == 0 else None
+
+                def _cell(col, value, align=center_align):
+                    c = ws.cell(row=row_idx, column=col, value=value)
+                    c.border    = thin_border
+                    c.alignment = align
+                    if fill:
+                        c.fill = fill
+                    return c
+
+                _cell(1, emp_name,    align=left_align)
+                _cell(2, date_start.strftime("%d/%m/%Y")    if date_start else "N/A")
+                _cell(3, date_start.strftime("%H:%M")       if date_start else "N/A")
+                _cell(4, date_end.strftime("%H:%M")         if date_end   else "N/A")
+                _cell(5, round(auth_hours, 2))
+                _cell(6, round(float(monthly_hours), 2))
+
+            # ── Totale ────────────────────────────────────────────────────
+            total_row = len(rows) + 2
+            total_font = Font(bold=True, size=10)
+            for col in range(1, 7):
+                c = ws.cell(row=total_row, column=col)
+                c.border    = thin_border
+                c.font      = total_font
+                c.fill      = PatternFill(start_color="D7DFEB", end_color="D7DFEB", fill_type="solid")
+                c.alignment = center_align
+            ws.cell(row=total_row, column=1, value="TOTAL").alignment = left_align
+            ws.cell(row=total_row, column=5,
+                    value=f"=SUM(E2:E{total_row - 1})")
+            ws.cell(row=total_row, column=6).value = ""
+
+            # ── Salva file temporaneo ─────────────────────────────────────
+            temp_file = tempfile.NamedTemporaryFile(
+                prefix=f"OvertimeApproval_{request_id}_",
+                suffix=".xlsx",
+                delete=False,
+                dir="C:\\Temp"
+            )
+            file_path = temp_file.name
+            temp_file.close()
+            wb.save(file_path)
+
+            logger.info(f"Approval Excel generated: {file_path}")
+            return file_path
+
+        except Exception as e:
+            logger.error(f"Error generating approval Excel: {e}", exc_info=True)
+            return None
+
     # ==================== EMAIL ====================
+
     
     def send_overtime_notification(self, request_number, supervisor_name, employees_count, pdf_path):
         """
@@ -928,18 +1071,19 @@ class OvertimeManager:
             logger.error(f"Error sending email: {e}", exc_info=True)
             return False
     
-    def send_approval_notification(self, request_id, request_number, requester_id, approved, approver_name, attachment_path=None):
+    def send_approval_notification(self, request_id, request_number, requester_id, approved, approver_name, extra_attachments=None, attachment_path=None):
         """
         Invia email di notifica approvazione/rifiuto al richiedente.
-        
+
         Args:
             request_id: ID richiesta
             request_number: Numero richiesta (non usato, recuperato da DB)
             requester_id: ID richiedente (EmployeeHireHistoryId)
             approved: True se approvata, False se rifiutata
             approver_name: Nome di chi ha approvato/rifiutato
-            attachment_path: PDF da allegare (opzionale, usato quando approved=True)
-            
+            extra_attachments: Lista di path file da allegare (PDF + Excel, opzionale)
+            attachment_path: (deprecato) singolo path allegato per compatibilità
+
         Returns:
             bool: True se invio riuscito
         """
@@ -1049,9 +1193,14 @@ class OvertimeManager:
             sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
             from utils import send_email
             
-            attachments = None
-            if approved and attachment_path and os.path.exists(attachment_path):
-                attachments = [attachment_path]
+            attachments = []
+            # Supporto per extra_attachments (nuovo) e attachment_path (legacy)
+            if extra_attachments:
+                attachments.extend([p for p in extra_attachments if p and os.path.exists(p)])
+            elif attachment_path and os.path.exists(attachment_path):
+                attachments.append(attachment_path)
+            if not attachments:
+                attachments = None
 
             # Recupera indirizzi CC da Settings
             cc_emails = None
