@@ -264,7 +264,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.3.8'  # Versione aggiornata
+APP_VERSION = '2.3.4.2'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -1097,10 +1097,9 @@ class Database:
     def fetch_scrap_reasons(self):
         """Recupera le causali di scarto"""
         query = """
-                SELECT ScrapReasonId, ReasonCode, ReasonDescription
-                FROM [Traceability_RS].[dbo].[ScrapReasons]
-                WHERE DateStop IS NULL
-                ORDER BY ReasonCode; \
+                SELECT ScrapReasonId, Reason as ReasonCode, Reason as ReasonDescription, NoReference
+                FROM [Traceability_RS].[dbo].[ScrapResons]
+                ORDER BY Reason; \
                 """
         try:
             self.cursor.execute(query)
@@ -1109,6 +1108,39 @@ class Database:
             self.last_error_details = str(e)
             logger.error(f"Errore fetch causali scrap: {e}")
             return []
+
+    def insert_scrap_reason(self, reason_text, no_reference=False):
+        """Inserisce una nuova causale di scarto."""
+        query = """
+                INSERT INTO [Traceability_RS].[dbo].[ScrapResons]
+                    (Reason, NoReference)
+                VALUES (?, ?)
+                """
+        try:
+            self.cursor.execute(query, reason_text, 1 if no_reference else 0)
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            logger.error(f"Errore insert causale scrap '{reason_text}': {e}")
+            return False
+
+    def delete_scrap_reason(self, reason_id):
+        """Elimina una causale di scarto."""
+        query = """
+                DELETE FROM [Traceability_RS].[dbo].[ScrapResons]
+                WHERE ScrapReasonId = ?
+                """
+        try:
+            self.cursor.execute(query, reason_id)
+            self.conn.commit()
+            return True
+        except pyodbc.Error as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            logger.error(f"Errore delete causale scrap ID={reason_id}: {e}")
+            return False
 
     def fetch_all_product_checks(self):
         """Recupera tutte le verifiche configurate"""
@@ -1876,6 +1908,34 @@ class Database:
             self.last_error_details = str(e)
             return None
 
+    def log_user_activity(self, employee_hire_history_id, activity, username):
+        """Registra un accesso/attività utente in eqp.UsersLogs."""
+        # Valida che employee_hire_history_id sia un intero valido.
+        # Può arrivare come stringa (es. il nome-login dell'utente) se last_authorized_user_id è None;
+        # in quel caso saltiamo silenziosamente per evitare l'errore di conversione SQL.
+        try:
+            hire_id = int(employee_hire_history_id)
+        except (TypeError, ValueError):
+            logger.debug(
+                f"log_user_activity: employee_hire_history_id non è un intero valido "
+                f"(ricevuto: {employee_hire_history_id!r}), log ignorato per '{username}'"
+            )
+            return
+        try:
+            self.cursor.execute(
+                """
+                INSERT INTO [Traceability_RS].[eqp].[UsersLogs]
+                    (EmployeeHireHistoryId, DateLog, Activity, USERNAME)
+                VALUES (?, GETDATE(), ?, ?)
+                """,
+                hire_id,
+                str(activity)[:255],
+                str(username)[:100]
+            )
+            self.conn.commit()
+        except Exception as e:
+            logger.warning(f"log_user_activity: impossibile registrare log per '{username}': {e}")
+
     def _ensure_connection(self):
         """Verifica e ripristina la connessione se necessario"""
         with self._lock:
@@ -1908,13 +1968,17 @@ class Database:
 
     def fetch_kanban_current_stock_by_component(self):
         """
-        Recupera lo stock corrente di tutti i componenti dal Kanban.
+        Recupera lo stock corrente di tutti i componenti dal Kanban,
+        SOLO per le zone KanBan con AskForRefill = 1.
         """
         sql = """
-              SELECT IdComponent, COALESCE(SUM(Quantity), 0) AS Stock
-              FROM Traceability_rs.knb.KanBanRecords
-              WHERE DateOut IS NULL
-              GROUP BY IdComponent
+              SELECT r.IdComponent, COALESCE(SUM(r.Quantity), 0) AS Stock
+              FROM Traceability_rs.knb.KanBanRecords r
+              INNER JOIN knb.Locations l ON l.LocationId = r.LocationId
+              INNER JOIN knb.KanBanLocations kbl ON kbl.KanBanLocationId = l.KanBanLocationId
+              WHERE r.DateOut IS NULL
+                AND kbl.AskForRefill = 1
+              GROUP BY r.IdComponent
               """
         with self._lock:
             try:
@@ -9588,6 +9652,7 @@ class KanbanMoveForm(tk.Toplevel):
         - 'load': solo carico, nasconde radio buttons
         - 'unload': solo prelievo, nasconde radio buttons
         """
+        logger.info(f"KanbanMoveForm: {mode}")
         super().__init__(master)
         self.db = db_handler
         self.lang = lang_manager
@@ -9885,11 +9950,50 @@ class KanbanMoveForm(tk.Toplevel):
         self.log.configure(state="disabled")
         self.log.see("end")
 
+    @staticmethod
+    def _normalize_qty_str(s: str) -> int:
+        """
+        Normalizza una stringa numerica in formato italiano/internazionale
+        e restituisce un intero (i decimali vengono troncati).
+        Esempi:
+          '10.00'    -> 10
+          '10,00'    -> 10
+          '1.000'    -> 1000
+          '1.500,00' -> 1500
+          '1,500.00' -> 1500
+          '500'      -> 500
+        """
+        s = s.strip()
+        # Caso: sia '.' che ',' presenti
+        if '.' in s and ',' in s:
+            # Determina quale e' il separatore decimale (l'ultimo)
+            if s.rfind('.') > s.rfind(','):
+                # '.' e' decimale, ',' e' migliaia  (es. '1,500.00')
+                s = s.replace(',', '')          # rimuovi migliaia
+                # '.' rimane come decimale per float()
+            else:
+                # ',' e' decimale, '.' e' migliaia  (es. '1.500,00')
+                s = s.replace('.', '')          # rimuovi migliaia
+                s = s.replace(',', '.')         # converti decimale
+        elif ',' in s:
+            # Solo virgola: trattala come decimale (es. '10,00' -> '10.00')
+            s = s.replace(',', '.')
+        elif '.' in s:
+            # Solo punto: migliaia se esattamente 3 cifre dopo, altrimenti decimale
+            parts = s.split('.')
+            if len(parts) == 2 and len(parts[1]) == 3 and parts[1].isdigit():
+                s = s.replace('.', '')          # migliaia (es. '1.000' -> '1000')
+            # altrimenti lascia il punto come decimale (es. '10.00')
+        return int(float(s))
+
     def _parse_qty(self):
-        s = self.qty_var.get().strip()
-        if not s.isdigit():
+        raw = self.qty_var.get().strip()
+        if not raw:
             return None
-        n = int(s)
+        try:
+            n = self._normalize_qty_str(raw)
+        except (ValueError, TypeError):
+            return None
         return n if n > 0 else None
 
     def _on_execute(self):
@@ -10214,9 +10318,10 @@ class KanbanMoveForm(tk.Toplevel):
                                                     f'Riga {idx}: campi mancanti (Component/Location/Quantity).')
                 continue
 
-            # Parse quantita
+            # Parse quantita (gestisce formato italiano: '.' migliaia, ',' decimali)
             try:
-                qty = int(float(qty_text))  # accetta "10.0" -> 10
+                normalized_qty = self._normalize_qty_str(qty_text)
+                qty = int(float(normalized_qty))  # tronca la parte decimale
             except Exception:
                 err_count += 1
                 if first_error_msg is None:
@@ -10821,6 +10926,18 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         logger.debug("INIT: start __init__")
+
+        # ── Splash screen ────────────────────────────────────────────────────
+        # Nascondi la finestra principale finché non è pronta
+        self.withdraw()
+        try:
+            from splash_screen import SplashScreen
+            self._splash = SplashScreen(self)
+            self._splash.update_progress(5, "Avvio in corso...")
+        except Exception as _splash_err:
+            logger.warning("Splash screen non disponibile: %s", _splash_err)
+            self._splash = None
+        # ─────────────────────────────────────────────────────────────────────
         self._simple_login_cache_file = Path(os.getenv("LOCALAPPDATA", ".")) / "TraceabilityRS" / "simple_login_auth_cache.json"
         self._authorized_action_cache_file = Path(os.getenv("LOCALAPPDATA", ".")) / "TraceabilityRS" / "authorized_action_cache.json"
         self.should_exit = False  # Flag to control shutdown
@@ -10849,10 +10966,14 @@ class App(tk.Tk):
         # === 1. INIZIALIZZAZIONE DELLE DIPENDENZE FONDAMENTALI ===
 
         # Inizializza il database
+        if self._splash:
+            self._splash.update_progress(15, "Connessione al database...")
         self.db = Database(DB_CONN_STR)
         logger.info("Tentativo di connessione al database...")
         if not self.db.connect():
             logger.error("INIT: Connessione al DB fallita. Dettagli: %s", self.db.last_error_details)
+            if self._splash:
+                self._splash.close()
             messagebox.showerror("Database Error",
                                  f"Impossibile connettersi al database.\n\nDetails: {self.db.last_error_details}")
             self.destroy()
@@ -10861,6 +10982,8 @@ class App(tk.Tk):
         logger.info("Connessione al database stabilita con successo")
 
         # Carica la lingua salvata
+        if self._splash:
+            self._splash.update_progress(30, "Caricamento traduzioni...")
         initial_lang = self._load_language_setting()
         logger.debug("INIT: language setting loaded -> %s", initial_lang)
         self.lang = LanguageManager(self.db)
@@ -10871,6 +10994,8 @@ class App(tk.Tk):
         # Questo Ã¨ il posto ideale per inizializzare i moduli che dipendono da DB e Lingua
 
         # --- INIZIALIZZAZIONE GESTORE NPI (POSIZIONE CORRETTA) ---
+        if self._splash:
+            self._splash.update_progress(50, "Inizializzazione modulo NPI...")
         try:
             self.npi_manager = GestoreNPI(engine=self.db.npi_engine)
             logger.info(f"NPI Manager inizializzato con engine: {self.db.npi_engine}")
@@ -10892,6 +11017,8 @@ class App(tk.Tk):
             self.npi_menu = None
             self._npi_notification_service = None
 
+        if self._splash:
+            self._splash.update_progress(65, "Inizializzazione moduli...")
         self.traceability_manager = TraceabilityManager(self, self.db, self.lang)
         logger.debug("INIT: traceability manager OK")
 
@@ -10903,6 +11030,8 @@ class App(tk.Tk):
         # === 3. CONTROLLI DI AVVIO E CREAZIONE UI ===
 
         # Controlla la versione (e se l'app deve chiudersi)
+        if self._splash:
+            self._splash.update_progress(75, "Verifica versione...")
         if self.check_version() is False:
             # check_version giÃ  gestisce la chiusura, quindi fermiamo l'init
             return
@@ -10914,16 +11043,26 @@ class App(tk.Tk):
 
         # Creazione dei widget e dei menu
         # Ora queste chiamate sono sicure perchÃ© self.npi_manager esiste
+        if self._splash:
+            self._splash.update_progress(80, "Creazione interfaccia...")
         self._create_widgets()
         logger.debug("INIT: widgets created")
         self._create_menu()
         logger.debug("INIT: menu created")
 
         # Aggiornamento testi e UI
+        if self._splash:
+            self._splash.update_progress(95, "Finalizzazione...")
         self.update_texts()
         logger.debug("INIT: texts updated")
 
         # === 4. COMPITI DI POST-AVVIO E BACKGROUND ===
+
+        # Chiudi la splash e mostra la finestra principale
+        if self._splash:
+            self._splash.update_progress(100, "Pronto!")
+            self.after(200, self._splash.close)   # breve pausa per mostrare 100%
+            self._splash = None
 
         # Operazioni per rendere la finestra visibile e reattiva
         self.update_idletasks()
@@ -13321,6 +13460,16 @@ class App(tk.Tk):
             # Passa user_id invece di user.name per compatibilitÃ  con _open_product_verification
             action_callback(user_id)
 
+        # 🆕 Log attività utente
+        try:
+            self.db.log_user_activity(
+                employee_hire_history_id=user_id,
+                activity=caller_function,
+                username=user.name
+            )
+        except Exception as _log_exc:
+            logger.warning(f"_execute_simple_login: log fallito: {_log_exc}")
+
         return user
 
     def _execute_authorized_action(self, menu_translation_key, action_callback):
@@ -13412,6 +13561,20 @@ class App(tk.Tk):
                 user_name=self.last_authenticated_user_name,
                 authorized_used_id=self.last_authorized_user_id
             )
+
+            # 🆕 Log attività utente (solo se abbiamo un ID numerico valido)
+            try:
+                log_id = self.last_authorized_user_id
+                log_name = self.last_authenticated_user_name or str(user_id)
+                logger.info(f"Log attività utente: {log_id}, {menu_translation_key}, {log_name}")
+                if log_id:
+                    self.db.log_user_activity(
+                        employee_hire_history_id=log_id,
+                        activity=menu_translation_key,
+                        username=log_name
+                    )
+            except Exception as _log_exc:
+                logger.warning(f"_execute_authorized_action: log fallito: {_log_exc}")
 
             action_callback()
             return True
@@ -15181,7 +15344,7 @@ class App(tk.Tk):
         logger.info(f"Utente '{authorized_user}' autorizzato per la Configurazione NPI.")
         try:
             config_win = NpiConfigWindow(master=self, npi_manager=self.npi_manager, lang=self.lang,
-                                         authorized_user=authorized_user)
+                                         authorized_user=authorized_user, db=self.db)
             self.wait_window(config_win)
 
         except Exception as e:
