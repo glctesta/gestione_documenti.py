@@ -304,9 +304,9 @@ class MatchProductionOrdersWindow(tk.Toplevel):
             
             logger.info(f"Trovati {len(self.production_orders_cache)} ordini di produzione")
             
-            # Popola combo
+            # Popola combo mostrando anche la quantità residua del PO
             display_values = [
-                f"{po['OrderNumber']} - {po['Product']}" 
+                f"{po['OrderNumber']} - {po['Product']} | Disponibile: {int(po.get('RemainingQty', 0))}"
                 for po in self.production_orders_cache
             ]
             self.production_order_combo['values'] = display_values
@@ -453,19 +453,30 @@ class MatchProductionOrdersWindow(tk.Toplevel):
                 )
                 return
             
-            # Verifica quantità rimanente
-            qty_remaining = float(self.selected_sale_order['values'][6])
-            if qty > qty_remaining:
+            # Verifica quantità rimanente lato ordine di vendita
+            qty_remaining_so = float(self.selected_sale_order['values'][6])
+            if qty > qty_remaining_so:
+                msg_so = self.lang.get('qty_exceeds_remaining', "La quantit\u00e0 eccede quella rimanente dell'ordine di vendita")
                 messagebox.showerror(
                     self.lang.get('error', 'Errore'),
-                    f"{self.lang.get('qty_exceeds_remaining', 'La quantità eccede quella rimanente')}: {qty_remaining}",
+                    f"{msg_so}: {qty_remaining_so}",
                     parent=self
                 )
                 return
-            
-            # Crea associazione
+
+            # Verifica quantità disponibile lato ordine di produzione
             po_data = self.production_orders_cache[po_index]
-            
+            po_remaining = po_data.get('RemainingQty', None)
+            if po_remaining is not None and qty > po_remaining:
+                msg_po = self.lang.get('qty_exceeds_po_remaining', "La quantit\u00e0 eccede quella disponibile nell'ordine di produzione")
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"{msg_po}: {int(po_remaining)}",
+                    parent=self
+                )
+                return
+
+
             association_data = {
                 'DynamicSaleOrderId': self.selected_sale_order['DynamicSaleOrderId'],
                 'IdOrder': po_data['IdOrder'],

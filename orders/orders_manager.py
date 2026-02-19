@@ -407,40 +407,58 @@ class OrdersManager:
     
     def get_available_production_orders(self, product_code: Optional[str] = None) -> List[Dict]:
         """
-        Recupera gli ordini di produzione non ancora assegnati
-        
+        Recupera gli ordini di produzione con quantità ancora disponibile (non interamente assegnata).
+
+        Un ordine di produzione può essere associato a più ordini di vendita finché
+        la somma delle qty assegnate è inferiore alla sua quantità totale (col_quantity).
+
         Args:
             product_code: Filtro opzionale per ProductCode (usa LIKE con % alla fine)
-        
+
         Returns:
-            Lista di dizionari con i dati degli ordini di produzione disponibili
+            Lista di dizionari con i dati degli ordini di produzione disponibili,
+            includendo RemainingQty e TotalQty.
         """
         query_str = """
-            SELECT 
-                o.IdOrder, 
-                o.OrderNumber, 
-                p.ProductCode + ' [' + p.ProductName + ']' AS Product  
-            FROM [Traceability_RS].dbo.orders o 
-            LEFT JOIN [Traceability_RS].dbo.Products p 
+            SELECT
+                o.IdOrder,
+                o.OrderNumber,
+                p.ProductCode + ' [' + p.ProductName + ']' AS Product,
+                ISNULL(o.col_quantity, 0) AS TotalQty,
+                ISNULL(o.col_quantity, 0)
+                    - ISNULL((
+                        SELECT SUM(dpo.Qty)
+                        FROM [Traceability_RS].[dyn].[DynamicProductionOrders] dpo
+                        WHERE dpo.IdOrder = o.IdOrder
+                    ), 0) AS RemainingQty
+            FROM [Traceability_RS].dbo.orders o
+            LEFT JOIN [Traceability_RS].dbo.Products p
                 ON p.IDProduct = o.IDProduct
-            WHERE o.IdOrder NOT IN (
-                SELECT IdOrder 
-                FROM [Traceability_RS].[dyn].[DynamicProductionOrders]
-            )
-            AND LEFT(o.OrderNumber, 2) = 'PR'
+            WHERE LEFT(o.OrderNumber, 2) = 'PR'
         """
-        
+
         params = {}
-        
+
         # Aggiungi filtro ProductCode se fornito (LIKE con % alla fine)
         if product_code:
             query_str += " AND p.ProductCode LIKE :product_code"
             params['product_code'] = f"{product_code}%"
-        
-        query_str += " ORDER BY o.OrderNumber"
-        
+
+        # Filtra solo PO con quantità ancora disponibile (tramite AND nella WHERE)
+        query_str += """
+            AND (
+                ISNULL(o.col_quantity, 0)
+                - ISNULL((
+                    SELECT SUM(dpo.Qty)
+                    FROM [Traceability_RS].[dyn].[DynamicProductionOrders] dpo
+                    WHERE dpo.IdOrder = o.IdOrder
+                ), 0)
+            ) > 0
+            ORDER BY o.OrderNumber
+        """
+
         query = text(query_str)
-        
+
         session = self._get_session()
         try:
             result = session.execute(query, params)
@@ -449,7 +467,9 @@ class OrdersManager:
                 orders.append({
                     'IdOrder': row[0],
                     'OrderNumber': row[1],
-                    'Product': row[2] or ''
+                    'Product': row[2] or '',
+                    'TotalQty': float(row[3]) if row[3] is not None else 0.0,
+                    'RemainingQty': float(row[4]) if row[4] is not None else 0.0,
                 })
             return orders
         except Exception as e:
@@ -458,6 +478,7 @@ class OrdersManager:
             raise
         finally:
             session.close()
+
     
     def create_production_association(self, association_data: Dict) -> int:
         """
