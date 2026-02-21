@@ -428,22 +428,23 @@ def generate_fai_report(fai_log_id, db, output_path):
         INNER JOIN Traceability_RS.dbo.products p ON o.IDProduct = p.IDProduct
         WHERE h.FaiLogId = ?
         """
-        
+         
         db.cursor.execute(order_query, (fai_log_id,))
         order_row = db.cursor.fetchone()
-        
+
         order_number = order_row.OrderNumber if order_row else ''
-        product_code = order_row.ProductCode if order_row else ''
-        quantity = order_row.orderquantity if order_row else ''
-        
+        product_code = order_row.productcode if order_row else ''  # lowercase = nome colonna pyodbc
+        quantity     = order_row.orderquantity if order_row else ''
+
         # Recupera dati validazione
         validation_query = """
         SELECT NPI, Test, PRODUCTION, StandardProcessDeviation, Others
         FROM Traceability_RS.fai.FaiLogHeathers
         WHERE FaiLogId = ?
         """
-        
+
         db.cursor.execute(validation_query, (fai_log_id,))
+        
         validation_row = db.cursor.fetchone()
         
         validation_data = {

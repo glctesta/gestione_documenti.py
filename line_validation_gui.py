@@ -117,9 +117,12 @@ class LineValidationWindow(tk.Toplevel):
         # Template Selector
         ttk.Label(row1, text=self.lang.get('select_template', 'Template FAI:'), font=('Arial', 10, 'bold')).pack(side=tk.LEFT, padx=(20, 5))
         self.template_var = tk.StringVar()
-        self.template_combo = ttk.Combobox(row1, textvariable=self.template_var, state='readonly', width=40)
+        self.template_combo = ttk.Combobox(row1, textvariable=self.template_var, state='readonly', width=60)
         self.template_combo.pack(side=tk.LEFT, padx=5)
         self.template_combo.bind('<<ComboboxSelected>>', self._on_template_selected)
+        # Label descrittiva che mostra il testo completo del template selezionato
+        self.template_desc_label = ttk.Label(row1, text="", font=('Arial', 9, 'bold'), foreground='#003366', wraplength=500, justify=tk.LEFT)
+        self.template_desc_label.pack(side=tk.LEFT, padx=(8, 5))
         
         # Seconda riga - Document info
         row2 = ttk.Frame(header_frame)
@@ -147,10 +150,10 @@ class LineValidationWindow(tk.Toplevel):
         # Combobox EDITABILE per ricerca ordine
         self.order_var = tk.StringVar()
         self.order_combo = ttk.Combobox(
-            row3, 
+            row3,
             textvariable=self.order_var,
-            width=50,
-            state='normal'  # ✅ Editabile invece di readonly
+            width=70,
+            state='normal'  # Editabile per ricerca live
         )
         self.order_combo.pack(side=tk.LEFT, padx=5)
         
@@ -418,6 +421,9 @@ class LineValidationWindow(tk.Toplevel):
         if selected and selected in self.templates_map:
             template_data = self.templates_map[selected]
             
+            # Aggiorna label descrittiva accanto al combo
+            self.template_desc_label.config(text=selected)
+            
             # Aggiorna i campi della testata
             self.doc_number_label.config(text=template_data['NrDocument'] or "")
             self.revision_label.config(text=str(template_data['Revision'] or ""))
@@ -431,6 +437,8 @@ class LineValidationWindow(tk.Toplevel):
             self.current_validation_labels = self._load_validation_labels_for_template(self.current_template_id)
             self._build_validation_checkboxes()
             self._load_fai_steps()
+        else:
+            self.template_desc_label.config(text="")
     
     def _load_orders(self):
         """Carica gli ordini dal database (escludendo CIPR e RMA)"""
@@ -1242,28 +1250,25 @@ class LineValidationWindow(tk.Toplevel):
                     if widgets['ok_var'].get() or widgets['not_ok_var'].get():
                         last_step_ok = widgets['ok_var'].get()
                         break
-            
             final_result = last_step_ok if last_step_ok is not None else True
             
-            # Invia email di notifica
+            # ── Genera e salva il PDF (SEMPRE, indipendentemente dall'email) ─────
+            logger.info("[PDF] Inizio generazione automatica report FAI.")
+            pdf_path = None
             try:
                 from fai_report_generator import generate_fai_report
-                from utils import get_email_recipients, send_email
                 import tempfile
-                import os # Aggiunto per os.path.join
-                from datetime import datetime # Aggiunto per datetime.now()
-                
-                # Genera PDF report
-                pdf_path = os.path.join(tempfile.gettempdir(), f"FAI_Report_{fai_log_id}.pdf")
-                if generate_fai_report(fai_log_id, self.db, pdf_path):
-                    logger.info(f"Report FAI generato: {pdf_path}")
-                    
-                    # Salva PDF nel database come binary
+                import os
+
+                temp_pdf_path = os.path.join(tempfile.gettempdir(), f"FAI_Report_{fai_log_id}.pdf")
+                if generate_fai_report(fai_log_id, self.db, temp_pdf_path):
+                    pdf_path = temp_pdf_path
+                    logger.info(f"[PDF] Report generato: {pdf_path}")
+
+                    # Salva PDF nel database (DocVerification)
                     try:
                         with open(pdf_path, 'rb') as pdf_file:
                             pdf_binary = pdf_file.read()
-                        
-                        # UPDATE primo record FaiLogs con il PDF
                         update_pdf_query = """
                         UPDATE Traceability_RS.fai.FaiLogs
                         SET DocVerification = ?
@@ -1271,30 +1276,39 @@ class LineValidationWindow(tk.Toplevel):
                         """
                         self.db.cursor.execute(update_pdf_query, (pdf_binary, fai_log_id))
                         self.db.conn.commit()
-                        logger.info(f"PDF salvato nel database: {len(pdf_binary)} bytes")
-                    
-                    except Exception as pdf_error:
-                        logger.error(f"Errore salvataggio PDF nel database: {pdf_error}", exc_info=True)
+                        logger.info(f"[PDF] PDF salvato in FaiLogs.DocVerification ({len(pdf_binary)} bytes, FaiLogId={fai_log_id})")
+                    except Exception as pdf_db_err:
+                        logger.error(f"[PDF] Errore salvataggio PDF nel database: {pdf_db_err}", exc_info=True)
                 else:
-                    logger.warning(f"Impossibile generare PDF per FaiLogId {fai_log_id}")
-                    pdf_path = None  # Reset se la generazione fallisce
-                
-                # Recupera destinatari email
-                recipients = get_email_recipients(self.db.conn, 'Sys_verifica_linea')
-                
+                    logger.warning(f"[PDF] generate_fai_report ha restituito False per FaiLogId={fai_log_id}. PDF non generato.")
+            except Exception as pdf_gen_err:
+                logger.error(f"[PDF] Errore generazione PDF: {pdf_gen_err}", exc_info=True)
+            # ── Invia email di notifica (usa il pdf_path già generato sopra) ─────
+            logger.info("[EMAIL] Inizio invio email di notifica FAI.")
+            try:
+                from utils import get_email_recipients, send_email
+                from datetime import datetime
+                import os
+
+                # Recupera destinatari da Settings (chiave: Sys_verifica_linea)
+                logger.info("[EMAIL] Recupero destinatari da Settings (Sys_verifica_linea)...")
+                recipients = []
+                try:
+                    recipients = get_email_recipients(self.db.conn, 'Sys_verifica_linea')
+                    logger.info(f"[EMAIL] Destinatari trovati: {recipients}")
+                except Exception as recipient_error:
+                    logger.error(f"[EMAIL] Errore nel recupero dei destinatari: {recipient_error}", exc_info=True)
+
                 if recipients:
                     product_name = order_data.get('ProductName', order_data.get('ProductCode', 'Unknown'))
-                    order_num = order_data.get('OrderNumber', order_data.get('IDOrder', 'Unknown'))
-                    
-                    # Crea subject
-                    result_text = 'PASSED ✓' if final_result else 'FAILED ✗'
-                    subject = f"FAI Validation Report - {product_name} - Order {order_num} - {result_text}"
-                    
-                    # Crea corpo HTML
-                    result_color = "green" if final_result else "red"
-                    result_label = "PASSED" if final_result else "FAILED"
-                    result_icon = "✓" if final_result else "✗"
-                    
+                    order_num    = order_data.get('OrderNumber', order_data.get('IDOrder', 'Unknown'))
+
+                    result_text  = 'PASSED \u2713' if final_result else 'FAILED \u2717'
+                    result_label = 'PASSED'       if final_result else 'FAILED'
+                    result_icon  = '\u2713'        if final_result else '\u2717'
+                    result_color = 'green'         if final_result else 'red'
+                    subject      = f"FAI Validation Report - {product_name} - Order {order_num} - {result_text}"
+
                     html_body = f"""
                     <html>
                     <head>
@@ -1302,85 +1316,48 @@ class LineValidationWindow(tk.Toplevel):
                             body {{ font-family: Arial, sans-serif; }}
                             .header {{ background-color: #003366; color: white; padding: 20px; }}
                             .content {{ padding: 20px; }}
-                            .result {{ 
-                                font-size: 24px; 
-                                font-weight: bold; 
-                                color: {result_color}; 
-                                padding: 10px;
+                            .result {{
+                                font-size: 24px; font-weight: bold;
+                                color: {result_color}; padding: 10px;
                                 border: 2px solid {result_color};
-                                display: inline-block;
-                                margin: 10px 0;
+                                display: inline-block; margin: 10px 0;
                             }}
-                            .info-table {{ 
-                                border-collapse: collapse; 
-                                width: 100%; 
-                                margin: 20px 0;
-                            }}
-                            .info-table td {{ 
-                                padding: 8px; 
-                                border: 1px solid #ddd; 
-                            }}
-                            .info-table td:first-child {{ 
-                                font-weight: bold; 
-                                background-color: #f0f0f0;
-                                width: 30%;
-                            }}
+                            .info-table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
+                            .info-table td {{ padding: 8px; border: 1px solid #ddd; }}
+                            .info-table td:first-child {{ font-weight: bold; background-color: #f0f0f0; width: 30%; }}
                         </style>
-                    </head>  
+                    </head>
                     <body>
                         <div class="header">
                             <h2>FAI (First Article Inspection) Validation Report</h2>
                         </div>
                         <div class="content">
-                            <div class="result">
-                                Risultato Finale: {result_label} {result_icon}
-                            </div>
-                            
+                            <div class="result">Risultato Finale: {result_label} {result_icon}</div>
                             <table class="info-table">
-                                <tr>
-                                    <td>Product:</td>
-                                    <td><strong>{product_name}</strong></td>
-                                </tr>
-                                <tr>
-                                    <td>Order Number:</td>
-                                    <td><strong>{order_num}</strong></td>
-                                </tr>
-                                <tr>
-                                    <td>Validation Date:</td>
-                                    <td>{datetime.now().strftime('%d/%m/%Y %H:%M')}</td>
-                                </tr>
-                                <tr>
-                                    <td>Operator:</td>
-                                    <td>{self.user_name}</td>
-                                </tr>
-                                <tr>
-                                    <td>FAI Log ID:</td>
-                                    <td>{fai_log_id}</td>
-                                </tr>
+                                <tr><td>Product:</td>        <td><strong>{product_name}</strong></td></tr>
+                                <tr><td>Order Number:</td>   <td><strong>{order_num}</strong></td></tr>
+                                <tr><td>Validation Date:</td><td>{datetime.now().strftime('%d/%m/%Y %H:%M')}</td></tr>
+                                <tr><td>Operator:</td>       <td>{self.user_name}</td></tr>
+                                <tr><td>FAI Log ID:</td>     <td>{fai_log_id}</td></tr>
                             </table>
-                            
-                            <p>
-                                Il report FAI completo è allegato a questa email in formato PDF.
-                            </p>
-                            
+                            <p>Il report FAI completo è allegato a questa email in formato PDF.</p>
                             <p style="color: #666; font-size: 12px; margin-top: 30px;">
-                                Questa è una email automatica generata dal sistema di tracciabilità.
-                                <br>Per qualsiasi domanda, contattare il reparto qualità.
+                                Questa è una email automatica generata dal sistema di tracciabilità.<br>
+                                Per qualsiasi domanda, contattare il reparto qualità.
                             </p>
                         </div>
                     </body>
                     </html>
                     """
-                    
-                    # Prepara allegati (solo se PDF esiste)
+
                     attachments = []
                     if pdf_path and os.path.exists(pdf_path):
                         attachments.append(pdf_path)
-                        logger.info(f"PDF allegato: {pdf_path}")
+                        logger.info(f"[EMAIL] PDF allegato: {pdf_path}")
                     else:
-                        logger.warning("PDF non disponibile, email inviata senza allegato")
-                    
-                    # Invia email usando utils.send_email (stesso metodo usato per Kanban, NPI, ecc.)
+                        logger.warning("[EMAIL] PDF non disponibile, email inviata senza allegato.")
+
+                    logger.debug(f"[EMAIL] Invio a: {', '.join(recipients)}")
                     send_email(
                         recipients=recipients,
                         subject=subject,
@@ -1388,24 +1365,26 @@ class LineValidationWindow(tk.Toplevel):
                         is_html=True,
                         attachments=attachments if attachments else None
                     )
-                    
-                    logger.info(f"Email FAI inviata a: {', '.join(recipients)}")
+                    logger.info(f"[EMAIL] Email FAI inviata con successo a: {', '.join(recipients)}")
                 else:
-                    logger.warning("Nessun destinatario configurato per Sys_verifica_linea")
+                    logger.warning("[EMAIL] Nessun destinatario configurato per Sys_verifica_linea. Email non inviata.")
                     messagebox.showinfo(
                         self.lang.get('info', 'Info'),
                         'Validazione salvata ma email non inviata:\n'
                         'Nessun destinatario configurato in Settings (Sys_verifica_linea)',
                         parent=self
                     )
-                        
+
             except Exception as email_error:
-                logger.error(f"Errore invio email FAI: {email_error}", exc_info=True)
+                logger.error(f"[EMAIL] Errore invio email FAI: {email_error}", exc_info=True)
                 messagebox.showwarning(
                     self.lang.get('warning', 'Attenzione'),
                     f'Validazione salvata ma email non inviata:\n{str(email_error)}',
                     parent=self
                 )
+            logger.info("[EMAIL] Fine processo email FAI.")
+
+
             
             messagebox.showinfo(
                 self.lang.get('success', 'Successo'),
