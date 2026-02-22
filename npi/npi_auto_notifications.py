@@ -273,11 +273,18 @@ class NpiAutoNotificationService:
             total_sent += sent
             total_skipped += skipped
             total_failed += failed
-            
+
+            # Panoramica globale NPI (ogni lunedì non festivo)
+            sent, skipped, failed = self._send_global_npi_view_email()
+            total_sent += sent
+            total_skipped += skipped
+            total_failed += failed
+
             logger.info(f"=== FINE CONTROLLO NOTIFICHE NPI ===")
             logger.info(f"Totale email inviate: {total_sent}")
             logger.info(f"Totale email saltate: {total_skipped}")
             logger.info(f"Totale email fallite: {total_failed}")
+
             
         except Exception as e:
             logger.error(f"Errore durante controllo notifiche: {e}", exc_info=True)
@@ -1557,6 +1564,295 @@ class NpiAutoNotificationService:
         """
         
         return html
+
+    # ── Global NPI View Email (ogni lunedì non festivo) ───────────────────────
+
+    def _is_global_view_send_day(self) -> bool:
+        """
+        La email globale NPI viene inviata ogni lunedì non festivo.
+        Usa la stessa funzione DB per verificare se oggi è lavorativo.
+        """
+        today = date.today()
+        # Lunedì = weekday 0
+        if today.weekday() != 0:
+            logger.info("[GLOBAL_VIEW] Oggi non è lunedì (%s). Email globale NPI saltata.", today.strftime('%A'))
+            return False
+        # Verifica festivo via DB
+        if not self._is_today_working_day():
+            logger.info("[GLOBAL_VIEW] Oggi è lunedì ma è festivo. Email globale NPI saltata.")
+            return False
+        return True
+
+    def _was_global_view_email_sent_this_week(self) -> bool:
+        """Ritorna True se questa settimana è già stata inviata la email globale NPI."""
+        session = self.npi_manager._get_session()
+        try:
+            today = date.today()
+            # Inizio settimana corrente (lunedì)
+            week_start = today - timedelta(days=today.weekday())
+            row = session.execute(
+                text("""
+                    SELECT TOP 1 1
+                    FROM [dbo].[NpiProjectDelayEmailLog]
+                    WHERE [RecipientEmail] = '__global_npi_view__'
+                      AND [NotificationDate] >= :week_start
+                """),
+                {"week_start": week_start}
+            ).first()
+            return row is not None
+        except Exception as e:
+            logger.error("[GLOBAL_VIEW] Errore verifica invio settimanale: %s", e, exc_info=True)
+            return False
+        finally:
+            session.close()
+
+    def _mark_global_view_email_sent(self) -> None:
+        """Registra l'invio della email globale NPI con chiave sentinella."""
+        session = self.npi_manager._get_session()
+        try:
+            session.execute(
+                text("""
+                    INSERT INTO [dbo].[NpiProjectDelayEmailLog]
+                        ([NotificationDate], [RecipientEmail], [OverdueCount], [PotentialCount])
+                    VALUES (:today, '__global_npi_view__', 0, 0)
+                """),
+                {"today": date.today()}
+            )
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.error("[GLOBAL_VIEW] Errore registrazione invio: %s", e, exc_info=True)
+        finally:
+            session.close()
+
+    def _collect_global_npi_stats(self) -> dict:
+        """
+        Raccoglie statistiche globali su tutti i progetti NPI:
+        - Totale, attivi, chiusi, in ritardo (deadline scaduta), potenziale ritardo
+        - Dettaglio per cliente (prodotto o nome cliente dall'owner)
+        """
+        from .data_models import ProgettoNPI, WaveNPI, TaskProdotto
+        session = self.npi_manager._get_session()
+        today = date.today()
+        stats = {
+            "total": 0, "active": 0, "closed": 0,
+            "overdue": 0, "potential_delay": 0,
+            "clients": {}
+        }
+        try:
+            projects = session.scalars(
+                select(ProgettoNPI)
+                .options(
+                    joinedload(ProgettoNPI.prodotto),
+                    joinedload(ProgettoNPI.owner),
+                    subqueryload(ProgettoNPI.waves).subqueryload(WaveNPI.tasks)
+                )
+                .order_by(ProgettoNPI.ProgettoId)
+            ).all()
+
+            for p in projects:
+                stats["total"] += 1
+                is_closed = (p.StatoProgetto or '').strip().lower() == 'chiuso'
+
+                # Nome cliente: dal prodotto o dall'owner del progetto
+                client_name = "N/A"
+                if p.prodotto and p.prodotto.NomeProdotto:
+                    client_name = p.prodotto.NomeProdotto
+                elif p.owner and p.owner.Nome:
+                    client_name = p.owner.Nome
+
+                # Inizializza bucket cliente
+                c = stats["clients"].setdefault(client_name, {
+                    "total": 0, "active": 0, "closed": 0, "overdue": 0
+                })
+                c["total"] += 1
+
+                if is_closed:
+                    stats["closed"] += 1
+                    c["closed"] += 1
+                    continue
+
+                stats["active"] += 1
+                c["active"] += 1
+
+                # Verifica ritardo
+                deadline = self._to_date(getattr(p, 'ScadenzaProgetto', None))
+                tasks = []
+                for wave in (p.waves or []):
+                    tasks.extend(wave.tasks or [])
+                incomplete = [t for t in tasks if (t.Stato or '').strip().lower() != 'completato']
+
+                if deadline and deadline < today:
+                    stats["overdue"] += 1
+                    c["overdue"] += 1
+                else:
+                    # Potenziale ritardo: task aperti già scaduti
+                    has_overdue_task = any(
+                        self._to_date(t.DataScadenza) and self._to_date(t.DataScadenza) < today
+                        for t in incomplete if t.DataScadenza
+                    )
+                    if has_overdue_task:
+                        stats["potential_delay"] += 1
+
+            return stats
+        except Exception as e:
+            logger.error("[GLOBAL_VIEW] Errore raccolta stats NPI: %s", e, exc_info=True)
+            return stats
+        finally:
+            session.close()
+
+    def _build_global_view_email_html(self, stats: dict, logo_html: str) -> str:
+        """Genera HTML professionale con KPI globali e tabella per cliente."""
+        today_str = date.today().strftime('%d/%m/%Y')
+
+        # KPI cards
+        kpi_style = "display:inline-block;width:22%;text-align:center;padding:16px 8px;border-radius:8px;margin:4px;"
+        kpi_cards = f"""
+        <div style="margin:18px 0;">
+            <div style="{kpi_style}background:#EEF4FB;border:1px solid #B0C8E8;">
+                <div style="font-size:32px;font-weight:bold;color:#1F4E78;">{stats['total']}</div>
+                <div style="color:#555;margin-top:4px;">Total Projects</div>
+            </div>
+            <div style="{kpi_style}background:#EAF7EA;border:1px solid #A3D9A3;">
+                <div style="font-size:32px;font-weight:bold;color:#2E7D32;">{stats['active']}</div>
+                <div style="color:#555;margin-top:4px;">Active</div>
+            </div>
+            <div style="{kpi_style}background:#F5F5F5;border:1px solid #CCC;">
+                <div style="font-size:32px;font-weight:bold;color:#555;">{stats['closed']}</div>
+                <div style="color:#555;margin-top:4px;">Closed</div>
+            </div>
+            <div style="{kpi_style}background:#FFF0F0;border:1px solid #F5A0A0;">
+                <div style="font-size:32px;font-weight:bold;color:#C00000;">{stats['overdue']}</div>
+                <div style="color:#555;margin-top:4px;">Overdue</div>
+            </div>
+        </div>"""
+
+        # Per-client table rows
+        client_rows = ""
+        for client, c in sorted(stats["clients"].items()):
+            overdue_cell_style = "color:#C00000;font-weight:bold;" if c['overdue'] > 0 else "color:#333;"
+            client_rows += f"""
+            <tr>
+                <td style="padding:8px 12px;border:1px solid #ddd;">{client}</td>
+                <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;">{c['total']}</td>
+                <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;color:#2E7D32;">{c['active']}</td>
+                <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;color:#555;">{c['closed']}</td>
+                <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;{overdue_cell_style}">{c['overdue']}</td>
+            </tr>"""
+
+        client_table = f"""
+        <table style="border-collapse:collapse;width:100%;margin:12px 0;">
+            <thead>
+                <tr style="background:#1F4E78;color:#fff;">
+                    <th style="padding:10px 12px;border:1px solid #ddd;text-align:left;">Customer / Product</th>
+                    <th style="padding:10px 12px;border:1px solid #ddd;">Total</th>
+                    <th style="padding:10px 12px;border:1px solid #ddd;">Active</th>
+                    <th style="padding:10px 12px;border:1px solid #ddd;">Closed</th>
+                    <th style="padding:10px 12px;border:1px solid #ddd;">Overdue</th>
+                </tr>
+            </thead>
+            <tbody>{client_rows}</tbody>
+        </table>"""
+
+        html = f"""
+        <html>
+        <body style="font-family:Segoe UI,Arial,sans-serif;color:#1f2937;background:#f5f7fb;padding:20px;">
+            <div style="max-width:900px;margin:0 auto;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
+                <div style="background:#0B3A66;color:#fff;padding:22px 26px;">
+                    {logo_html}
+                    <h2 style="margin:12px 0 4px 0;">NPI Portfolio — Weekly Global Status Report</h2>
+                    <p style="margin:0;opacity:0.9;">Week of {today_str} | Automated monitoring report</p>
+                </div>
+                <div style="padding:24px 26px;">
+                    <h3 style="color:#1F4E78;margin-top:0;">Global Overview</h3>
+                    {kpi_cards}
+                    <p style="color:#555;font-size:13px;margin-top:6px;">
+                        Additionally, <strong>{stats['potential_delay']}</strong> active project(s) have open tasks already past their due date (potential delay).
+                    </p>
+                    <h3 style="color:#1F4E78;margin-top:24px;">Breakdown by Customer / Product</h3>
+                    {client_table}
+                    <p style="color:#6b7280;font-size:12px;margin-top:24px;">
+                        This is an automated weekly notification from the NPI Project Management System.
+                        The attached Excel report contains the full detail of overdue and potential-delay projects.
+                        Please do not reply to this email.
+                    </p>
+                </div>
+            </div>
+        </body>
+        </html>"""
+        return html
+
+    def _send_global_npi_view_email(self) -> Tuple[int, int, int]:
+        """
+        Invia email settimanale con panoramica globale NPI.
+        Condizioni: oggi è lunedì non festivo + non ancora inviata questa settimana.
+        Destinatari: settings.atribute = 'Sys_email_npi_global_view'.
+        Allegato: Excel overdue/potential-delay già usato per le altre email.
+        """
+        if not self._is_global_view_send_day():
+            return 0, 1, 0
+
+        if self._was_global_view_email_sent_this_week():
+            logger.info("[GLOBAL_VIEW] Email globale NPI già inviata questa settimana. Skip.")
+            return 0, 1, 0
+
+        try:
+            recipients = self._get_setting_email_list('Sys_email_npi_global_view')
+            if not recipients:
+                logger.warning("[GLOBAL_VIEW] Nessun destinatario configurato in 'Sys_email_npi_global_view'. Email globale NPI saltata.")
+                return 0, 1, 0
+
+            stats = self._collect_global_npi_stats()
+
+            # Excel allegato (overdue + potential delay)
+            overdue_list, potential_list = self._collect_project_delay_data()
+            report_path = self._build_project_delay_excel_report(overdue_list, potential_list)
+
+            # Logo
+            logo_path = self._resolve_logo_path()
+            logo_html = ""
+            attachments = [report_path]
+            if logo_path:
+                attachments = [('inline', logo_path, 'company_logo')] + attachments
+                logo_html = '<img src="cid:company_logo" alt="Company Logo" style="max-width:180px;height:auto;"/>'
+
+            html_body = self._build_global_view_email_html(stats, logo_html)
+            subject = (
+                f"NPI Weekly Report — {stats['total']} projects | "
+                f"{stats['active']} active | {stats['overdue']} overdue"
+            )
+
+            from email_connector import EmailSender
+            sender = EmailSender()
+            sender.save_credentials("Accounting@Eutron.it", "9jHgFhSs7Vf+")
+            sender.send_email(
+                to_email=recipients[0],
+                subject=subject,
+                body=html_body,
+                is_html=True,
+                attachments=attachments,
+                cc_emails=recipients[1:] if len(recipients) > 1 else []
+            )
+
+            self._mark_global_view_email_sent()
+            logger.info(
+                "[GLOBAL_VIEW] Email globale NPI inviata a %d destinatari. "
+                "Totale=%d, Attivi=%d, Chiusi=%d, In ritardo=%d",
+                len(recipients), stats['total'], stats['active'], stats['closed'], stats['overdue']
+            )
+
+            # Cleanup Excel temporaneo
+            try:
+                if report_path and os.path.exists(report_path):
+                    os.remove(report_path)
+            except Exception:
+                pass
+
+            return 1, 0, 0
+
+        except Exception as e:
+            logger.error("[GLOBAL_VIEW] Errore invio email globale NPI: %s", e, exc_info=True)
+            return 0, 0, 1
 
 
 # Istanza globale del servizio

@@ -126,7 +126,66 @@ def setup_logging(debug: bool = False,
     app_logger.debug("Logging inizializzato. Livello=%s, file=%s", logging.getLevelName(level), file_path)
     return file_path
 
+
+def archive_log_if_needed(log_file_path: str) -> None:
+    """Archivia il log attivo se copre almeno 2 mesi (60 giorni).
+
+    Legge la prima e l'ultima riga del log per estrarre le date.
+    Se lo span e' >= 60 giorni:
+      - Copia il file in <log_dir>/traceability_rs_<start>---<end>.log
+      - Azzera il log attivo per ricominciare da zero
+      - Scrive un messaggio di avvio nel log pulito
+    """
+    import re as _re
+    path = Path(log_file_path)
+    if not path.exists() or path.stat().st_size == 0:
+        return
+
+    date_pattern = _re.compile(r'^(\d{4}-\d{2}-\d{2})')
+    first_date = None
+    last_date = None
+
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as fh:
+            for line in fh:
+                m = date_pattern.match(line)
+                if m:
+                    first_date = m.group(1)
+                    break
+        with open(path, 'r', encoding='utf-8', errors='replace') as fh:
+            for line in fh:
+                m = date_pattern.match(line)
+                if m:
+                    last_date = m.group(1)
+    except Exception:
+        return
+
+    if not first_date or not last_date:
+        return
+
+    from datetime import datetime as _dt
+    d0 = _dt.strptime(first_date, '%Y-%m-%d')
+    d1 = _dt.strptime(last_date,  '%Y-%m-%d')
+    if (d1 - d0).days < 60:
+        return
+
+    archive_name = path.parent / f"traceability_rs_{first_date}---{last_date}.log"
+    try:
+        shutil.copy2(path, archive_name)
+        # Azzera il log attivo
+        with open(path, 'w', encoding='utf-8'):
+            pass
+        logging.getLogger("TraceabilityRS").info(
+            "Log archiviato in: %s. Nuovo log avviato.", archive_name
+        )
+    except Exception as e:
+        logging.getLogger("TraceabilityRS").warning(
+            "Impossibile archiviare il log: %s", e
+        )
+
+
 LOG_FILE_PATH = setup_logging(debug=False, logger_name="TraceabilityRS")
+archive_log_if_needed(LOG_FILE_PATH)
 logger = logging.getLogger("TraceabilityRS")
 logger.info("Logging avviato. File: %s", LOG_FILE_PATH)
 
@@ -264,7 +323,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.4.5'  # Versione aggiornata
+APP_VERSION = '2.3.4.8'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -9734,7 +9793,20 @@ class KanbanMoveForm(tk.Toplevel):
         self.cb_component.pack(side="left", fill="x", expand=True)
         self.cb_component.bind("<KeyRelease>", self._on_component_typed)
 
-        # Location row (giÃ  presente)
+        # Quantity row — PRIMA della locazione, così il filtro locazioni può usare entrambi i valori
+        r3 = ttk.Frame(sf)
+        r3.pack(fill="x", padx=6, pady=6)
+        ttk.Label(r3, text=self.lang.get('quantity', 'Quantita'), width=16).pack(side="left")
+        self.qty_entry = ttk.Entry(r3, textvariable=self.qty_var, width=12)
+        self.qty_entry.pack(side="left")
+
+        # Etichette saldo: qui e altrove
+        self.lbl_here_balance = ttk.Label(r3, text=self.lang.get('balance_here', 'Saldo qui: {qty}').format(qty='-'))
+        self.lbl_here_balance.pack(side="left", padx=(16, 8))
+        self.lbl_other_balance = ttk.Label(r3, text=self.lang.get('balance_other', 'Altrove: {qty}').format(qty='-'))
+        self.lbl_other_balance.pack(side="left")
+
+        # Location row — dopo la quantità
         r2 = ttk.Frame(sf)
         r2.pack(fill="x", padx=6, pady=6)
         ttk.Label(r2, text=self.lang.get('location', 'Locazione'), width=16).pack(side="left")
@@ -9749,18 +9821,6 @@ class KanbanMoveForm(tk.Toplevel):
             foreground="gray"
         )
         self.lbl_loc_hint.pack(side="left", padx=(8, 0))
-
-        # Quantity row (giÃ  presente)
-        r3 = ttk.Frame(sf);
-        r3.pack(fill="x", padx=6, pady=6)
-        ttk.Label(r3, text=self.lang.get('quantity', 'Quantita'), width=16).pack(side="left")
-        ttk.Entry(r3, textvariable=self.qty_var, width=12).pack(side="left")
-
-        # Etichette saldo: qui e altrove
-        self.lbl_here_balance = ttk.Label(r3, text=self.lang.get('balance_here', 'Saldo qui: {qty}').format(qty='-'))
-        self.lbl_here_balance.pack(side="left", padx=(16, 8))
-        self.lbl_other_balance = ttk.Label(r3, text=self.lang.get('balance_other', 'Altrove: {qty}').format(qty='-'))
-        self.lbl_other_balance.pack(side="left")
 
         # Pulsanti
         bf = ttk.Frame(root); bf.pack(fill="x", pady=(12, 0))
@@ -9784,6 +9844,12 @@ class KanbanMoveForm(tk.Toplevel):
         # Component combobox bindings
         self.cb_component.bind("<<ComboboxSelected>>", self._on_component_selected)
         self.cb_component.bind("<FocusOut>", self._on_component_focus_out)
+        # Return sul componente: filtra le locazioni in base al componente digitato
+        self.cb_component.bind("<Return>", self._on_component_enter)
+
+        # Qty: quando si preme Return/Tab, aggiorna il filtro locazioni
+        self.qty_entry.bind("<Return>", self._on_qty_filter_locations)
+        self.qty_entry.bind("<FocusOut>", self._on_qty_filter_locations)
 
         # Area combobox bindings
         self.cb_area.bind("<<ComboboxSelected>>", self._on_area_selected)
@@ -9792,6 +9858,88 @@ class KanbanMoveForm(tk.Toplevel):
         # Location combobox bindings
         self.cb_location.bind("<<ComboboxSelected>>", self._on_location_selected)
         self.cb_location.bind("<FocusOut>", lambda e: self._update_balances())
+
+    def _on_component_enter(self, event=None):
+        """
+        Invocato quando si preme Invio nel campo componente (ricerca manuale).
+        Risolve il componente digitato e ri-filtra le locazioni in base al componente
+        (e alla quantità già inserita, se presente).
+        """
+        comp_id, comp_code, _ = self._resolve_component(self.component_var.get())
+        if not comp_id:
+            # Componente non trovato: segnala e torna
+            self._append_log(self.lang.get('component_not_found',
+                                           f'Componente non trovato: {self.component_var.get()}'))
+            return
+        # Aggiorna l'UI come se fosse selezionato dal combo
+        self._refresh_component_dependent_ui()
+        # Sposta il focus alla qty se non è già valorizzata, altrimenti alla locazione
+        if not self.qty_var.get().strip():
+            self.qty_entry.focus_set()
+        else:
+            self._on_qty_filter_locations()
+            self.cb_location.focus_set()
+
+    def _on_qty_filter_locations(self, event=None):
+        """
+        Invocato quando l'utente conferma la quantità (Return/FocusOut su qty_entry).
+        Se il componente è già valorizzato, ri-filtra e ordina le locazioni per qty desc.
+        Il filtro si limita alle locazioni che contengono il componente.
+        """
+        comp_id, _, _ = self._resolve_component(self.component_var.get())
+        if not comp_id:
+            return  # nessun componente → niente da filtrare
+
+        # Recupera locazioni con stock per il componente, ordinate per qty decrescente
+        try:
+            loc_map = self.db.get_component_locations_with_stock(comp_id)  # {LocationId: Qty}
+        except Exception as e:
+            logger.warning(f"KanbanMoveForm._on_qty_filter: errore lettura stock: {e}")
+            return
+
+        if not loc_map:
+            # Nessuna locazione con stock: lascia inalterata la lista
+            return
+
+        # Costruisce lista ordinata per qty decrescente, limitata alle locazioni nel cache _locations
+        loc_with_qty = []
+        for (lid, code, area) in self._locations:
+            if lid in loc_map:
+                qty = loc_map[lid]
+                loc_with_qty.append((lid, code, area, qty))
+
+        if not loc_with_qty:
+            return  # locazioni in cache non ancora caricate, skip
+
+        # Ordina per qty decrescente
+        loc_with_qty.sort(key=lambda x: x[3], reverse=True)
+
+        # Aggiorna il combo con le locazioni filtrate + label con qty
+        items = []
+        for (lid, code, area, qty) in loc_with_qty:
+            if area:
+                label = f"{code} (Qty: {qty}) - {area}"
+            else:
+                label = f"{code} (Qty: {qty})"
+            items.append(label)
+
+        self.cb_location["values"] = items
+        # Auto-seleziona la prima (quella con più stock)
+        if items:
+            self.cb_location.current(0)
+            self._on_location_selected()
+
+    def _on_component_selected(self, event=None):
+        self._refresh_component_dependent_ui()
+
+    def _on_component_focus_out(self, event=None):
+        # Se il testo corrisponde a un componente valido, aggiorna UI
+        comp_id, _, _ = self._resolve_component(self.component_var.get())
+        if comp_id:
+            self._refresh_component_dependent_ui()
+
+    def _on_location_selected(self, event=None):
+        self._update_balances()
 
     def _on_op_changed(self):
         if self.op_var.get() == "load":
@@ -10440,18 +10588,6 @@ class KanbanMoveForm(tk.Toplevel):
             except Exception:
                 pass
 
-    def _on_component_selected(self, event=None):
-        self._refresh_component_dependent_ui()
-
-    def _on_component_focus_out(self, event=None):
-        # Se il testo corrisponde a un componente valido, aggiorna UI
-        comp_id, _, _ = self._resolve_component(self.component_var.get())
-        if comp_id:
-            self._refresh_component_dependent_ui()
-
-    def _on_location_selected(self, event=None):
-        self._update_balances()
-
     def _refresh_component_dependent_ui(self):
         """
         Dopo la scelta del componente: marca le locazioni in uso (***), aggiorna i saldi.
@@ -11098,6 +11234,9 @@ class App(tk.Tk):
         self._fai_fails_email_stop_event = threading.Event()
         self._fai_fails_email_last_sent = None  # Track last send date
         self._start_fai_fails_email_background_task()
+
+        # Flag in-memory per evitare invii multipli email Kanban refill nella stessa giornata
+        self._kanban_email_sent_today = None  # type: datetime.date | None
 
         # Inizializza il thread per l'email settimanale NPI Overview
         self._weekly_npi_email_thread = None
@@ -11840,7 +11979,12 @@ class App(tk.Tk):
 
     def _kanban_refill_check_worker(self, manual=False):
         """
-        Logica di controllo Kanban refill
+        Logica di controllo Kanban refill.
+
+        REGOLE:
+        1. Eseguito al massimo UNA VOLTA al giorno (flag in-memory + check DB).
+        2. NON eseguito se AskForRefill = 0 in tutte le locazioni.
+        3. Genera UNA sola email con tutti i materiali da ricaricare.
         """
         log = logging.getLogger("TraceabilityRS")
         try:
@@ -11853,9 +11997,17 @@ class App(tk.Tk):
                         "Connessione al database non disponibile. Riprovare più tardi."
                     ))
                 return
-            
-            # Verifica se è già stata inviata una richiesta oggi (solo per esecuzioni automatiche)
+
+            # REGOLA 1 — Check in-memory: evita esecuzioni multiple nella stessa giornata
+            # (protegge anche da richiami ricorsivi dello scheduler ogni N minuti)
             if not manual:
+                from datetime import date as _date
+                today = _date.today()
+                if getattr(self, '_kanban_email_sent_today', None) == today:
+                    log.info("KanbanRefill: email già inviata oggi (flag in-memory). Skip esecuzione automatica.")
+                    return
+
+                # REGOLA 1b — Check su DB: protezione aggiuntiva per riavvii dell'applicazione
                 try:
                     sql_check = """
                     SELECT COUNT(*) FROM knb.KanBanMaterialRequestes
@@ -11864,15 +12016,32 @@ class App(tk.Tk):
                     self.db.cursor.execute(sql_check)
                     count_today = self.db.cursor.fetchone()[0]
                     if count_today > 0:
-                        log.info(f"KanbanRefill: già inviate {count_today} richieste oggi. Skip esecuzione automatica.")
+                        log.info(f"KanbanRefill: già presenti {count_today} richieste nel DB per oggi. Skip esecuzione automatica.")
+                        # Aggiorna il flag in-memory per evitare ulteriori query
+                        self._kanban_email_sent_today = today
                         return
                 except Exception as e:
-                    log.warning(f"KanbanRefill: errore verifica richieste giornaliere: {e}. Procedo comunque.")
-        
+                    log.warning(f"KanbanRefill: errore verifica richieste giornaliere DB: {e}. Procedo comunque.")
+
+            # REGOLA 2 — Controlla che almeno una locazione abbia AskForRefill = 1
+            try:
+                sql_ask = """
+                SELECT ISNULL(MAX(AskForRefill), 0)
+                FROM [knb].[KanBanLocations]
+                """
+                self.db.cursor.execute(sql_ask)
+                ask_for_refill = self.db.cursor.fetchone()[0]
+                if not ask_for_refill:
+                    log.info("KanbanRefill: AskForRefill = 0 per tutte le locazioni. Email soppressa.")
+                    return
+                log.info(f"KanbanRefill: AskForRefill = {ask_for_refill}. Procedo con il controllo stock.")
+            except Exception as e:
+                log.warning(f"KanbanRefill: impossibile leggere AskForRefill ({e}). Procedo comunque.")
+
             # 1. Stock corrente per componente
             log.info("Recupero stock corrente...")
             stock_map = self.db.fetch_kanban_current_stock_by_component()
-        
+
             # Gestione degli errori
             if stock_map is None:  # Errore di connessione o query fallita
                 log.error("Errore nel recupero stock - connessione persa o query fallita")
@@ -11882,7 +12051,7 @@ class App(tk.Tk):
                         "Errore di connessione durante il recupero dei dati stock."
                     ))
                 return
-        
+
             if not stock_map:  # Nessun dato ma senza errori (tabella vuota)
                 log.warning("Nessun dato stock recuperato (tabella vuota o tutti i componenti hanno DateOut)")
                 if manual:
@@ -11891,10 +12060,10 @@ class App(tk.Tk):
                         "Nessun componente trovato con stock attivo (tutti i componenti hanno DateOut compilato)."
                     ))
                 return
-        
+
             comp_ids = list(stock_map.keys())
             log.info(f"Componenti da processare: {len(comp_ids)}")
-        
+
             # 2. Regole attive per componente
             log.info("Recupero regole attive...")
             rules_map = self.db.fetch_active_rules_by_component()
@@ -11902,18 +12071,18 @@ class App(tk.Tk):
                 log.error("Errore nel recupero regole attive")
                 return
             log.info(f"Regole attive trovate: {len(rules_map)}")
-        
-            #3. Prima quantitÃ  (per chi ha regola percentuale)
+
+            # 3. Prima quantità (per chi ha regola percentuale)
             pct_comp_ids = [cid for cid, r in rules_map.items() if r.get('min_pct') is not None]
             first_qty_map = {}
             if pct_comp_ids:
-                log.info(f"Recupero prime quantitÃ  per {len(pct_comp_ids)} componenti...")
+                log.info(f"Recupero prime quantità per {len(pct_comp_ids)} componenti...")
                 first_qty_map = self.db.fetch_first_load_qty_by_component(pct_comp_ids)
                 if first_qty_map is None:  # Errore di connessione
-                    log.error("Errore nel recupero prime quantitÃ ")
+                    log.error("Errore nel recupero prime quantità")
                     return
-                log.info(f"Prime quantitÃ  recuperate: {len(first_qty_map)}")
-        
+                log.info(f"Prime quantità recuperate: {len(first_qty_map)}")
+
             # 4. Max singolo carico + record id
             log.info("Recupero max carichi...")
             max_load_map = self.db.fetch_max_single_load_by_component(comp_ids)
@@ -11921,7 +12090,7 @@ class App(tk.Tk):
                 log.error("Errore nel recupero max carichi")
                 return
             log.info(f"Max carichi recuperati: {len(max_load_map)}")
-        
+
             # 5. Master component
             log.info("Recupero master component...")
             master_map = self.db.fetch_components_master(comp_ids)
@@ -11929,7 +12098,7 @@ class App(tk.Tk):
                 log.error("Errore nel recupero master component")
                 return
             log.info(f"Master component recuperati: {len(master_map)}")
-        
+
             # 6. Valuta richieste
             requests = []  # elementi: dict con info per Excel e per insert
             for cid, cur_stock in stock_map.items():
@@ -11940,7 +12109,7 @@ class App(tk.Tk):
                         rule_type = "ABS"
                         rule_value = threshold
                     else:
-                        # percentuale: calcolo su prima quantitÃ 
+                        # percentuale: calcolo su prima quantità
                         base = int(first_qty_map.get(cid, 0))
                         pct = int(rule.get('min_pct') or 0)
                         # floor per non anticipare troppo
@@ -11951,14 +12120,14 @@ class App(tk.Tk):
                     threshold = 0
                     rule_type = "NA"
                     rule_value = None
-        
+
                 if cur_stock <= threshold:
                     ml = max_load_map.get(cid)
                     if not ml:
                         continue
                     qty_to_refill = int(ml['max_qty'])
                     krec_id = int(ml['record_id'])
-                    # dedup: se giÃ  presente oggi per questa KanBanRecordId, salta
+                    # dedup per componente: se già presente oggi per questa KanBanRecordId, salta
                     if self.db.has_refill_request_today(krec_id):
                         continue
                     # prepara riga
@@ -11975,30 +12144,50 @@ class App(tk.Tk):
                         'qty_to_refill': qty_to_refill,
                         'kanban_record_id': krec_id
                     })
-        
+
             if not requests:
+                log.info("KanbanRefill: nessun componente sotto soglia. Nessuna email inviata.")
                 if manual:
                     self.after(0, lambda: messagebox.showinfo(
                         self.lang.get('info_title', 'Informazione'),
                         self.lang.get('kanban_refill_none', 'Nessun componente da richiedere.')
                     ))
                 return
-        
+
             # 7. Genera Excel in memoria
             excel_bytes = self._build_kanban_refill_excel(requests)
-        
+
             # 8. Destinatari mail
             try:
                 recipients = utils.get_email_recipients(self.db.conn, attribute='Sys_email_KanBanRefill')
             except Exception as e:
                 log.error("KanbanRefill: error reading recipients: %s", e)
                 recipients = []
-        
+
             if not recipients:
                 log.warning("KanbanRefill: no recipients for Sys_email_KanBanRefill; skipping email.")
                 return
-        
-            # 9. Invia email (con allegato Excel)
+
+            # 9. Registra richieste su DB PRIMA dell'invio email.
+            # In questo modo, qualsiasi thread concorrente che parta subito dopo
+            # troverà già i record e bloccherà la propria esecuzione in has_refill_request_today.
+            inserts_ok = 0
+            for req in requests:
+                ok = self.db.insert_refill_request(req['kanban_record_id'], req['qty_to_refill'])
+                if ok:
+                    inserts_ok += 1
+                else:
+                    log.warning("KanbanRefill: insert failed for KanBanRecordId=%s: %s",
+                                req['kanban_record_id'], self.db.last_error_details)
+
+            log.info(f"KanbanRefill: inseriti {inserts_ok}/{len(requests)} record nel DB.")
+
+            # Aggiorna il flag in-memory SUBITO dopo l'insert (prima ancora di inviare l'email)
+            if not manual:
+                from datetime import date as _date
+                self._kanban_email_sent_today = _date.today()
+
+            # 10. Invia email (con allegato Excel)
             subject = "[Kanban] Refill request - Repair Kanban"
             body = (
                 "Dear Colleagues,\n\n"
@@ -12006,19 +12195,19 @@ class App(tk.Tk):
                 "The list includes all components whose current stock is at or below the configured reorder point.\n\n"
                 "Regards,\nTraceability System"
             )
-        
+
             try:
                 # Salva Excel in file temporaneo
                 import tempfile
                 import os
                 from datetime import datetime
-                
+
                 temp_dir = tempfile.gettempdir()
                 excel_temp_file = os.path.join(temp_dir, f"KanbanRefill_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
-                
+
                 with open(excel_temp_file, 'wb') as f:
                     f.write(excel_bytes)
-                
+
                 # Invia email con allegato
                 success = utils.send_email(
                     recipients=recipients,
@@ -12026,29 +12215,22 @@ class App(tk.Tk):
                     body=body,
                     attachments=[excel_temp_file]
                 )
-                
+
                 if success:
-                    log.info("KanbanRefill: email sent to %d recipients.", len(recipients))
+                    log.info("KanbanRefill: email inviata a %d destinatari.", len(recipients))
                 else:
-                    log.error("KanbanRefill: email send returned False")
-                
+                    log.error("KanbanRefill: invio email ha restituito False")
+
                 # Pulisci file temporaneo
                 try:
                     os.remove(excel_temp_file)
-                except:
+                except Exception:
                     pass
-                    
+
             except Exception as e:
-                log.error("KanbanRefill: email send failed: %s", e)
+                log.error("KanbanRefill: invio email fallito: %s", e)
                 return
-        
-            # 10. Registra richieste su DB
-            for req in requests:
-                ok = self.db.insert_refill_request(req['kanban_record_id'], req['qty_to_refill'])
-                if not ok:
-                    log.warning("KanbanRefill: insert failed for KanBanRecordId=%s: %s",
-                                req['kanban_record_id'], self.db.last_error_details)
-        
+
         except Exception as e:
             logging.getLogger("TraceabilityRS").exception("KanbanRefill job failed: %s", e)
             log.exception("KanbanRefill job failed completamente: %s", e)
@@ -12529,33 +12711,90 @@ class App(tk.Tk):
         self._on_closing(force_quit=True)  # Chiude l'app senza chiedere conferma
 
     def _periodic_version_check(self):
-        """Controlla periodicamente la presenza di nuove versioni."""
+        """
+        Controlla periodicamente la presenza di nuove versioni.
+
+        Stessa logica di check_version():
+        - Se mandatory (Must=True) o skip_count >= 3: update obbligatorio → chiude app se rifiutato
+        - Se non mandatory e skip_count < 3: chiede all'utente (max 3 volte), poi ripianifica
+        - Nessun aggiornamento: ripianifica tra 120 minuti
+        """
         logger.info("Controllo periodico versione in corso...")
 
-        app_name = os.path.basename(sys.executable)
-        version_info = self.db.fetch_latest_version_info(app_name)
+        try:
+            app_name = os.path.basename(sys.executable)
+            version_info = self.db.fetch_latest_version_info(app_name)
 
-        # Se trova una nuova versione, mostra il dialogo
-        if version_info and is_update_needed(APP_VERSION, version_info.Version):
-            dialog = UpdateNotificationDialog(self, self.lang, version_info.Version, APP_VERSION)
-            self.wait_window(dialog)
+            if not version_info or not version_info.Version or not version_info.MainPath:
+                # Nessuna info → ripianifica tra 120 minuti
+                self.periodic_check_job_id = self.after(120 * 60 * 1000, self._periodic_version_check)
+                return
 
-            if dialog.result == 'now':
+            if not is_update_needed(APP_VERSION, version_info.Version):
+                # Versione già aggiornata → reset conteggio e ripianifica
+                reset_update_skip_count()
+                self.periodic_check_job_id = self.after(120 * 60 * 1000, self._periodic_version_check)
+                return
+
+            # C'è un aggiornamento disponibile
+            is_mandatory = getattr(version_info, 'Must', False)
+
+            skip_count, last_version = load_update_skip_count()
+            if last_version != version_info.Version:
+                skip_count = 0  # nuova versione → reset contatore
+
+            force_update = is_mandatory or skip_count >= 3
+
+            if force_update:
+                # Update obbligatorio: informa e aggiorna (chiude se updater mancante)
+                if is_mandatory:
+                    message = self.lang.get(
+                        "force_upgrade_message_mandatory",
+                        version_info.Version, APP_VERSION
+                    )
+                else:
+                    message = self.lang.get(
+                        "force_upgrade_message_max_skips",
+                        version_info.Version, APP_VERSION
+                    )
+                messagebox.showinfo(
+                    self.lang.get("upgrade_required_title", "Aggiornamento Obbligatorio"),
+                    message, parent=self
+                )
                 self._trigger_update(version_info)
-                return  # Interrompe il ciclo di controllo
-            elif dialog.result == 'later':
-                # Ripianifica il controllo tra 15 minuti
-                remind_interval_ms = 15 * 60 * 1000
-                self.periodic_check_job_id = self.after(remind_interval_ms, self._periodic_version_check)
-                return
-            elif dialog.result == 'ignore':
-                # Interrompe il controllo per questa sessione
-                print("Controllo versione silenziato per questa sessione.")
+                # _trigger_update chiama _on_closing(force_quit=True) se updater trovato
+                # Se updater NON trovato mostra errore e non chiude → ripianifica
+                self.periodic_check_job_id = self.after(15 * 60 * 1000, self._periodic_version_check)
                 return
 
-        # Se non ci sono aggiornamenti, ripianifica il controllo tra 120 minuti
-        default_interval_ms = 120 * 60 * 1000
-        self.periodic_check_job_id = self.after(default_interval_ms, self._periodic_version_check)
+            # Update opzionale: chiedi all'utente
+            remaining_skips = 3 - skip_count
+            message = self.lang.get(
+                "optional_upgrade_message",
+                version_info.Version, APP_VERSION, remaining_skips
+            )
+            response = messagebox.askyesno(
+                self.lang.get("upgrade_available_title", "Aggiornamento Disponibile"),
+                message, parent=self
+            )
+
+            if response:
+                # Aggiorna ora
+                reset_update_skip_count()
+                self._trigger_update(version_info)
+                return
+            else:
+                # Rinvia
+                skip_count += 1
+                save_update_skip_count(skip_count, version_info.Version)
+                logger.info(f"Controllo versione periodico: update rinviato ({skip_count}/3)")
+                # Ripianifica tra 15 minuti
+                self.periodic_check_job_id = self.after(15 * 60 * 1000, self._periodic_version_check)
+
+        except Exception as e:
+            logger.error(f"Errore in _periodic_version_check: {e}", exc_info=True)
+            # In caso di errore ripianifica tra 120 minuti senza interrompere
+            self.periodic_check_job_id = self.after(120 * 60 * 1000, self._periodic_version_check)
 
     def open_company_manager_with_login(self):
         """Apre la finestra di gestione delle compagnie dopo il login."""
@@ -14866,10 +15105,129 @@ class App(tk.Tk):
             label=self.lang.get('menu_recover_password', 'Recupera Password'),
             command=self._open_password_recovery
         )
+
+        # Voce Logs
+        self.help_menu.add_command(
+            label=self.lang.get('menu_logs', 'Logs'),
+            command=self._open_logs_viewer
+        )
         
         self.help_menu.add_separator()
         about_menu_label = f"{self.lang.get('menu_about')} {APP_VERSION}"
         self.help_menu.add_command(label=about_menu_label, command=self._show_about)
+
+
+    def _open_logs_viewer(self):
+        """Apre una finestra per scegliere e aprire un log con Notepad.
+
+        Il log attivo (traceability_rs.log) e' sempre il primo della lista.
+        I log archiviati vengono mostrati in ordine cronologico inverso.
+        """
+        log_dir = Path(LOG_FILE_PATH).parent
+        active_log = log_dir / "traceability_rs.log"
+
+        # Raccogli tutti i file .log nella directory
+        try:
+            all_logs = sorted(
+                [f for f in log_dir.glob("*.log") if f.name != "traceability_rs.log"],
+                reverse=True
+            )
+        except Exception as e:
+            logger.error("Errore lettura directory log: %s", e)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile leggere la directory dei log: {e}",
+                parent=self
+            )
+            return
+
+        # Lista ordinata: log attivo prima, poi archivi
+        log_files = []
+        if active_log.exists():
+            log_files.append(active_log)
+        log_files.extend(all_logs)
+
+        if not log_files:
+            messagebox.showinfo(
+                self.lang.get('menu_logs', 'Logs'),
+                self.lang.get('no_logs_found', 'Nessun file log trovato.'),
+                parent=self
+            )
+            return
+
+        # --- Finestra di selezione ---
+        win = tk.Toplevel(self)
+        win.title(self.lang.get('menu_logs', 'Logs'))
+        win.geometry("640x380")
+        win.resizable(True, True)
+        win.transient(self)
+        win.grab_set()
+
+        tk.Label(
+            win,
+            text=self.lang.get('select_log_to_open', 'Seleziona il log da aprire:'),
+            font=('Helvetica', 10, 'bold')
+        ).pack(pady=(12, 4), padx=10, anchor='w')
+
+        frame = tk.Frame(win)
+        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
+
+        scrollbar = tk.Scrollbar(frame, orient=tk.VERTICAL)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        listbox = tk.Listbox(
+            frame,
+            yscrollcommand=scrollbar.set,
+            font=('Courier', 9),
+            selectmode=tk.SINGLE,
+            activestyle='dotbox'
+        )
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=listbox.yview)
+
+        # Inserisce le voci: log attivo con etichetta speciale
+        for idx, lf in enumerate(log_files):
+            if lf == active_log:
+                listbox.insert(tk.END, f"[ATTIVO]  {lf.name}")
+                listbox.itemconfig(idx, fg='darkgreen', selectforeground='white')
+            else:
+                listbox.insert(tk.END, f"          {lf.name}")
+        listbox.selection_set(0)
+
+        def _open_selected():
+            sel = listbox.curselection()
+            if not sel:
+                return
+            chosen = log_files[sel[0]]
+            try:
+                import subprocess
+                subprocess.Popen(['notepad.exe', str(chosen)])
+            except Exception as ex:
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire il file: {ex}",
+                    parent=win
+                )
+
+        btn_frame = tk.Frame(win)
+        btn_frame.pack(pady=10)
+
+        tk.Button(
+            btn_frame,
+            text=self.lang.get('open_in_notepad', 'Apri in Notepad'),
+            width=18,
+            command=_open_selected
+        ).pack(side=tk.LEFT, padx=6)
+
+        tk.Button(
+            btn_frame,
+            text=self.lang.get('close', 'Chiudi'),
+            width=12,
+            command=win.destroy
+        ).pack(side=tk.LEFT, padx=6)
+
+        # Doppio clic per aprire direttamente
+        listbox.bind('<Double-Button-1>', lambda e: _open_selected())
 
 
     def _update_main_menubar(self):
