@@ -6,6 +6,11 @@
         "include_logo": true,
         "logo_path": "logo.png"
     },
+    "schedule": {
+        "send_every_n_working_days": 2,
+        "working_day_check_db": "Employee",
+        "working_day_check_note": "Usa Employee.dbo.NoNOTWorkingDaysBetWeenGivenDate(date, NULL) -> 0=giorno lavorativo, >0=festivo/weekend"
+    },
     "recipient_types": {
         "Interno": {
             "send_email": true,

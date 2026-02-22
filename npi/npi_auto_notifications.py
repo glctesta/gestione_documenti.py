@@ -59,6 +59,10 @@ class NpiAutoNotificationService:
                 "include_logo": True,
                 "logo_path": "logo.png"
             },
+            "schedule": {
+                "send_every_n_working_days": 2,
+                "working_day_check_db": "Employee"
+            },
             "recipient_types": {
                 "Interno": {"send_email": True},
                 "Cliente": {"send_email": False},
@@ -69,6 +73,99 @@ class NpiAutoNotificationService:
                 "task_overdue": {"enabled": True}
             }
         }
+
+    # ── Schedule helpers ──────────────────────────────────────────────────────
+
+    def _is_today_working_day(self) -> bool:
+        """
+        Chiama Employee.dbo.NoNOTWorkingDaysBetWeenGivenDate(oggi, NULL).
+        Ritorna 0 se oggi è un giorno lavorativo, >0 se è festivo/weekend.
+        """
+        try:
+            db_name = self.config.get('schedule', {}).get('working_day_check_db', 'Employee')
+            session = self.npi_manager._get_session()
+            try:
+                result = session.execute(
+                    text(f"SELECT [{db_name}].[dbo].[NoNOTWorkingDaysBetWeenGivenDate](:d, NULL)"),
+                    {"d": date.today()}
+                ).scalar()
+                is_working = (result == 0)
+                if not is_working:
+                    logger.info(f"[SCHEDULE] Oggi ({date.today()}) non è un giorno lavorativo (DB result={result}). Email NPI saltata.")
+                return is_working
+            finally:
+                session.close()
+        except Exception as e:
+            logger.warning(f"[SCHEDULE] Impossibile verificare giorno lavorativo via DB: {e}. Procedo comunque.")
+            return True  # In caso di errore, non blocca l'invio
+
+    def _working_days_since_last_send(self) -> int:
+        """
+        Conta i giorni lavorativi trascorsi dall'ultimo invio registrato
+        in NpiProjectDelayEmailLog. Usa la funzione DB per escludere festivi.
+        Ritorna 9999 se non ci sono invii precedenti (primo avvio → invia).
+        """
+        try:
+            db_name = self.config.get('schedule', {}).get('working_day_check_db', 'Employee')
+            session = self.npi_manager._get_session()
+            try:
+                # Trova la data dell'ultimo invio
+                row = session.execute(
+                    text("SELECT MAX([NotificationDate]) FROM [dbo].[NpiProjectDelayEmailLog]")
+                ).scalar()
+
+                if row is None:
+                    logger.info("[SCHEDULE] Nessun invio precedente trovato. Primo avvio: invio consentito.")
+                    return 9999
+
+                last_send: date = row if isinstance(row, date) else row.date()
+                today = date.today()
+
+                if last_send >= today:
+                    # Già inviato oggi
+                    return 0
+
+                # Calcola giorni calendario tra last_send e oggi
+                calendar_days = (today - last_send).days
+
+                # Sottrai i giorni NON lavorativi tra last_send e oggi
+                non_working = session.execute(
+                    text(f"SELECT [{db_name}].[dbo].[NoNOTWorkingDaysBetWeenGivenDate](:from_d, :to_d)"),
+                    {"from_d": last_send, "to_d": today}
+                ).scalar() or 0
+
+                working_days = max(0, calendar_days - non_working)
+                logger.info(
+                    f"[SCHEDULE] Ultimo invio: {last_send} | Oggi: {today} | "
+                    f"Calendario: {calendar_days}gg | Non-lavorativi: {non_working} | Lavorativi: {working_days}"
+                )
+                return working_days
+            finally:
+                session.close()
+        except Exception as e:
+            logger.warning(f"[SCHEDULE] Impossibile calcolare giorni lavorativi dall'ultimo invio: {e}. Procedo comunque.")
+            return 9999
+
+    def _is_send_day(self) -> bool:
+        """
+        Gate principale: ritorna True solo se:
+        1. Oggi è un giorno lavorativo (non festivo, non weekend)
+        2. Sono trascorsi almeno send_every_n_working_days dall'ultimo invio
+        """
+        n = int(self.config.get('schedule', {}).get('send_every_n_working_days', 2))
+
+        if not self._is_today_working_day():
+            return False
+
+        days_since = self._working_days_since_last_send()
+        if days_since < n:
+            logger.info(
+                f"[SCHEDULE] Giorni lavorativi dall'ultimo invio: {days_since} (richiesti: {n}). Email NPI saltata."
+            )
+            return False
+
+        logger.info(f"[SCHEDULE] Condizioni soddisfatte (giorni lavorativi: {days_since} >= {n}). Invio email NPI.")
+        return True
     
     def start(self):
         """Avvia il servizio di notifiche in background."""
@@ -142,6 +239,11 @@ class NpiAutoNotificationService:
     
     def _check_and_send_notifications(self):
         """Controlla task e invia notifiche necessarie."""
+        # Verifica schedule: giorno lavorativo + intervallo minimo
+        if not self._is_send_day():
+            logger.info("[SCHEDULE] Invio email NPI non dovuto oggi. Controllo saltato.")
+            return
+
         logger.info("=== INIZIO CONTROLLO NOTIFICHE NPI ===")
         
         try:
@@ -959,18 +1061,51 @@ class NpiAutoNotificationService:
         if not notification_type:
             return sent, skipped, failed
         
-        # ✅ CORREZIONE: Invia UNA SOLA email al task owner
-        # Il project owner sarà automaticamente in CC tramite _build_notification_cc_list
-        if task.owner:
+        # Recupera il task owner: prima prova la relazione ORM, poi fallback SQL
+        # (la relazione ORM può fallire se vw_Soggetti è una view cross-database)
+        task_owner_obj = task.owner
+        if task_owner_obj is None and task.OwnerID:
+            # Carica il soggetto direttamente via SQL dalla view
+            try:
+                row = session.execute(
+                    text("""
+                        SELECT SoggettoId, Nome, Email, Tipo
+                        FROM dbo.vw_Soggetti
+                        WHERE SoggettoId = :sid
+                    """),
+                    {"sid": task.OwnerID}
+                ).first()
+                if row:
+                    # Crea un oggetto semplice con gli attributi necessari
+                    class _TaskOwnerProxy:
+                        def __init__(self, sid, nome, email, tipo):
+                            self.SoggettoId = sid
+                            self.Nome = nome
+                            self.Email = email
+                            self.Tipo = tipo or 'Interno'
+                    task_owner_obj = _TaskOwnerProxy(row[0], row[1], row[2], row[3])
+                    logger.debug(
+                        "Task owner caricato via SQL (ORM fallback): task=%s owner=%s email=%s",
+                        task.TaskProdottoID, task_owner_obj.Nome, task_owner_obj.Email
+                    )
+            except Exception as e:
+                logger.warning("Errore caricamento task owner via SQL per task %s: %s", task.TaskProdottoID, e)
+
+        if task_owner_obj:
+            # ✅ CORRETTO: invia al Task Owner in TO, Project Owner in CC
             s, sk, f = self._send_notification_email(
-                task, progetto, task.owner, 'TaskOwner', notification_type, session
+                task, progetto, task_owner_obj, 'TaskOwner', notification_type, session
             )
             sent += s
             skipped += sk
             failed += f
         else:
-            # Se il task non ha owner, invia al project owner come fallback
+            # Se il task non ha owner (nemmeno via SQL), invia al project owner come fallback
             if progetto.owner:
+                logger.warning(
+                    "Task %s non ha owner (OwnerID=%s): fallback a Project Owner %s",
+                    task.TaskProdottoID, task.OwnerID, progetto.owner.Nome
+                )
                 s, sk, f = self._send_notification_email(
                     task, progetto, progetto.owner, 'ProjectOwner', notification_type, session
                 )
