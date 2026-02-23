@@ -410,7 +410,7 @@ class OrdersManager:
         Recupera gli ordini di produzione con quantità ancora disponibile (non interamente assegnata).
 
         Un ordine di produzione può essere associato a più ordini di vendita finché
-        la somma delle qty assegnate è inferiore alla sua quantità totale (col_quantity).
+        la somma delle qty assegnate è inferiore alla sua quantità totale (OrderQuantity).
 
         Args:
             product_code: Filtro opzionale per ProductCode (usa LIKE con % alla fine)
@@ -424,8 +424,8 @@ class OrdersManager:
                 o.IdOrder,
                 o.OrderNumber,
                 p.ProductCode + ' [' + p.ProductName + ']' AS Product,
-                ISNULL(o.col_quantity, 0) AS TotalQty,
-                ISNULL(o.col_quantity, 0)
+                ISNULL(o.OrderQuantity, 0) AS TotalQty,
+                ISNULL(o.OrderQuantity, 0)
                     - ISNULL((
                         SELECT SUM(dpo.Qty)
                         FROM [Traceability_RS].[dyn].[DynamicProductionOrders] dpo
@@ -447,7 +447,7 @@ class OrdersManager:
         # Filtra solo PO con quantità ancora disponibile (tramite AND nella WHERE)
         query_str += """
             AND (
-                ISNULL(o.col_quantity, 0)
+                ISNULL(o.OrderQuantity, 0)
                 - ISNULL((
                     SELECT SUM(dpo.Qty)
                     FROM [Traceability_RS].[dyn].[DynamicProductionOrders] dpo

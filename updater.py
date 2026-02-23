@@ -3,15 +3,20 @@ import os
 import shutil
 import subprocess
 import time
+import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
 
+# ------------------------------------------------------------------ #
+#  Percorso log centralizzato (usato sia da log() che dal ticket)     #
+# ------------------------------------------------------------------ #
+_LOG_FILE = os.path.join(os.path.expanduser("~"), "Downloads", "maintenance_app_updater.log")
+
 
 def log(message):
-    log_file_path = os.path.join(os.path.expanduser("~"), "Downloads", "maintenance_app_updater.log")
     try:
-        with open(log_file_path, "a", encoding="utf-8") as f:
+        with open(_LOG_FILE, "a", encoding="utf-8") as f:
             f.write(f"{datetime.now()}: {message}\n")
     except Exception as e:
         print(f"Failed to write to log: {e}")
@@ -26,6 +31,10 @@ class UpdateProgressWindow(tk.Tk):
         self.source_path = source_path
         self.dest_path = dest_path
         self.exe_name = exe_name
+
+        # Variabile tkinter per aggiornamenti thread-safe
+        self._file_var = tk.StringVar(value="")
+        self._cancelled = False
 
         self.title("Aggiornamento Applicazione")
         self.geometry("450x150")
@@ -56,44 +65,51 @@ class UpdateProgressWindow(tk.Tk):
         # Frame per il nome del file (con altezza fissa)
         file_frame = ttk.Frame(main_frame, height=20)
         file_frame.pack(fill='x', pady=5)
-        file_frame.pack_propagate(False)  # Mantiene l'altezza fissa
+        file_frame.pack_propagate(False)
 
-        # Label per il nome del file
+        # Label per il nome del file — usa StringVar per aggiornamenti da altri thread
         self.file_label = ttk.Label(
             file_frame,
-            text="",
+            textvariable=self._file_var,
             font=("Helvetica", 8),
             foreground="grey",
-            anchor="w",  # Questo anchor è per l'allineamento del testo DENTRO la label
+            anchor="w",
             width=80
         )
-        self.file_label.pack(fill='x')  # ✅ CORRETTO - riempie tutta la larghezza disponibile
+        self.file_label.pack(fill='x')
 
+        # Avvia l'aggiornamento dopo un breve delay
         self.after(500, self.start_update)
 
-    def update_file_label(self, text):
-        """Aggiorna il testo della label del file senza artefatti grafici."""
-        try:
-            width = int(self.file_label.cget('width')) or 0
-        except Exception:
-            width = 0
-        if width > 0:
-            self.file_label.configure(text=" " * width)
-            self.file_label.update_idletasks()
+        # Impedisce la chiusura manuale durante la copia
+        self.protocol("WM_DELETE_WINDOW", self._on_close_requested)
 
-        # Imposta il nuovo testo
-        self.file_label.configure(text=text or "")
-        self.file_label.update_idletasks()
+    def _on_close_requested(self):
+        """Impedisce la chiusura della finestra durante la copia."""
+        if not self._cancelled:
+            messagebox.showwarning(
+                "Operazione in corso",
+                "L'aggiornamento è in corso. Attendere il completamento."
+            )
 
-    def copy_files_safely(self, file_list):
-        """Copia i file con gestione degli errori."""
+    def _set_progress(self, value, file_text=""):
+        """Aggiorna la barra di progresso e il testo del file (thread-safe via after)."""
+        self.progress_bar["value"] = value
+        self._file_var.set(file_text)
+
+    def _copy_worker(self, file_list):
+        """
+        Worker eseguito in un thread separato.
+        NON chiama mai direttamente widget tkinter — usa self.after() come ponte.
+        """
+        errors = []
+
         for i, (root, name) in enumerate(file_list):
-            # Aggiorna il nome del file corrente
-            self.update_file_label(f"Copia di: {name}")
-            self.update_idletasks()
+            # Aggiorna la GUI tramite after (thread-safe)
+            self.after(0, self._set_progress, i + 1, f"Copia di: {name}")
 
+            # Salta l'updater stesso per non sovrascriversi
             if name.lower() == 'updater.exe':
-                self.progress_bar["value"] = i + 1
                 continue
 
             try:
@@ -101,13 +117,10 @@ class UpdateProgressWindow(tk.Tk):
                 relative_path = os.path.relpath(root, self.source_path)
                 dest_dir = os.path.join(self.dest_path, relative_path)
 
-                # Crea directory se non esiste
                 os.makedirs(dest_dir, exist_ok=True)
-
-                # File di destinazione
                 dest_file = os.path.join(dest_dir, name)
 
-                # Tentativo di copia con ritry
+                # Retry in caso di PermissionError (file temporaneamente in uso)
                 max_retries = 3
                 for attempt in range(max_retries):
                     try:
@@ -115,33 +128,61 @@ class UpdateProgressWindow(tk.Tk):
                         break
                     except PermissionError:
                         if attempt < max_retries - 1:
-                            time.sleep(1)  # Aspetta 1 secondo prima di ritentare
-                            continue
+                            time.sleep(1)
                         else:
                             raise
 
-                # Aggiorna la barra di progresso
-                self.progress_bar["value"] = i + 1
-                self.update_idletasks()
-
             except Exception as e:
-                log(f"Errore nella copia di {name}: {e}")
-                # Continua con il prossimo file invece di fermarsi completamente
+                msg = f"Errore nella copia di {name}: {e}"
+                log(msg)
+                errors.append(msg)
+
+        # Al termine notifica il thread principale
+        self.after(0, self._on_copy_done, errors)
+
+    def _on_copy_done(self, errors):
+        """Chiamata dal thread principale al termine della copia."""
+        self._cancelled = True  # Permette ora la chiusura della finestra
+
+        if errors:
+            error_summary = "\n".join(errors[:10])
+            if len(errors) > 10:
+                error_summary += f"\n... e altri {len(errors) - 10} errori (vedi log)"
+            log(f"Aggiornamento completato con {len(errors)} errori.")
+            messagebox.showwarning(
+                "Aggiornamento con errori",
+                f"Aggiornamento completato con {len(errors)} file non copiati:\n\n{error_summary}\n\nControlla il log per i dettagli."
+            )
+        else:
+            log("Aggiornamento completato con successo.")
+
+        self.progress_label.config(text="Aggiornamento completato con successo!")
+        self._file_var.set("")
+
+        if messagebox.askyesno("Riavvio", "Aggiornamento completato. Vuoi riavviare l'applicazione ora?"):
+            new_exe_path = os.path.join(self.dest_path, self.exe_name)
+
+            if not os.path.exists(new_exe_path):
+                messagebox.showerror(
+                    "File non trovato",
+                    f"Impossibile avviare l'applicazione:\n{new_exe_path}"
+                )
+                log(f"EXE non trovato dopo l'aggiornamento: {new_exe_path}")
+            else:
+                log(f"Avvio dell'applicazione: {new_exe_path}")
+                # Usa lista invece di stringa per gestire correttamente i path con spazi
+                subprocess.Popen([new_exe_path], shell=False)
+
+        self.destroy()
 
     def start_update(self):
-        try:
-            # Attesa iniziale per permettere all'app principale di chiudersi
-            self.after(2000, self._perform_update)
-
-        except Exception as e:
-            log(f"ERRORE CRITICO nell'updater: {e}")
-            messagebox.showerror("Errore di Aggiornamento", f"Si è verificato un errore:\n{e}")
-            self.destroy()
+        """Attende la chiusura dell'app principale poi avvia il thread di copia."""
+        # Attesa iniziale per permettere all'app principale di chiudersi
+        self.after(2000, self._perform_update)
 
     def _perform_update(self):
-        """Esegue l'aggiornamento vero e proprio."""
+        """Verifica le directory e lancia il worker in un thread separato."""
         try:
-            # Verifica che le directory esistano
             if not os.path.exists(self.source_path):
                 raise FileNotFoundError(f"Directory sorgente non trovata: {self.source_path}")
 
@@ -157,31 +198,14 @@ class UpdateProgressWindow(tk.Tk):
             if not file_list:
                 raise Exception("Nessun file trovato nella directory sorgente")
 
+            log(f"Inizio copia di {len(file_list)} file da '{self.source_path}' a '{self.dest_path}'")
+
             self.progress_bar["maximum"] = len(file_list)
             self.progress_bar["value"] = 0
 
-            # Copia i file
-            self.copy_files_safely(file_list)
-
-            # Aggiornamento completato
-            self.progress_label.config(text="Aggiornamento completato con successo!")
-            self.update_file_label("")
-
-            # Chiedi all'utente se vuole riavviare l'applicazione
-            if messagebox.askyesno("Riavvio", "Aggiornamento completato. Vuoi riavviare l'applicazione ora?"):
-                new_exe_path = os.path.join(self.dest_path, self.exe_name)
-
-                # Verifica che l'exe esista
-                if not os.path.exists(new_exe_path):
-                    raise FileNotFoundError(f"File eseguibile non trovato: {new_exe_path}")
-
-                # Avvia il nuovo processo gestendo correttamente i percorsi con spazi
-                if os.name == 'nt':  # Windows
-                    subprocess.Popen(f'"{new_exe_path}"')
-                else:  # Linux/Mac
-                    subprocess.Popen([new_exe_path])
-
-            self.destroy()
+            # Avvia la copia in un thread separato per non bloccare la GUI
+            t = threading.Thread(target=self._copy_worker, args=(file_list,), daemon=True)
+            t.start()
 
         except Exception as e:
             log(f"ERRORE CRITICO nell'updater: {e}")
@@ -205,11 +229,9 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------ #
     import traceback as _tb
     import json as _json
-    import threading as _threading
     import datetime as _dt
 
     _TICKET_DIR = os.path.join(os.getenv("LOCALAPPDATA", "."), "TraceabilityRS", "tickets")
-    _LOG_FILE = os.path.join(os.path.expanduser("~"), "Downloads", "maintenance_app_updater.log")
 
     def _get_log_tail(n=50):
         try:
@@ -221,7 +243,7 @@ if __name__ == "__main__":
             return "(errore lettura log)"
 
     def _save_fallback_json(error_info):
-        """Salva ticket su file JSON locale se l'email non e' disponibile."""
+        """Salva ticket su file JSON locale se l'email non è disponibile."""
         try:
             os.makedirs(_TICKET_DIR, exist_ok=True)
             ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -236,22 +258,19 @@ if __name__ == "__main__":
         """Invia email di notifica ticket updater in background."""
         def _run():
             try:
-                # email_connector e' nella stessa cartella dell'exe/script
                 _script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
                 sys.path.insert(0, _script_dir)
                 from email_connector import EmailSender
 
-                # Leggi destinatario (file credenziali locale)
-                import pyodbc as _pyodbc  # noqa – solo per tentare lettura DB
+                import pyodbc as _pyodbc
                 try:
-                    # Prova a leggere l'email destinataria dal DB (best-effort)
                     from config_manager import ConfigManager
                     _cfg = ConfigManager()
                     _conn_str = _cfg.get_connection_string()
                     _conn = _pyodbc.connect(_conn_str, timeout=5)
                     _cur = _conn.cursor()
                     _cur.execute(
-                        "SELECT [value] FROM traceability_rs.dbo.settingrs "
+                        "SELECT [value] FROM traceability_rs.dbo.settings "
                         "WHERE Atribute = 'SysEmail_service_tickets'"
                     )
                     _row = _cur.fetchone()
@@ -292,26 +311,23 @@ if __name__ == "__main__":
             except Exception as e:
                 log(f"[TICKET] Errore invio email updater: {e}")
 
-        _threading.Thread(target=_run, daemon=True).start()
+        threading.Thread(target=_run, daemon=True).start()
 
     def _on_updater_exception(exc_type, exc_value, exc_tb):
         """Intercetta eccezioni non gestite nell'updater e crea un ticket."""
         error_info = {
-            'type':       exc_type.__name__,
-            'message':    str(exc_value),
-            'traceback':  ''.join(_tb.format_tb(exc_tb)),
+            'type':        exc_type.__name__,
+            'message':     str(exc_value),
+            'traceback':   ''.join(_tb.format_tb(exc_tb)),
             'log_snippet': _get_log_tail(50),
-            'created_at': _dt.datetime.now().strftime('%d/%m/%Y %H:%M:%S'),
-            'source':     source,
-            'dest':       dest,
-            'exe':        exe
+            'created_at':  _dt.datetime.now().strftime('%d/%m/%Y %H:%M:%S'),
+            'source':      source,
+            'dest':        dest,
+            'exe':         exe
         }
         log(f"[TICKET] Eccezione non gestita: {exc_value}")
-        # 1. Salva localmente (sempre, anche senza rete)
         _save_fallback_json(error_info)
-        # 2. Tenta invio email in background
         _send_email_alert(error_info)
-        # 3. Mostra dialog all'utente e aspetta l'email
         try:
             messagebox.showerror(
                 "Errore Updater",

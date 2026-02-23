@@ -27,15 +27,93 @@ class OvertimeManager:
         self.db = db_handler
     
     # ==================== METODI DIPENDENTI ====================
-    
-    def fetch_eligible_employees(self, month=None, year=None):
+
+    def is_manager_admin(self, manager_hire_history_id):
+        """
+        Verifica se il manager ha il FunctionCode massimo (= amministratore).
+        L'admin non ha filtri e vede tutti i dipendenti.
+
+        Args:
+            manager_hire_history_id: EmployeeHireHistoryId del responsabile loggato
+
+        Returns:
+            bool: True se admin, False altrimenti
+        """
+        query = """
+        SELECT TOP 1
+            CASE WHEN f.FunctionCode = (SELECT MAX(FunctionCode) FROM Employee.dbo.Functions)
+                 THEN 1 ELSE 0 END AS IsAdmin
+        FROM Employee.dbo.EmployeeCdcStories cs
+        INNER JOIN Employee.dbo.Functions f ON cs.FunctionId = f.FunctionId
+        WHERE cs.EmployeeHireHistoryId = ?
+          AND cs.DateOut IS NULL
+        """
+        try:
+            cursor = self.db.conn.cursor()
+            cursor.execute(query, (manager_hire_history_id,))
+            row = cursor.fetchone()
+            cursor.close()
+            return bool(row and row[0] == 1)
+        except Exception as e:
+            logger.error(f"Errore verifica admin per ID {manager_hire_history_id}: {e}", exc_info=True)
+            return False
+
+    def fetch_subordinates(self, manager_hire_history_id):
+        """
+        Recupera i EmployeeHireHistoryId di tutti i subalterni diretti del responsabile.
+        Usa la query CTE gerarchica basata su FunctionCode e CdcId.
+
+        Args:
+            manager_hire_history_id: EmployeeHireHistoryId del responsabile loggato
+
+        Returns:
+            set: Set di EmployeeHireHistoryId dei subalterni, vuoto se nessuno
+        """
+        query = """
+        WITH Manager (SubCdcId, FunctionCode, MainCdcId) AS
+        (
+            SELECT cs.SubCdcId, f.FunctionCode, c.CdcId
+            FROM employee.dbo.EmployeeCdcStories cs
+            INNER JOIN employee.dbo.CdcSub c
+                ON c.SubCdcId = cs.SubCdcId AND cs.DateOut IS NULL
+            INNER JOIN Employee.dbo.Functions F ON cs.FunctionId = F.FunctionId
+            WHERE cs.EmployeeHireHistoryId = ?
+              AND cs.DateOut IS NULL
+        )
+        SELECT h.EmployeeHireHistoryId
+        FROM employee.dbo.EmployeeHireHistory h
+        INNER JOIN employee.dbo.EmployeeCdcStories css
+            ON h.EmployeeHireHistoryId = css.EmployeeHireHistoryId
+            AND css.DateOut IS NULL
+            AND h.EndWorkDate IS NULL
+            AND h.employeerid = 2
+        INNER JOIN employee.dbo.Employees e ON h.EmployeeId = e.EmployeeId
+        INNER JOIN employee.dbo.CdcSub s ON s.SubCdcId = css.SubCdcId
+        INNER JOIN employee.dbo.Functions f ON f.FunctionId = css.FunctionId
+        INNER JOIN employee.dbo.CostCenters c ON c.CdcId = s.CdcId
+        INNER JOIN Manager m ON m.MainCdcId = s.CdcId AND m.FunctionCode > f.FunctionCode
+        WHERE f.FunctionCode < m.FunctionCode
+        """
+        try:
+            cursor = self.db.conn.cursor()
+            cursor.execute(query, (manager_hire_history_id,))
+            rows = cursor.fetchall()
+            cursor.close()
+            return {row[0] for row in rows if row[0] is not None}
+        except Exception as e:
+            logger.error(f"Errore recupero subalterni per ID {manager_hire_history_id}: {e}", exc_info=True)
+            return set()
+
+    def fetch_eligible_employees(self, month=None, year=None, manager_hire_history_id=None):
         """
         Recupera dipendenti eligibili per straordinario (non hanno superato ore massime).
-        
+        Se manager_hire_history_id e' fornito e non e' admin, filtra per subalterni.
+
         Args:
             month: Mese di riferimento (default: mese corrente)
             year: Anno di riferimento (default: anno corrente)
-            
+            manager_hire_history_id: EmployeeHireHistoryId del responsabile (per filtraggio)
+
         Returns:
             List di dipendenti con (EmployeeHireHistoryId, Nome, Cognome, OreMensili)
         """
@@ -43,46 +121,64 @@ class OvertimeManager:
             month = datetime.now().month
         if year is None:
             year = datetime.now().year
-        
+
         # Calcola primo e ultimo giorno del mese
         first_day = date(year, month, 1)
         if month == 12:
             last_day = date(year + 1, 1, 1)
         else:
             last_day = date(year, month + 1, 1)
-        
-        query = """
-        SELECT 
+
+        # Determina filtro gerarchia
+        subordinate_filter = ""
+        filter_params = [first_day, last_day]
+
+        if manager_hire_history_id:
+            if not self.is_manager_admin(manager_hire_history_id):
+                subordinates = self.fetch_subordinates(manager_hire_history_id)
+                if subordinates:
+                    placeholders = ", ".join(["?"] * len(subordinates))
+                    subordinate_filter = f"AND h.EmployeeHireHistoryId IN ({placeholders})"
+                    filter_params = list(subordinates) + [first_day, last_day]
+                else:
+                    # Nessun subalterno: ritorna lista vuota (non e' admin)
+                    logger.info(f"Nessun subalterno trovato per ID {manager_hire_history_id}, lista vuota")
+                    return []
+
+        query = f"""
+        SELECT
             h.EmployeeHireHistoryId,
             e.EmployeeSurname,
             e.EmployeeName,
             ISNULL(SUM(DATEDIFF(HOUR, s.DateStart, s.DateEnd)), 0) AS MonthlyHours
         FROM Employee.dbo.Employees e
-        INNER JOIN Employee.dbo.EmployeeHireHistory h 
+        INNER JOIN Employee.dbo.EmployeeHireHistory h
             ON e.EmployeeId = h.EmployeeId
-        LEFT JOIN ResetServices.dbo.ExtraTimeApprovalStory s 
+        LEFT JOIN ResetServices.dbo.ExtraTimeApprovalStory s
             ON h.EmployeeHireHistoryId = s.IdEmployee
-            AND s.DateStart >= ? 
+            AND s.DateStart >= ?
             AND s.DateStart < ?
         WHERE h.EndWorkDate IS NULL
             AND h.EmployeerId = 2
-            AND NOT e.employeeName ='ANONYMOUS'
+            AND NOT e.employeeName = 'ANONYMOUS'
+            {subordinate_filter}
         GROUP BY h.EmployeeHireHistoryId, e.EmployeeSurname, e.EmployeeName
-        HAVING ISNULL(SUM(DATEDIFF(HOUR, s.DateStart, s.DateEnd)), 0) < 
+        HAVING ISNULL(SUM(DATEDIFF(HOUR, s.DateStart, s.DateEnd)), 0) <
             (SELECT MaxHourPerMonth FROM Employee.dbo.OverTimeRules WHERE DateOut IS NULL)
         ORDER BY e.EmployeeSurname, e.EmployeeName
         """
-        
+
         try:
             cursor = self.db.conn.cursor()
-            cursor.execute(query, (first_day, last_day))
+            cursor.execute(query, filter_params)
             results = cursor.fetchall()
             cursor.close()
             return results
         except Exception as e:
             logger.error(f"Errore recupero dipendenti eligibili: {e}", exc_info=True)
             return []
-    
+
+
     def get_employee_monthly_hours(self, employee_id, month=None, year=None):
         """
         Calcola le ore di straordinario già effettuate da un dipendente nel mese.

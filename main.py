@@ -323,7 +323,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.4.9'  # Versione aggiornata
+APP_VERSION = '2.3.5.0'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -692,7 +692,7 @@ class LanguageManager:
     def __init__(self, db_handler):
         self.db = db_handler
         self.translations = defaultdict(dict)
-        self.current_language = 'it'  # Lingua predefinita
+        self.current_language = 'ro'  # Lingua predefinita
         self.load_translations()
 
     def load_translations(self):
@@ -16265,6 +16265,48 @@ class App(tk.Tk):
         self.lang.set_language(lang_code)
         self.update_texts()
         self._save_language_setting(lang_code)
+
+    def _load_language_setting(self) -> str:
+        """Carica la lingua salvata dall'utente, altrimenti usa 'ro' come default."""
+        try:
+            user_settings_path = Path(os.getenv("LOCALAPPDATA", ".")) / "TraceabilityRS" / "user_settings.json"
+            if user_settings_path.exists():
+                with open(user_settings_path, "r", encoding="utf-8") as f:
+                    settings = json.load(f)
+                    lang_code = settings.get("language")
+                    if lang_code:
+                        logger.info("Lingua letta da user_settings.json: %s", lang_code)
+                        return lang_code.lower()
+        except Exception as e:
+            logger.warning("Errore lettura user_settings.json: %s", e)
+
+        # Default: se nessuna preferenza salvata, usa il rumeno
+        logger.info("Nessuna impostazione lingua trovata, uso il default 'ro'")
+        return 'ro'
+
+    def _save_language_setting(self, lang_code: str):
+        """Salva la lingua scelta dall'utente nel file JSON locale."""
+        try:
+            user_settings_path = Path(os.getenv("LOCALAPPDATA", ".")) / "TraceabilityRS" / "user_settings.json"
+            user_settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+            settings = {}
+            if user_settings_path.exists():
+                try:
+                    with open(user_settings_path, "r", encoding="utf-8") as f:
+                        settings = json.load(f)
+                except json.JSONDecodeError:
+                    logger.warning("File user_settings.json corrotto, verrà ricreato.")
+                    settings = {}
+
+            settings["language"] = lang_code.lower()
+
+            with open(user_settings_path, "w", encoding="utf-8") as f:
+                json.dump(settings, f, indent=2, ensure_ascii=False)
+            logger.info("Impostazione lingua salvata: %s", lang_code)
+
+        except Exception as e:
+            logger.error("Errore nel salvataggio dell'impostazione lingua: %s", e)
 
 
     def _open_fct_settings(self):

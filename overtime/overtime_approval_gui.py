@@ -134,25 +134,48 @@ class OvertimeApprovalWindow(tk.Toplevel):
         ).pack(side=tk.RIGHT, padx=5)
     
     def _load_pending_requests(self):
-        """Carica le richieste in attesa di approvazione."""
+        """Carica le richieste in attesa di approvazione, filtrate per gerarchia."""
         # Pulisci treeview
         for item in self.tree.get_children():
             self.tree.delete(item)
-        
+
         status_filter = self.status_var.get()
-        
+
+        # Determina filtro gerarchico sui dipendenti
+        subordinate_filter = ""
+        filter_ids = []
+
+        if self.user_id:
+            from .overtime_manager import OvertimeManager
+            mgr = OvertimeManager(self.db)
+            if not mgr.is_manager_admin(self.user_id):
+                subordinates = mgr.fetch_subordinates(self.user_id)
+                if subordinates:
+                    placeholders = ", ".join(["?"] * len(subordinates))
+                    subordinate_filter = f"""
+                    AND a.ExtraHourApprovalId IN (
+                        SELECT DISTINCT ExtraHourApprovalId
+                        FROM ResetServices.dbo.ExtraTimeApprovalStory
+                        WHERE IdEmployee IN ({placeholders})
+                    )"""
+                    filter_ids = list(subordinates)
+                else:
+                    # Non admin e nessun subalterno: non mostrare nulla
+                    logger.info(f"Nessun subalterno per ID {self.user_id}, lista richieste vuota")
+                    return
+
         # Query per recuperare richieste
-        query = """
+        query = f"""
         WITH StoryAggregated AS (
-    SELECT 
+    SELECT
         ExtraHourApprovalId,
         COUNT(DISTINCT IdEmployee) AS EmployeeCount,
         SUM(DATEDIFF(HOUR, DateStart, DateEnd)) AS TotalHours,
-        CASE 
+        CASE
             WHEN MAX(ApprovedId) IS NULL THEN 'Pending'
             WHEN MAX(CAST(Approved AS INT)) = 1 THEN 'Approved'
             ELSE 'Rejected'
-        END AS Status, 
+        END AS Status,
         ApprovelDate,
         MAX(ApprovedId) AS ApprovedId,
         MAX(CAST(Approved AS INT)) AS Approved
@@ -160,7 +183,7 @@ class OvertimeApprovalWindow(tk.Toplevel):
     WHERE Datesys >'2026-02-01'
     GROUP BY ExtraHourApprovalId, ApprovelDate
 )
-SELECT 
+SELECT
     a.ExtraHourApprovalId,
     CAST(a.IdRegistro AS VARCHAR) AS RequestNumber,
     a.DateSys,
@@ -169,31 +192,32 @@ SELECT
     ISNULL(s.TotalHours, 0) AS TotalHours,
     ISNULL(s.Status, 'Pending') AS Status
 FROM ResetServices.dbo.ExtraTimeApproval a
-LEFT JOIN StoryAggregated s 
+LEFT JOIN StoryAggregated s
     ON a.ExtraHourApprovalId = s.ExtraHourApprovalId
-LEFT JOIN resetservices.dbo.tbuserkey u 
+LEFT JOIN resetservices.dbo.tbuserkey u
     ON a.IdChief = u.idanga
 WHERE s.ApprovelDate IS NULL
   AND a.DateSys > '2026-02-01'
+  {subordinate_filter}
         """
-        
+
         if status_filter == 'Pending':
             query += " AND s.ApprovedId IS NULL"
         elif status_filter == 'Approved':
             query += " AND s.Approved = 1"
         elif status_filter == 'Rejected':
             query += " AND s.Approved = 0 AND s.ApprovedId IS NOT NULL"
-        
+
         query += """
         ORDER BY a.DateSys DESC
         """
-        
+
         try:
             cursor = self.db.conn.cursor()
-            cursor.execute(query)
+            cursor.execute(query, filter_ids)
             results = cursor.fetchall()
             cursor.close()
-            
+
             for row in results:
                 date_str = row[2].strftime('%d/%m/%Y %H:%M') if row[2] else 'N/D'
                 self.tree.insert('', tk.END, values=(
@@ -212,6 +236,7 @@ WHERE s.ApprovelDate IS NULL
                 f"Errore caricamento richieste:\n{str(e)}",
                 parent=self
             )
+
     
     def _show_request_details(self, event=None):
         """Mostra i dettagli della richiesta selezionata."""

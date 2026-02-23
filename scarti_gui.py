@@ -130,6 +130,7 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
     # Mappe ID
     origin_map = {}
     reason_map = {}
+    reason_no_ref_map = {}  # 🆕 nome_causale → NoReference (bool)
 
     def enable_fields():
         origin_area_combo.config(state="readonly")
@@ -137,10 +138,8 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
         notes_txt.config(state="normal")
         select_pic_btn.config(state="normal")
         save_btn.config(state="normal")
-        # riferimenti
-        referiment_combo.config(state="normal")  # editabile
-        add_ref_btn.config(state="normal")
-        remove_ref_btn.config(state="normal")
+        # riferimenti: abilitati solo se la causale selezionata NON ha NoReference
+        _update_ref_widgets_state()
 
     def disable_fields():
         origin_area_combo.config(state="disabled", values=[])
@@ -158,6 +157,27 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
         refs_listbox.delete(0, tk.END)
         add_ref_btn.config(state="disabled")
         remove_ref_btn.config(state="disabled")
+
+    def _update_ref_widgets_state():
+        """Abilita o disabilita i widget riferimento in base al flag NoReference della causale."""
+        reason_name = scrap_reason_var.get()
+        no_ref = reason_no_ref_map.get(reason_name, False)
+        if no_ref:
+            # Causale senza riferimento: disabilita e svuota
+            referiment_combo.set("")
+            referiment_combo.config(state="disabled")
+            refs_listbox.delete(0, tk.END)
+            add_ref_btn.config(state="disabled")
+            remove_ref_btn.config(state="disabled")
+        else:
+            referiment_combo.config(state="normal")
+            add_ref_btn.config(state="normal")
+            remove_ref_btn.config(state="normal")
+
+    def on_reason_changed(event=None):
+        """Chiamato quando l'utente cambia la causale di scarto."""
+        if verified.get():
+            _update_ref_widgets_state()
 
     def do_verify():
         disable_fields()
@@ -209,9 +229,11 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
         reasons = db_connection.fetch_scrap_reasons()
         reason_names = []
         reason_map.clear()
+        reason_no_ref_map.clear()  # 🆕
         for r in reasons:
-            reason_map[r.Reason] = r.ScrapReasonId
-            reason_names.append(r.Reason)
+            reason_map[r.ReasonCode] = r.ScrapReasonId
+            reason_no_ref_map[r.ReasonCode] = bool(getattr(r, 'NoReference', False))  # 🆕
+            reason_names.append(r.ReasonCode)
         scrap_reason_combo['values'] = reason_names
         if reason_names:
             scrap_reason_combo.set(reason_names[0])
@@ -316,8 +338,10 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
         if not verified.get():
             return
 
-        # Almeno un riferimento richiesto
-        if refs_listbox.size() < 1:
+        # Riferimento scheda obbligatorio SOLO se la causale non ha NoReference
+        reason_name = scrap_reason_var.get()
+        no_ref = reason_no_ref_map.get(reason_name, False)
+        if not no_ref and refs_listbox.size() < 1:
             messagebox.showerror(lang_manager.get('error', "Errore"),
                                  "Inserire almeno un riferimento scheda.", parent=win)
             return
@@ -335,8 +359,10 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
             messagebox.showerror(lang_manager.get('error', "Errore"), "Selezionare il Motivo.", parent=win)
             return
 
-        # Riferimenti uniti da ';'
-        riferiments = ",".join([refs_listbox.get(i) for i in range(refs_listbox.size())])[:500]
+        # Riferimenti uniti da ',' (stringa vuota se NoReference)
+        reason_name = scrap_reason_var.get()
+        no_ref = reason_no_ref_map.get(reason_name, False)
+        riferiments = "" if no_ref else ",".join([refs_listbox.get(i) for i in range(refs_listbox.size())])[:500]
 
         ok = db_connection.insert_scrap_declaration(
             user_name=user_name,
@@ -371,6 +397,7 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
     label_code_entry.bind("<Return>", _on_label_enter)
     label_code_entry.bind("<KP_Enter>", _on_label_enter)
 
+    scrap_reason_combo.bind("<<ComboboxSelected>>", on_reason_changed)  # 🆕
     select_pic_btn.config(command=select_picture)
     save_btn.config(command=do_save)
     add_ref_btn.config(command=add_reference)
@@ -415,12 +442,14 @@ class ScrapReasonsManagerWindow(tk.Toplevel):
         # Lista motivi
         ttk.Label(main, text=self.lang.get('scrap_reasons_list_label', 'Elenco motivi')).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0,6))
 
-        cols = ('id', 'reason')
+        cols = ('id', 'reason', 'use_ref')
         self.tree = ttk.Treeview(main, columns=cols, show="headings", height=12, selectmode='browse')
         self.tree.heading('id', text='ID')
         self.tree.heading('reason', text=self.lang.get('scrap_reason_label', 'Motivo'))
-        self.tree.column('id', width=60, anchor='center')
-        self.tree.column('reason', width=360, anchor='w')
+        self.tree.heading('use_ref', text=self.lang.get('scrap_use_ref_label', 'Usa rif.'))
+        self.tree.column('id', width=50, anchor='center')
+        self.tree.column('reason', width=300, anchor='w')
+        self.tree.column('use_ref', width=70, anchor='center')
         self.tree.grid(row=1, column=0, columnspan=3, sticky="nsew")
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
 
@@ -435,9 +464,17 @@ class ScrapReasonsManagerWindow(tk.Toplevel):
         self.reason_entry.grid(row=2, column=1, sticky="ew", pady=(10,5))
         ttk.Button(main, text=self.lang.get('new_button_short', 'Nuovo'), command=self._new).grid(row=2, column=2, sticky="w", pady=(10,5), padx=5)
 
+        # 🆕 Checkbox "Usa riferimenti scheda" (NoReference = NOT checked)
+        self.use_ref_var = tk.BooleanVar(value=True)  # default: usa riferimenti
+        ttk.Checkbutton(
+            main,
+            text=self.lang.get('scrap_use_ref_label', 'Usa riferimenti scheda'),
+            variable=self.use_ref_var
+        ).grid(row=3, column=1, sticky="w", pady=(0, 8))
+
         # Bottoni
         btns = ttk.Frame(main)
-        btns.grid(row=3, column=0, columnspan=3, sticky="e", pady=(10,0))
+        btns.grid(row=4, column=0, columnspan=3, sticky="e", pady=(10,0))
         ttk.Button(btns, text=self.lang.get('save_button', 'Salva'), command=self._save).pack(side="right", padx=5)
         ttk.Button(btns, text=self.lang.get('delete_button', 'Cancella'), command=self._delete).pack(side="right", padx=5)
         ttk.Button(btns, text=self.lang.get('cancel_button', 'Chiudi'), command=self.destroy).pack(side="right")
@@ -446,7 +483,10 @@ class ScrapReasonsManagerWindow(tk.Toplevel):
         self.tree.delete(*self.tree.get_children())
         self.reasons = self.db.fetch_scrap_reasons() or []
         for r in self.reasons:
-            self.tree.insert('', tk.END, iid=str(r.ScrapReasonId), values=(r.ScrapReasonId, r.Reason))
+            no_ref = bool(getattr(r, 'NoReference', False))
+            use_ref_label = '✗' if no_ref else '✓'
+            self.tree.insert('', tk.END, iid=str(r.ScrapReasonId),
+                             values=(r.ScrapReasonId, r.ReasonCode, use_ref_label))
 
     def _on_select(self, event=None):
         sel = self.tree.focus()
@@ -457,14 +497,17 @@ class ScrapReasonsManagerWindow(tk.Toplevel):
         except ValueError:
             self.current_id = None
             return
-        # Valore testo
         values = self.tree.item(sel, 'values')
         self.reason_var.set(values[1] if len(values) > 1 else '')
+        # 🆕 Ripristina checkbox: use_ref_label '✓' → True, '✗' → False
+        use_ref_label = values[2] if len(values) > 2 else '✓'
+        self.use_ref_var.set(use_ref_label == '✓')
 
     def _new(self):
         self.tree.selection_remove(self.tree.selection())
         self.current_id = None
         self.reason_var.set('')
+        self.use_ref_var.set(True)  # default: usa riferimenti
         self.reason_entry.focus_set()
 
     def _save(self):
@@ -474,8 +517,9 @@ class ScrapReasonsManagerWindow(tk.Toplevel):
                                    self.lang.get('error_reason_required', 'Inserire un motivo valido.'), parent=self)
             return
 
-        #if self.current_id is None:
-        ok = self.db.insert_scrap_reason(text)
+        # 🆕 NoReference = NOT use_ref_var (se NON usa riferimenti → NoReference=1)
+        no_reference = not self.use_ref_var.get()
+        ok = self.db.insert_scrap_reason(text, no_reference=no_reference)
         #else:
         #    ok = self.db.update_scrap_reason(self.current_id, text)
 

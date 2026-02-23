@@ -6,6 +6,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime, date, timedelta
 import logging
+import os
+from email_connector import EmailSender
 
 logger = logging.getLogger("TraceabilityRS")
 
@@ -159,9 +161,6 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
             logger.info(f"Caricamento richieste per ID login: {self.authorized_user_id}")
 
             # STEP 1: risolve EmployeeHireHistoryId del capo loggato.
-            # Compatibilita':
-            # - nuovo flusso: ID login e' gia' EmployeeHireHistoryId
-            # - flusso legacy: ID login = AuthorizedUsedId, quindi conversione
             employee_hire_history_id = None
             direct_id_query = """
                 SELECT TOP 1 EmployeeHireHistoryId
@@ -198,8 +197,71 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
                 self._populate_tree([])
                 return
 
-            # STEP 2: Query semplice per ottenere tutte le richieste pendenti
-            query = """
+            # STEP 2: determina se admin (FunctionCode massimo) o responsabile normale
+            admin_check_query = """
+                SELECT TOP 1
+                    CASE WHEN f.FunctionCode = (SELECT MAX(FunctionCode) FROM Employee.dbo.Functions)
+                         THEN 1 ELSE 0 END AS IsAdmin
+                FROM Employee.dbo.EmployeeCdcStories cs
+                INNER JOIN Employee.dbo.Functions f ON cs.FunctionId = f.FunctionId
+                WHERE cs.EmployeeHireHistoryId = ?
+                  AND cs.DateOut IS NULL
+            """
+            with self.db._lock:
+                self.db.cursor.execute(admin_check_query, employee_hire_history_id)
+                admin_row = self.db.cursor.fetchone()
+            is_admin = bool(admin_row and admin_row[0] == 1)
+            logger.info(f"EmployeeHireHistoryId={employee_hire_history_id}, IsAdmin={is_admin}")
+
+            # STEP 3: costruisce filtro gerarchia
+            subordinate_filter = ""
+            subordinate_ids = []
+
+            if not is_admin:
+                # Recupera subalterni con CTE gerarchica
+                subordinate_query = """
+                WITH Manager (SubCdcId, FunctionCode, MainCdcId) AS
+                (
+                    SELECT cs.SubCdcId, f.FunctionCode, c.CdcId
+                    FROM employee.dbo.EmployeeCdcStories cs
+                    INNER JOIN employee.dbo.CdcSub c
+                        ON c.SubCdcId = cs.SubCdcId AND cs.DateOut IS NULL
+                    INNER JOIN Employee.dbo.Functions F ON cs.FunctionId = F.FunctionId
+                    WHERE cs.EmployeeHireHistoryId = ?
+                      AND cs.DateOut IS NULL
+                )
+                SELECT h.EmployeeHireHistoryId
+                FROM employee.dbo.EmployeeHireHistory h
+                INNER JOIN employee.dbo.EmployeeCdcStories css
+                    ON h.EmployeeHireHistoryId = css.EmployeeHireHistoryId
+                    AND css.DateOut IS NULL
+                    AND h.EndWorkDate IS NULL
+                    AND h.employeerid = 2
+                INNER JOIN employee.dbo.Employees e ON h.EmployeeId = e.EmployeeId
+                INNER JOIN employee.dbo.CdcSub s ON s.SubCdcId = css.SubCdcId
+                INNER JOIN employee.dbo.Functions f ON f.FunctionId = css.FunctionId
+                INNER JOIN employee.dbo.CostCenters c ON c.CdcId = s.CdcId
+                INNER JOIN Manager m ON m.MainCdcId = s.CdcId AND m.FunctionCode > f.FunctionCode
+                WHERE f.FunctionCode < m.FunctionCode
+                """
+                with self.db._lock:
+                    self.db.cursor.execute(subordinate_query, employee_hire_history_id)
+                    sub_rows = self.db.cursor.fetchall()
+
+                subordinate_ids = [row[0] for row in sub_rows if row and row[0] is not None]
+                logger.info(f"Subalterni trovati per {employee_hire_history_id}: {subordinate_ids}")
+
+                if not subordinate_ids:
+                    logger.info("Nessun subalterno trovato, lista richieste vuota")
+                    self.pending_requests = []
+                    self._populate_tree([])
+                    return
+
+                placeholders = ", ".join(["?"] * len(subordinate_ids))
+                subordinate_filter = f"AND H.EmployeeHireHistoryId IN ({placeholders})"
+
+            # STEP 4: Query principale con filtro gerarchia
+            query = f"""
                 SELECT
                     AR.[AbsenceRequestId],
                     R.RequestName + ' [' + R.Abbreviation + ']' AS RequestType,
@@ -225,77 +287,20 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
                     Employee.dbo.Registry RE ON RE.RegistroId = AR.RegistroId
                 WHERE
                     AR.Approved = '1900-01-01 00:00:00.000'
+                    {subordinate_filter}
                 ORDER BY
                     AR.[DateStart],
                     E.EmployeeSurname + ' ' + E.EmployeeName
             """
 
             with self.db._lock:
-                self.db.cursor.execute(query)
+                self.db.cursor.execute(query, subordinate_ids)
                 all_requests = self.db.cursor.fetchall()
 
-            logger.info(f"Trovate {len(all_requests) if all_requests else 0} richieste pendenti totali")
+            logger.info(f"Trovate {len(all_requests) if all_requests else 0} richieste pendenti per EmployeeHireHistoryId={employee_hire_history_id}")
 
-            if not all_requests:
-                self.pending_requests = []
-                self._populate_tree([])
-                return
-
-            # STEP 3: filtro gerarchico con SP Employee.dbo.GetManagerID
-            filtered_requests = []
-            authorized_user_id_str = str(employee_hire_history_id)
-            authorized_request_ids = []
-            unauthorized_request_ids = []
-
-            logger.info(f"Filtro richieste per EmployeeHireHistoryId manager: {employee_hire_history_id}")
-
-            get_managers_query = """
-                DECLARE @Ids dbo.EmployeeIdTableType;
-                INSERT INTO @Ids (EmployeeHireHistoryId) VALUES (?);
-                EXEC Employee.dbo.GetManagerID @Ids;
-            """
-
-            for request in all_requests:
-                try:
-                    with self.db._lock:
-                        self.db.cursor.execute(get_managers_query, request.EmployeeHireHistoryId)
-                        manager_results = self.db.cursor.fetchall()
-
-                    manager_ids = [str(row[0]) for row in manager_results if row and row[0] is not None]
-
-                    if authorized_user_id_str in manager_ids:
-                        filtered_requests.append(request)
-                        authorized_request_ids.append(request.AbsenceRequestId)
-                        logger.info(
-                            f"Richiesta {request.AbsenceRequestId} (dipendente {request.EmployeeHireHistoryId}) "
-                            f"AUTORIZZATA. Manager: {', '.join(manager_ids)}"
-                        )
-                    else:
-                        unauthorized_request_ids.append(request.AbsenceRequestId)
-                        logger.debug(
-                            f"Richiesta {request.AbsenceRequestId} (dipendente {request.EmployeeHireHistoryId}) "
-                            f"NON autorizzata. Manager: {', '.join(manager_ids) if manager_ids else 'NESSUNO'}"
-                        )
-
-                except Exception as e:
-                    logger.error(f"Errore nel controllo manager per richiesta {request.AbsenceRequestId}: {e}")
-                    continue
-
-            logger.info(
-                f"Richieste filtrate per EmployeeHireHistoryId {employee_hire_history_id}: "
-                f"{len(filtered_requests)}/{len(all_requests)}"
-            )
-            logger.info(
-                "Dettaglio filtro richieste assenza - incluse: %s",
-                ", ".join(map(str, authorized_request_ids)) if authorized_request_ids else "nessuna"
-            )
-            logger.info(
-                "Dettaglio filtro richieste assenza - escluse: %s",
-                ", ".join(map(str, unauthorized_request_ids)) if unauthorized_request_ids else "nessuna"
-            )
-
-            self.pending_requests = filtered_requests
-            self._populate_tree(filtered_requests)
+            self.pending_requests = all_requests
+            self._populate_tree(all_requests)
 
         except Exception as e:
             logger.error(f"Errore nel caricamento richieste assenza: {e}", exc_info=True)
@@ -304,6 +309,7 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
                 f"Impossibile caricare le richieste: {str(e)}",
                 parent=self
             )
+
 
     def _populate_tree(self, requests):
         """Popola il Treeview con le richieste"""
@@ -692,6 +698,12 @@ giorni: {self.selected_request.NrDays if self.selected_request.NrDays else 'N/A'
             
             logger.info(f"✅ Richiesta {self.selected_request.AbsenceRequestId} approvata con successo")
             
+            # STEP 5: Invia notifica email al richiedente
+            try:
+                self._send_absence_decision_email(approved=True)
+            except Exception as email_err:
+                logger.warning(f"Notifica email non inviata: {email_err}")
+            
             messagebox.showinfo(
                 self.lang.get('success', 'Successo'),
                 self.lang.get('request_approved_success', 'Richiesta approvata con successo'),
@@ -1034,6 +1046,12 @@ giorni: {self.selected_request.NrDays if self.selected_request.NrDays else 'N/A'
             logger.info(f"   Approved: GETDATE()")
             logger.info(f"   Rejected: 1")
             
+            # Invia notifica email al richiedente
+            try:
+                self._send_absence_decision_email(approved=False, reason=reason)
+            except Exception as email_err:
+                logger.warning(f"Notifica email rifiuto non inviata: {email_err}")
+            
             messagebox.showinfo(
                 self.lang.get('success', 'Successo'),
                 self.lang.get('request_rejected_success', f'Richiesta rifiutata con successo.\n\nMotivo: {reason}'),
@@ -1050,6 +1068,463 @@ giorni: {self.selected_request.NrDays if self.selected_request.NrDays else 'N/A'
                 f"Errore durante il rifiuto della richiesta: {str(e)}",
                 parent=self
             )
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Email notification helpers
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _get_employee_email(self, employee_hire_history_id):
+        """Restituisce (full_name, work_email) per l'EmployeeHireHistoryId dato."""
+        query = """
+            SELECT DISTINCT
+                e.EmployeeName + ' ' + e.EmployeeSurname AS Employee,
+                ea.WorkEmail AS Email
+            FROM  Employee.dbo.EmployeeHireHistory h
+            LEFT JOIN Employee.dbo.Employees e
+                ON e.EmployeeId = h.EmployeeId AND h.employeerid = 2 AND h.EndWorkDate IS NULL
+            LEFT JOIN Employee.dbo.EmployeeAddress ea
+                ON ea.EmployeeId = e.EmployeeId AND ea.DateOut IS NULL
+            INNER JOIN resetservices.dbo.tbuserkey k
+                ON e.employeeid = k.IdAnga
+            WHERE h.EmployeeHireHistoryId = ?
+        """
+        with self.db._lock:
+            self.db.cursor.execute(query, employee_hire_history_id)
+            row = self.db.cursor.fetchone()
+        if row and row.Email:
+            return row.Employee, row.Email
+        return None, None
+
+    def _get_cc_recipients(self, employee_hire_history_id):
+        """Raccoglie tutti gli indirizzi email in CC:
+           1. Valore settings 'Sys_email_absence_decision'
+           2. Email dei manager diretti del dipendente richiedente
+        """
+        cc = []
+
+        # 1. Indirizzi fissi da settings
+        try:
+            with self.db._lock:
+                self.db.cursor.execute(
+                    "SELECT [value] FROM traceability_rs.dbo.settings WHERE atribute = 'Sys_email_absence_decision'"
+                )
+                row = self.db.cursor.fetchone()
+            if row and row.value:
+                for addr in row.value.replace(';', ',').split(','):
+                    addr = addr.strip()
+                    if addr:
+                        cc.append(addr)
+        except Exception as e:
+            logger.warning(f"Impossibile leggere Sys_email_absence_decision dalle settings: {e}")
+
+        # 2. Email dei manager del dipendente richiedente
+        try:
+            with self.db._lock:
+                self.db.cursor.execute(
+                    "EXEC Employee.dbo.GetManagerForSingleEmployee @EmployeeHireHistoryId = ?",
+                    employee_hire_history_id
+                )
+                manager_rows = self.db.cursor.fetchall()
+
+            manager_ids = [row[0] for row in manager_rows if row and row[0] is not None]
+
+            for mgr_id in manager_ids:
+                _, mgr_email = self._get_employee_email(mgr_id)
+                if mgr_email and mgr_email not in cc:
+                    cc.append(mgr_email)
+        except Exception as e:
+            logger.warning(f"Impossibile recuperare email manager: {e}")
+
+        return cc
+
+    def _get_vacation_balance(self, employee_hire_history_id):
+        """Restituisce il saldo giorni ferie anno corrente per il dipendente.
+        Usa EmployeeHireHistoryId come parametro diretto.
+        Restituisce None in caso di errore o dati non disponibili."""
+        try:
+            current_year = datetime.now().year
+
+            query = """
+                DECLARE @Anno INT = ?
+                DECLARE @DataRiferimento DATE = GETDATE()
+                DECLARE @InizioAnno DATE = DATEFROMPARTS(@Anno, 1, 1)
+                DECLARE @FineAnno DATE = DATEFROMPARTS(@Anno, 12, 31)
+
+                ;WITH 
+                Numbers AS (
+                    SELECT a.n + b.n + c.n AS n 
+                    FROM (
+                        SELECT 0 AS n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 
+                        UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9
+                    ) a
+                    CROSS JOIN (
+                        SELECT 0 AS n UNION ALL SELECT 10 UNION ALL SELECT 20 UNION ALL SELECT 30 UNION ALL SELECT 40 
+                        UNION ALL SELECT 50 UNION ALL SELECT 60 UNION ALL SELECT 70 UNION ALL SELECT 80 UNION ALL SELECT 90
+                    ) b
+                    CROSS JOIN (
+                        SELECT 0 AS n UNION ALL SELECT 100 UNION ALL SELECT 200 UNION ALL SELECT 300
+                    ) c
+                    WHERE a.n + b.n + c.n <= 365
+                ),
+                BonusAnzianitaCTE AS (
+                    SELECT 
+                        noYears,
+                        FixValueOnBrutSalary AS GiorniBonus
+                    FROM 
+                        [Employee].[dbo].[BonusTypeSeniotiry]
+                    WHERE 
+                        BonusTypeValueId = 4 
+                        AND dateout IS NULL
+                ),
+                FestiviCTE AS (
+                    SELECT DISTINCT
+                        DATEFROMPARTS(YearPublicHoliday, MonthPublicHoliday, DayPublicHoliday) AS DataFestivo
+                    FROM 
+                        [Timeclocking].[dbo].[PublicHoliday]
+                    WHERE 
+                        YearPublicHoliday BETWEEN @Anno - 50 AND @Anno + 1
+                ),
+                CalcoloAnzianitaCTE AS (
+                    SELECT 
+                        te.IDEmployee,
+                        h.EmployeeHireHistoryId,
+                        e.EmployeeName,
+                        e.EmployeeSurname,
+                        b.NoBadge,
+                        h.HireDate,
+                        h.HolidayPerYear,
+                        CASE 
+                            WHEN h.HireDate <= @DataRiferimento THEN
+                                CASE 
+                                    WHEN MONTH(@DataRiferimento) > MONTH(h.HireDate) 
+                                        OR (MONTH(@DataRiferimento) = MONTH(h.HireDate) AND DAY(@DataRiferimento) >= DAY(h.HireDate))
+                                    THEN DATEDIFF(YEAR, h.HireDate, @DataRiferimento)
+                                    ELSE DATEDIFF(YEAR, h.HireDate, @DataRiferimento) - 1
+                                END
+                            ELSE 0
+                        END AS Anni
+                    FROM 
+                        employee.dbo.employees E
+                        INNER JOIN employee.dbo.EmployeeHireHistory H 
+                            ON e.EmployeeId = h.EmployeeId 
+                            AND h.EmployeerId = 2 
+                            AND h.EndWorkDate IS NULL
+                        INNER JOIN [Timeclocking].[dbo].[Employee] TE 
+                            ON e.EmployeeNID COLLATE Latin1_General_CI_AI = te.UniqueID COLLATE Latin1_General_CI_AI
+                            AND te.DataStop IS NULL
+                        INNER JOIN employee.dbo.EmployeeBadgeHistory BH 
+                            ON h.EmployeeHireHistoryId = bh.EmployeeHireHistoryId 
+                            AND bh.DateOut IS NULL
+                        INNER JOIN employee.dbo.Badges B 
+                            ON bh.BadgeID = b.BadgeId
+                    WHERE 
+                        h.EmployeeHireHistoryId = ?
+                ),
+                FerieSpettantiCTE AS (
+                    SELECT 
+                        C.*,
+                        ISNULL((
+                            SELECT TOP 1 GiorniBonus 
+                            FROM BonusAnzianitaCTE 
+                            WHERE noYears <= C.Anni
+                            ORDER BY noYears DESC
+                        ), 0) AS GiorniBonusAnzianita,
+                        CASE 
+                            WHEN YEAR(C.HireDate) = @Anno THEN 
+                                CEILING(CAST(C.HolidayPerYear AS FLOAT) * 
+                                       (DATEDIFF(DAY, C.HireDate, @DataRiferimento) + 1) / 
+                                       (CASE WHEN (@Anno % 4 = 0 AND @Anno % 100 != 0) OR (@Anno % 400 = 0) 
+                                             THEN 366 ELSE 365 END))
+                            WHEN YEAR(C.HireDate) < @Anno THEN 
+                                C.HolidayPerYear
+                            ELSE 
+                                0
+                        END AS FerieAnnoCorrente
+                    FROM CalcoloAnzianitaCTE C
+                ),
+                FerieSpettantiPerAnnoCTE AS (
+                    SELECT 
+                        F.IDEmployee,
+                        YEAR(F.HireDate) + (N.n / 10) AS Anno,
+                        CASE 
+                            WHEN YEAR(F.HireDate) = YEAR(F.HireDate) + (N.n / 10) THEN 
+                                CEILING(CAST(F.HolidayPerYear AS FLOAT) * 
+                                       (DATEDIFF(DAY, F.HireDate, DATEFROMPARTS(YEAR(F.HireDate) + (N.n / 10), 12, 31)) + 1) / 
+                                       (CASE WHEN ((YEAR(F.HireDate) + (N.n / 10)) % 4 = 0 AND (YEAR(F.HireDate) + (N.n / 10)) % 100 != 0) 
+                                          OR ((YEAR(F.HireDate) + (N.n / 10)) % 400 = 0) 
+                                             THEN 366 ELSE 365 END))
+                            WHEN YEAR(F.HireDate) < YEAR(F.HireDate) + (N.n / 10) THEN 
+                                F.HolidayPerYear
+                            ELSE 
+                                0
+                        END AS FerieSpettanti
+                    FROM 
+                        FerieSpettantiCTE F
+                        CROSS JOIN Numbers N
+                    WHERE 
+                        N.n % 10 = 0
+                        AND (N.n / 10) <= 30
+                        AND YEAR(F.HireDate) + (N.n / 10) < @Anno
+                ),
+                FerieSpettantiAnniPrecedentiCTE AS (
+                    SELECT 
+                        IDEmployee,
+                        SUM(FerieSpettanti) AS TotaleFerieSpettantiAnniPrecedenti
+                    FROM 
+                        FerieSpettantiPerAnnoCTE
+                    GROUP BY 
+                        IDEmployee
+                ),
+                GiorniAssenzeEspansi AS (
+                    SELECT 
+                        D.IDEmployee,
+                        D.IDRequestType,
+                        DATEADD(DAY, N.n, D.DateFrom) AS DataCorrente,
+                        CASE 
+                            WHEN DATEADD(DAY, N.n, D.DateFrom) < @InizioAnno THEN 1
+                            ELSE 0
+                        END AS IsAnniPrecedenti,
+                        CASE 
+                            WHEN DATEADD(DAY, N.n, D.DateFrom) >= @InizioAnno 
+                                AND DATEADD(DAY, N.n, D.DateFrom) <= @FineAnno THEN 1
+                            ELSE 0
+                        END AS IsAnnoCorrente,
+                        CASE 
+                            WHEN DATEPART(WEEKDAY, DATEADD(DAY, N.n, D.DateFrom)) IN (1, 7) THEN 0
+                            WHEN EXISTS (
+                                SELECT 1 
+                                FROM FestiviCTE F 
+                                WHERE F.DataFestivo = DATEADD(DAY, N.n, D.DateFrom)
+                            ) THEN 0
+                            ELSE 1
+                        END AS IsGiornoLavorativo
+                    FROM 
+                        [Timeclocking].[dbo].[EmployeeRequestEntireDay] D
+                        CROSS JOIN Numbers N
+                    WHERE 
+                        DATEADD(DAY, N.n, D.DateFrom) <= D.DateTo
+                        AND D.DateFrom <= DATEADD(YEAR, 1, @FineAnno)
+                ),
+                FerieUsateAnniPrecedentiCTE AS (
+                    SELECT 
+                        IDEmployee,
+                        SUM(IsGiornoLavorativo) AS FerieUsateAnniPrecedenti
+                    FROM 
+                        GiorniAssenzeEspansi
+                    WHERE 
+                        IDRequestType = 1
+                        AND IsAnniPrecedenti = 1
+                    GROUP BY 
+                        IDEmployee
+                ),
+                FerieUsateAnnoCorrenteCTE AS (
+                    SELECT 
+                        IDEmployee,
+                        SUM(IsGiornoLavorativo) AS FerieUsateAnnoCorrente
+                    FROM 
+                        GiorniAssenzeEspansi
+                    WHERE 
+                        IDRequestType = 1
+                        AND IsAnnoCorrente = 1
+                    GROUP BY 
+                        IDEmployee
+                )
+                SELECT 
+                    F.FerieAnnoCorrente + F.GiorniBonusAnzianita + 
+                    (ISNULL(FSAP.TotaleFerieSpettantiAnniPrecedenti, 0) - ISNULL(FUAP.FerieUsateAnniPrecedenti, 0)) - 
+                    ISNULL(FUAC.FerieUsateAnnoCorrente, 0) AS GiorniDisponibili
+                FROM 
+                    FerieSpettantiCTE F
+                    LEFT JOIN FerieSpettantiAnniPrecedentiCTE FSAP ON F.IDEmployee = FSAP.IDEmployee
+                    LEFT JOIN FerieUsateAnniPrecedentiCTE FUAP ON F.IDEmployee = FUAP.IDEmployee
+                    LEFT JOIN FerieUsateAnnoCorrenteCTE FUAC ON F.IDEmployee = FUAC.IDEmployee
+            """
+            with self.db._lock:
+                self.db.cursor.execute(query, current_year, employee_hire_history_id)
+                result = self.db.cursor.fetchone()
+            if result:
+                return result.GiorniDisponibili
+            return None
+        except Exception as e:
+            logger.warning(f"Impossibile calcolare saldo ferie: {e}")
+            return None
+
+    def _send_absence_decision_email(self, approved: bool, reason: str = None):
+        """Invia email di notifica in rumeno al richiedente (TO) e ai manager/HR (CC)."""
+        req = self.selected_request
+        employee_hire_history_id = req.EmployeeHireHistoryId
+
+        # Recupera email dipendente
+        employee_name, to_email = self._get_employee_email(employee_hire_history_id)
+        if not to_email:
+            logger.warning(
+                f"Email dipendente non trovata per EmployeeHireHistoryId={employee_hire_history_id}. "
+                "Notifica non inviata."
+            )
+            return
+
+        # Recupera CC e deduplica (rimuovi duplicati e l'indirizzo TO se presente)
+        cc_emails = self._get_cc_recipients(employee_hire_history_id)
+        seen = {to_email.lower()}
+        cc_emails_unique = []
+        for addr in cc_emails:
+            if addr.lower() not in seen:
+                seen.add(addr.lower())
+                cc_emails_unique.append(addr)
+        cc_emails = cc_emails_unique
+
+        current_year = datetime.now().year
+
+        # Dettagli richiesta
+        request_type = req.RequestType if hasattr(req, 'RequestType') else ""
+        date_start = req.DateStart.strftime('%d.%m.%Y') if req.DateStart else ""
+        date_end = req.DateEnd.strftime('%d.%m.%Y') if req.DateEnd else ""
+        manager_name = self.authorized_user_name or ""
+
+        # Testo esito in rumeno
+        if approved:
+            subject = f"Cererea dvs. de absență a fost APROBATĂ"
+            status_color = "#28a745"
+            status_text = "APROBATĂ"
+            status_icon = "✔"
+            decision_block = ""
+        else:
+            subject = f"Cererea dvs. de absență a fost RESPINSĂ"
+            status_color = "#dc3545"
+            status_text = "RESPINSĂ"
+            status_icon = "✘"
+            rejection_html = (
+                f'<tr><td style="padding:6px 12px;color:#555;">Motiv refuz:</td>'
+                f'<td style="padding:6px 12px;"><strong>{reason or ""}</strong></td></tr>'
+            )
+            decision_block = rejection_html
+
+        # Saldo ferie: solo per richieste di congedo giornaliero (IDRequestType == 1)
+        balance_block = ""
+        if getattr(req, 'IDRequestType', None) == 1:
+            vacation_balance = self._get_vacation_balance(employee_hire_history_id)
+            if vacation_balance is not None:
+                balance_block = (
+                    f'<tr><td style="padding:6px 12px;color:#555;">Sold concediu disponibil ({current_year}):</td>'
+                    f'<td style="padding:6px 12px;"><strong>{vacation_balance} zile</strong></td></tr>'
+                )
+
+        # Path logo
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        logo_path = os.path.join(base_dir, "Logo.png")
+
+        # Corpo HTML
+        html_body = f"""
+<!DOCTYPE html>
+<html lang="ro">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width"></head>
+<body style="margin:0;padding:0;background:#f4f6f8;font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f8;padding:30px 0;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0"
+             style="background:#ffffff;border-radius:8px;overflow:hidden;
+                    box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+
+        <!-- Header con logo -->
+        <tr>
+          <td style="background:#003366;padding:24px 32px;text-align:center;">
+            <img src="cid:company_logo" alt="Company Logo"
+                 style="max-height:60px;max-width:200px;" />
+          </td>
+        </tr>
+
+        <!-- Banner esito -->
+        <tr>
+          <td style="background:{status_color};padding:16px 32px;text-align:center;">
+            <span style="font-size:22px;font-weight:bold;color:#ffffff;letter-spacing:1px;">
+              {status_icon}&nbsp;&nbsp;Cerere de absență {status_text}
+            </span>
+          </td>
+        </tr>
+
+        <!-- Salut -->
+        <tr>
+          <td style="padding:28px 32px 8px 32px;">
+            <p style="margin:0;font-size:15px;color:#222;">Stimate/Stimată <strong>{employee_name}</strong>,</p>
+            <p style="margin:12px 0 0 0;font-size:14px;color:#444;line-height:1.6;">
+              Vă informăm că cererea dvs. de absență a fost
+              <strong style="color:{status_color};">{status_text.lower()}</strong>
+              de către <strong>{manager_name}</strong>.
+            </p>
+          </td>
+        </tr>
+
+        <!-- Detalii cerere -->
+        <tr>
+          <td style="padding:16px 32px;">
+            <p style="margin:0 0 10px 0;font-size:14px;font-weight:bold;color:#003366;">Detalii cerere:</p>
+            <table width="100%" cellpadding="0" cellspacing="0"
+                   style="border:1px solid #e0e0e0;border-radius:6px;font-size:14px;color:#333;">
+              <tr style="background:#f8f9fa;">
+                <td style="padding:6px 12px;color:#555;">Tip absență:</td>
+                <td style="padding:6px 12px;"><strong>{request_type}</strong></td>
+              </tr>
+              <tr>
+                <td style="padding:6px 12px;color:#555;">Data început:</td>
+                <td style="padding:6px 12px;"><strong>{date_start}</strong></td>
+              </tr>
+              <tr style="background:#f8f9fa;">
+                <td style="padding:6px 12px;color:#555;">Data sfârșit:</td>
+                <td style="padding:6px 12px;"><strong>{date_end}</strong></td>
+              </tr>
+              {decision_block}
+              {balance_block}
+            </table>
+          </td>
+        </tr>
+
+        <!-- Nota -->
+        <tr>
+          <td style="padding:8px 32px 28px 32px;">
+            <p style="margin:0;font-size:13px;color:#888;line-height:1.5;">
+              Această notificare a fost generată automat de sistemul TraceabilityRS.
+              Vă rugăm să nu răspundeți la acest mesaj.
+            </p>
+          </td>
+        </tr>
+
+        <!-- Footer -->
+        <tr>
+          <td style="background:#f0f0f0;padding:14px 32px;text-align:center;">
+            <span style="font-size:12px;color:#999;">
+              &copy; {current_year} Vandewiele &mdash; TraceabilityRS System
+            </span>
+          </td>
+        </tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+"""
+
+        # Allegato logo inline
+        attachments = []
+        if os.path.exists(logo_path):
+            attachments.append(('inline', logo_path, 'company_logo'))
+        else:
+            logger.warning(f"Logo non trovato in {logo_path}, email inviata senza logo")
+
+        # Invia
+        sender = EmailSender()
+        sender.send_email(
+            to_email=to_email,
+            subject=subject,
+            body=html_body,
+            is_html=True,
+            attachments=attachments if attachments else None,
+            cc_emails=cc_emails if cc_emails else None
+        )
+        logger.info(
+            f"Email notifica {'approvazione' if approved else 'rifiuto'} inviata a {to_email}"
+            + (f" CC: {', '.join(cc_emails)}" if cc_emails else "")
+        )
 
 
 class RejectReasonDialog(tk.Toplevel):

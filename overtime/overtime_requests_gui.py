@@ -258,7 +258,7 @@ class OvertimeRequestWindow(tk.Toplevel):
         """Carica dati iniziali (dipendenti, motivi, ordini)."""
         # Carica dipendenti
         logger.info("Caricamento dipendenti eligibili...")
-        employees = self.manager.fetch_eligible_employees()
+        employees = self.manager.fetch_eligible_employees(manager_hire_history_id=self.user_id)
         logger.info(f"Dipendenti trovati: {len(employees) if employees else 0}")
         if employees:
             self.employees_data = {
