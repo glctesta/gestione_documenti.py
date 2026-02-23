@@ -200,5 +200,131 @@ if __name__ == "__main__":
 
     log(f"Avvio updater: source={source}, dest={dest}, exe={exe}")
 
+    # ------------------------------------------------------------------ #
+    #  Ticket automatico su eccezioni non gestite                          #
+    # ------------------------------------------------------------------ #
+    import traceback as _tb
+    import json as _json
+    import threading as _threading
+    import datetime as _dt
+
+    _TICKET_DIR = os.path.join(os.getenv("LOCALAPPDATA", "."), "TraceabilityRS", "tickets")
+    _LOG_FILE = os.path.join(os.path.expanduser("~"), "Downloads", "maintenance_app_updater.log")
+
+    def _get_log_tail(n=50):
+        try:
+            if not os.path.exists(_LOG_FILE):
+                return "(log non trovato)"
+            with open(_LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
+                return "".join(f.readlines()[-n:])
+        except Exception:
+            return "(errore lettura log)"
+
+    def _save_fallback_json(error_info):
+        """Salva ticket su file JSON locale se l'email non e' disponibile."""
+        try:
+            os.makedirs(_TICKET_DIR, exist_ok=True)
+            ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = os.path.join(_TICKET_DIR, f"updater_ticket_{ts}.json")
+            with open(path, "w", encoding="utf-8") as f:
+                _json.dump(error_info, f, ensure_ascii=False, indent=2)
+            log(f"[TICKET] Ticket salvato localmente: {path}")
+        except Exception as e:
+            log(f"[TICKET] Impossibile salvare ticket JSON: {e}")
+
+    def _send_email_alert(error_info):
+        """Invia email di notifica ticket updater in background."""
+        def _run():
+            try:
+                # email_connector e' nella stessa cartella dell'exe/script
+                _script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+                sys.path.insert(0, _script_dir)
+                from email_connector import EmailSender
+
+                # Leggi destinatario (file credenziali locale)
+                import pyodbc as _pyodbc  # noqa – solo per tentare lettura DB
+                try:
+                    # Prova a leggere l'email destinataria dal DB (best-effort)
+                    from config_manager import ConfigManager
+                    _cfg = ConfigManager()
+                    _conn_str = _cfg.get_connection_string()
+                    _conn = _pyodbc.connect(_conn_str, timeout=5)
+                    _cur = _conn.cursor()
+                    _cur.execute(
+                        "SELECT [value] FROM traceability_rs.dbo.settingrs "
+                        "WHERE Atribute = 'SysEmail_service_tickets'"
+                    )
+                    _row = _cur.fetchone()
+                    recipient = str(_row[0]).strip() if _row and _row[0] else ""
+                    _conn.close()
+                except Exception:
+                    recipient = ""
+
+                if not recipient:
+                    log("[TICKET] Nessuna email destinataria trovata per updater ticket.")
+                    return
+
+                sender = EmailSender()
+                subject = f"[Ticket Updater] {error_info['type']}: {error_info['message'][:80]}"
+                body = f"""<html><body style="font-family:Arial,sans-serif;font-size:13px;">
+<h2 style="color:#B71C1C;">&#9888; Errore Updater – Ticket automatico</h2>
+<table cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:700px;">
+  <tr><td style="font-weight:bold;width:120px;">Tipo errore</td><td style="color:#C62828;font-weight:bold;">{error_info['type']}</td></tr>
+  <tr style="background:#F5F5F5;"><td style="font-weight:bold;">Messaggio</td><td>{error_info['message']}</td></tr>
+  <tr><td style="font-weight:bold;">Data/Ora</td><td>{error_info['created_at']}</td></tr>
+  <tr style="background:#F5F5F5;"><td style="font-weight:bold;">Sorgente</td><td>{error_info.get('source','N/A')}</td></tr>
+  <tr><td style="font-weight:bold;">Destinazione</td><td>{error_info.get('dest','N/A')}</td></tr>
+</table>
+<h3 style="color:#C62828;">Stacktrace</h3>
+<pre style="background:#FFF3E0;padding:10px;border-left:4px solid #C62828;font-size:11px;">{error_info['traceback']}</pre>
+<h3 style="color:#2E7D32;">Log recente</h3>
+<pre style="background:#E8F5E9;padding:10px;border-left:4px solid #2E7D32;font-size:10px;">{error_info['log_snippet']}</pre>
+</body></html>"""
+
+                sender.send_email(
+                    to_email=recipient,
+                    subject=subject,
+                    body=body,
+                    is_html=True
+                )
+                log(f"[TICKET] Email updater inviata a {recipient}")
+
+            except Exception as e:
+                log(f"[TICKET] Errore invio email updater: {e}")
+
+        _threading.Thread(target=_run, daemon=True).start()
+
+    def _on_updater_exception(exc_type, exc_value, exc_tb):
+        """Intercetta eccezioni non gestite nell'updater e crea un ticket."""
+        error_info = {
+            'type':       exc_type.__name__,
+            'message':    str(exc_value),
+            'traceback':  ''.join(_tb.format_tb(exc_tb)),
+            'log_snippet': _get_log_tail(50),
+            'created_at': _dt.datetime.now().strftime('%d/%m/%Y %H:%M:%S'),
+            'source':     source,
+            'dest':       dest,
+            'exe':        exe
+        }
+        log(f"[TICKET] Eccezione non gestita: {exc_value}")
+        # 1. Salva localmente (sempre, anche senza rete)
+        _save_fallback_json(error_info)
+        # 2. Tenta invio email in background
+        _send_email_alert(error_info)
+        # 3. Mostra dialog all'utente e aspetta l'email
+        try:
+            messagebox.showerror(
+                "Errore Updater",
+                f"Si è verificato un errore imprevisto:\n\n"
+                f"{exc_type.__name__}: {exc_value}\n\n"
+                "Il ticket è stato registrato automaticamente.\n"
+                "Il team tecnico riceverà una notifica via email."
+            )
+        except Exception:
+            pass
+
+    sys.excepthook = _on_updater_exception
+    # ------------------------------------------------------------------ #
+
     app = UpdateProgressWindow(source, dest, exe)
     app.mainloop()

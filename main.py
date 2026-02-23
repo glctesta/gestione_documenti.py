@@ -323,7 +323,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.4.8'  # Versione aggiornata
+APP_VERSION = '2.3.4.9'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -8953,7 +8953,7 @@ class KanbanLocationCreateForm(tk.Toplevel):
         if PIL_AVAILABLE:
             try:
                 from PIL import Image, ImageTk
-                img = Image.open("logo.png")
+                img = Image.open("Logo.png")
                 img.thumbnail((100, 100))
                 self._logo_img = ImageTk.PhotoImage(img)
                 ttk.Label(bottom, image=self._logo_img).grid(row=0, column=1, sticky="e")
@@ -15111,7 +15111,13 @@ class App(tk.Tk):
             label=self.lang.get('menu_logs', 'Logs'),
             command=self._open_logs_viewer
         )
-        
+
+        # Voce Tickets (penultima prima del separatore)
+        self.help_menu.add_command(
+            label=self.lang.get('menu_tickets', 'Tickets'),
+            command=self._open_tickets
+        )
+
         self.help_menu.add_separator()
         about_menu_label = f"{self.lang.get('menu_about')} {APP_VERSION}"
         self.help_menu.add_command(label=about_menu_label, command=self._show_about)
@@ -16375,7 +16381,21 @@ class App(tk.Tk):
             about_message,
             parent=self
         )
-    
+
+    def _open_tickets(self, error_info=None):
+        """Apre la finestra di ticketing (Help → Tickets o da eccezione automatica)."""
+        try:
+            import ticket_gui
+            user = getattr(self, 'last_authenticated_user_name', None)
+            ticket_gui.open_ticket_window(self, self.db, self.lang, user, error_info)
+        except Exception as e:
+            logger.error(f"Errore apertura finestra ticket: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                str(e),
+                parent=self
+            )
+
     def _open_change_password(self):
         """Apre la finestra per il cambio password"""
         import change_password_gui
@@ -16611,6 +16631,31 @@ class UpdateNotificationDialog(tk.Toplevel):
 if __name__ == "__main__":
     try:
         app = App()
+
+        # ------------------------------------------------------------------ #
+        #  Global exception hook – apertura automatica ticket su errori        #
+        # ------------------------------------------------------------------ #
+        def _on_unhandled_exception(exc_type, exc_value, exc_tb):
+            """Intercetta le eccezioni non gestite e apre la finestra ticket."""
+            import traceback as _tb
+            error_info = {
+                'type':      exc_type.__name__,
+                'message':   str(exc_value),
+                'traceback': ''.join(_tb.format_tb(exc_tb))
+            }
+            logger.critical(
+                f"Eccezione non gestita: {exc_value}",
+                exc_info=(exc_type, exc_value, exc_tb)
+            )
+            # Apri la finestra ticket nel thread principale via after()
+            try:
+                app.after(0, lambda: app._open_tickets(error_info=error_info))
+            except Exception:
+                pass  # non bloccare mai il processo in questo hook
+
+        sys.excepthook = _on_unhandled_exception
+        # ------------------------------------------------------------------ #
+
         app.mainloop()
     except KeyboardInterrupt:
         # Gestione interruzione da tastiera (Ctrl+C)
