@@ -25,8 +25,8 @@ _LOG_FILE = os.path.join(os.getenv("LOCALAPPDATA", "."), "TraceabilityRS", "logs
 # --------------------------------------------------------------------------- #
 
 def _get_ticket_email(db) -> str:
-    """Legge l'email destinataria da traceability_rs.dbo.settingrs."""
-    query = "SELECT [value] FROM traceability_rs.dbo.settingrs WHERE Atribute = 'SysEmail_service_tickets'"
+    """Legge l'email destinataria da dbo.settingrs."""
+    query = "SELECT [value] FROM dbo.settingrs WHERE Atribute = 'SysEmail_service_tickets'"
     try:
         with db._lock:
             db._clear_cursor_state()
