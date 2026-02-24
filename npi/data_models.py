@@ -62,6 +62,9 @@ class Prodotto(Base):
     CodiceProdotto = Column(String(100))
     Cliente = Column(String(255))
     DataScadenzaProgetto = Column(DateTime)
+    SimilarAsProductId = Column(Integer, nullable=True)
+    IDFinalClient = Column(Integer, nullable=True)
+    DateOut = Column(DateTime, nullable=True)   # soft-delete: valorizzato = prodotto eliminato
 
     # La relazione punta al NOME DELLA CLASSE, non alla tabella del DB
     progetti_npi = relationship("ProgettoNPI", back_populates="prodotto")

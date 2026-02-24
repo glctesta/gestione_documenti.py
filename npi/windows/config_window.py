@@ -231,12 +231,27 @@ class ProductManagementFrame(ttk.Frame):
         list_frame = ttk.Frame(paned_window, padding=10)
         paned_window.add(list_frame, weight=1)
 
+        # Toolbar sopra la lista: checkbox "Mostra eliminati"
+        list_toolbar = ttk.Frame(list_frame)
+        list_toolbar.pack(fill=tk.X, pady=(0, 4))
+        self.show_deleted_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            list_toolbar,
+            text=self.lang.get('show_deleted_products', 'Mostra eliminati'),
+            variable=self.show_deleted_var,
+            onvalue=True,
+            offvalue=False,
+            command=self._load_products
+        ).pack(side=tk.LEFT)
+
         cols = (self.lang.get('col_id'), self.lang.get('col_product_code'), self.lang.get('col_product_name'),
                 self.lang.get('col_customer'), self.lang.get('label_version', 'Versione'),
-                self.lang.get('npi_project_owner_label', 'Owner Progetto'))
+                self.lang.get('npi_project_owner_label', 'Owner Progetto'),
+                self.lang.get('col_status', 'Stato'))
         self.column_names = cols
         self.tree = ttk.Treeview(list_frame, columns=cols, show='headings', selectmode='browse')
-        
+        self.tree.tag_configure('deleted', foreground='gray')
+
         # Aggiungi binding per ordinamento cliccabile
         for i, col in enumerate(cols):
             self.tree.heading(col, text=col, command=lambda c=i: self._sort_by_column(c))
@@ -246,6 +261,7 @@ class ProductManagementFrame(ttk.Frame):
         self.tree.column(cols[3], width=150)
         self.tree.column(cols[4], width=80)
         self.tree.column(cols[5], width=120)
+        self.tree.column(cols[6], width=70)
         self.tree.pack(fill=tk.BOTH, expand=True)
         self.tree.bind('<<TreeviewSelect>>', self._on_product_select)
 
@@ -278,6 +294,15 @@ class ProductManagementFrame(ttk.Frame):
         ttk.Button(button_frame, text=self.lang.get('btn_save'), command=self._save_product).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text=self.lang.get('btn_delete'), command=self._delete_product).pack(side=tk.LEFT,
                                                                                                       padx=5)
+        self.restore_product_button = ttk.Button(
+            button_frame,
+            text=self.lang.get('btn_restore', '↩ Ripristina'),
+            command=self._restore_product,
+            state=tk.DISABLED
+        )
+        self.restore_product_button.pack(side=tk.LEFT, padx=5)
+
+        # Checkbox "Mostra eliminati" — gestito separatamente nella top bar della lista
 
         # --- FUNZIONALITA' DI GESTIONE PROGETTO CON VERSIONE ---
         project_frame = ttk.LabelFrame(form_panel, text=self.lang.get('project_npi_management_title'), padding=10)
@@ -363,37 +388,49 @@ class ProductManagementFrame(ttk.Frame):
 
     def _load_products(self):
         for i in self.tree.get_children(): self.tree.delete(i)
-        products = self.npi_manager.get_prodotti()
-        
+        products = self.npi_manager.get_prodotti()  # solo attivi (DateOut IS NULL)
+
         # Carica i soggetti per il combobox owner
         soggetti = self.npi_manager.get_soggetti()
         self.soggetti_map = {s.Nome: s.SoggettoId for s in soggetti}
         self.soggetti_map_rev = {v: k for k, v in self.soggetti_map.items()}
         self.project_owner_combo['values'] = [''] + list(self.soggetti_map.keys())
-        
+
         # Reset cache dati e stato ordinamento
         self.current_data = []
         self.sort_state = {}
-        
+
+        # Recupera i progetti NPI per ottenere versioni e owner
+        progetti = self.npi_manager.get_progetti_attivi()
+        version_map = {p['ProdottoID']: p.get('Version', '') for p in progetti}
+        owner_map = {}
+        for p in progetti:
+            owner_id = p.get('OwnerID')
+            owner_name = self.soggetti_map_rev.get(owner_id, '') if owner_id else ''
+            owner_map[p['ProdottoID']] = owner_name
+
+        stato_attivo = self.lang.get('status_active', 'Attivo')
+        stato_eliminato = self.lang.get('status_deleted', '🗑 Eliminato')
+
         if products:
-            # Recupera i progetti NPI per ottenere versioni e owner
-            progetti = self.npi_manager.get_progetti_attivi()
-            
-            # Crea mappe prodotto_id -> (versione, owner_name)
-            version_map = {p['ProdottoID']: p.get('Version', '') for p in progetti}
-            owner_map = {}
-            for p in progetti:
-                owner_id = p.get('OwnerID')
-                owner_name = self.soggetti_map_rev.get(owner_id, '') if owner_id else ''
-                owner_map[p['ProdottoID']] = owner_name
-            
             for p in products:
                 version = version_map.get(p.ProdottoID, "")
                 owner = owner_map.get(p.ProdottoID, "")
-                row_data = (p.ProdottoID, p.CodiceProdotto or "", p.NomeProdotto, p.Cliente or "", version, owner)
+                row_data = (p.ProdottoID, p.CodiceProdotto or "", p.NomeProdotto, p.Cliente or "",
+                            version, owner, stato_attivo)
                 self.current_data.append(row_data)
                 self.tree.insert('', tk.END, values=row_data)
-        
+
+        # Se checkbox "Mostra eliminati" attiva, aggiungi i prodotti soft-deleted
+        if getattr(self, 'show_deleted_var', None) and self.show_deleted_var.get():
+            deleted = self.npi_manager.get_prodotti_deleted()
+            if deleted:
+                for p in deleted:
+                    row_data = (p.ProdottoID, p.CodiceProdotto or "", p.NomeProdotto, p.Cliente or "",
+                                "", "", stato_eliminato)
+                    self.current_data.append(row_data)
+                    self.tree.insert('', tk.END, values=row_data, tags=('deleted',))
+
         # Reset indicatori ordinamento nelle intestazioni
         self._update_column_headers()
     
@@ -427,19 +464,29 @@ class ProductManagementFrame(ttk.Frame):
         if not self.tree.selection(): return
         item = self.tree.item(self.tree.selection()[0])
         self.selected_product_id = item['values'][0]
+        # Controlla se il prodotto è eliminato (tag 'deleted' o colonna Stato)
+        tags = self.tree.item(self.tree.selection()[0], 'tags')
+        is_deleted = 'deleted' in tags
+
         prodotto = self.npi_manager.get_prodotto_by_id(self.selected_product_id)
         if prodotto:
             self._populate_form(prodotto)
-            self.create_project_button.config(state=tk.NORMAL)
-            
-            # Abilita pulsante Aggiorna solo se il progetto esiste
-            progetto = self.npi_manager.get_progetto_by_prodotto(self.selected_product_id)
-            if progetto:
-                self.update_project_button.config(state=tk.NORMAL)
-                self.delete_project_button.config(state=tk.NORMAL)  # 🆕
-            else:
+            if is_deleted:
+                # Prodotto eliminato: abilita solo Ripristina, disabilita il resto
+                self.create_project_button.config(state=tk.DISABLED)
                 self.update_project_button.config(state=tk.DISABLED)
-                self.delete_project_button.config(state=tk.DISABLED)  # 🆕
+                self.delete_project_button.config(state=tk.DISABLED)
+                self.restore_product_button.config(state=tk.NORMAL)
+            else:
+                self.restore_product_button.config(state=tk.DISABLED)
+                self.create_project_button.config(state=tk.NORMAL)
+                progetto = self.npi_manager.get_progetto_by_prodotto(self.selected_product_id)
+                if progetto:
+                    self.update_project_button.config(state=tk.NORMAL)
+                    self.delete_project_button.config(state=tk.NORMAL)
+                else:
+                    self.update_project_button.config(state=tk.DISABLED)
+                    self.delete_project_button.config(state=tk.DISABLED)
 
     def _populate_form(self, prodotto):
         self._clear_form(clear_selection=False)
@@ -466,7 +513,8 @@ class ProductManagementFrame(ttk.Frame):
         if clear_selection and self.tree.selection(): self.tree.selection_remove(self.tree.selection())
         self.create_project_button.config(state=tk.DISABLED)
         self.update_project_button.config(state=tk.DISABLED)
-        self.delete_project_button.config(state=tk.DISABLED)  # 🆕
+        self.delete_project_button.config(state=tk.DISABLED)
+        self.restore_product_button.config(state=tk.DISABLED)
         for field in self.fields.values(): field.delete(0, tk.END)
         # Pulisci anche i campi del progetto
         self.version_entry.delete(0, tk.END)
@@ -500,14 +548,38 @@ class ProductManagementFrame(ttk.Frame):
         if messagebox.askyesno(self.lang.get('confirm_delete_title'), self.lang.get('confirm_delete_product_text'),
                                parent=self):
             try:
-                self.npi_manager.delete_prodotto(self.selected_product_id)
+                self.npi_manager.delete_prodotto(self.selected_product_id)  # soft-delete
                 messagebox.showinfo(self.lang.get('success_title'), self.lang.get('success_product_deleted'),
                                     parent=self)
                 self._load_products()
                 self._clear_form()
             except Exception as e:
                 messagebox.showerror(self.lang.get('db_error_title'),
-                                     self.lang.get('db_error_delete_product').format(error=e), parent=self)
+                                     self.lang.get('db_error_delete_product', 'Errore: {error}').format(error=e),
+                                     parent=self)
+
+    def _restore_product(self):
+        """Ripristina un prodotto soft-deleted (DateOut -> NULL)."""
+        if self.selected_product_id is None:
+            return
+        if messagebox.askyesno(
+            self.lang.get('confirm_restore_title', 'Conferma Ripristino'),
+            self.lang.get('confirm_restore_product_text',
+                          'Vuoi ripristinare questo prodotto? Tornerà visibile nelle liste attive.'),
+            parent=self
+        ):
+            try:
+                self.npi_manager.restore_prodotto(self.selected_product_id)
+                messagebox.showinfo(self.lang.get('success_title'),
+                                    self.lang.get('success_product_restored', 'Prodotto ripristinato con successo.'),
+                                    parent=self)
+                self._load_products()
+                self._clear_form()
+            except Exception as e:
+                messagebox.showerror(self.lang.get('db_error_title'),
+                                     self.lang.get('db_error_restore_product', 'Errore: {error}').format(error=e),
+                                     parent=self)
+
 
     def _sort_by_column(self, col_index):
         """Ordina il treeview per la colonna specificata."""
@@ -1952,7 +2024,7 @@ class NpiConfigWindow(tk.Toplevel):
         self.product_id_to_select = product_id_to_select  # 🆕 ID prodotto da selezionare automaticamente
 
         self.title(self.lang.get('config_window_title'))
-        self.geometry("1200x900")
+        self.geometry("1500x900")
         self.transient(master)
         self.grab_set()
 

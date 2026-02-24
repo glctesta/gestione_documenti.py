@@ -312,13 +312,14 @@ class GestoreNPI:
 
 
     def get_prodotti(self):
-        """Recupera tutti i prodotti ordinati per nome."""
+        """Recupera tutti i prodotti ATTIVI (DateOut IS NULL) ordinati per nome."""
         session = self._get_session()
         try:
             prodotti = session.scalars(
-                select(Prodotto).order_by(Prodotto.NomeProdotto)
+                select(Prodotto)
+                .where(Prodotto.DateOut.is_(None))
+                .order_by(Prodotto.NomeProdotto)
             ).all()
-
             return self._detach_list(session, prodotti)
         except Exception as e:
             logger.error(f"Errore in get_prodotti: {e}")
@@ -380,23 +381,60 @@ class GestoreNPI:
             session.close()
 
     def delete_prodotto(self, prodotto_id):
-        """Elimina un prodotto."""
+        """Soft-delete di un prodotto: imposta DateOut = GETDATE().
+        Non elimina fisicamente la riga, così non ci sono problemi con le FK.
+        """
         session = self._get_session()
         try:
-            prodotto = session.get(Prodotto, prodotto_id)
-            if prodotto:
-                session.delete(prodotto)
-                session.commit()
-                return True
-            return False
+            session.execute(
+                text("UPDATE dbo.Prodotti SET DateOut = GETDATE() WHERE ProdottoID = :pid"),
+                {"pid": prodotto_id}
+            )
+            session.commit()
+            logger.info(f"Prodotto {prodotto_id} soft-deleted (DateOut impostato).")
+            return True
         except Exception as e:
-            logger.error(f"Errore in delete_prodotto: {e}")
+            logger.error(f"Errore in delete_prodotto: {e}", exc_info=True)
             session.rollback()
             raise
         finally:
             session.close()
 
-            # --- METODI CRUD PER CATEGORIE ---
+    def get_prodotti_deleted(self):
+        """Recupera i prodotti eliminati (DateOut IS NOT NULL) ordinati per nome."""
+        session = self._get_session()
+        try:
+            prodotti = session.scalars(
+                select(Prodotto)
+                .where(Prodotto.DateOut.isnot(None))
+                .order_by(Prodotto.NomeProdotto)
+            ).all()
+            return self._detach_list(session, prodotti)
+        except Exception as e:
+            logger.error(f"Errore in get_prodotti_deleted: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def restore_prodotto(self, prodotto_id):
+        """Ripristina un prodotto eliminato: imposta DateOut = NULL."""
+        session = self._get_session()
+        try:
+            session.execute(
+                text("UPDATE dbo.Prodotti SET DateOut = NULL WHERE ProdottoID = :pid"),
+                {"pid": prodotto_id}
+            )
+            session.commit()
+            logger.info(f"Prodotto {prodotto_id} ripristinato (DateOut = NULL).")
+            return True
+        except Exception as e:
+            logger.error(f"Errore in restore_prodotto: {e}", exc_info=True)
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
 
     def get_categories(self):
         """Recupera tutte le categorie ordinate per NrOrdin."""
@@ -1052,7 +1090,7 @@ class GestoreNPI:
                 .join(WaveNPI, TaskProdotto.WaveID == WaveNPI.WaveID)
                 .where(
                     WaveNPI.ProgettoID == progetto_id,
-                    TaskProdotto.stato.isnot(None)
+                    TaskProdotto.Stato.isnot(None)
                 )
             ) or 0
 
