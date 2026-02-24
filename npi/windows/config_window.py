@@ -235,14 +235,15 @@ class ProductManagementFrame(ttk.Frame):
         list_toolbar = ttk.Frame(list_frame)
         list_toolbar.pack(fill=tk.X, pady=(0, 4))
         self.show_deleted_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
+        self.show_deleted_check = ttk.Checkbutton(
             list_toolbar,
             text=self.lang.get('show_deleted_products', 'Mostra eliminati'),
             variable=self.show_deleted_var,
             onvalue=True,
             offvalue=False,
             command=self._load_products
-        ).pack(side=tk.LEFT)
+        )
+        self.show_deleted_check.pack(side=tk.LEFT)
 
         cols = (self.lang.get('col_id'), self.lang.get('col_product_code'), self.lang.get('col_product_name'),
                 self.lang.get('col_customer'), self.lang.get('label_version', 'Versione'),
@@ -422,7 +423,14 @@ class ProductManagementFrame(ttk.Frame):
                 self.tree.insert('', tk.END, values=row_data)
 
         # Se checkbox "Mostra eliminati" attiva, aggiungi i prodotti soft-deleted
-        if getattr(self, 'show_deleted_var', None) and self.show_deleted_var.get():
+        show_deleted = False
+        if hasattr(self, 'show_deleted_check'):
+            try:
+                show_deleted = 'selected' in self.show_deleted_check.state()
+            except Exception:
+                show_deleted = False
+
+        if show_deleted:
             deleted = self.npi_manager.get_prodotti_deleted()
             if deleted:
                 for p in deleted:
