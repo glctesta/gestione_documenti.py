@@ -253,7 +253,7 @@ class ProductManagementFrame(ttk.Frame):
                 self.lang.get('col_status', 'Stato'))
         self.column_names = cols
         self.tree = ttk.Treeview(list_frame, columns=cols, show='headings', selectmode='browse')
-        self.tree.tag_configure('deleted', foreground='gray')
+        self.tree.tag_configure('deleted', foreground='#CC4400', font=('', 0, 'italic'))  # Arancione scuro + corsivo
 
         # Aggiungi binding per ordinamento cliccabile
         for i, col in enumerate(cols):
@@ -450,6 +450,7 @@ class ProductManagementFrame(ttk.Frame):
                                     "", "", stato_eliminato)
                         self.current_data.append(row_data)
                         self.tree.insert('', tk.END, values=row_data, tags=('deleted',))
+                        logger.info(f"[show_deleted] Inserito nel tree: {row_data}")
             except Exception as e:
                 logger.error(f"[show_deleted] Errore in get_prodotti_deleted: {e}", exc_info=True)
 
@@ -654,7 +655,10 @@ class ProductManagementFrame(ttk.Frame):
             self.tree.delete(item)
         
         for row in data:
-            self.tree.insert('', tk.END, values=row)
+            # Rileva se il prodotto è eliminato dalla colonna Stato (indice 6)
+            is_deleted = len(row) > 6 and row[6] and 'Eliminat' in str(row[6])
+            tags = ('deleted',) if is_deleted else ()
+            self.tree.insert('', tk.END, values=row, tags=tags)
         
         # Ripristina selezione
         if selected_id is not None:
