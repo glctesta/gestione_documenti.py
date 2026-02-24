@@ -5,6 +5,8 @@ import logging
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
+logger = logging.getLogger(__name__)
+
 
 # --- Frame per la gestione dei Soggetti (Persone, Clienti, Fornitori) ---
 class SubjectManagementFrame(ttk.Frame):
@@ -426,18 +428,30 @@ class ProductManagementFrame(ttk.Frame):
         show_deleted = False
         if hasattr(self, 'show_deleted_check'):
             try:
-                show_deleted = 'selected' in self.show_deleted_check.state()
-            except Exception:
+                state = self.show_deleted_check.state()
+                show_deleted = 'selected' in state
+                logger.info(f"[show_deleted] widget state={state}, show_deleted={show_deleted}")
+            except Exception as e:
+                logger.error(f"[show_deleted] Errore lettura stato checkbox: {e}", exc_info=True)
                 show_deleted = False
+        else:
+            logger.warning("[show_deleted] self.show_deleted_check non esiste!")
+
+        logger.info(f"[show_deleted] Valore finale show_deleted={show_deleted}")
 
         if show_deleted:
-            deleted = self.npi_manager.get_prodotti_deleted()
-            if deleted:
-                for p in deleted:
-                    row_data = (p.ProdottoID, p.CodiceProdotto or "", p.NomeProdotto, p.Cliente or "",
-                                "", "", stato_eliminato)
-                    self.current_data.append(row_data)
-                    self.tree.insert('', tk.END, values=row_data, tags=('deleted',))
+            logger.info("[show_deleted] Chiamo get_prodotti_deleted()...")
+            try:
+                deleted = self.npi_manager.get_prodotti_deleted()
+                logger.info(f"[show_deleted] Prodotti eliminati trovati: {len(deleted) if deleted else 0}")
+                if deleted:
+                    for p in deleted:
+                        row_data = (p.ProdottoID, p.CodiceProdotto or "", p.NomeProdotto, p.Cliente or "",
+                                    "", "", stato_eliminato)
+                        self.current_data.append(row_data)
+                        self.tree.insert('', tk.END, values=row_data, tags=('deleted',))
+            except Exception as e:
+                logger.error(f"[show_deleted] Errore in get_prodotti_deleted: {e}", exc_info=True)
 
         # Reset indicatori ordinamento nelle intestazioni
         self._update_column_headers()
