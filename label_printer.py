@@ -196,6 +196,37 @@ def generate_zpl_label(label_data: Dict[str, Any], label_config: Dict[str, Any])
     return zpl
 
 
+def _split_text_to_lines(text: str, max_chars: int) -> list:
+    """
+    Divide il testo in righe che non superano max_chars caratteri.
+    Spezza preferibilmente ai separatori (virgola, spazio).
+    """
+    if not text or max_chars <= 0:
+        return [text] if text else []
+    if len(text) <= max_chars:
+        return [text]
+
+    lines = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= max_chars:
+            lines.append(remaining)
+            break
+        chunk = remaining[:max_chars]
+        # Prova a spezzare dopo una virgola
+        last_comma = chunk.rfind(',')
+        last_space = chunk.rfind(' ')
+        if last_comma > 0:
+            split_at = last_comma + 1  # include la virgola nella riga corrente
+        elif last_space > 0:
+            split_at = last_space
+        else:
+            split_at = max_chars  # nessun separatore: spezza duro
+        lines.append(remaining[:split_at].rstrip())
+        remaining = remaining[split_at:].lstrip()
+    return lines if lines else [text]
+
+
 def generate_escpos_label(label_data: Dict[str, Any], label_config: Dict[str, Any], model: str) -> str:
     """
     Genera comandi per stampanti Brother e ZJIANG.
@@ -281,19 +312,33 @@ def generate_escpos_label(label_data: Dict[str, Any], label_config: Dict[str, An
         font_size = label_config['tspl_font_size']  # Da configurazione
         font_mul_x = label_config['tspl_font_multiplier_x']  # Da configurazione
         font_mul_y = label_config['tspl_font_multiplier_y']  # Da configurazione
-        
-        for _, field_text in fields:
-            # Usa parametri configurabili per font e posizione
-            commands.append(f'TEXT {x_position},{y_position},"{font_size}",0,{font_mul_x},{font_mul_y},"{field_text}"')
-            y_position += y_increment
-        
-        # Aggiungi QR code sul lato destro dell'etichetta
-        # QRCODE x, y, error_correction_level, cell_width, mode, rotation, "data"
-        # Error correction: L=1, M=2, Q=3, H=4
-        # Usa parametri dalla configurazione
+
+        # QR code parametri (definiti qui perché usati anche per calcolo larghezza testo)
         qr_x = label_config['tspl_qr_x']  # Da configurazione
         qr_y = label_config['tspl_qr_y']  # Da configurazione
         qr_cell_width = label_config['tspl_qr_cell_width']  # Da configurazione
+
+        # Calcola larghezza max per riga (in caratteri)
+        # Font TSPL "3" = ~16 dots/char; aggiustato per moltiplicatore
+        _font_char_width = {'1': 8, '2': 12, '3': 16, '4': 24, '5': 24}
+        est_char_width = _font_char_width.get(str(font_size), 16) * font_mul_x
+        text_area_width = qr_x - x_position - 10  # dots disponibili (margin 10)
+        max_chars_per_line = max(8, int(text_area_width / est_char_width))
+
+        # Calcola Y massima utilizzabile (in dots: 8 dots/mm alla risoluzione tipica)
+        height_dots = height_mm * 8
+        max_y = height_dots - y_increment  # lascia margine per l'ultima riga
+
+        for _, field_text in fields:
+            wrapped_lines = _split_text_to_lines(field_text, max_chars_per_line)
+            for line in wrapped_lines:
+                if y_position > max_y:
+                    logger.warning(f"TSPL: testo troncato, Y={y_position} supera max={max_y}")
+                    break
+                commands.append(f'TEXT {x_position},{y_position},"{font_size}",0,{font_mul_x},{font_mul_y},"{line}"')
+                y_position += y_increment
+        
+
         
         # Stampa QR code con il codice componente
         component_code = label_data.get('ComponentCode', '')

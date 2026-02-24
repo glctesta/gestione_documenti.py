@@ -1,9 +1,9 @@
 {
-    "connection_type": "USB",
+    "connection_type": "DEFAULT",
     "ip": "",
     "port": 9100,
     "usb_printer_name": "ZIJIANG LABEL",
     "printer_model": "ZJIANG",
-    "last_updated": "2026-02-12 18:46:32",
+    "last_updated": "2026-02-24 16:31:23",
     "orders_excel_last_path": "T:/Planning/Import Orders from Power BI"
 }

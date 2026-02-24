@@ -69,13 +69,15 @@ class LabelPrintWindow(tk.Toplevel):
         main_frame = ttk.Frame(self, padding="20")
         main_frame.pack(fill='both', expand=True)
         
-        # Selezione ordine
+        # Selezione ordine (editabile con filtro)
         ttk.Label(main_frame, text=self.lang.get('order_label', 'Ordine') + ' *').grid(
             row=0, column=0, sticky='w', padx=5, pady=5)
         
-        self.order_combo = ttk.Combobox(main_frame, state='readonly', width=40)
+        self.order_combo = ttk.Combobox(main_frame, width=40)
         self.order_combo.grid(row=0, column=1, padx=5, pady=5, sticky='ew')
         self.order_combo.bind('<<ComboboxSelected>>', self._on_order_selected)
+        self.order_combo.bind('<Return>', self._on_order_confirm)
+        self.order_combo.bind('<FocusOut>', self._on_order_filter)
         
         # Frame per informazioni ordine
         info_frame = ttk.LabelFrame(main_frame, text=self.lang.get('order_info', 'Informazioni Ordine'), 
@@ -121,6 +123,8 @@ class LabelPrintWindow(tk.Toplevel):
         self.component_code_var = tk.StringVar()
         self.component_code_entry = ttk.Entry(main_frame, textvariable=self.component_code_var, width=40)
         self.component_code_entry.grid(row=3, column=1, padx=5, pady=5, sticky='ew')
+        # Premendo Invio nel campo Codice Componente si avvia la stampa
+        self.component_code_entry.bind('<Return>', lambda e: self._on_print())
         
         main_frame.columnconfigure(1, weight=1)
         
@@ -161,6 +165,7 @@ class LabelPrintWindow(tk.Toplevel):
                 self.orders_dict[order_number] = order_id
                 order_list.append(order_number)
             
+            self._all_orders = order_list
             self.order_combo['values'] = order_list
             
             if order_list:
@@ -184,13 +189,36 @@ class LabelPrintWindow(tk.Toplevel):
     def _on_order_selected(self, event=None):
         """Gestisce la selezione di un ordine."""
         order_number = self.order_combo.get()
-        if order_number:
+        if order_number and order_number in self.orders_dict:
             self.selected_order_id = self.orders_dict.get(order_number)
             self.selected_order_number = order_number
             logger.info(f"Ordine selezionato: {order_number} (ID: {self.selected_order_id})")
-            
+            # Chiude il dropdown dopo selezione
+            self.order_combo.set(order_number)
             # Carica i dati dell'ordine
             self._load_order_data()
+
+    def _on_order_filter(self, event=None):
+        """Filtra la lista ordini (attivato su FocusOut o Return)."""
+        typed = self.order_combo.get().strip().upper()
+        all_orders = getattr(self, '_all_orders', [])
+        if not typed:
+            self.order_combo['values'] = all_orders
+        else:
+            filtered = [o for o in all_orders if typed in str(o).upper()]
+            self.order_combo['values'] = filtered
+
+    def _on_order_confirm(self, event=None):
+        """Conferma la selezione quando si preme Invio nel campo ordine."""
+        self._on_order_filter()
+        order_number = self.order_combo.get().strip()
+        if order_number in self.orders_dict:
+            self._on_order_selected()
+        elif self.order_combo['values']:
+            # Se c'è un solo risultato filtrato, selezionalo automaticamente
+            if len(self.order_combo['values']) == 1:
+                self.order_combo.set(self.order_combo['values'][0])
+                self._on_order_selected()
     
     def _on_phase_selected(self, event=None):
         """Gestisce la selezione di una fase."""
@@ -471,6 +499,9 @@ class LabelPrintWindow(tk.Toplevel):
             )
             logger.info(f"🖱️ GUI: Etichetta stampata - Ordine: {self.selected_order_number}, "
                        f"Componente: {component_code}, Fase: {selected_phase}")
+            # Reset campo e torna al Codice Componente per il prossimo inserimento
+            self.component_code_var.set('')
+            self.component_code_entry.focus_set()
         else:
             logger.error(f"🖱️ GUI: ❌ Errore durante la stampa: {error_msg}")
             messagebox.showerror(

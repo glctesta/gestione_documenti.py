@@ -323,7 +323,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.5.0'  # Versione aggiornata
+APP_VERSION = '2.3.5.1'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -12026,7 +12026,7 @@ class App(tk.Tk):
             # REGOLA 2 — Controlla che almeno una locazione abbia AskForRefill = 1
             try:
                 sql_ask = """
-                SELECT ISNULL(MAX(AskForRefill), 0)
+                SELECT ISNULL(MAX(CAST(AskForRefill AS INT)), 0)
                 FROM [knb].[KanBanLocations]
                 """
                 self.db.cursor.execute(sql_ask)
@@ -13264,13 +13264,132 @@ class App(tk.Tk):
         except Exception as e:
             logger.error(f"Error updating task status: {e}")
 
+    # Percorso del file JSON locale che sovrascrive il setting DB per lo slideshow
+    SLIDESHOW_CONFIG_FILE = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "slideshow_config.json"
+    )
+    # Directory di default per le immagini slideshow
+    SLIDESHOW_DEFAULT_FOLDER = r"T:\Traceability_RESET_Services\Pict\AlideShows"
+
+    def _get_slideshow_lang_text(self, key: str) -> str:
+        """
+        Ritorna la traduzione per la lingua locale (self.lang se disponibile,
+        altrimenti legge lang.conf; default rumeno).
+        """
+        # Dizionario inline per i messaggi slideshow (usato se self.lang non è ancora pronto)
+        _INLINE = {
+            'slideshow_path_title': {
+                'ro': 'Cale imagini Slideshow',
+                'it': 'Percorso Immagini Slideshow',
+                'en': 'Slideshow Images Path',
+                'de': 'Slideshow Bilderpfad',
+                'sv': 'Bildväg för Slideshow',
+            },
+            'slideshow_path_message': {
+                'ro': 'Calea imaginilor pentru slideshow nu este configurată sau nu a fost găsită.\n\nSelectați folderul care conține imaginile de afișat.',
+                'it': 'Il percorso delle immagini per lo slideshow non è configurato o non è stato trovato.\n\nSeleziona la cartella contenente le immagini da visualizzare.',
+                'en': 'The slideshow image path is not configured or could not be found.\n\nPlease select the folder containing the images to display.',
+                'de': 'Der Slideshow-Bildpfad ist nicht konfiguriert oder wurde nicht gefunden.\n\nBitte wählen Sie den Ordner mit den anzuzeigenden Bildern.',
+                'sv': 'Sökvägen för bildspelsbilder är inte konfigurerad eller hittades inte.\n\nVälj mappen som innehåller bilderna att visa.',
+            },
+            'slideshow_select_folder': {
+                'ro': 'Selectați folderul de imagini pentru slideshow',
+                'it': 'Seleziona cartella immagini slideshow',
+                'en': 'Select slideshow images folder',
+                'de': 'Slideshow-Bilderordner auswählen',
+                'sv': 'Välj mapp för bildspelsbilder',
+            },
+            'slideshow_no_folder': {
+                'ro': 'Niciun folder de imagini selectat.',
+                'it': 'Nessuna cartella immagini selezionata.',
+                'en': 'No image folder selected.',
+                'de': 'Kein Bilderordner ausgewählt.',
+                'sv': 'Ingen bildmapp vald.',
+            },
+        }
+        # Prova prima self.lang (LanguageManager già inizializzato)
+        try:
+            translated = self.lang.get(key)
+            if translated and translated != key:
+                return translated
+        except Exception:
+            pass
+        # Fallback: legge lang.conf
+        lang_code = 'ro'
+        try:
+            lang_conf = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lang.conf')
+            if os.path.isfile(lang_conf):
+                with open(lang_conf, 'r', encoding='utf-8') as f:
+                    lang_code = f.read().strip().lower() or 'ro'
+        except Exception:
+            pass
+        translations = _INLINE.get(key, {})
+        return translations.get(lang_code, translations.get('ro', key))
+
+    def _get_slideshow_folder(self) -> str:
+        """
+        Ritorna il percorso valido della cartella immagini slideshow.
+        Priorità:
+          1. Setting DB 'SlideshowFolderPath'
+          2. JSON locale slideshow_config.json
+          3. Directory di default SLIDESHOW_DEFAULT_FOLDER
+          4. Dialog di selezione cartella (con salvataggio nel JSON)
+        Ritorna stringa vuota se nessun percorso valido viene trovato.
+        """
+        # 1. Prova dal DB
+        try:
+            db_path = self.db.fetch_setting('SlideshowFolderPath')
+            if db_path and os.path.isdir(db_path):
+                return db_path
+        except Exception:
+            pass
+
+        # 2. Prova dal JSON locale
+        config_file = self.__class__.SLIDESHOW_CONFIG_FILE
+        if os.path.isfile(config_file):
+            try:
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                saved = data.get('slideshow_folder', '')
+                if saved and os.path.isdir(saved):
+                    logger.info(f"Slideshow: percorso letto da JSON locale: {saved}")
+                    return saved
+            except Exception as e:
+                logger.warning(f"Slideshow: impossibile leggere slideshow_config.json: {e}")
+
+        # 3. Prova la directory di default
+        default_folder = self.__class__.SLIDESHOW_DEFAULT_FOLDER
+        if os.path.isdir(default_folder):
+            logger.info(f"Slideshow: uso directory di default: {default_folder}")
+            return default_folder
+
+        # 4. Chiede all'utente tramite dialog (messaggi nella lingua locale)
+        messagebox.showinfo(
+            self._get_slideshow_lang_text('slideshow_path_title'),
+            self._get_slideshow_lang_text('slideshow_path_message')
+        )
+        chosen = filedialog.askdirectory(
+            title=self._get_slideshow_lang_text('slideshow_select_folder')
+        )
+        if chosen and os.path.isdir(chosen):
+            # Salva la scelta nel JSON locale per i prossimi avvii
+            try:
+                with open(config_file, 'w', encoding='utf-8') as f:
+                    json.dump({'slideshow_folder': chosen}, f, indent=2)
+                logger.info(f"Slideshow: percorso salvato in JSON locale: {chosen}")
+            except Exception as e:
+                logger.warning(f"Slideshow: impossibile salvare slideshow_config.json: {e}")
+            return chosen
+
+        return ""
+
     def _setup_slideshow(self):
         """Legge le impostazioni e avvia il ciclo dello slideshow."""
-        folder_path = self.db.fetch_setting('SlideshowFolderPath')
-        interval_min_str = self.db.fetch_setting('SlideshowIntervalMinutes')
+        folder_path = self._get_slideshow_folder()
+        interval_min_str = self.db.fetch_setting('SlideshowIntervalMinutes') if self.db.conn else None
 
         if not folder_path or not os.path.isdir(folder_path):
-            self.slideshow_label.config(text="Percorso immagini non configurato o non valido.", foreground="white")
+            self.slideshow_label.config(text=self._get_slideshow_lang_text('slideshow_no_folder'), foreground="white")
             return
 
         try:
@@ -15118,6 +15237,12 @@ class App(tk.Tk):
             command=self._open_tickets
         )
 
+        # Voce Reset Login
+        self.help_menu.add_command(
+            label=self.lang.get('menu_reset_login', 'Reset Login'),
+            command=self._reset_simple_login_cache
+        )
+
         self.help_menu.add_separator()
         about_menu_label = f"{self.lang.get('menu_about')} {APP_VERSION}"
         self.help_menu.add_command(label=about_menu_label, command=self._show_about)
@@ -16432,6 +16557,37 @@ class App(tk.Tk):
             ticket_gui.open_ticket_window(self, self.db, self.lang, user, error_info)
         except Exception as e:
             logger.error(f"Errore apertura finestra ticket: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                str(e),
+                parent=self
+            )
+
+    def _reset_simple_login_cache(self):
+        """Elimina entrambe le cache di autenticazione (simple login e authorized action),
+        forzando un nuovo login alla prossima operazione protetta."""
+        try:
+            # Cache _execute_simple_login
+            if self._simple_login_cache_file.exists():
+                self._simple_login_cache_file.unlink()
+                logger.info("Cache simple login eliminata (reset manuale).")
+            else:
+                logger.info("Cache simple login già vuota.")
+
+            # Cache _execute_authorized_action
+            if self._authorized_action_cache_file.exists():
+                self._authorized_action_cache_file.unlink()
+                logger.info("Cache authorized action eliminata (reset manuale).")
+            else:
+                logger.info("Cache authorized action già vuota.")
+
+            # messagebox.showinfo(
+            #     self.lang.get('reset_login_title', 'Reset Login'),
+            #     self.lang.get('reset_login_msg', 'Login reimpostato. Al prossimo accesso verrà richiesto un nuovo login.'),
+            #     parent=self
+            # )
+        except Exception as e:
+            logger.error(f"Errore reset cache login: {e}")
             messagebox.showerror(
                 self.lang.get('error', 'Errore'),
                 str(e),

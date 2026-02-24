@@ -139,7 +139,7 @@ class OvertimeManager:
                 if subordinates:
                     placeholders = ", ".join(["?"] * len(subordinates))
                     subordinate_filter = f"AND h.EmployeeHireHistoryId IN ({placeholders})"
-                    filter_params = list(subordinates) + [first_day, last_day]
+                    filter_params = [first_day, last_day] + list(subordinates)
                 else:
                     # Nessun subalterno: ritorna lista vuota (non e' admin)
                     logger.info(f"Nessun subalterno trovato per ID {manager_hire_history_id}, lista vuota")
