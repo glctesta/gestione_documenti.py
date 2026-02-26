@@ -16044,23 +16044,29 @@ class App(tk.Tk):
 
     def _open_submissions_management(self, user_id=None):
         """Apre la finestra di gestione segnalazioni"""
-        # ðŸ” DEBUG: Stampa tutti gli attributi che contengono "user" o "employee"
-        print("\n=== ATTRIBUTI DISPONIBILI ===")
-        for attr in dir(self):
-            if not attr.startswith('_'):  # Escludi attributi privati
-                if 'user' in attr.lower() or 'employee' in attr.lower() or 'logged' in attr.lower():
-                    try:
-                        value = getattr(self, attr)
-                        if not callable(value):  # Escludi metodi
-                            print(f"  {attr} = {value}")
-                    except:
-                        pass
-        print("=============================\n")
         import submissions_management_gui
-        user_id = getattr(self, '_temp_authorized_user_id', None)
+
+        # Costruisci il dict current_user che SubmissionsManagementWindow si aspetta
+        emp_hh_id = getattr(self, 'last_authorized_user_id', None)
+        user_name = getattr(self, 'last_authenticated_user_name', None) or str(
+            getattr(self, '_temp_authorized_user_id', ''))
+
+        if not emp_hh_id:
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                self.lang.get('no_user_id', 'ID utente non disponibile'),
+                parent=self
+            )
+            return
+
+        current_user = {
+            'employee_hire_history_id': emp_hh_id,
+            'username': user_name,
+            'email': ''  # verrà usato per email di conferma, opzionale
+        }
 
         submissions_management_gui.SubmissionsManagementWindow(
-            self, self.db, self.lang, user_id
+            self, self.db, self.lang, current_user
         )
 
     def open_coating_types_with_login(self):
