@@ -323,7 +323,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.5.1'  # Versione aggiornata
+APP_VERSION = '2.3.5.3'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -2158,22 +2158,31 @@ class Database:
               WHERE IdComponent IN ({placeholders})
               GROUP BY IdComponent
               """
-        with self._lock:
-            try:
-                if not self._ensure_connection(): return None
-                self.cursor.execute(sql, component_ids)
-                rows = self.cursor.fetchall()
-                return {
-                    int(row[0]): {
-                        'max_qty': int(row[1]),
-                        'record_id': int(row[2])
-                    } for row in rows
-                }
-
-            except pyodbc.Error as e:
-                self.last_error_details = str(e)
-                logger.error(f"Error in fetch_max_single_load_by_component: {e}")
+        cur = None
+        try:
+            if not self._ensure_connection():
+                logger.error("fetch_max_single_load_by_component: connessione non disponibile")
                 return None
+            cur = self.conn.cursor()
+            cur.execute(sql, list(component_ids))
+            rows = cur.fetchall()
+            return {
+                int(row[0]): {
+                    'max_qty': int(row[1]),
+                    'record_id': int(row[2])
+                } for row in rows
+            }
+
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            logger.error(f"Error in fetch_max_single_load_by_component: {e}")
+            return None
+        finally:
+            try:
+                if cur:
+                    cur.close()
+            except Exception:
+                pass
 
     def fetch_components_master(self, component_ids):
         """
@@ -3401,7 +3410,7 @@ class Database:
         Carica la combo 'Motivo' da dbo.ScrapResons (nome tabella fornito).
         """
         query = """
-            SELECT ScrapReasonId, [Reason]
+            SELECT ScrapReasonId, Reason as ReasonCode, Reason as ReasonDescription, NoReference
             FROM Traceability_RS.dbo.ScrapResons
             ORDER BY [Reason];
         """
@@ -3411,6 +3420,7 @@ class Database:
             return cur.fetchall()
         except Exception as e:
             self.last_error_details = str(e)
+            logger.error(f"Errore fetch causali scrap: {e}")
             return []
         finally:
             try:
@@ -16650,7 +16660,8 @@ class App(tk.Tk):
         from overtime import open_overtime_request_window
         self._execute_authorized_action(
             menu_translation_key='overtime_requests',
-            action_callback=lambda: open_overtime_request_window(self, self.db, self.lang, self.last_authenticated_user_name, getattr(self, 'last_authorized_user_id', 0))
+            action_callback=lambda: open_overtime_request_window(self, self.db, self.lang, 
+            self.last_authenticated_user_name, getattr(self, 'last_authorized_user_id', 0))
         )
     
     def open_overtime_approval_with_auth(self):

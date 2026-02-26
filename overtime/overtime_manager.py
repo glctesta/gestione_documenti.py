@@ -70,33 +70,62 @@ class OvertimeManager:
             set: Set di EmployeeHireHistoryId dei subalterni, vuoto se nessuno
         """
         query = """
-        WITH Manager (SubCdcId, FunctionCode, MainCdcId) AS
-        (
-            SELECT cs.SubCdcId, f.FunctionCode, c.CdcId
-            FROM employee.dbo.EmployeeCdcStories cs
-            INNER JOIN employee.dbo.CdcSub c
-                ON c.SubCdcId = cs.SubCdcId AND cs.DateOut IS NULL
-            INNER JOIN Employee.dbo.Functions F ON cs.FunctionId = F.FunctionId
-            WHERE cs.EmployeeHireHistoryId = ?
-              AND cs.DateOut IS NULL
-        )
-        SELECT h.EmployeeHireHistoryId
-        FROM employee.dbo.EmployeeHireHistory h
-        INNER JOIN employee.dbo.EmployeeCdcStories css
-            ON h.EmployeeHireHistoryId = css.EmployeeHireHistoryId
-            AND css.DateOut IS NULL
-            AND h.EndWorkDate IS NULL
-            AND h.employeerid = 2
-        INNER JOIN employee.dbo.Employees e ON h.EmployeeId = e.EmployeeId
-        INNER JOIN employee.dbo.CdcSub s ON s.SubCdcId = css.SubCdcId
-        INNER JOIN employee.dbo.Functions f ON f.FunctionId = css.FunctionId
-        INNER JOIN employee.dbo.CostCenters c ON c.CdcId = s.CdcId
-        INNER JOIN Manager m ON m.MainCdcId = s.CdcId AND m.FunctionCode > f.FunctionCode
-        WHERE f.FunctionCode < m.FunctionCode
+       WITH Manager (SubCdcId, FunctionCode, MainCdcId) AS
+            (
+                SELECT cs.SubCdcId, f.FunctionCode, c.CdcId
+                FROM employee.dbo.EmployeeCdcStories cs
+                INNER JOIN employee.dbo.CdcSub c
+                    ON c.SubCdcId = cs.SubCdcId
+                    AND cs.DateOut IS NULL
+                INNER JOIN Employee.dbo.Functions f
+                    ON cs.FunctionId = f.FunctionId
+                WHERE cs.EmployeeHireHistoryId = ?
+                AND cs.DateOut IS NULL
+            )
+            SELECT
+                h.EmployeeHireHistoryId    
+            FROM employee.dbo.EmployeeHireHistory h
+            INNER JOIN employee.dbo.EmployeeCdcStories css
+                ON h.EmployeeHireHistoryId = css.EmployeeHireHistoryId
+                AND css.DateOut IS NULL
+                AND h.EndWorkDate IS NULL
+                AND h.employeerid = 2
+            INNER JOIN employee.dbo.Employees e
+                ON h.EmployeeId = e.EmployeeId
+            INNER JOIN employee.dbo.CdcSub s
+                ON s.SubCdcId = css.SubCdcId
+            INNER JOIN employee.dbo.Functions f
+                ON f.FunctionId = css.FunctionId
+            INNER JOIN employee.dbo.CostCenters c
+                ON c.CdcId = s.CdcId
+            LEFT JOIN Manager m
+                ON m.MainCdcId = s.CdcId
+            AND m.FunctionCode > f.FunctionCode
+            WHERE
+                (
+                    -- caso normale: filtrato per struttura del manager (2086)
+                    h.EmployeeHireHistoryId <> ?
+                    AND m.MainCdcId IS NOT NULL
+                    AND f.FunctionCode < m.FunctionCode
+                )
+                OR
+                (
+                    -- caso speciale: 100 vede tutti i dipendenti
+                    EXISTS (
+                        SELECT 1
+                        FROM employee.dbo.EmployeeCdcStories ecs
+                        INNER JOIN employee.dbo.Functions fn
+                            ON ecs.FunctionId = fn.FunctionId
+                        WHERE ecs.EmployeeHireHistoryId = ?
+                        AND ecs.DateOut IS NULL
+                        AND fn.FunctionCode = 100
+                    )
+                )
+                ORDER BY UPPER(e.employeesurname + ' ' + e.EmployeeName);
         """
         try:
             cursor = self.db.conn.cursor()
-            cursor.execute(query, (manager_hire_history_id,))
+            cursor.execute(query, (manager_hire_history_id, manager_hire_history_id, manager_hire_history_id))
             rows = cursor.fetchall()
             cursor.close()
             return {row[0] for row in rows if row[0] is not None}
@@ -106,7 +135,8 @@ class OvertimeManager:
 
     def fetch_eligible_employees(self, month=None, year=None, manager_hire_history_id=None):
         """
-        Recupera dipendenti eligibili per straordinario (non hanno superato ore massime).
+        Recupera TUTTI i dipendenti subalterni con le ore mensili attuali.
+        Include un flag 'Exceeded' per quelli che hanno superato il limite.
         Se manager_hire_history_id e' fornito e non e' admin, filtra per subalterni.
 
         Args:
@@ -115,7 +145,7 @@ class OvertimeManager:
             manager_hire_history_id: EmployeeHireHistoryId del responsabile (per filtraggio)
 
         Returns:
-            List di dipendenti con (EmployeeHireHistoryId, Nome, Cognome, OreMensili)
+            List di tuple: (EmployeeHireHistoryId, Cognome, Nome, OreMensili, MaxOre, Exceeded)
         """
         if month is None:
             month = datetime.now().month
@@ -136,6 +166,7 @@ class OvertimeManager:
         if manager_hire_history_id:
             if not self.is_manager_admin(manager_hire_history_id):
                 subordinates = self.fetch_subordinates(manager_hire_history_id)
+                logger.info(f"Subalterni trovati per manager {manager_hire_history_id}: {subordinates}")
                 if subordinates:
                     placeholders = ", ".join(["?"] * len(subordinates))
                     subordinate_filter = f"AND h.EmployeeHireHistoryId IN ({placeholders})"
@@ -144,13 +175,21 @@ class OvertimeManager:
                     # Nessun subalterno: ritorna lista vuota (non e' admin)
                     logger.info(f"Nessun subalterno trovato per ID {manager_hire_history_id}, lista vuota")
                     return []
+            else:
+                logger.info(f"Manager {manager_hire_history_id} è admin, nessun filtro subalterni")
 
         query = f"""
         SELECT
             h.EmployeeHireHistoryId,
             e.EmployeeSurname,
             e.EmployeeName,
-            ISNULL(SUM(DATEDIFF(HOUR, s.DateStart, s.DateEnd)), 0) AS MonthlyHours
+            ISNULL(SUM(DATEDIFF(HOUR, s.DateStart, s.DateEnd)), 0) AS MonthlyHours,
+            ISNULL((SELECT MaxHourPerMonth FROM Employee.dbo.OverTimeRules WHERE DateOut IS NULL), 999) AS MaxHourPerMonth,
+            CASE
+                WHEN ISNULL(SUM(DATEDIFF(HOUR, s.DateStart, s.DateEnd)), 0) >=
+                     ISNULL((SELECT MaxHourPerMonth FROM Employee.dbo.OverTimeRules WHERE DateOut IS NULL), 999)
+                THEN 1 ELSE 0
+            END AS Exceeded
         FROM Employee.dbo.Employees e
         INNER JOIN Employee.dbo.EmployeeHireHistory h
             ON e.EmployeeId = h.EmployeeId
@@ -163,16 +202,19 @@ class OvertimeManager:
             AND NOT e.employeeName = 'ANONYMOUS'
             {subordinate_filter}
         GROUP BY h.EmployeeHireHistoryId, e.EmployeeSurname, e.EmployeeName
-        HAVING ISNULL(SUM(DATEDIFF(HOUR, s.DateStart, s.DateEnd)), 0) <
-            (SELECT MaxHourPerMonth FROM Employee.dbo.OverTimeRules WHERE DateOut IS NULL)
         ORDER BY e.EmployeeSurname, e.EmployeeName
         """
 
         try:
             cursor = self.db.conn.cursor()
+            logger.debug(f"fetch_eligible_employees: params={filter_params}")
             cursor.execute(query, filter_params)
             results = cursor.fetchall()
             cursor.close()
+            logger.info(f"fetch_eligible_employees: {len(results)} dipendenti trovati")
+            if results:
+                exceeded_count = sum(1 for row in results if row[5] == 1)
+                logger.info(f"fetch_eligible_employees: {exceeded_count} dipendenti hanno superato il limite ore")
             return results
         except Exception as e:
             logger.error(f"Errore recupero dipendenti eligibili: {e}", exc_info=True)
@@ -289,7 +331,7 @@ class OvertimeManager:
         if end_datetime <= start_datetime:
             return False, "Data/ora fine deve essere successiva a data/ora inizio"
         
-        # Validazione 2: Ore massime mensili
+        # Validazione 2: Ore massime mensili (solo log informativo, decisione in fase approvazione)
         hours_requested = (end_datetime - start_datetime).total_seconds() / 3600
         current_hours = self.get_employee_monthly_hours(
             employee_id, 
@@ -297,12 +339,16 @@ class OvertimeManager:
             start_datetime.year
         )
         
-        max_hours_query = "SELECT MaxHoursPerMonth FROM ResetServices.dbo.OvertimeRules WHERE DateOut IS NULL"
+        max_hours_query = "SELECT MaxHourPerMonth FROM Employee.dbo.OverTimeRules WHERE DateOut IS NULL"
         max_hours_result = self.db.fetch_one(max_hours_query)
         max_hours = max_hours_result[0] if max_hours_result else 32
         
         if current_hours + hours_requested > max_hours:
-            return False, f"Superamento ore massime mensili ({max_hours}h). Ore attuali: {current_hours}h, richieste: {hours_requested}h"
+            logger.warning(
+                f"Dipendente {employee_id}: superamento ore massime mensili "
+                f"({max_hours}h). Ore attuali: {current_hours}h, richieste: {hours_requested}h. "
+                f"Decisione demandata alla fase di approvazione."
+            )
         
         # Validazione 3: Verifica sovrapposizioni
         overlap_query = """
@@ -1555,7 +1601,7 @@ class OvertimeManager:
             ),
             CTE_HireHistory AS (
                 SELECT
-                    h.EmployeeHireHistoryId AS EmployeeHireId,
+                    h.EmployeeHireHistoryId,
                     ee.EmployeeNID COLLATE DATABASE_DEFAULT AS UniqueID
                 FROM employee.dbo.employees ee
                 INNER JOIN employee.dbo.employeehirehistory h

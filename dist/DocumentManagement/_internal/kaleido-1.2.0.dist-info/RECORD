@@ -1,5 +1,5 @@
-../../Scripts/kaleido_get_chrome.exe,sha256=p1iI61k20gI115riardPm72HgEM-0igP7MjbxpINWlI,108414
-../../Scripts/kaleido_mocker.exe,sha256=bJECchSMpU2dVPYf5JF1KinvSzMiaWysJlHfhr-GbgE,108395
+../../Scripts/kaleido_get_chrome.exe,sha256=_hw-P3B6O8HtYpy6fgIzSKDlMo7YTq49TelRjDhtOw0,108449
+../../Scripts/kaleido_mocker.exe,sha256=5O2x1tt3oHPwxbEmhtft4jnJS5J3p5u30ADXitP4itw,108430
 docs/__pycache__/examples_script.cpython-311.pyc,,
 docs/examples_script.py,sha256=iZnKDJsRpqGiBaGv8uCms20JLA8-trTpMQELvwzYnP4,2416
 integration_tests/dates/__init__.py,sha256=3orpo89fgLjnihQ3wuy_xftE9yKWOWBRjoVopOe2j2M,81

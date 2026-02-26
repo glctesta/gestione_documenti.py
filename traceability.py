@@ -1,6 +1,45 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
+import logging
+
+logger = logging.getLogger('TraceabilityRS')
+
+
+def _attach_combo_tooltip(combo: ttk.Combobox) -> None:
+    """Mostra un tooltip con il testo completo quando il mouse è sopra il combobox.
+    NON ribinda <<ComboboxSelected>> per non interferire con altri handler già registrati.
+    """
+    tip_win: list = [None]  # mutabile per closure
+
+    def _show(event=None):
+        text = combo.get()
+        if not text:
+            return
+        if tip_win[0] is not None:
+            return
+        x = combo.winfo_rootx() + 10
+        y = combo.winfo_rooty() + combo.winfo_height() + 4
+        tw = tk.Toplevel(combo)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        lbl = tk.Label(
+            tw, text=text, justify="left",
+            background="#ffffe0", relief="solid", borderwidth=1,
+            font=("TkDefaultFont", 9), wraplength=700, padx=4, pady=2
+        )
+        lbl.pack()
+        tip_win[0] = tw
+
+    def _hide(event=None):
+        if tip_win[0] is not None:
+            tip_win[0].destroy()
+            tip_win[0] = None
+
+    # Solo Enter/Leave — NON <<ComboboxSelected>> per non sovrascrivere handler esistenti
+    combo.bind("<Enter>", _show, add=True)
+    combo.bind("<Leave>", _hide, add=True)
+
 
 class TraceabilityManager:
     def __init__(self, parent, db, lang):
@@ -741,6 +780,7 @@ class TraceabilityManager:
 
     def open_manage_links(self, user_name=None):
         """Apre la finestra per gestire i collegamenti tra prodotti"""
+        logger.info("[manage_links] Apertura finestra gestione collegamenti. user_name=%r", user_name)
         window = tk.Toplevel(self.parent)
         window.title(self.lang.get('manage_links_title', "Gestione Collegamenti"))
         window.geometry("1200x800")
@@ -769,9 +809,10 @@ class TraceabilityManager:
         ttk.Label(filter_frame, text=self.lang.get('select_client', "Seleziona Cliente:")).pack(side=tk.LEFT, padx=(0, 5))
 
         self.client_var = tk.StringVar()
-        self.client_combo = ttk.Combobox(filter_frame, textvariable=self.client_var, width=30, state="readonly")
+        self.client_combo = ttk.Combobox(filter_frame, textvariable=self.client_var, width=60, state="readonly")
         self.client_combo.pack(side=tk.LEFT, padx=(0, 10))
         self.client_combo.bind('<<ComboboxSelected>>', self._on_client_selected)
+        _attach_combo_tooltip(self.client_combo)
 
         # Pulsante per caricare tutti i collegamenti
         ttk.Button(filter_frame, text=self.lang.get('show_all', "Mostra Tutti"),
@@ -787,16 +828,18 @@ class TraceabilityManager:
                                                                                            pady=5)
         self.final_product_var = tk.StringVar()
         self.final_product_combo = ttk.Combobox(add_frame, textvariable=self.final_product_var,
-                                                width=30, state="readonly")
+                                                width=60, state="readonly")
         self.final_product_combo.grid(row=0, column=1, sticky=tk.W, pady=5, padx=(10, 0))
+        _attach_combo_tooltip(self.final_product_combo)
 
         # Semilavorati
         ttk.Label(add_frame, text=self.lang.get('semi_product', "Semilavorato:")).grid(row=0, column=2, sticky=tk.W,
                                                                                        pady=5, padx=(20, 0))
         self.semi_product_var = tk.StringVar()
         self.semi_product_combo = ttk.Combobox(add_frame, textvariable=self.semi_product_var,
-                                               width=30, state="readonly")
+                                               width=60, state="readonly")
         self.semi_product_combo.grid(row=0, column=3, sticky=tk.W, pady=5, padx=(10, 0))
+        _attach_combo_tooltip(self.semi_product_combo)
 
         # Pulsante aggiungi
         ttk.Button(add_frame, text=self.lang.get('add_link', "Aggiungi Collegamento"),
@@ -841,9 +884,11 @@ class TraceabilityManager:
 
     def _load_clients(self):
         """Carica i clienti nel combobox"""
+        logger.debug("[manage_links] Caricamento clienti per filtro...")
         clients = self.db.fetch_final_clients_for_linking()
         client_options = [f"{c.FinalClientName} ({c.AcronimForCode})" for c in clients]
         self.client_combo['values'] = client_options
+        logger.info("[manage_links] Clienti caricati: %d", len(client_options))
 
         # Dizionario per mapping clienti
         self.client_dict = {}
@@ -853,6 +898,7 @@ class TraceabilityManager:
     def _on_client_selected(self, event):
         """Quando viene selezionato un cliente"""
         selected_client = self.client_var.get()
+        logger.info("[manage_links] Cliente selezionato: %r", selected_client)
         if selected_client:
             client_id = self.client_dict[selected_client]
 
@@ -870,6 +916,7 @@ class TraceabilityManager:
                 if product_id is not None:
                     self.final_product_dict[display_name] = product_id
 
+            logger.info("[manage_links] Prodotti finali caricati per client_id=%r: %d", client_id, len(final_options))
             self.final_product_combo['values'] = final_options
 
             # Carica semilavorati per questo cliente
@@ -886,6 +933,7 @@ class TraceabilityManager:
                 if product_id is not None:
                     self.semi_product_dict[display_name] = product_id
 
+            logger.info("[manage_links] Semilavorati caricati per client_id=%r: %d", client_id, len(semi_options))
             self.semi_product_combo['values'] = semi_options
 
             # Carica i collegamenti per questo cliente
@@ -893,12 +941,16 @@ class TraceabilityManager:
 
     def _load_all_links(self):
         """Carica tutti i collegamenti"""
+        logger.debug("[manage_links] Caricamento tutti i collegamenti...")
         links = self.db.fetch_existing_links()
+        logger.info("[manage_links] Link totali recuperati: %d", len(links) if links else 0)
         self._populate_links_tree(links)
 
     def _load_links_for_client(self, client_id):
         """Carica i collegamenti per un cliente specifico"""
+        logger.debug("[manage_links] Caricamento link per client_id=%r", client_id)
         links = self.db.fetch_existing_links(client_id=client_id)
+        logger.info("[manage_links] Link per client_id=%r: %d", client_id, len(links) if links else 0)
         self._populate_links_tree(links)
 
     def _populate_links_tree(self, links):
@@ -933,6 +985,7 @@ class TraceabilityManager:
         """Aggiunge un nuovo collegamento"""
         final_product_text = self.final_product_var.get()
         semi_product_text = self.semi_product_var.get()
+        logger.info("[manage_links] Aggiungi link: finale=%r, semi=%r", final_product_text, semi_product_text)
 
         if not final_product_text or not semi_product_text:
             messagebox.showwarning(self.lang.get('warning', "Attenzione"),
@@ -948,6 +1001,10 @@ class TraceabilityManager:
             return
 
         success, message = self.db.add_product_link(final_product_id, semi_product_id)
+        if success:
+            logger.info("[manage_links] Link aggiunto: final_id=%r, semi_id=%r", final_product_id, semi_product_id)
+        else:
+            logger.warning("[manage_links] Errore aggiunta link: %s", message)
 
         if success:
             messagebox.showinfo("Successo", message)
@@ -967,10 +1024,15 @@ class TraceabilityManager:
 
     def _delete_link(self, link_id):
         """Elimina un collegamento"""
+        logger.info("[manage_links] Richiesta eliminazione link_id=%r", link_id)
         if messagebox.askyesno(self.lang.get('confirmation', "Conferma"),
                                self.lang.get('confirm_delete_link',
                                              "Sei sicuro di voler eliminare questo collegamento?")):
             success, message = self.db.delete_product_link(link_id)
+            if success:
+                logger.info("[manage_links] Link eliminato: link_id=%r", link_id)
+            else:
+                logger.warning("[manage_links] Errore eliminazione link_id=%r: %s", link_id, message)
 
             if success:
                 messagebox.showinfo(self.lang.get('success', "Successo"), message)

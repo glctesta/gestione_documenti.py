@@ -48,6 +48,8 @@ class OvertimeRequestWindow(tk.Toplevel):
         self.orders_data = {}     # {display_text: order_id}
         self.selected_employees = []  # Lista di dict con dati dipendenti selezionati
         self.all_employee_values = []
+        self.exceeded_employees = set()  # Nomi combo di dipendenti con ore eccedute
+        self.employee_hours = {}  # {combo_name: (monthly_hours, max_hours)}
         
         # Setup finestra
         self.title(self.lang.get('overtime_request_title', 'Richiesta Straordinario'))
@@ -87,6 +89,18 @@ class OvertimeRequestWindow(tk.Toplevel):
         self.employee_combo.bind('<FocusOut>', self._filter_employee_combo)
         self.employee_combo.bind('<FocusIn>', self._reset_employee_filter)
         self.employee_combo.bind('<<ComboboxSelected>>', self._sync_employee_display_name)
+
+        # Label di avvertimento ore eccedute (nascosto inizialmente)
+        self.exceeded_label = tk.Label(
+            selection_frame,
+            text='',
+            foreground='red',
+            font=('TkDefaultFont', 9, 'italic'),
+            wraplength=600,
+            justify=tk.LEFT,
+            anchor=tk.W
+        )
+        self.exceeded_label.grid(row=0, column=2, sticky=tk.W, padx=10, pady=5)
         
         # Riga 2: Motivo
         ttk.Label(selection_frame, text=self.lang.get('reason', 'Motivo:')).grid(
@@ -230,6 +244,9 @@ class OvertimeRequestWindow(tk.Toplevel):
         
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Tag per righe con ore eccedute (rosso)
+        self.tree.tag_configure('exceeded', foreground='red', font=('TkDefaultFont', 9, 'bold'))
         
         # Pulsante rimuovi
         ttk.Button(
@@ -257,16 +274,33 @@ class OvertimeRequestWindow(tk.Toplevel):
     def _load_initial_data(self):
         """Carica dati iniziali (dipendenti, motivi, ordini)."""
         # Carica dipendenti
-        logger.info("Caricamento dipendenti eligibili...")
+        logger.info("Caricamento dipendenti...")
         employees = self.manager.fetch_eligible_employees(manager_hire_history_id=self.user_id)
         logger.info(f"Dipendenti trovati: {len(employees) if employees else 0}")
         if employees:
-            self.employees_data = {
-                f"{row[1]} {row[2]}": row[0] for row in employees
-            }
+            self.employees_data = {}
+            self.exceeded_employees = set()  # Nomi dipendenti che hanno superato il limite
+            self.employee_hours = {}  # {display_name: (monthly_hours, max_hours)}
+            for row in employees:
+                # row = (EmployeeHireHistoryId, Surname, Name, MonthlyHours, MaxHourPerMonth, Exceeded)
+                display_name = f"{row[1]} {row[2]}"
+                exceeded = bool(row[5])
+                monthly_hours = row[3]
+                max_hours = row[4]
+
+                if exceeded:
+                    combo_name = f"⚠️ {display_name} ({monthly_hours}/{max_hours}h)"
+                    self.exceeded_employees.add(combo_name)
+                else:
+                    combo_name = display_name
+
+                self.employees_data[combo_name] = row[0]
+                self.employee_hours[combo_name] = (monthly_hours, max_hours)
+
             self.all_employee_values = sorted(list(self.employees_data.keys()))
             self.employee_combo['values'] = self.all_employee_values
-            logger.info(f"Combobox popolata con {len(self.employees_data)} dipendenti")
+            exceeded_count = len(self.exceeded_employees)
+            logger.info(f"Combobox popolata con {len(self.employees_data)} dipendenti ({exceeded_count} con ore eccedute)")
         else:
             logger.warning("Nessun dipendente eligibile trovato")
         
@@ -345,11 +379,25 @@ class OvertimeRequestWindow(tk.Toplevel):
         """Normalizza il nome selezionato nel formato esatto presente in lista."""
         employee_name = self.employee_var.get().strip()
         if not employee_name:
+            self._update_exceeded_warning('')
             return
         for name in self.employees_data.keys():
             if name.lower() == employee_name.lower():
                 self.employee_var.set(name)
+                self._update_exceeded_warning(name)
                 return
+        self._update_exceeded_warning(employee_name)
+
+    def _update_exceeded_warning(self, employee_name):
+        """Mostra o nasconde il label di avvertimento se il dipendente ha ore eccedute."""
+        if employee_name and employee_name in getattr(self, 'exceeded_employees', set()):
+            warning_text = self.lang.get('employee_exceeded_warning',
+                "Questo dipendente non è eleggibile dato che ha totalizzato più ore "
+                "di quelle ammesse per legge. La decisione di accettare le ore "
+                "straordinarie è demandata all'amministratore.")
+            self.exceeded_label.config(text=f"⚠️ {warning_text}")
+        else:
+            self.exceeded_label.config(text='')
 
     def _resolve_employee_name(self):
         """Risolvi il nome dipendente digitato/selecionato contro la lista valida."""
@@ -463,6 +511,23 @@ class OvertimeRequestWindow(tk.Toplevel):
         # Calcola ore
         hours = (end_dt - start_dt).total_seconds() / 3600
         
+        # Verifica se dipendente ha ore eccedute
+        is_exceeded = employee_name in self.exceeded_employees
+        if is_exceeded:
+            # Mostra avvertimento ma consenti comunque
+            hours_info = self.employee_hours.get(employee_name, (0, 0))
+            proceed = messagebox.askyesno(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('employee_exceeded_hours',
+                    f'Attenzione: questo dipendente ha superato il limite ore mensili '
+                    f'({hours_info[0]}/{hours_info[1]}h).\n\n'
+                    f'La decisione verrà valutata in fase di approvazione.\n'
+                    f'Procedere comunque?'),
+                parent=self
+            )
+            if not proceed:
+                return
+
         # Aggiungi a lista
         employee_data = {
             'employee_id': employee_id,
@@ -474,7 +539,8 @@ class OvertimeRequestWindow(tk.Toplevel):
             'hours': hours,
             'justify': justify if justify else 'N/A',
             'order_id': None,
-            'qty_target': None
+            'qty_target': None,
+            'exceeded': is_exceeded
         }
         
         # Aggiungi ordine se presente
@@ -516,7 +582,8 @@ class OvertimeRequestWindow(tk.Toplevel):
         
         self.selected_employees.append(employee_data)
         
-        # Aggiungi a treeview
+        # Aggiungi a treeview (con tag rosso se exceeded)
+        row_tag = ('exceeded',) if is_exceeded else ()
         self.tree.insert('', tk.END, values=(
             employee_name,
             reason_text,
@@ -524,7 +591,7 @@ class OvertimeRequestWindow(tk.Toplevel):
             end_dt.strftime('%d/%m/%Y %H:%M'),
             f"{hours:.1f}",
             justify
-        ))
+        ), tags=row_tag)
         
         # Reset campi
         self.employee_var.set('')

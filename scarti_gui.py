@@ -1,9 +1,12 @@
 # File: scarti_gui.py
 
 import os
+import logging
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 
 def open_scrap_declaration_window(parent, db_connection, lang_manager):
@@ -95,6 +98,20 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
     remove_ref_btn.pack(side="top", padx=6)
     row += 1
 
+    # Inserimento manuale riferimento (visibile quando il combo è vuoto)
+    ttk.Label(main, text=lang_manager.get('scrap_manual_ref_label', "Riferimento manuale")).grid(row=row, column=0,
+                                                                                                  sticky="w", pady=4)
+    manual_ref_frame = ttk.Frame(main)
+    manual_ref_frame.grid(row=row, column=1, sticky="ew", pady=4)
+    manual_ref_var = tk.StringVar()
+    manual_ref_entry = ttk.Entry(manual_ref_frame, textvariable=manual_ref_var, width=28, state="disabled")
+    manual_ref_entry.pack(side="left", padx=(0, 6))
+    add_manual_ref_btn = ttk.Button(manual_ref_frame,
+                                     text=lang_manager.get('add_button', "Aggiungi"),
+                                     state="disabled")
+    add_manual_ref_btn.pack(side="left")
+    row += 1
+
     ttk.Label(main, text=lang_manager.get('scrap_selected_refs_label', "Riferimenti selezionati")).grid(row=row,
                                                                                                         column=0,
                                                                                                         sticky="nw",
@@ -154,6 +171,9 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
         # riferimenti
         referiment_combo.set("")
         referiment_combo.config(state="disabled", values=[])
+        manual_ref_var.set("")
+        manual_ref_entry.config(state="disabled")
+        add_manual_ref_btn.config(state="disabled")
         refs_listbox.delete(0, tk.END)
         add_ref_btn.config(state="disabled")
         remove_ref_btn.config(state="disabled")
@@ -162,17 +182,29 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
         """Abilita o disabilita i widget riferimento in base al flag NoReference della causale."""
         reason_name = scrap_reason_var.get()
         no_ref = reason_no_ref_map.get(reason_name, False)
+        has_combo_values = len(all_referiments) > 0
         if no_ref:
             # Causale senza riferimento: disabilita e svuota
             referiment_combo.set("")
             referiment_combo.config(state="disabled")
+            manual_ref_var.set("")
+            manual_ref_entry.config(state="disabled")
+            add_manual_ref_btn.config(state="disabled")
             refs_listbox.delete(0, tk.END)
             add_ref_btn.config(state="disabled")
             remove_ref_btn.config(state="disabled")
         else:
-            referiment_combo.config(state="normal")
-            add_ref_btn.config(state="normal")
+            # Abilita sempre inserimento manuale
+            manual_ref_entry.config(state="normal")
+            add_manual_ref_btn.config(state="normal")
             remove_ref_btn.config(state="normal")
+            if has_combo_values:
+                referiment_combo.config(state="normal")
+                add_ref_btn.config(state="normal")
+            else:
+                # Combo vuoto: disabilita combo, l'utente usa l'entry manuale
+                referiment_combo.config(state="disabled")
+                add_ref_btn.config(state="disabled")
 
     def on_reason_changed(event=None):
         """Chiamato quando l'utente cambia la causale di scarto."""
@@ -183,7 +215,9 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
         disable_fields()
 
         code = label_code_var.get().strip()
+        logger.info(f"[scarti_gui] do_verify chiamato con codice: '{code}'")
         if not code:
+            logger.warning("[scarti_gui] Codice scheda vuoto")
             messagebox.showerror(lang_manager.get('error', "Errore"),
                                  lang_manager.get('scrap_invalid_label', "Codice scheda non valido"),
                                  parent=win)
@@ -191,6 +225,7 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
 
         info = db_connection.get_scrap_label_info(code)
         if not info:
+            logger.warning(f"[scarti_gui] Nessuna info trovata per codice: '{code}'")
             messagebox.showerror(lang_manager.get('error', "Errore"),
                                  lang_manager.get('scrap_invalid_label', "Codice scheda non valido"),
                                  parent=win)
@@ -227,6 +262,10 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
 
         # Motivi
         reasons = db_connection.fetch_scrap_reasons()
+        logger.debug(f"[scarti_gui] fetch_scrap_reasons ha restituito {len(reasons) if reasons else 0} righe")
+        if reasons:
+            cols = [col[0] for col in reasons[0].cursor_description]
+            logger.debug(f"[scarti_gui] Colonne restituite dalla query scrap_reasons: {cols}")
         reason_names = []
         reason_map.clear()
         reason_no_ref_map.clear()  # 🆕
@@ -235,13 +274,18 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
             reason_no_ref_map[r.ReasonCode] = bool(getattr(r, 'NoReference', False))  # 🆕
             reason_names.append(r.ReasonCode)
         scrap_reason_combo['values'] = reason_names
+        logger.info(f"[scarti_gui] Caricate {len(reason_names)} causali di scarto")
         if reason_names:
             scrap_reason_combo.set(reason_names[0])
 
         # Riferimenti scheda dalla query
         try:
             ref_values = db_connection.fetch_card_referiments(code) or []
-        except Exception:
+            logger.info(f"[scarti_gui] fetch_card_referiments per '{code}': {len(ref_values)} riferimenti trovati")
+            if ref_values:
+                logger.debug(f"[scarti_gui] Riferimenti: {ref_values}")
+        except Exception as e:
+            logger.error(f"[scarti_gui] Errore fetch_card_referiments: {e}")
             ref_values = []
 
         all_referiments.clear()
@@ -250,8 +294,12 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
         referiment_combo['values'] = all_referiments
         referiment_combo.set(all_referiments[0] if all_referiments else "")
 
+        if not all_referiments:
+            logger.info("[scarti_gui] Nessun riferimento da DB, attivato inserimento manuale")
+
         verified.set(True)
         enable_fields()
+        logger.info(f"[scarti_gui] Verifica completata per codice '{code}', IDLabel={id_label_code_var.get()}")
 
     def select_picture():
         nonlocal picture_bytes
@@ -298,12 +346,12 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
     referiment_combo.bind("<Return>", lambda e: add_reference())
 
     def add_reference(event=None):
-        # Consenti aggiunta solo se la voce è nell’elenco originale
+        """Aggiunge un riferimento dalla combo (se ha valori dal DB)."""
         val_typed = (referiment_var.get() or "").strip()
         if not val_typed:
             return
 
-        # Mappa al valore “canone” presente in all_referiments (case-insensitive)
+        # Mappa al valore "canone" presente in all_referiments (case-insensitive)
         canonical = next((x for x in all_referiments if x.casefold() == val_typed.casefold()), None)
         if canonical is None:
             # Se il filtro attuale ha una sola voce, usala
@@ -323,10 +371,27 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
         if canonical in existing:
             return
 
+        logger.debug(f"[scarti_gui] Aggiunto riferimento da combo: '{canonical}'")
         refs_listbox.insert(tk.END, canonical)
         # prepara al prossimo inserimento
         referiment_var.set("")
         _ref_reset_values()
+
+    def add_manual_reference(event=None):
+        """Aggiunge un riferimento digitato manualmente dall'utente."""
+        val = (manual_ref_var.get() or "").strip()
+        if not val:
+            return
+
+        # Evita duplicati
+        existing = [refs_listbox.get(i) for i in range(refs_listbox.size())]
+        if val in existing:
+            logger.debug(f"[scarti_gui] Riferimento manuale '{val}' già presente, ignorato")
+            return
+
+        logger.info(f"[scarti_gui] Aggiunto riferimento manuale: '{val}'")
+        refs_listbox.insert(tk.END, val)
+        manual_ref_var.set("")
 
     def remove_reference():
         sel = list(refs_listbox.curselection())
@@ -338,10 +403,13 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
         if not verified.get():
             return
 
+        logger.info("[scarti_gui] do_save chiamato")
+
         # Riferimento scheda obbligatorio SOLO se la causale non ha NoReference
         reason_name = scrap_reason_var.get()
         no_ref = reason_no_ref_map.get(reason_name, False)
         if not no_ref and refs_listbox.size() < 1:
+            logger.warning("[scarti_gui] Nessun riferimento scheda inserito")
             messagebox.showerror(lang_manager.get('error', "Errore"),
                                  "Inserire almeno un riferimento scheda.", parent=win)
             return
@@ -352,10 +420,14 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
         reason_name = scrap_reason_var.get()
         note = notes_txt.get("1.0", "end").strip()[:250]
 
+        logger.debug(f"[scarti_gui] Salvataggio: user={user_name}, id_label={id_label}, origin={origin_name}, reason={reason_name}")
+
         if not origin_name or origin_name not in origin_map:
+            logger.warning(f"[scarti_gui] Area di provenienza non valida: '{origin_name}'")
             messagebox.showerror(lang_manager.get('error', "Errore"), "Selezionare l'Area di provenienza.", parent=win)
             return
         if not reason_name or reason_name not in reason_map:
+            logger.warning(f"[scarti_gui] Motivo non valido: '{reason_name}'")
             messagebox.showerror(lang_manager.get('error', "Errore"), "Selezionare il Motivo.", parent=win)
             return
 
@@ -374,11 +446,13 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
             riferiments=riferiments
         )
         if ok:
+            logger.info(f"[scarti_gui] Dichiarazione salvata con successo (IDLabel={id_label}, Reason={reason_name})")
             messagebox.showinfo(lang_manager.get('info', "Informazione"),
                                 lang_manager.get('saved_ok', "Dichiarazione salvata"),
                                 parent=win)
             win.destroy()
         else:
+            logger.error(f"[scarti_gui] Errore salvataggio dichiarazione: {db_connection.last_error_details}")
             messagebox.showerror(lang_manager.get('error', "Errore"),
                                  lang_manager.get('saved_ko', f"Errore nel salvataggio: {db_connection.last_error_details}"),
                                  parent=win)
@@ -402,6 +476,9 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
     save_btn.config(command=do_save)
     add_ref_btn.config(command=add_reference)
     remove_ref_btn.config(command=remove_reference)
+    add_manual_ref_btn.config(command=add_manual_reference)
+    manual_ref_entry.bind("<Return>", lambda e: add_manual_reference())
+    manual_ref_entry.bind("<KP_Enter>", lambda e: add_manual_reference())
     referiment_combo.bind("<Return>", lambda e: add_reference())
     referiment_combo.bind("<KeyRelease>", on_ref_keyrelease)
     referiment_combo.bind("<Escape>", on_ref_escape)
@@ -482,6 +559,7 @@ class ScrapReasonsManagerWindow(tk.Toplevel):
     def _load_reasons(self):
         self.tree.delete(*self.tree.get_children())
         self.reasons = self.db.fetch_scrap_reasons() or []
+        logger.debug(f"[scarti_gui] _load_reasons: caricate {len(self.reasons)} causali")
         for r in self.reasons:
             no_ref = bool(getattr(r, 'NoReference', False))
             use_ref_label = '✗' if no_ref else '✓'
@@ -519,11 +597,13 @@ class ScrapReasonsManagerWindow(tk.Toplevel):
 
         # 🆕 NoReference = NOT use_ref_var (se NON usa riferimenti → NoReference=1)
         no_reference = not self.use_ref_var.get()
+        logger.info(f"[scarti_gui] _save: text='{text}', no_reference={no_reference}, current_id={self.current_id}")
         ok = self.db.insert_scrap_reason(text, no_reference=no_reference)
         #else:
         #    ok = self.db.update_scrap_reason(self.current_id, text)
 
         if ok:
+            logger.info(f"[scarti_gui] Causale '{text}' salvata con successo")
             self._load_reasons()
             # Reseleziona/posiziona
             if self.current_id is None:
@@ -537,6 +617,7 @@ class ScrapReasonsManagerWindow(tk.Toplevel):
             messagebox.showinfo(self.lang.get('success_title', 'Successo'),
                                 self.lang.get('info_saved_ok', 'Salvataggio eseguito.'), parent=self)
         else:
+            logger.error(f"[scarti_gui] Errore salvataggio causale: {self.db.last_error_details}")
             messagebox.showerror(self.lang.get('error_title', 'Errore'),
                                  self.db.last_error_details or self.lang.get('error_db_operation', 'Errore database.'),
                                  parent=self)
@@ -554,13 +635,16 @@ class ScrapReasonsManagerWindow(tk.Toplevel):
         ):
             return
 
+        logger.info(f"[scarti_gui] _delete: eliminazione causale id={self.current_id}")
         ok = self.db.delete_scrap_reason(self.current_id)
         if ok:
+            logger.info(f"[scarti_gui] Causale id={self.current_id} eliminata con successo")
             self._new()
             self._load_reasons()
             messagebox.showinfo(self.lang.get('success_title', 'Successo'),
                                 self.lang.get('info_deleted_ok', 'Cancellazione eseguita.'), parent=self)
         else:
+            logger.error(f"[scarti_gui] Errore eliminazione causale id={self.current_id}: {self.db.last_error_details}")
             # Probabile vincolo FK se il motivo è usato in dichiarazioni
             messagebox.showerror(self.lang.get('error_title', 'Errore'),
                                  self.db.last_error_details or self.lang.get('error_db_operation', 'Errore database.'),
