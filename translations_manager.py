@@ -73,6 +73,19 @@ class TranslationsManagerWindow(tk.Toplevel):
         ttk.Button(buttons_row, text=self.lang.get('reset_filters', 'Reset Filtri'), 
                   command=self._reset_filters).pack(side=tk.LEFT, padx=5)
         
+        # Frame pulsanti azioni — PRIMA del treeview per garantirne la visibilità
+        actions_frame = ttk.Frame(translations_frame)
+        actions_frame.pack(fill=tk.X, padx=5, pady=(2, 5))
+
+        ttk.Button(actions_frame, text=self.lang.get('add', 'Aggiungi'),
+                  command=self._add_translation).pack(side=tk.LEFT, padx=5)
+        ttk.Button(actions_frame, text=self.lang.get('edit', 'Modifica'),
+                  command=self._edit_translation).pack(side=tk.LEFT, padx=5)
+        ttk.Button(actions_frame, text=self.lang.get('delete', 'Elimina'),
+                  command=self._delete_translation).pack(side=tk.LEFT, padx=5)
+        ttk.Button(actions_frame, text=self.lang.get('refresh', 'Aggiorna'),
+                  command=self._load_translations).pack(side=tk.LEFT, padx=5)
+
         # Frame Treeview traduzioni
         tree_frame = ttk.Frame(translations_frame)
         tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -116,20 +129,7 @@ class TranslationsManagerWindow(tk.Toplevel):
         
         tree_frame.grid_rowconfigure(0, weight=1)
         tree_frame.grid_columnconfigure(0, weight=1)
-        
-        # Frame pulsanti azioni
-        actions_frame = ttk.Frame(translations_frame)
-        actions_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        ttk.Button(actions_frame, text=self.lang.get('add', 'Aggiungi'), 
-                  command=self._add_translation).pack(side=tk.LEFT, padx=5)
-        ttk.Button(actions_frame, text=self.lang.get('edit', 'Modifica'), 
-                  command=self._edit_translation).pack(side=tk.LEFT, padx=5)
-        ttk.Button(actions_frame, text=self.lang.get('delete', 'Elimina'), 
-                  command=self._delete_translation).pack(side=tk.LEFT, padx=5)
-        ttk.Button(actions_frame, text=self.lang.get('refresh', 'Aggiorna'), 
-                  command=self._load_translations).pack(side=tk.LEFT, padx=5)
-        
+
         # ===== SEZIONE INFERIORE: UTENTI AUTORIZZATI =====
         authorized_frame = ttk.LabelFrame(main_paned, text=self.lang.get('authorized_users', 'Utenti Autorizzati'), padding=10)
         main_paned.add(authorized_frame, weight=1)

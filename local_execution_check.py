@@ -62,29 +62,22 @@ class SimpleSecurityWindow:
 
 
 def is_local_execution_simple(not_allowed_ips: List[str] = None):
-    """Verifica semplice con IP bloccati"""
+    """Verifica se l'IP della macchina è nella lista degli IP bloccati.
+    
+    Blocca SOLO gli IP specifici nella lista, non le sessioni remote in generale.
+    """
     not_allowed_ips = not_allowed_ips or []
 
     try:
         # Ottieni IP locale
         hostname = socket.gethostname()
         local_ip = socket.gethostbyname(hostname)
+        print(f"Verifica sicurezza: IP locale = {local_ip}")
 
-        # Controlla se l'IP locale è bloccato
+        # Controlla se l'IP locale è nella lista bloccata
         if local_ip in not_allowed_ips:
+            print(f"IP {local_ip} è nella lista bloccata!")
             return False
-
-        # Controllo variabili remote
-        remote_indicators = ['SESSIONNAME', 'CLIENTNAME', 'SSH_CONNECTION', 'SSH_CLIENT', 'TELNET']
-        for var in remote_indicators:
-            if os.getenv(var):
-                return False
-
-        # Controllo Windows RDP
-        if os.name == 'nt':
-            session_name = os.getenv('SESSIONNAME', '')
-            if session_name and 'rdp' in session_name.lower():
-                return False
 
         return True
 

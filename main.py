@@ -16,18 +16,17 @@ NOT_ALLOWED_IPS = [
 
 # --- Verifica esecuzione locale ---
 try:
-    # Importa il modulo di verifica
-    from local_execution_check import is_local_execution_simple
+    # Importa e lancia la verifica completa (blocca + sys.exit se IP non permesso)
+    from local_execution_check import verify_simple
 
-    # Esegui la verifica con IP bloccati
-    is_local_execution_simple(not_allowed_ips=NOT_ALLOWED_IPS)
+    verify_simple(not_allowed_ips=NOT_ALLOWED_IPS)
 
 except ImportError:
     # Fallback alla versione semplice
     try:
-        from simple_local_check import verify_simple
+        from simple_local_check import verify_simple as verify_simple_fallback
 
-        verify_simple(not_allowed_ips=NOT_ALLOWED_IPS)
+        verify_simple_fallback(not_allowed_ips=NOT_ALLOWED_IPS)
     except ImportError:
         print("AVVISO: Moduli di sicurezza non trovati")
         print("Continuo senza verifiche...")
@@ -323,7 +322,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.5.4'  # Versione aggiornata
+APP_VERSION = '2.3.5.5'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -14595,6 +14594,22 @@ class App(tk.Tk):
             command=self.open_overtime_analysis_with_auth
         )
 
+        # External Programs (Programmi Esterni)
+        self.personnel_menu.add_separator()
+        ext_programs_submenu = tk.Menu(self.personnel_menu, tearoff=0)
+        self.personnel_menu.add_cascade(
+            label=self.lang.get('submenu_external_programs', 'Programmi Esterni'),
+            menu=ext_programs_submenu
+        )
+        ext_programs_submenu.add_command(
+            label=self.lang.get('ext_setup_ip', 'SetUp IP'),
+            command=self.open_setup_ip_with_login
+        )
+        ext_programs_submenu.add_command(
+            label=self.lang.get('ext_open_browser', 'Apri Programma'),
+            command=self.open_browser_program
+        )
+
         self.operations_menu.add_separator()
 
         # 5. Popola il menu 'Ordini'
@@ -16771,6 +16786,25 @@ class App(tk.Tk):
             menu_translation_key='overtime_analysis',
             action_callback=lambda: open_overtime_analysis_window(self, self.db, self.lang, self.last_authenticated_user_name)
         )
+
+    # =========================================================================
+    # METODI MENU PROGRAMMI ESTERNI
+    # =========================================================================
+
+    def open_setup_ip_with_login(self):
+        """Apre la finestra SetUp IP (gestione ExternalIps) dopo autorizzazione."""
+        logger.info("open_setup_ip_with_login: avvio")
+        import skills_browser_gui
+        self._execute_authorized_action(
+            menu_translation_key='setup_Ip_browser_Skills',
+            action_callback=lambda: skills_browser_gui.open_external_ips_manager(self, self.db, self.lang)
+        )
+
+    def open_browser_program(self):
+        """Apre la finestra per lanciare un programma esterno nel browser."""
+        logger.info("open_browser_program: avvio")
+        import skills_browser_gui
+        skills_browser_gui.open_browser_launcher(self, self.db, self.lang)
 
     # =========================================================================
     # METODI MENU ORDINI (PLACEHOLDER)
