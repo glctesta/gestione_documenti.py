@@ -90,6 +90,7 @@ class ProgettoNPI(Base):
     OwnerID = Column(Integer, ForeignKey('dbo.vw_Soggetti.SoggettoId'), nullable=True)  # Owner del progetto
     Descrizione = Column(Text, nullable=True)  # Descrizione del progetto
     DateOut = Column(DateTime, nullable=True)  # 🆕 Soft-delete: valorizzato = progetto cancellato
+    OnHold = Column(Boolean, default=False, nullable=True)  # Progetto sospeso: escluso dalle email di warning
     
     # 🆕 CAMPI PER GERARCHIA PROGETTI (Parent-Child)
     ParentProjectID = Column('ParentProjectID', Integer, ForeignKey('dbo.ProgettiNPI.ProgettoID'), nullable=True)

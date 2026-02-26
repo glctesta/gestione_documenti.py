@@ -2039,6 +2039,248 @@ class DefaultCatalogFrame(ttk.Frame):
                                  self.lang.get('db_error_generic_save', '{error}').format(error=e), parent=self)
 
 
+# --- Frame per la gestione dei Progetti NPI (OnHold) ---
+class ProjectManagementFrame(ttk.Frame):
+    """Frame per visualizzare progetti NPI e gestire lo stato OnHold."""
+
+    def __init__(self, master, npi_manager, lang, **kwargs):
+        super().__init__(master, **kwargs)
+        self.npi_manager = npi_manager
+        self.lang = lang
+        self.pack(fill=tk.BOTH, expand=True)
+        self.all_projects = []
+
+        # --- Toolbar filtro ---
+        toolbar = ttk.Frame(self, padding=5)
+        toolbar.pack(fill=tk.X)
+
+        ttk.Label(toolbar, text=self.lang.get('filter_project', 'Filtro progetto:')).pack(side=tk.LEFT, padx=(5, 2))
+        self.filter_var = tk.StringVar()
+        self.filter_entry = ttk.Entry(toolbar, textvariable=self.filter_var, width=30)
+        self.filter_entry.pack(side=tk.LEFT, padx=5)
+        self.filter_entry.bind('<KeyRelease>', lambda e: self._apply_filter())
+
+        self.show_closed_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            toolbar,
+            text=self.lang.get('show_closed_projects', 'Mostra chiusi'),
+            variable=self.show_closed_var,
+            command=self._apply_filter
+        ).pack(side=tk.LEFT, padx=10)
+
+        ttk.Button(
+            toolbar,
+            text=self.lang.get('btn_toggle_onhold', 'Toggle On Hold'),
+            command=self._toggle_onhold
+        ).pack(side=tk.RIGHT, padx=5)
+
+        # --- Treeview ---
+        tree_frame = ttk.Frame(self)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        cols = ('ID', 
+                self.lang.get('col_project_name', 'Nome Progetto'),
+                self.lang.get('col_product_name', 'Prodotto'),
+                self.lang.get('col_status', 'Stato'),
+                self.lang.get('col_deadline', 'Scadenza'),
+                self.lang.get('col_onhold', 'On Hold'))
+        
+        self.tree = ttk.Treeview(tree_frame, columns=cols, show='headings', selectmode='browse')
+
+        col_widths = [60, 250, 200, 100, 120, 80]
+        for col, width in zip(cols, col_widths):
+            self.tree.heading(col, text=col, command=lambda c=col: self._sort_by_column(c))
+            self.tree.column(col, width=width, anchor=tk.CENTER if col in ('ID', cols[5]) else tk.W)
+
+        scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Tags per evidenziare righe
+        self.tree.tag_configure('onhold', background='#FFE0B2', foreground='#E65100')
+        self.tree.tag_configure('closed', foreground='gray')
+        self.tree.tag_configure('overdue', foreground='red')
+
+        self.tree.bind('<Double-1>', lambda e: self._toggle_onhold())
+
+        # Sorting state
+        self.sort_column = None
+        self.sort_reverse = False
+
+        # Carica dati
+        self._load_projects()
+
+    def _load_projects(self):
+        """Carica tutti i progetti dal database."""
+        session = self.npi_manager._get_session()
+        try:
+            from npi.data_models import ProgettoNPI
+            from sqlalchemy.orm import joinedload
+
+            projects = session.query(ProgettoNPI).options(
+                joinedload(ProgettoNPI.prodotto),
+                joinedload(ProgettoNPI.owner)
+            ).filter(
+                ProgettoNPI.DateOut == None  # Solo progetti non cancellati
+            ).order_by(ProgettoNPI.ProgettoId.desc()).all()
+
+            self.all_projects = []
+            for p in projects:
+                product_name = p.prodotto.NomeProdotto if p.prodotto else ''
+                owner_name = p.owner.Nome if p.owner else ''
+                deadline = p.ScadenzaProgetto.strftime('%d/%m/%Y') if p.ScadenzaProgetto else ''
+                is_onhold = bool(getattr(p, 'OnHold', False))
+                
+                self.all_projects.append({
+                    'id': p.ProgettoId,
+                    'name': p.NomeProgetto or '',
+                    'product': product_name,
+                    'status': p.StatoProgetto or '',
+                    'deadline': deadline,
+                    'deadline_raw': p.ScadenzaProgetto,
+                    'onhold': is_onhold,
+                    'owner': owner_name
+                })
+
+            logger.info(f"Progetti caricati: {len(self.all_projects)}")
+            self._apply_filter()
+
+        except Exception as e:
+            logger.error(f"Errore caricamento progetti: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('db_error_title', 'Errore Database'),
+                f"Errore nel caricamento progetti: {e}",
+                parent=self
+            )
+        finally:
+            session.close()
+
+    def _apply_filter(self):
+        """Applica filtro testo e popola il treeview."""
+        from datetime import date
+
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        filter_text = self.filter_var.get().strip().lower()
+        show_closed = self.show_closed_var.get()
+        today = date.today()
+
+        for proj in self.all_projects:
+            # Filtro chiusi
+            status_lower = proj['status'].lower()
+            if not show_closed and status_lower == 'chiuso':
+                continue
+
+            # Filtro testo
+            if filter_text:
+                searchable = f"{proj['name']} {proj['product']} {proj['status']} {proj['owner']}".lower()
+                if filter_text not in searchable:
+                    continue
+
+            onhold_text = '✅ ON HOLD' if proj['onhold'] else ''
+
+            # Determina tags
+            tags = []
+            if proj['onhold']:
+                tags.append('onhold')
+            elif status_lower == 'chiuso':
+                tags.append('closed')
+            elif proj['deadline_raw'] and (getattr(proj['deadline_raw'], 'date', lambda: proj['deadline_raw'])()) < today:
+                tags.append('overdue')
+
+            self.tree.insert('', tk.END, iid=str(proj['id']), values=(
+                proj['id'],
+                proj['name'],
+                proj['product'],
+                proj['status'],
+                proj['deadline'],
+                onhold_text
+            ), tags=tuple(tags))
+
+    def _toggle_onhold(self):
+        """Toggle lo stato OnHold del progetto selezionato."""
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning(
+                self.lang.get('warning_no_selection_title', 'Nessuna selezione'),
+                self.lang.get('warning_select_project', 'Seleziona un progetto dalla lista.'),
+                parent=self
+            )
+            return
+
+        project_id = int(selection[0])
+
+        # Trova il progetto nella lista locale
+        proj = next((p for p in self.all_projects if p['id'] == project_id), None)
+        if not proj:
+            return
+
+        new_state = not proj['onhold']
+        state_text = self.lang.get('onhold_status_on', 'ON HOLD') if new_state else self.lang.get('onhold_status_off', 'ATTIVO')
+
+        if not messagebox.askyesno(
+            self.lang.get('confirm_title', 'Conferma'),
+            self.lang.get('confirm_toggle_onhold',
+                f"Impostare il progetto '{proj['name']}' come {state_text}?").format(
+                    project=proj['name'], status=state_text),
+            parent=self
+        ):
+            return
+
+        # Aggiorna nel database
+        session = self.npi_manager._get_session()
+        try:
+            from npi.data_models import ProgettoNPI
+            project = session.query(ProgettoNPI).get(project_id)
+            if project:
+                project.OnHold = new_state
+                session.commit()
+                proj['onhold'] = new_state
+                logger.info(f"Progetto {project_id} '{proj['name']}' impostato OnHold={new_state}")
+                self._apply_filter()
+            else:
+                messagebox.showerror(
+                    self.lang.get('error_title', 'Errore'),
+                    self.lang.get('error_project_not_found', 'Progetto non trovato.'),
+                    parent=self
+                )
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Errore toggle OnHold progetto {project_id}: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('db_error_title', 'Errore Database'),
+                f"Errore: {e}",
+                parent=self
+            )
+        finally:
+            session.close()
+
+    def _sort_by_column(self, col):
+        """Ordina il treeview per la colonna cliccata."""
+        if self.sort_column == col:
+            self.sort_reverse = not self.sort_reverse
+        else:
+            self.sort_column = col
+            self.sort_reverse = False
+
+        items = [(self.tree.set(k, col), k) for k in self.tree.get_children()]
+        
+        # Prova ordinamento numerico per la colonna ID
+        try:
+            items.sort(key=lambda t: int(t[0]) if t[0] else 0, reverse=self.sort_reverse)
+        except (ValueError, TypeError):
+            items.sort(key=lambda t: t[0].lower() if t[0] else '', reverse=self.sort_reverse)
+
+        for index, (_, k) in enumerate(items):
+            self.tree.move(k, '', index)
+
+    def refresh_data(self):
+        """Ricarica i dati dal database."""
+        self._load_projects()
+
+
 class NpiConfigWindow(tk.Toplevel):
     def __init__(self, master, npi_manager, lang, authorized_user, db=None, product_id_to_select=None, **kwargs):
         super().__init__(master, **kwargs)
@@ -2059,6 +2301,7 @@ class NpiConfigWindow(tk.Toplevel):
 
         self.subj_frame = SubjectManagementFrame(notebook, self.npi_manager, self.lang, db=self.db)
         self.prod_frame = ProductManagementFrame(notebook, self.npi_manager, self.lang)
+        self.project_frame = ProjectManagementFrame(notebook, self.npi_manager, self.lang)
         self.cat_frame = CategoryManagementFrame(notebook, self.npi_manager, self.lang)
         self.task_frame = TaskManagementFrame(notebook, self.npi_manager, self.lang)
         self.defaults_frame = DefaultCatalogFrame(notebook, self.npi_manager, self.lang)
@@ -2067,6 +2310,7 @@ class NpiConfigWindow(tk.Toplevel):
 
         notebook.add(self.subj_frame, text=self.lang.get('tab_subjects_title'))
         notebook.add(self.prod_frame, text=self.lang.get('tab_products_title'))
+        notebook.add(self.project_frame, text=self.lang.get('tab_projects_title', 'Progetti'))
         notebook.add(self.cat_frame, text=self.lang.get('tab_categories_title'))
         notebook.add(self.task_frame, text=self.lang.get('tab_task_catalog_title'))
         notebook.add(self.defaults_frame, text=self.lang.get('tab_defaults_title', 'Defaults'))
@@ -2075,8 +2319,11 @@ class NpiConfigWindow(tk.Toplevel):
 
         def on_tab_changed(event):
             try:
-                if notebook.select() == str(self.task_frame):
+                selected = notebook.select()
+                if selected == str(self.task_frame):
                     self.task_frame.refresh_data()
+                elif selected == str(self.project_frame):
+                    self.project_frame.refresh_data()
             except tk.TclError:
                 pass
 

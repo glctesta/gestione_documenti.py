@@ -4,6 +4,12 @@
 secrets/
 config/__pycache__/
 
+# Virtual environment Python
+.venv/
+.venv_old/
+venv/
+env/
+
 # File temporanei
 *.tmp
 *.log

@@ -392,6 +392,7 @@ class NpiAutoNotificationService:
                     .options(joinedload(TaskProdotto.task_catalogo), joinedload(TaskProdotto.owner))
                 )
                 .where(ProgettoNPI.StatoProgetto != 'Chiuso')
+                .where(ProgettoNPI.OnHold != True)
             ).all()
 
             for project in projects:
@@ -1647,6 +1648,7 @@ class NpiAutoNotificationService:
                     joinedload(ProgettoNPI.owner),
                     subqueryload(ProgettoNPI.waves).subqueryload(WaveNPI.tasks)
                 )
+                .where(ProgettoNPI.OnHold != True)
                 .order_by(ProgettoNPI.ProgettoId)
             ).all()
 

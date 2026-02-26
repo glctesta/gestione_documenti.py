@@ -497,23 +497,27 @@ class NotificationManagerV2:
 
         try:
             # Query task scaduti con JOIN Employee e Soggetto per tipo
+            # Escludi task appartenenti a progetti OnHold
             query = text("""
-                         SELECT tp.TaskId,
-                                tp.OwnerID,
-                                e.EmployeeName + ' ' + e.EmployeeSurname AS FullName,
-                                a.WorkEmail                              AS Email,
-                                DATEDIFF(DAY, tp.DataFine, GETDATE())    AS GiorniRitardo,
-                                ISNULL(sog.Tipo, 'Interno')              AS TipoSoggetto
-                         FROM Traceability_rs.dbo.TaskProdotto tp
-                                  LEFT JOIN Employee.dbo.EmployeeHireHistory s ON tp.OwnerID = s.EmployeeHireHistoryId
-                                  LEFT JOIN Employee.dbo.Employees e ON e.EmployeeId = s.EmployeeId
-                                  LEFT JOIN Employee.dbo.EmployeeAddress a ON a.EmployeeId = e.EmployeeId
-                                  LEFT JOIN Traceability_rs.dbo.vw_Soggetti sog ON s.EmployeeHireHistoryId = sog.SoggettoId
-                         WHERE tp.DataFine < GETDATE()
-                           AND tp.Stato NOT IN ('Completato', 'Cancellato')
-                           AND tp.PercentualeCompletamento < 100
-                           AND tp.OwnerID IS NOT NULL
-                         """)
+                     SELECT tp.TaskId,
+                            tp.OwnerID,
+                            e.EmployeeName + ' ' + e.EmployeeSurname AS FullName,
+                            a.WorkEmail                              AS Email,
+                            DATEDIFF(DAY, tp.DataFine, GETDATE())    AS GiorniRitardo,
+                            ISNULL(sog.Tipo, 'Interno')              AS TipoSoggetto
+                     FROM Traceability_rs.dbo.TaskProdotto tp
+                              LEFT JOIN Traceability_rs.dbo.WaveNPI w ON tp.WaveID = w.WaveID
+                              LEFT JOIN Traceability_rs.dbo.ProgettiNPI proj ON w.ProgettoID = proj.ProgettoID
+                              LEFT JOIN Employee.dbo.EmployeeHireHistory s ON tp.OwnerID = s.EmployeeHireHistoryId
+                              LEFT JOIN Employee.dbo.Employees e ON e.EmployeeId = s.EmployeeId
+                              LEFT JOIN Employee.dbo.EmployeeAddress a ON a.EmployeeId = e.EmployeeId
+                              LEFT JOIN Traceability_rs.dbo.vw_Soggetti sog ON s.EmployeeHireHistoryId = sog.SoggettoId
+                     WHERE tp.DataFine < GETDATE()
+                       AND tp.Stato NOT IN ('Completato', 'Cancellato')
+                       AND tp.PercentualeCompletamento < 100
+                       AND tp.OwnerID IS NOT NULL
+                       AND ISNULL(proj.OnHold, 0) = 0
+                     """)
 
             results = self.session.execute(query).fetchall()
 

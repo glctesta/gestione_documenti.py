@@ -323,7 +323,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.5.3'  # Versione aggiornata
+APP_VERSION = '2.3.5.4'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -12706,19 +12706,131 @@ class App(tk.Tk):
             action_callback=lambda user_name: self.traceability_manager.open_manage_links()
         )
 
-    def _trigger_update(self, version_info):
-        """Lancia l'updater e chiude l'applicazione."""
+    def _trigger_update(self, version_info, mandatory=True):
+        """
+        Mostra un dialogo pre-aggiornamento, poi lancia l'updater.
+
+        Bottoni:
+        - "Salva e Aggiorna": chiude normalmente (dà tempo di salvare le finestre aperte),
+          poi avvia l'updater.
+        - "Aggiorna Subito": force_quit immediato.
+        - "Annulla" (solo se mandatory=False): torna all'app senza aggiornare.
+
+        Returns:
+            True  → update avviato
+            False → utente ha annullato (solo per update opzionale)
+        """
         source = version_info.MainPath
         destination = os.path.dirname(sys.executable)
         exe_name = os.path.basename(sys.executable)
         updater_path = os.path.join(destination, "updater.exe")
 
         if not os.path.exists(updater_path):
-            messagebox.showerror("Errore Critico", "File updater.exe non trovato! Impossibile aggiornare.", parent=self)
-            return
+            messagebox.showerror(
+                self.lang.get('error', 'Errore Critico'),
+                "File updater.exe non trovato! Impossibile aggiornare.",
+                parent=self
+            )
+            return False
 
+        # ── Dialogo pre-update ───────────────────────────────────────────────
+        dialog = tk.Toplevel(self)
+        dialog.title(self.lang.get('update_ready_title', 'Aggiornamento Pronto'))
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        # Impedisce la chiusura con X se obbligatorio
+        if mandatory:
+            dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+        else:
+            dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+
+        frame = ttk.Frame(dialog, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        if mandatory:
+            msg = self.lang.get(
+                'update_ready_msg_mandatory',
+                f"L'aggiornamento alla versione {version_info.Version} è pronto.\n\n"
+                "Puoi salvare le attività in corso nelle finestre aperte,\n"
+                "poi clicca 'Salva e Aggiorna'.\n\n"
+                "⚠  L'aggiornamento è obbligatorio e non può essere rimandato."
+            )
+        else:
+            msg = self.lang.get(
+                'update_ready_msg_optional',
+                f"L'aggiornamento alla versione {version_info.Version} è pronto.\n\n"
+                "Puoi salvare le attività in corso nelle finestre aperte,\n"
+                "poi clicca 'Salva e Aggiorna'."
+            )
+
+        ttk.Label(frame, text=msg, justify=tk.LEFT, wraplength=380).pack(pady=(0, 20))
+
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack()
+
+        chosen = {'action': None}  # closure per catturare la scelta
+
+        def on_save_and_update():
+            chosen['action'] = 'save'
+            dialog.destroy()
+
+        def on_update_now():
+            chosen['action'] = 'now'
+            dialog.destroy()
+
+        def on_cancel():
+            chosen['action'] = 'cancel'
+            dialog.destroy()
+
+        ttk.Button(
+            btn_frame,
+            text=self.lang.get('update_save_and_update_btn', '💾 Salva e Aggiorna'),
+            command=on_save_and_update
+        ).pack(side=tk.LEFT, padx=6)
+
+        ttk.Button(
+            btn_frame,
+            text=self.lang.get('update_now_btn', '⚡ Aggiorna Subito'),
+            command=on_update_now
+        ).pack(side=tk.LEFT, padx=6)
+
+        if not mandatory:
+            ttk.Button(
+                btn_frame,
+                text=self.lang.get('cancel', 'Annulla'),
+                command=on_cancel
+            ).pack(side=tk.LEFT, padx=6)
+
+        # Centra il dialogo sulla finestra principale
+        self.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() - 420) // 2
+        y = self.winfo_y() + (self.winfo_height() - 200) // 2
+        dialog.geometry(f"420x230+{x}+{y}")
+
+        dialog.wait_window()
+        # ────────────────────────────────────────────────────────────────────
+
+        action = chosen['action']
+        logger.info(f"_trigger_update: scelta utente = '{action}' (mandatory={mandatory})")
+
+        if action == 'cancel':
+            return False
+
+        # Avvia updater
         subprocess.Popen([updater_path, source, destination, exe_name])
-        self._on_closing(force_quit=True)  # Chiude l'app senza chiedere conferma
+
+        if action == 'save':
+            # Chiusura normale: Tk mostrerà il prompt "Sei sicuro?" solo se non mandatory.
+            # Se mandatory forziamo comunque la chiusura dopo che l'utente ha avuto
+            # l'opportunità di salvare manualmente nelle finestre aperte.
+            self._on_closing(force_quit=mandatory)
+        else:
+            # 'now' → chiusura immediata
+            self._on_closing(force_quit=True)
+
+        return True
 
     def _periodic_version_check(self):
         """
@@ -12756,25 +12868,13 @@ class App(tk.Tk):
             force_update = is_mandatory or skip_count >= 3
 
             if force_update:
-                # Update obbligatorio: informa e aggiorna (chiude se updater mancante)
-                if is_mandatory:
-                    message = self.lang.get(
-                        "force_upgrade_message_mandatory",
-                        version_info.Version, APP_VERSION
-                    )
-                else:
-                    message = self.lang.get(
-                        "force_upgrade_message_max_skips",
-                        version_info.Version, APP_VERSION
-                    )
-                messagebox.showinfo(
-                    self.lang.get("upgrade_required_title", "Aggiornamento Obbligatorio"),
-                    message, parent=self
-                )
-                self._trigger_update(version_info)
-                # _trigger_update chiama _on_closing(force_quit=True) se updater trovato
-                # Se updater NON trovato mostra errore e non chiude → ripianifica
-                self.periodic_check_job_id = self.after(15 * 60 * 1000, self._periodic_version_check)
+                # Update obbligatorio: il dialogo interno a _trigger_update gestisce
+                # il messaggio e dà all'utente la possibilità di salvare prima di uscire.
+                logger.info(f"_periodic_version_check: update obbligatorio (mandatory={is_mandatory}, skip={skip_count})")
+                updated = self._trigger_update(version_info, mandatory=True)
+                # Se updater NON trovato (updated==False), ripianifica tra 15 min
+                if not updated:
+                    self.periodic_check_job_id = self.after(15 * 60 * 1000, self._periodic_version_check)
                 return
 
             # Update opzionale: chiedi all'utente
@@ -12789,9 +12889,9 @@ class App(tk.Tk):
             )
 
             if response:
-                # Aggiorna ora
+                # L'utente ha scelto di aggiornare ora (volontario)
                 reset_update_skip_count()
-                self._trigger_update(version_info)
+                self._trigger_update(version_info, mandatory=False)
                 return
             else:
                 # Rinvia
@@ -12891,6 +12991,7 @@ class App(tk.Tk):
 
     def _check_for_birthdays(self):
         """Controlla i compleanni e avvia l'avviso appropriato (fisso o scorrevole)."""
+        logger.debug("_check_for_birthdays: start")
         # Ferma sempre un eventuale avviso precedente
         self._stop_birthday_display()
         if hasattr(self, 'birthday_label'):
@@ -12898,17 +12999,24 @@ class App(tk.Tk):
 
         try:
             # ... (la logica per leggere le impostazioni e trovare i compleanni rimane invariata)
+            logger.debug("_check_for_birthdays: recupero impostazioni dal DB...")
             pre_alert_days = int(self.db.fetch_setting('Sys_BirthDay_Prealler'))
             post_alert_days = int(self.db.fetch_setting('Sys_BirthDay_PostAllert'))
             image_path = os.path.join(
                 self.db.fetch_setting('Sys_Pics_Directory'),
                 self.db.fetch_setting('Sys_BirthDay_Allert')
             )
-        except (ValueError, TypeError, AttributeError):
+            logger.debug(f"_check_for_birthdays: image_path='{image_path}', pre={pre_alert_days}, post={post_alert_days}")
+        except (ValueError, TypeError, AttributeError) as e:
+            logger.warning(f"_check_for_birthdays: impostazioni non valide ({e}), skip")
             return False
-        if not image_path or not os.path.isfile(image_path): return False
+        if not image_path or not os.path.isfile(image_path):
+            logger.debug(f"_check_for_birthdays: immagine non trovata ('{image_path}'), skip")
+            return False
+        logger.debug("_check_for_birthdays: recupero dipendenti dal DB...")
         today = datetime.now().date()
         employees = self.db.fetch_all_active_employees_birthdays()
+        logger.debug(f"_check_for_birthdays: {len(employees) if employees else 0} dipendenti trovati")
         celebrating = []
         for emp in employees:
             bday = emp.EmployeeBirthDate
@@ -13395,10 +13503,14 @@ class App(tk.Tk):
 
     def _setup_slideshow(self):
         """Legge le impostazioni e avvia il ciclo dello slideshow."""
+        logger.debug("_setup_slideshow: start")
         folder_path = self._get_slideshow_folder()
+        logger.debug(f"_setup_slideshow: folder_path='{folder_path}'")
         interval_min_str = self.db.fetch_setting('SlideshowIntervalMinutes') if self.db.conn else None
+        logger.debug(f"_setup_slideshow: SlideshowIntervalMinutes='{interval_min_str}'")
 
         if not folder_path or not os.path.isdir(folder_path):
+            logger.warning(f"_setup_slideshow: cartella slideshow non trovata o non valida: '{folder_path}'")
             self.slideshow_label.config(text=self._get_slideshow_lang_text('slideshow_no_folder'), foreground="white")
             return
 
@@ -14089,41 +14201,11 @@ class App(tk.Tk):
                 force_update = is_mandatory or skip_count >= 3
                 
                 if force_update:
-                    # Update obbligatorio
-                    title = self.lang.get("upgrade_required_title")
-                    
-                    if is_mandatory:
-                        message = self.lang.get(
-                            "force_upgrade_message_mandatory",
-                            version_info.Version, APP_VERSION
-                        )
-                    else:
-                        message = self.lang.get(
-                            "force_upgrade_message_max_skips",
-                            version_info.Version, APP_VERSION
-                        )
-                    
-                    messagebox.showinfo(title, message, parent=self)
-
-                    destination = os.path.dirname(sys.executable)
-                    exe_name = os.path.basename(sys.executable)
-                    updater_path = os.path.join(destination, "updater.exe")
-
-                    if not os.path.exists(updater_path):
-                        messagebox.showerror("Errore Critico", "File updater.exe non trovato! Impossibile aggiornare.",
-                                             parent=self)
-                        self.db.disconnect()
-                        self.destroy()
-                        self.should_exit = True  # Set the flag
-                        return False
-
-                    # Reset del conteggio prima di aggiornare
+                    # Update obbligatorio: usa il dialogo unificato _trigger_update
+                    logger.info(f"check_version: update obbligatorio (mandatory={is_mandatory}, skip={skip_count})")
                     reset_update_skip_count()
-                    
-                    subprocess.Popen([updater_path, source_path, destination, exe_name])
-                    self.db.disconnect()
-                    self.destroy()
-                    self.should_exit = True  # Set the flag
+                    self._trigger_update(version_info, mandatory=True)
+                    self.should_exit = True
                     return False
                 else:
                     # Update opzionale - chiedi all'utente
@@ -14133,29 +14215,13 @@ class App(tk.Tk):
                         "optional_upgrade_message",
                         version_info.Version, APP_VERSION, remaining_skips
                     )
-                    
+
                     response = messagebox.askyesno(title, message, parent=self)
-                    
+
                     if response:
                         # L'utente vuole aggiornare
-                        destination = os.path.dirname(sys.executable)
-                        exe_name = os.path.basename(sys.executable)
-                        updater_path = os.path.join(destination, "updater.exe")
-
-                        if not os.path.exists(updater_path):
-                            messagebox.showerror("Errore Critico", "File updater.exe non trovato! Impossibile aggiornare.",
-                                                 parent=self)
-                            self.db.disconnect()
-                            self.destroy()
-                            self.should_exit = True
-                            return False
-
-                        # Reset del conteggio prima di aggiornare
                         reset_update_skip_count()
-                        
-                        subprocess.Popen([updater_path, source_path, destination, exe_name])
-                        self.db.disconnect()
-                        self.destroy()
+                        self._trigger_update(version_info, mandatory=False)
                         self.should_exit = True
                         return False
                     else:
@@ -14163,7 +14229,7 @@ class App(tk.Tk):
                         skip_count += 1
                         save_update_skip_count(skip_count, version_info.Version)
                         logger.info(f"Update rinviato. Conteggio rinvii: {skip_count}/3")
-                        
+
                         # Mostra un messaggio informativo
                         info_message = self.lang.get(
                             "update_skipped_message",
@@ -14190,6 +14256,7 @@ class App(tk.Tk):
 
 
     def _create_widgets(self):
+        logger.debug("INIT: _create_widgets start")
         # --- PRIMA: Crea la Barra di Stato Inferiore ---
         status_bar = ttk.Frame(self, style="Card.TFrame", padding=5)
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
@@ -14201,12 +14268,15 @@ class App(tk.Tk):
         # Logo (ora in basso a destra)
         if PIL_AVAILABLE:
             try:
+                logger.debug("INIT: caricamento logo...")
                 image = Image.open("logo.png")
                 image.thumbnail((100, 100))
                 self.logo_image = ImageTk.PhotoImage(image)
                 self.logo_label = ttk.Label(bottom_right_frame, image=self.logo_image)
                 self.logo_label.pack()
+                logger.debug("INIT: logo caricato OK")
             except Exception as e:
+                logger.warning(f"Errore caricamento logo: {e}")
                 print(f"Errore caricamento logo: {e}")
 
         # Orologio (ora sotto il logo)
@@ -14225,6 +14295,7 @@ class App(tk.Tk):
 
         # Associa il ridimensionamento al disegno dell'immagine
         self.slideshow_label.bind('<Configure>', lambda e: self._draw_current_image())
+        logger.debug("INIT: _create_widgets DONE")
 
 
     def _launch_specific_gantt_window(self, project_id):
@@ -14241,22 +14312,29 @@ class App(tk.Tk):
 
     def _create_menu(self):
         """Crea la struttura completa dei menu con gerarchia organizzata"""
+        logger.debug("INIT: _create_menu start")
         self.menubar = tk.Menu(self)
         self.config(menu=self.menubar)
 
         # Inizializza tutti i menu principali
+        logger.debug("INIT: _init_main_menus...")
         self._init_main_menus()
 
         # Inizializza i sottomenu complessi
+        logger.debug("INIT: _init_production_submenus...")
         self._init_production_submenus()
         #self._init_npi_submenus()
 
         #self._init_other_submenus()  # Metodo fittizio per gli altri sottomenu
+        logger.debug("INIT: _init_tools_submenus...")
         self._init_tools_submenus()
+        logger.debug("INIT: _init_help_submenus...")
         self._init_help_submenus()
 
         # Aggiungi i menu principali alla barra
+        logger.debug("INIT: _add_main_menus_to_bar...")
         self._add_main_menus_to_bar()
+        logger.debug("INIT: _create_menu DONE")
 
     def _init_main_menus(self):
         """Inizializza i menu principali"""
