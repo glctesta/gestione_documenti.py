@@ -293,12 +293,14 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
 
         referiment_combo['values'] = all_referiments
         referiment_combo.set(all_referiments[0] if all_referiments else "")
+        logger.info(f"[scarti_gui] Combo values assegnati: {len(referiment_combo['values'])} valori, stato combo: {referiment_combo.cget('state')}")
 
         if not all_referiments:
             logger.info("[scarti_gui] Nessun riferimento da DB, attivato inserimento manuale")
 
         verified.set(True)
         enable_fields()
+        logger.info(f"[scarti_gui] Post enable_fields - Combo values: {len(referiment_combo['values'])}, stato: {referiment_combo.cget('state')}")
         logger.info(f"[scarti_gui] Verifica completata per codice '{code}', IDLabel={id_label_code_var.get()}")
 
     def select_picture():

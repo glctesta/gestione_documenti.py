@@ -27,6 +27,17 @@ for file in files_to_include:
     if os.path.exists(file):
         datas_list.append((file, '.'))
 
+# Aggiungi directory Tcl/Tk (necessarie per tkinter nell'exe compilato)
+import sys
+_python_base = os.path.dirname(sys.executable)
+_tcl_root = os.path.join(_python_base, 'tcl')
+if not os.path.isdir(_tcl_root):
+    _tcl_root = r'C:\Users\gtesta\AppData\Local\Programs\Python\Python311\tcl'
+for _d in ('tcl8.6', 'tk8.6'):
+    _p = os.path.join(_tcl_root, _d)
+    if os.path.isdir(_p):
+        datas_list.append((_p, _d))
+
 # Aggiungi la directory npi se esiste
 if os.path.exists('npi'):
     datas_list.append(('npi', 'npi'))

@@ -1,11 +1,28 @@
-# -*- mode: python ; coding: utf-8 -*-
+import os, sys
 
+# Trova automaticamente le directory Tcl/Tk
+_python_base = os.path.dirname(sys.executable)
+_tcl_root = os.path.join(_python_base, 'tcl')
+if not os.path.isdir(_tcl_root):
+    _tcl_root = r'C:\Users\gtesta\AppData\Local\Programs\Python\Python311\tcl'
+
+_tcl_data = []
+for _d in ('tcl8.6', 'tk8.6'):
+    _p = os.path.join(_tcl_root, _d)
+    if os.path.isdir(_p):
+        _tcl_data.append((_p, _d))
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('updater.exe', '.'), ('logo.png', '.'), ('logo.ico', '.'), ('DejaVuSans.ttf', '.'), ('DejaVuSans-Bold.ttf', '.'), ('updater.exe', '.')],
+    datas=[
+        ('updater.exe', '.'),
+        ('logo.png', '.'),
+        ('logo.ico', '.'),
+        ('DejaVuSans.ttf', '.'),
+        ('DejaVuSans-Bold.ttf', '.'),
+    ] + _tcl_data,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

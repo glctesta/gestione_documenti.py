@@ -322,7 +322,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.5.5'  # Versione aggiornata
+APP_VERSION = '2.3.5.7'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -11100,6 +11100,9 @@ class App(tk.Tk):
         self.slideshow_interval_ms = 60000
         self.slideshow_job_id = None
 
+        # --- Flag di chiusura per evitare callback dopo destroy ---
+        self._closing = False
+
         # --- NUOVE VARIABILI PER IL FLASHING ---
         self.birthday_flash_job_id = None
         self.birthday_stop_job_id = None
@@ -11139,7 +11142,14 @@ class App(tk.Tk):
         logger.debug("INIT: LanguageManager loaded")
         self.lang.set_language(initial_lang)
 
-        # === 2. INIZIALIZZAZIONE DEI MODULI PRINCIPALI (INCLUSO NPI) ===
+        # === 2. CONTROLLO VERSIONE (prima dei moduli in background) ===
+        if self._splash:
+            self._splash.update_progress(50, "Verifica versione...")
+        if self.check_version() is False:
+            return
+        logger.debug("INIT: after check_version")
+
+        # === 3. INIZIALIZZAZIONE DEI MODULI PRINCIPALI (INCLUSO NPI) ===
         # Questo Ã¨ il posto ideale per inizializzare i moduli che dipendono da DB e Lingua
 
         # --- INIZIALIZZAZIONE GESTORE NPI (POSIZIONE CORRETTA) ---
@@ -11176,15 +11186,8 @@ class App(tk.Tk):
         self.fct_manager = fct_transfer.FCTTransferManager(DB_CONN_STR, self.fct_config)
         self.fct_run_menu_index = None
 
-        # === 3. CONTROLLI DI AVVIO E CREAZIONE UI ===
+        # === 4. CREAZIONE UI ===
 
-        # Controlla la versione (e se l'app deve chiudersi)
-        if self._splash:
-            self._splash.update_progress(75, "Verifica versione...")
-        if self.check_version() is False:
-            # check_version giÃ  gestisce la chiusura, quindi fermiamo l'init
-            return
-        logger.debug("INIT: after check_version")
 
         self.doc_categories = self.db.fetch_doc_categories()
         self.logo_label = None
@@ -13260,6 +13263,8 @@ class App(tk.Tk):
         Verifica periodicamente se Ã¨ il momento di eseguire il check.
         Viene chiamato ogni minuto per controllare orari configurati.
         """
+        if self._closing:
+            return
         try:
             config = self._get_task_config('VerificationDiscrepanciesCheck')
             
@@ -13638,7 +13643,7 @@ class App(tk.Tk):
 
     def _cycle_image(self):
         """Cambia l'indice dell'immagine, la disegna e si riprogramma."""
-        if not self.image_files:
+        if self._closing or not self.image_files:
             return
 
         self._draw_current_image()
@@ -13670,6 +13675,8 @@ class App(tk.Tk):
     def _update_clock(self):
         """Aggiorna l'etichetta dell'orologio ogni secondo."""
         # Formato: Giorno/Mese/Anno Ora:Minuti:Secondi
+        if self._closing:
+            return
         now_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         self.clock_label.config(text=now_str)
 
@@ -16889,6 +16896,9 @@ class App(tk.Tk):
 
     def _on_closing(self, force_quit=False):
         """Gestisce la chiusura dell'applicazione."""
+        # Segnala che l'app sta chiudendo (blocca callback periodici)
+        self._closing = True
+
         # Ferma tutti i timer attivi
         if self.slideshow_job_id: self.after_cancel(self.slideshow_job_id)
         if self.birthday_flash_job_id: self.after_cancel(self.birthday_flash_job_id)
