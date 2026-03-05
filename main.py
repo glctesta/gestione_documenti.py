@@ -322,7 +322,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.6.0'  # Versione aggiornata
+APP_VERSION = '2.3.6.2'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -11322,6 +11322,11 @@ class App(tk.Tk):
         self._weekly_npi_email_thread = None
         self._weekly_npi_email_stop_event = threading.Event()
         self._start_weekly_npi_email_background_task()
+
+        # Inizializza il thread per l'email settimanale overtime non autorizzati
+        self._weekly_overtime_email_thread = None
+        self._weekly_overtime_email_stop_event = threading.Event()
+        self._start_weekly_overtime_email_background_task()
         
         logger.info("INIT: App initialization complete.")
 
@@ -11791,6 +11796,88 @@ class App(tk.Tk):
                 logger.error(f"Errore nel worker email settimanale NPI: {e}", exc_info=True)
                 time.sleep(3600)
 
+    # =========================================================================
+    # BACKGROUND TASK: Email settimanale overtime non autorizzati
+    # =========================================================================
+    def _start_weekly_overtime_email_background_task(self):
+        """Avvia il thread per l'email settimanale overtime non autorizzati."""
+        try:
+            if self._weekly_overtime_email_thread is None or not self._weekly_overtime_email_thread.is_alive():
+                self._weekly_overtime_email_stop_event.clear()
+                self._weekly_overtime_email_thread = threading.Thread(
+                    target=self._weekly_overtime_email_worker,
+                    daemon=True,
+                    name="WeeklyOvertimeNotAuthWorker"
+                )
+                self._weekly_overtime_email_thread.start()
+                logger.info("Background task per email settimanale overtime non autorizzati avviato")
+        except Exception as e:
+            logger.error(f"Errore avvio background task email overtime: {e}", exc_info=True)
+
+    def _weekly_overtime_email_worker(self):
+        """
+        Worker thread che invia il report overtime non autorizzati ogni lunedì.
+        Usa OvertimeManager.send_weekly_unauthorized_overtime_email() che ha
+        la deduplicazione incorporata via NpiWeeklyGeneralEmailLog.
+        """
+        from business_days import should_send_notification
+        from datetime import datetime, timedelta
+        import time
+
+        target_hour = 9
+        first_run = True
+
+        while not self._weekly_overtime_email_stop_event.is_set():
+            try:
+                if first_run:
+                    first_run = False
+                    today = datetime.now().date()
+                    if today.weekday() == 0 and should_send_notification(country_code='IT'):
+                        try:
+                            from overtime.overtime_manager import OvertimeManager
+                            manager = OvertimeManager(self.db)
+                            manager.send_weekly_unauthorized_overtime_email()
+                            logger.info("Email settimanale overtime: prima esecuzione completata")
+                        except Exception as ex:
+                            logger.error(f"Errore prima esecuzione email overtime: {ex}", exc_info=True)
+
+                # Attendi fino alle 09:00 del giorno successivo
+                now = datetime.now()
+                if now.hour >= target_hour:
+                    next_check = now.replace(hour=target_hour, minute=0, second=0, microsecond=0) + timedelta(days=1)
+                else:
+                    next_check = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
+
+                wait_seconds = (next_check - now).total_seconds()
+                logger.info(f"Prossimo controllo email overtime non autorizzati: {next_check.strftime('%Y-%m-%d %H:%M')}")
+
+                elapsed = 0
+                while elapsed < wait_seconds and not self._weekly_overtime_email_stop_event.is_set():
+                    time.sleep(60)
+                    elapsed += 60
+
+                if self._weekly_overtime_email_stop_event.is_set():
+                    break
+
+                today = datetime.now().date()
+                if today.weekday() != 0:
+                    continue
+                if not should_send_notification(country_code='IT'):
+                    logger.debug("Email overtime: oggi non è un giorno lavorativo")
+                    continue
+
+                try:
+                    from overtime.overtime_manager import OvertimeManager
+                    manager = OvertimeManager(self.db)
+                    manager.send_weekly_unauthorized_overtime_email()
+                    logger.info("Email settimanale overtime non autorizzati inviata")
+                except Exception as ex:
+                    logger.error(f"Errore invio email overtime: {ex}", exc_info=True)
+
+            except Exception as e:
+                logger.error(f"Errore nel worker email settimanale overtime: {e}", exc_info=True)
+                time.sleep(3600)
+
     def _create_npi_overview_pie_chart(self, report_data, prefix="NPI_Overview_Pie"):
         """
         Crea un grafico a torta riassuntivo e restituisce il path del file PNG.
@@ -11954,6 +12041,12 @@ class App(tk.Tk):
             logger.info("Arresto background task email settimanale NPI...")
             self._weekly_npi_email_stop_event.set()
             self._weekly_npi_email_thread.join(timeout=5)
+
+        # Ferma anche il thread email settimanale overtime
+        if self._weekly_overtime_email_thread and self._weekly_overtime_email_thread.is_alive():
+            logger.info("Arresto background task email settimanale overtime...")
+            self._weekly_overtime_email_stop_event.set()
+            self._weekly_overtime_email_thread.join(timeout=5)
 
         # Ferma anche il servizio notifiche automatiche NPI
         try:
