@@ -266,9 +266,16 @@ class CheckTasksManagementWindow(tk.Toplevel):
         self.doc_label = ttk.Label(doc_frame, text='', foreground='blue')
         self.doc_label.pack(side='left', padx=5)
 
+        # Campo Ip_user_pass (Prelievodati/userid/pass)
+        ttk.Label(left_frame, text=self.lang.get('ip_user_pass_label', 'Prelievodati/userid/pass')).grid(
+            row=4, column=0, sticky='w', padx=5, pady=5)
+        self.ip_user_pass_var = tk.StringVar()
+        ttk.Entry(left_frame, textvariable=self.ip_user_pass_var, width=50).grid(
+            row=4, column=1, padx=5, pady=5, sticky='ew')
+
         # Pulsanti azione
         btn_frame = ttk.Frame(left_frame)
-        btn_frame.grid(row=4, column=0, columnspan=2, pady=10)
+        btn_frame.grid(row=5, column=0, columnspan=2, pady=10)
         ttk.Button(btn_frame, text=self.lang.get('btn_new', 'Nuovo'), command=self._on_new).pack(side='left', padx=2)
         ttk.Button(btn_frame, text=self.lang.get('btn_save', 'Salva'), command=self._on_save).pack(side='left', padx=2)
         ttk.Button(btn_frame, text=self.lang.get('btn_delete', 'Elimina'), command=self._on_delete).pack(side='left',
@@ -388,6 +395,10 @@ class CheckTasksManagementWindow(tk.Toplevel):
             else:
                 self.doc_label.config(text='')
 
+            # Carica Ip_user_pass
+            ip_user_pass = getattr(task, 'Ip_user_pass', None)
+            self.ip_user_pass_var.set(ip_user_pass if ip_user_pass else '')
+
     def _on_double_click(self, event):
         """Apre il documento se presente"""
         selection = self.tree.selection()
@@ -426,6 +437,7 @@ class CheckTasksManagementWindow(tk.Toplevel):
         self.product_combo.set('')
         self._doc_data = None
         self.doc_label.config(text='')
+        self.ip_user_pass_var.set('')
         self._on_generic_changed()
 
     def _on_save(self):
@@ -454,7 +466,8 @@ class CheckTasksManagementWindow(tk.Toplevel):
                 is_generic,
                 self.user_name,
                 self._doc_data,
-                product_check_id
+                product_check_id,
+                self.ip_user_pass_var.get().strip() or None
             )
         else:
             # Insert
@@ -463,7 +476,8 @@ class CheckTasksManagementWindow(tk.Toplevel):
                 is_generic,
                 self.user_name,
                 self._doc_data,
-                product_check_id
+                product_check_id,
+                self.ip_user_pass_var.get().strip() or None
             )
 
         if success:
@@ -741,6 +755,7 @@ class ProductVerificationWindow(tk.Toplevel):
 
         for task in generic_tasks:
             print(f"Generic task: {task.ItemToCheck}")
+            ip_user_pass = getattr(task, 'Ip_user_pass', None)
             item_id = self.checklist_tree.insert('', 'end', text='[ ]', values=(
                 False,
                 task.PriodicalProductCheckListId,
@@ -751,7 +766,10 @@ class ProductVerificationWindow(tk.Toplevel):
                 'tree_id': item_id,
                 'task_id': task.PriodicalProductCheckListId,
                 'checked': False,
-                'doc': task.Doc
+                'doc': task.Doc,
+                'ip_user_pass': ip_user_pass,
+                'xray_pdf_bytes': None,
+                'xray_missing': False
             })
 
         # CARICA TASK SPECIFICI solo se c'e' un prodotto selezionato
@@ -762,6 +780,7 @@ class ProductVerificationWindow(tk.Toplevel):
 
             for task in specific_tasks:
                 print(f"Specific task: {task.ItemToCheck}")
+                ip_user_pass = getattr(task, 'Ip_user_pass', None)
                 item_id = self.checklist_tree.insert('', 'end', text='[ ]', values=(
                     False,
                     task.PriodicalProductCheckListId,
@@ -772,7 +791,10 @@ class ProductVerificationWindow(tk.Toplevel):
                     'tree_id': item_id,
                     'task_id': task.PriodicalProductCheckListId,
                     'checked': False,
-                    'doc': task.Doc
+                    'doc': task.Doc,
+                    'ip_user_pass': ip_user_pass,
+                    'xray_pdf_bytes': None,
+                    'xray_missing': False
                 })
 
         print(f"Total checklist items: {len(self._check_items)}")
@@ -784,13 +806,158 @@ class ProductVerificationWindow(tk.Toplevel):
         if region == 'tree':
             item_id = self.checklist_tree.identify_row(event.y)
             if item_id:
-                # Toggle checkbox
                 for check_item in self._check_items:
                     if check_item['tree_id'] == item_id:
-                        check_item['checked'] = not check_item['checked']
-                        new_symbol = '[X]' if check_item['checked'] else '[ ]'
-                        self.checklist_tree.item(item_id, text=new_symbol)
+                        # Se sta selezionando (non deselezionando) un task con Ip_user_pass
+                        if not check_item['checked'] and check_item.get('ip_user_pass'):
+                            self._handle_xray_check(check_item, item_id)
+                        else:
+                            # Toggle normale
+                            check_item['checked'] = not check_item['checked']
+                            if not check_item['checked']:
+                                # Reset xray state on uncheck
+                                check_item['xray_missing'] = False
+                                check_item['xray_pdf_bytes'] = None
+                            new_symbol = '[X]' if check_item['checked'] else '[ ]'
+                            self.checklist_tree.item(item_id, text=new_symbol)
                         break
+
+    def _handle_xray_check(self, check_item, item_id):
+        """
+        Gestisce il click su un task con Ip_user_pass NOT NULL.
+        Cerca il PDF del LabelCode nella directory di rete.
+        """
+        label_code = self.label_code_var.get().strip()
+        if not label_code:
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('xray_enter_label_first',
+                              'Please enter the Label Code before checking this task.'),
+                parent=self
+            )
+            return
+
+        # Cerca il PDF nella directory di rete
+        status, pdf_bytes = self._connect_and_fetch_xray_pdf(
+            check_item['ip_user_pass'], label_code
+        )
+
+        if status == 'found':
+            check_item['checked'] = True
+            check_item['xray_pdf_bytes'] = pdf_bytes
+            check_item['xray_missing'] = False
+            self.checklist_tree.item(item_id, text='[X]')
+            messagebox.showinfo(
+                self.lang.get('success', 'Successo'),
+                self.lang.get('xray_pdf_found',
+                              'X-Ray PDF report found and will be saved with the verification.'),
+                parent=self
+            )
+        elif status == 'error':
+            # Errore di connessione — non permettere il check
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                self.lang.get('xray_connection_error',
+                              'Cannot connect to the X-Ray report directory. Please check the network connection and try again.'),
+                parent=self
+            )
+        elif status == 'not_found':
+            # PDF non trovato — avvisa e chiedi conferma
+            proceed = messagebox.askyesno(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('xray_pdf_not_found_msg',
+                              'The X-Ray PDF report for Label Code "{label_code}" was not found '
+                              'in the verification directory.\n\n'
+                              'IMPORTANT: The PDF document MUST be saved using the Label Code '
+                              'as the file name (e.g. "{label_code}.pdf").\n\n'
+                              'You cannot check this task without the verification document.\n'
+                              'Do you still want to proceed? '
+                              '(The check will be marked as NOT verified and a notification '
+                              'email will be sent.)').format(label_code=label_code),
+                parent=self
+            )
+            if proceed:
+                check_item['checked'] = True
+                check_item['xray_missing'] = True
+                check_item['xray_pdf_bytes'] = None
+                self.checklist_tree.item(item_id, text='[!]')  # Indicate warning
+            # else: leave unchecked
+
+    def _connect_and_fetch_xray_pdf(self, ip_user_pass, label_code):
+        """
+        Connette alla directory di rete e cerca un PDF con il LabelCode nel nome.
+
+        Args:
+            ip_user_pass: Stringa "IP;USERID;PASSWORD" (IP è un percorso UNC)
+            label_code: Il LabelCode da cercare nel nome del file
+
+        Returns:
+            tuple: (status, pdf_bytes)
+                status: 'found', 'not_found', 'error'
+                pdf_bytes: bytes del PDF se trovato, None altrimenti
+        """
+        import glob
+
+        try:
+            parts = ip_user_pass.split(';')
+            if len(parts) < 3:
+                logger.error(f"Invalid Ip_user_pass format: expected 3 parts, got {len(parts)}")
+                return ('error', None)
+
+            network_path = parts[0].strip()
+            userid = parts[1].strip()
+            password = parts[2].strip()
+
+            logger.info(f"Connecting to network share: {network_path}")
+
+            # Connetti alla share di rete con 'net use'
+            connect_cmd = f'net use "{network_path}" /user:{userid} "{password}" 2>&1'
+            try:
+                result = subprocess.run(
+                    connect_cmd, shell=True, capture_output=True, text=True, timeout=15
+                )
+                # Connessione OK o già connesso (errcode 0 o messaggio "already")
+                if result.returncode != 0 and 'already' not in result.stderr.lower():
+                    logger.error(f"Net use failed: {result.stderr or result.stdout}")
+                    return ('error', None)
+            except subprocess.TimeoutExpired:
+                logger.error(f"Connection timeout to {network_path}")
+                return ('error', None)
+            except Exception as conn_err:
+                logger.error(f"Connection error: {conn_err}")
+                return ('error', None)
+
+            # Cerca il file PDF con il LabelCode nel nome
+            search_pattern = os.path.join(network_path, f'*{label_code}*.pdf')
+            pdf_files = glob.glob(search_pattern)
+
+            if pdf_files:
+                # Prendi il primo match
+                pdf_path = pdf_files[0]
+                logger.info(f"X-Ray PDF found: {pdf_path}")
+                try:
+                    with open(pdf_path, 'rb') as f:
+                        pdf_bytes = f.read()
+                    return ('found', pdf_bytes)
+                except Exception as read_err:
+                    logger.error(f"Error reading PDF: {read_err}")
+                    return ('error', None)
+            else:
+                logger.info(f"No PDF found matching '{label_code}' in {network_path}")
+                return ('not_found', None)
+
+        except Exception as e:
+            logger.error(f"Error in _connect_and_fetch_xray_pdf: {e}", exc_info=True)
+            return ('error', None)
+        finally:
+            # Disconnetti la share (best effort)
+            try:
+                subprocess.run(
+                    f'net use "{network_path}" /delete /y 2>&1',
+                    shell=True, capture_output=True, timeout=5
+                )
+            except:
+                pass
 
     def _on_checklist_double_click(self, event):
         """Apre il documento se presente"""
@@ -858,7 +1025,7 @@ class ProductVerificationWindow(tk.Toplevel):
         if self.result_var.get() == 'FAIL' and not comments:
             messagebox.showwarning(
                 self.lang.get('warning', 'Attenzione'),
-                self.lang.get('Comments_Required_For_Fail', 'Il campo commenti Ã¨ obbligatorio per risultato FAIL'),
+                self.lang.get('Comments_Required_For_Fail', 'Il campo commenti è obbligatorio per risultato FAIL'),
                 parent=self
             )
             return
@@ -873,16 +1040,38 @@ class ProductVerificationWindow(tk.Toplevel):
             ):
                 return
 
+        # Cerca il task X-Ray per determinare attachment_doc e xray_task_id
+        attachment_doc = None
+        xray_task_id = None
+        xray_missing_items = []
+
+        for item in self._check_items:
+            if item.get('ip_user_pass'):
+                xray_task_id = item['task_id']
+                if item.get('xray_pdf_bytes'):
+                    attachment_doc = item['xray_pdf_bytes']
+                elif item.get('xray_missing'):
+                    xray_missing_items.append(item)
+
         # Salva nel database usando l'IDLabelCode
         success = self.db.save_product_verification(
             must_check_id=self._current_must_check_id,
             user_name=self.user_name,
-            label_code_id=self._current_label_code_id,  # Usa l'IDLabelCode invece del codice testo
+            label_code_id=self._current_label_code_id,
             status=self.result_var.get(),
-            comments=comments if self.result_var.get() == 'FAIL' else None
+            comments=comments if self.result_var.get() == 'FAIL' else None,
+            attachment_doc=attachment_doc,
+            xray_task_id=xray_task_id
         )
 
         if success:
+            # Se ci sono task X-Ray mancanti, invia email di notifica
+            if xray_missing_items:
+                self._send_xray_missing_email(
+                    self.label_code_var.get().strip(),
+                    xray_missing_items
+                )
+
             messagebox.showinfo(
                 self.lang.get('success', 'Successo'),
                 self.lang.get('verification_saved', 'Verifica salvata con successo'),
@@ -900,6 +1089,82 @@ class ProductVerificationWindow(tk.Toplevel):
                 f"{error_msg}: {self.db.last_error_details}",
                 parent=self
             )
+
+    def _send_xray_missing_email(self, label_code, missing_items):
+        """
+        Invia email di notifica quando la verifica X-Ray non è stata effettuata.
+        Destinatari: sys_email_NoXrayInChekControl
+        """
+        try:
+            import sys as _sys
+            _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from utils import get_email_recipients, send_email
+
+            recipients = get_email_recipients(self.db.conn, attribute='sys_email_NoXrayInChekControl')
+            if not recipients:
+                logger.warning("No recipients configured for 'sys_email_NoXrayInChekControl'")
+                return
+
+            # Recupera ordine dal treeview selezionato
+            order_number = ''
+            selection = self.products_tree.selection()
+            if selection:
+                item = self.products_tree.item(selection[0])
+                order_number = item['values'][1] if len(item['values']) > 1 else ''
+
+            subject = f"⚠️ X-Ray Verification Missing - Label {label_code}"
+
+            body = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif;">
+                <h2 style="color: #C00000;">⚠️ X-Ray Verification Not Performed</h2>
+                <p>Dear Team,</p>
+                <p>The following product verification was completed <strong>without</strong> the required
+                X-Ray verification document:</p>
+
+                <table style="border-collapse: collapse; margin: 20px 0;">
+                    <tr>
+                        <td style="padding: 8px; font-weight: bold; border: 1px solid #ddd;">Label Code:</td>
+                        <td style="padding: 8px; border: 1px solid #ddd;">{label_code}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px; font-weight: bold; border: 1px solid #ddd;">Order:</td>
+                        <td style="padding: 8px; border: 1px solid #ddd;">{order_number}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px; font-weight: bold; border: 1px solid #ddd;">Verified by:</td>
+                        <td style="padding: 8px; border: 1px solid #ddd;">{self.user_name}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px; font-weight: bold; border: 1px solid #ddd;">Date/Time:</td>
+                        <td style="padding: 8px; border: 1px solid #ddd;">{datetime.now().strftime('%d/%m/%Y %H:%M')}</td>
+                    </tr>
+                </table>
+
+                <p style="background-color: #FFE0E0; border-left: 4px solid #C00000; padding: 12px; margin: 20px 0;">
+                    <strong>&#9888; Warning:</strong> The X-Ray check for label <strong>{label_code}</strong>
+                    of order <strong>{order_number}</strong> was <strong>NOT performed</strong>.
+                    The verification has been saved with value <strong>0</strong> for the X-Ray task.
+                </p>
+
+                <p style="margin-top: 30px;">
+                    Best regards,<br>
+                    <strong>TraceabilityRS System</strong>
+                </p>
+            </body>
+            </html>
+            """
+
+            send_email(
+                recipients=recipients,
+                subject=subject,
+                body=body,
+                is_html=True
+            )
+            logger.info(f"X-Ray missing notification email sent for label {label_code}")
+
+        except Exception as e:
+            logger.error(f"Error sending X-Ray missing email: {e}", exc_info=True)
 
     def _clear_verification_form(self):
         """Pulisce il form di verifica"""

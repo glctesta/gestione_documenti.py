@@ -1317,21 +1317,22 @@ class Database:
     def fetch_check_task_by_id(self, task_id):
         """Recupera un task specifico per ID"""
         query = """
-                SELECT ppl.PriodicalProductCheckListId, \
-                       ppl.ItemToCheck, \
+                SELECT ppl.PriodicalProductCheckListId,
+                       ppl.ItemToCheck,
                        ppl.IsGeneric,
-                       ppl.UserType, \
-                       ppl.Doc, \
+                       ppl.UserType,
+                       ppl.Doc,
                        ppl.DateIn,
-                       p.ProductCode, \
-                       p.ProductName
+                       p.ProductCode,
+                       p.ProductName,
+                       ppl.Ip_user_pass
                 FROM [Traceability_RS].[dbo].[PeriodicalProductCheckLists] ppl
                     LEFT JOIN [Traceability_RS].[dbo].[PeriodicProductCheckListSpecifics] ps
                 ON ps.PriodicalProductCheckListId = ppl.PriodicalProductCheckListId
                     LEFT JOIN [Traceability_RS].[dbo].[PeriodicalProductChecks] pc
                     ON pc.PeriodicalProductCheckId = ps.PeriodicalProductCheckId
                     LEFT JOIN dbo.products p ON p.IDProduct = pc.IdProduct
-                WHERE ppl.PriodicalProductCheckListId = ?; \
+                WHERE ppl.PriodicalProductCheckListId = ?;
                 """
         try:
             self.cursor.execute(query, task_id)
@@ -1340,7 +1341,7 @@ class Database:
             self.last_error_details = str(e)
             return None
 
-    def insert_check_task(self, item_to_check, is_generic, user_type, doc_data, product_check_id=None):
+    def insert_check_task(self, item_to_check, is_generic, user_type, doc_data, product_check_id=None, ip_user_pass=None):
         """Inserisce un nuovo task di verifica"""
         try:
             self.conn.autocommit = False
@@ -1349,11 +1350,12 @@ class Database:
             query1 = """
                      SET NOCOUNT ON;
                      INSERT INTO [Traceability_RS].[dbo].[PeriodicalProductCheckLists]
-                         (ItemToCheck, IsGeneric, UserType, Doc, DateIn)
-                     VALUES (?, ?, ?, ?, GETDATE());
+                         (ItemToCheck, IsGeneric, UserType, Doc, DateIn, Ip_user_pass)
+                     VALUES (?, ?, ?, ?, GETDATE(), ?);
                      SELECT CAST(SCOPE_IDENTITY() AS INT) AS NewID;
                      """
-            self.cursor.execute(query1, item_to_check, 1 if is_generic else 0, user_type, doc_data)
+            self.cursor.execute(query1, item_to_check, 1 if is_generic else 0, user_type, doc_data,
+                                ip_user_pass if ip_user_pass else None)
             result = self.cursor.fetchone()
 
             if not result:
@@ -1361,7 +1363,7 @@ class Database:
 
             task_id = result[0]
 
-            # Se non Ã¨ generico, inserisci anche in PeriodicProductCheckListSpecifics
+            # Se non è generico, inserisci anche in PeriodicProductCheckListSpecifics
             if not is_generic and product_check_id:
                 query2 = """
                          INSERT INTO [Traceability_RS].[dbo].[PeriodicProductCheckListSpecifics]
@@ -1375,7 +1377,51 @@ class Database:
         except Exception as e:
             self.conn.rollback()
             self.last_error_details = str(e)
-            print(f"âŒ Errore insert_check_task: {e}")
+            print(f"❌ Errore insert_check_task: {e}")
+            return False
+        finally:
+            self.conn.autocommit = True
+
+    def update_check_task(self, task_id, item_to_check, is_generic, user_type, doc_data, product_check_id=None, ip_user_pass=None):
+        """Aggiorna un task di verifica esistente"""
+        try:
+            self.conn.autocommit = False
+
+            query = """
+                    UPDATE [Traceability_RS].[dbo].[PeriodicalProductCheckLists]
+                    SET ItemToCheck = ?, IsGeneric = ?, UserType = ?, Doc = ?, Ip_user_pass = ?
+                    WHERE PriodicalProductCheckListId = ?;
+                    """
+            self.cursor.execute(query, item_to_check, 1 if is_generic else 0, user_type, doc_data,
+                                ip_user_pass if ip_user_pass else None, task_id)
+
+            # Gestisci PeriodicProductCheckListSpecifics
+            if is_generic:
+                # Se diventa generico, rimuovi associazioni specifiche
+                self.cursor.execute("""
+                    UPDATE [Traceability_RS].[dbo].[PeriodicProductCheckListSpecifics]
+                    SET dateout = GETDATE()
+                    WHERE PriodicalProductCheckListId = ? AND dateout IS NULL
+                """, task_id)
+            elif product_check_id:
+                # Aggiorna l'associazione specifica
+                self.cursor.execute("""
+                    UPDATE [Traceability_RS].[dbo].[PeriodicProductCheckListSpecifics]
+                    SET dateout = GETDATE()
+                    WHERE PriodicalProductCheckListId = ? AND dateout IS NULL
+                """, task_id)
+                self.cursor.execute("""
+                    INSERT INTO [Traceability_RS].[dbo].[PeriodicProductCheckListSpecifics]
+                        (PeriodicalProductCheckId, PriodicalProductCheckListId)
+                    VALUES (?, ?)
+                """, product_check_id, task_id)
+
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.conn.rollback()
+            self.last_error_details = str(e)
+            logger.error(f"Errore update_check_task: {e}")
             return False
         finally:
             self.conn.autocommit = True
@@ -1467,10 +1513,10 @@ class Database:
         """Recupera task generici"""
         try:
             query = """
-                SELECT ppl.PriodicalProductCheckListId, ppl.ItemToCheck, ppl.Doc
+                SELECT ppl.PriodicalProductCheckListId, ppl.ItemToCheck, ppl.Doc, ppl.Ip_user_pass
                 FROM [Traceability_RS].[dbo].[PeriodicalProductCheckLists] AS ppl
                 WHERE isgeneric = 1 AND ppl.dateout IS NULL
-                ORDER BY ppl.DateIn; \
+                ORDER BY ppl.DateIn;
                 """
 
             self.cursor.execute(query)
@@ -1500,7 +1546,7 @@ class Database:
 
             # Ora recupera i task specifici
             query2 = """
-                     SELECT ppl.PriodicalProductCheckListId, ppl.ItemToCheck, ppl.Doc
+                     SELECT ppl.PriodicalProductCheckListId, ppl.ItemToCheck, ppl.Doc, ppl.Ip_user_pass
                      FROM [Traceability_RS].[dbo].[PeriodicalProductCheckLists] AS ppl
                          INNER JOIN [Traceability_RS].[dbo].[PeriodicProductCheckListSpecifics] AS ps
                      ON ps.PriodicalProductCheckListId = ppl.PriodicalProductCheckListId
@@ -1508,7 +1554,7 @@ class Database:
                        AND ppl.dateout IS NULL
                        AND ps.dateout IS NULL
                        AND ps.PeriodicalProductCheckId = ?
-                     ORDER BY ppl.DateIn; \
+                     ORDER BY ppl.DateIn;
                      """
             self.cursor.execute(query2, product_check_id)
             return self.cursor.fetchall()
@@ -1516,7 +1562,8 @@ class Database:
             self.last_error_details = str(e)
             return []
 
-    def save_product_verification(self, must_check_id, user_name, label_code_id, status, comments=None):
+    def save_product_verification(self, must_check_id, user_name, label_code_id, status, comments=None,
+                                    attachment_doc=None, xray_task_id=None):
         """Salva una verifica prodotto completata usando l'IDLabelCode"""
         try:
             # Verifica che la connessione e il cursor esistano
@@ -1534,10 +1581,12 @@ class Database:
             # Inserisci in PeriodicalProductCheckLogs usando IDLabelCode
             query1 = """
                      INSERT INTO [Traceability_RS].[dbo].[PeriodicalProductCheckLogs]
-                     (PeriodicalProductCheckMustListId, CheckTime, UserCheck, IDLabelCode, Status, Comments)
-                     VALUES (?, GETDATE(), ?, ?, ?, ?);
+                     (PeriodicalProductCheckMustListId, CheckTime, UserCheck, IDLabelCode, Status, Comments,
+                      AttachmentDoc, PriodicalProductCheckListId)
+                     VALUES (?, GETDATE(), ?, ?, ?, ?, ?, ?);
                      """
-            self.cursor.execute(query1, must_check_id, user_name, label_code_id, status, comments)
+            self.cursor.execute(query1, must_check_id, user_name, label_code_id, status, comments,
+                                attachment_doc, xray_task_id)
 
             # Aggiorna AllertActiveted in PeriodicalProductCheckMustLists
             query2 = """
