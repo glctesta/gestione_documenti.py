@@ -322,7 +322,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.6.2'  # Versione aggiornata
+APP_VERSION = '2.3.6.3'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -999,12 +999,12 @@ class Database:
     def fetch_products_for_checks(self):
         """Recupera prodotti per combo gestione verifiche"""
         query = """
-                SELECT p.IDProduct, productcode, productname
+                SELECT p.IDProduct, productcode AS ProductCode, productname AS ProductName
                 FROM traceability_rs.dbo.products AS P
                          LEFT JOIN traceability_rs.dbo.PeriodicalProductChecks AS PC
                                    ON p.idproduct = pc.idproduct AND pc.datestop IS NULL
                 WHERE CHARINDEX('MICR', ProductName, 1) = 0
-                ORDER BY ProductCode; \
+                ORDER BY ProductCode;
                 """
         try:
             self.cursor.execute(query)
@@ -1272,12 +1272,12 @@ class Database:
     def fetch_products_with_checks(self):
         """Recupera prodotti con verifiche configurate"""
         query = """
-                SELECT pc.PeriodicalProductCheckId, p.productcode, p.productname
+                SELECT pc.PeriodicalProductCheckId AS PeriodicalProductCheckLogId, p.productcode AS ProductCode, p.productname AS ProductName
                 FROM [Traceability_RS].[dbo].[PeriodicalProductChecks] pc
                     INNER JOIN dbo.products p 
                 ON p.IDProduct = pc.IdProduct
                 WHERE pc.datestop IS NULL
-                ORDER BY p.productcode; \
+                ORDER BY p.productcode;
                 """
         try:
             self.cursor.execute(query)
