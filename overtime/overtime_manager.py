@@ -2360,3 +2360,403 @@ class OvertimeManager:
         except Exception as e:
             logger.error(f"Error sending weekly overtime analysis email: {e}", exc_info=True)
             return False
+
+    def send_weekly_unauthorized_overtime_email(self):
+        """
+        Invia email settimanale (ogni lunedì) con i dipendenti (FunctionCode <= 60) che hanno:
+        - Timbrature durante il weekend (sabato/domenica)
+        - Ore lavorate > 8 durante i giorni feriali
+        Evidenzia quelli NON autorizzati.
+
+        Destinatari da: settings.atribute = 'Sys_email_overtimeNotAuth'
+        Include Logo.png e allegato Excel.
+
+        Returns:
+            bool: True se email inviata con successo
+        """
+        try:
+            from datetime import timedelta
+            import openpyxl
+            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+            import base64
+
+            # Calcola date settimana precedente (lunedì-domenica)
+            today = date.today()
+            days_since_monday = today.weekday()  # 0 = Monday
+            last_monday = today - timedelta(days=days_since_monday + 7)
+            last_sunday = last_monday + timedelta(days=6)
+
+            logger.info(f"Generating weekly unauthorized overtime report for: {last_monday} to {last_sunday}")
+
+            # === DEDUP: verifica se email già inviata per questa settimana ===
+            dedup_attribute = 'Sys_email_overtimeNotAuth'
+            try:
+                dedup_cursor = self.db.conn.cursor()
+                dedup_cursor.execute("""
+                    SELECT TOP 1 1 FROM [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
+                    WHERE WeekStartDate = ? AND Attribute = ?
+                """, (last_monday, dedup_attribute))
+                already_sent = dedup_cursor.fetchone() is not None
+                dedup_cursor.close()
+
+                if already_sent:
+                    logger.info(f"Weekly unauthorized overtime email already sent for week {last_monday}. Skipping.")
+                    return True
+            except Exception as dedup_err:
+                logger.warning(f"Dedup check failed (fail-safe: skip send): {dedup_err}")
+                return True  # Fail-safe: evita duplicati
+
+            # Query: dipendenti con FunctionCode <= 60, timbrature weekend o > 8h feriali
+            query = """
+            DECLARE @dateStart DATE = ?;
+            DECLARE @DateStop DATE = ?;
+
+            WITH
+            CTE_DailyState_Employee AS (
+                SELECT 
+                    ds.IDDailyState,
+                    ds.DailyStateDate,
+                    e.IDEmployee,
+                    UPPER(e.EmployeeSurname + ' ' + e.EmployeeName) AS Name, 
+                    e.UniqueID,
+                    DATEPART(WEEKDAY, ds.DailyStateDate) AS DayOfWeek  -- 1=Sun, 7=Sat
+                FROM Timeclocking.dbo.DailyState ds
+                INNER JOIN Timeclocking.dbo.Employee e
+                    ON e.IDEmployee = ds.IDEmployee 
+                    AND ds.DailyStateDate BETWEEN @dateStart AND @DateStop
+            ),
+            CTE_Presence AS (
+                SELECT
+                    fd.IDDailyState,
+                    fd.NoMin AS MinWorked,
+                    r.RequestName,
+                    r.IDRequestType
+                FROM Timeclocking.dbo.EmployeeRequestFractionalDay fd
+                INNER JOIN Timeclocking.dbo.RequestType r
+                    ON r.IDRequestType = fd.IDRequestType
+                WHERE r.IDRequestType = 8
+            ),
+            CTE_HireHistory AS (
+                SELECT
+                    h.EmployeeHireHistoryId AS EmployeeHireId,
+                    ee.EmployeeNID COLLATE DATABASE_DEFAULT AS UniqueID,
+                    ISNULL(f.FunctionCode, 0) AS FunctionCode,
+                    ISNULL(f.FunctionName, 'N/A') AS FunctionName
+                FROM employee.dbo.employees ee
+                INNER JOIN employee.dbo.employeehirehistory h
+                    ON ee.EmployeeId = h.EmployeeId
+                    AND h.employeerid = 2
+                    AND h.EndWorkDate IS NULL
+                LEFT JOIN Employee.dbo.Functions f
+                    ON h.FunctionId = f.FunctionId
+                WHERE ISNULL(f.FunctionCode, 0) <= 60
+            ),
+            CTE_ExtraTimeApprovalStory AS (
+                SELECT
+                    es.IdEmployee AS EmployeeHireHistoryId,
+                    CAST(es.DateStart AS DATE) AS DateStart,
+                    ISNULL(DATEDIFF(MINUTE, es.DateStart, es.DateEnd), 0) AS MinExtraTimeApproved
+                FROM [ResetServices].[dbo].ExtraTimeApprovalStory es
+                WHERE CAST(es.DateStart AS DATE) BETWEEN @dateStart AND @DateStop
+            ),
+            CTE_Combined AS (
+                SELECT 
+                    ROW_NUMBER() OVER (ORDER BY dse.DailyStateDate, dse.Name) AS Nr,
+                    dse.Name,
+                    dse.DailyStateDate AS OvertimeDate,
+                    dse.DayOfWeek,
+                    pres.MinWorked,
+                    ISNULL(eta.MinExtraTimeApproved, 0) AS MinApproved,
+                    hh.FunctionCode,
+                    hh.FunctionName,
+                    CASE
+                        WHEN dse.DayOfWeek IN (1, 7) THEN 'WEEKEND'
+                        ELSE 'WEEKDAY > 8H'
+                    END AS OvertimeType,
+                    CASE
+                        WHEN ISNULL(eta.MinExtraTimeApproved, 0) > 0 THEN 'AUTHORIZED'
+                        ELSE 'NOT AUTHORIZED'
+                    END AS AuthorizationStatus
+                FROM CTE_DailyState_Employee dse
+                INNER JOIN CTE_Presence pres ON dse.IDDailyState = pres.IDDailyState
+                INNER JOIN CTE_HireHistory hh ON dse.UniqueID COLLATE DATABASE_DEFAULT = hh.UniqueID
+                LEFT JOIN CTE_ExtraTimeApprovalStory eta ON hh.EmployeeHireId = eta.EmployeeHireHistoryId
+                    AND eta.DateStart = dse.DailyStateDate
+                WHERE 
+                    dse.DayOfWeek IN (1, 7)                     -- Weekend (Sun=1, Sat=7)
+                    OR (dse.DayOfWeek NOT IN (1, 7) AND pres.MinWorked > 480)  -- Weekday > 8h (480 min)
+            )
+            SELECT DISTINCT *
+            FROM CTE_Combined
+            ORDER BY OvertimeDate, Name;
+            """
+
+            cursor = self.db.conn.cursor()
+            cursor.execute(query, (last_monday, last_sunday))
+            results = cursor.fetchall()
+            cursor.close()
+
+            if not results:
+                logger.info("No weekend/over-8h overtime found for last week. Email not sent.")
+                return True
+
+            # Conta autorizzati / non autorizzati
+            total = len(results)
+            not_auth_count = sum(1 for r in results if r[9] == 'NOT AUTHORIZED')
+            auth_count = total - not_auth_count
+
+            # === CREA EXCEL ===
+            output_dir = tempfile.gettempdir()
+            filename = f"Overtime_Report_{last_monday.strftime('%Y%m%d')}_{last_sunday.strftime('%Y%m%d')}.xlsx"
+            file_path = os.path.join(output_dir, filename)
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Overtime Report"
+
+            thin_border = Border(
+                left=Side(style='thin'),
+                right=Side(style='thin'),
+                top=Side(style='thin'),
+                bottom=Side(style='thin')
+            )
+
+            # Title row
+            ws.merge_cells('A1:H1')
+            title_cell = ws.cell(row=1, column=1, value="OVERTIME REPORT - Weekend & Over 8h Weekday Presence")
+            title_cell.font = Font(bold=True, size=14, color="2E5090")
+            title_cell.alignment = Alignment(horizontal='center', vertical='center')
+            ws.row_dimensions[1].height = 30
+
+            # Period row
+            ws.merge_cells('A2:H2')
+            period_cell = ws.cell(row=2, column=1,
+                value=f"Period: {last_monday.strftime('%d/%m/%Y')} to {last_sunday.strftime('%d/%m/%Y')}  |  "
+                      f"Total: {total}  |  Authorized: {auth_count}  |  NOT Authorized: {not_auth_count}")
+            period_cell.font = Font(size=10, italic=True)
+            period_cell.alignment = Alignment(horizontal='center')
+            ws.row_dimensions[2].height = 20
+
+            # Headers row 3
+            headers = ['Nr', 'Employee', 'Date', 'Day', 'Min Worked', 'Min Approved',
+                        'Overtime Type', 'Authorization']
+            header_fill = PatternFill(start_color="2E5090", end_color="2E5090", fill_type="solid")
+            header_font = Font(bold=True, color="FFFFFF", size=10)
+
+            for col, header in enumerate(headers, 1):
+                cell = ws.cell(row=3, column=col, value=header)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                cell.border = thin_border
+            ws.row_dimensions[3].height = 22
+
+            # Data rows
+            day_names = {1: 'Sunday', 2: 'Monday', 3: 'Tuesday', 4: 'Wednesday',
+                         5: 'Thursday', 6: 'Friday', 7: 'Saturday'}
+            not_auth_fill = PatternFill(start_color="FFE0E0", end_color="FFE0E0", fill_type="solid")
+            auth_fill = PatternFill(start_color="D4EDDA", end_color="D4EDDA", fill_type="solid")
+            weekend_fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
+
+            for row_idx, row in enumerate(results, 4):
+                nr = row[0]
+                name = row[1]
+                ot_date = row[2].strftime('%d/%m/%Y') if row[2] else 'N/D'
+                day_of_week = day_names.get(row[3], '?')
+                min_worked = row[4] if row[4] else 0
+                min_approved = row[5] if row[5] else 0
+                ot_type = row[8]
+                auth_status = row[9]
+
+                is_not_auth = auth_status == 'NOT AUTHORIZED'
+                is_weekend = ot_type == 'WEEKEND'
+
+                ws.cell(row=row_idx, column=1, value=nr).alignment = Alignment(horizontal='center')
+                ws.cell(row=row_idx, column=2, value=name)
+                ws.cell(row=row_idx, column=3, value=ot_date).alignment = Alignment(horizontal='center')
+                ws.cell(row=row_idx, column=4, value=day_of_week).alignment = Alignment(horizontal='center')
+                ws.cell(row=row_idx, column=5, value=min_worked).alignment = Alignment(horizontal='center')
+                ws.cell(row=row_idx, column=6, value=min_approved).alignment = Alignment(horizontal='center')
+                ws.cell(row=row_idx, column=7, value=ot_type).alignment = Alignment(horizontal='center')
+                ws.cell(row=row_idx, column=8, value=auth_status).alignment = Alignment(horizontal='center')
+
+                # Formattazione condizionale
+                row_fill = None
+                if is_not_auth:
+                    row_fill = not_auth_fill
+                elif is_weekend:
+                    row_fill = weekend_fill
+                else:
+                    row_fill = auth_fill
+
+                for c in range(1, 9):
+                    ws.cell(row=row_idx, column=c).border = thin_border
+                    if row_fill:
+                        ws.cell(row=row_idx, column=c).fill = row_fill
+
+                # Bold e rosso per NOT AUTHORIZED
+                if is_not_auth:
+                    ws.cell(row=row_idx, column=8).font = Font(bold=True, color="C00000")
+
+            # Adatta larghezza colonne
+            ws.column_dimensions['A'].width = 6
+            ws.column_dimensions['B'].width = 35
+            ws.column_dimensions['C'].width = 12
+            ws.column_dimensions['D'].width = 12
+            ws.column_dimensions['E'].width = 14
+            ws.column_dimensions['F'].width = 14
+            ws.column_dimensions['G'].width = 16
+            ws.column_dimensions['H'].width = 18
+
+            wb.save(file_path)
+            logger.info(f"Excel report saved: {file_path}")
+
+            # === RECUPERA DESTINATARI ===
+            import sys
+            sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+            from utils import get_email_recipients, send_email
+
+            recipients = get_email_recipients(self.db.conn, attribute='Sys_email_overtimeNotAuth')
+
+            if not recipients:
+                logger.warning("No email recipients configured for 'Sys_email_overtimeNotAuth'")
+                return False
+
+            # === LOGO BASE64 ===
+            logo_html = ""
+            logo_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Logo.png")
+            if os.path.exists(logo_path):
+                try:
+                    with open(logo_path, "rb") as f:
+                        logo_data = base64.b64encode(f.read()).decode("utf-8")
+                    logo_html = f'<img src="data:image/png;base64,{logo_data}" style="height: 50px; margin-bottom: 10px;" /><br>'
+                except Exception as logo_err:
+                    logger.warning(f"Cannot embed logo: {logo_err}")
+
+            # === TABELLA RIASSUNTIVA IN EMAIL ===
+            table_rows = ""
+            for row in results:
+                ot_date = row[2].strftime('%d/%m/%Y') if row[2] else 'N/D'
+                day_name = day_names.get(row[3], '?')
+                min_w = row[4] if row[4] else 0
+                min_a = row[5] if row[5] else 0
+                ot_type = row[8]
+                auth = row[9]
+
+                bg_color = "#FFE0E0" if auth == "NOT AUTHORIZED" else ("#FFF3CD" if ot_type == "WEEKEND" else "#D4EDDA")
+                font_weight = "bold" if auth == "NOT AUTHORIZED" else "normal"
+                font_color = "#C00000" if auth == "NOT AUTHORIZED" else "#333333"
+
+                table_rows += f"""
+                <tr style="background-color: {bg_color};">
+                    <td style="padding: 6px; border: 1px solid #ddd; text-align: center;">{row[0]}</td>
+                    <td style="padding: 6px; border: 1px solid #ddd;">{row[1]}</td>
+                    <td style="padding: 6px; border: 1px solid #ddd; text-align: center;">{ot_date}</td>
+                    <td style="padding: 6px; border: 1px solid #ddd; text-align: center;">{day_name}</td>
+                    <td style="padding: 6px; border: 1px solid #ddd; text-align: center;">{min_w}</td>
+                    <td style="padding: 6px; border: 1px solid #ddd; text-align: center;">{min_a}</td>
+                    <td style="padding: 6px; border: 1px solid #ddd; text-align: center;">{ot_type}</td>
+                    <td style="padding: 6px; border: 1px solid #ddd; text-align: center; font-weight: {font_weight}; color: {font_color};">{auth}</td>
+                </tr>
+                """
+
+            subject = f"⚠️ Weekly Overtime Report - {last_monday.strftime('%d/%m/%Y')} to {last_sunday.strftime('%d/%m/%Y')}"
+
+            body = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif;">
+                {logo_html}
+                <h2 style="color: #2E5090;">Weekly Overtime Report</h2>
+                <p>Dear Team,</p>
+                <p>Below is the overtime report for the week <strong>{last_monday.strftime('%d/%m/%Y')}</strong> to
+                <strong>{last_sunday.strftime('%d/%m/%Y')}</strong>.</p>
+
+                <p>This report includes employees (FunctionCode &le; 60) who either worked on weekends
+                or exceeded 8 hours on weekdays.</p>
+
+                <table style="margin: 10px 0; font-size: 13px;">
+                    <tr>
+                        <td style="padding: 4px 12px;"><strong>Total entries:</strong></td>
+                        <td style="padding: 4px 12px;"><strong>{total}</strong></td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 4px 12px;">✅ Authorized:</td>
+                        <td style="padding: 4px 12px; color: #28A745;"><strong>{auth_count}</strong></td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 4px 12px;">❌ NOT Authorized:</td>
+                        <td style="padding: 4px 12px; color: #C00000;"><strong>{not_auth_count}</strong></td>
+                    </tr>
+                </table>
+
+                <table style="border-collapse: collapse; width: 100%; margin: 20px 0; font-size: 12px;">
+                    <thead>
+                        <tr style="background-color: #2E5090; color: white;">
+                            <th style="padding: 8px; border: 1px solid #ddd;">Nr</th>
+                            <th style="padding: 8px; border: 1px solid #ddd;">Employee</th>
+                            <th style="padding: 8px; border: 1px solid #ddd;">Date</th>
+                            <th style="padding: 8px; border: 1px solid #ddd;">Day</th>
+                            <th style="padding: 8px; border: 1px solid #ddd;">Min Worked</th>
+                            <th style="padding: 8px; border: 1px solid #ddd;">Min Approved</th>
+                            <th style="padding: 8px; border: 1px solid #ddd;">Type</th>
+                            <th style="padding: 8px; border: 1px solid #ddd;">Authorization</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {table_rows}
+                    </tbody>
+                </table>
+
+                <p style="background-color: #FFF3CD; border-left: 4px solid #FFC107; padding: 12px; margin: 20px 0;">
+                    <strong>&#9888; Legend:</strong><br>
+                    <span style="background-color: #FFE0E0; padding: 2px 8px;">Red</span> = NOT Authorized &nbsp;|&nbsp;
+                    <span style="background-color: #FFF3CD; padding: 2px 8px;">Yellow</span> = Weekend (Authorized) &nbsp;|&nbsp;
+                    <span style="background-color: #D4EDDA; padding: 2px 8px;">Green</span> = Weekday &gt; 8h (Authorized)
+                </p>
+
+                <p>The detailed Excel report is attached to this email.</p>
+
+                <p style="margin-top: 30px;">
+                    Best regards,<br>
+                    <strong>TraceabilityRS System</strong>
+                </p>
+            </body>
+            </html>
+            """
+
+            # Invia email con allegato
+            send_email(
+                recipients=recipients,
+                subject=subject,
+                body=body,
+                is_html=True,
+                attachments=[file_path]
+            )
+
+            logger.info(f"Weekly unauthorized overtime email sent to: {recipients}")
+
+            # === DEDUP: registra invio riuscito ===
+            try:
+                log_cursor = self.db.conn.cursor()
+                log_cursor.execute("""
+                    INSERT INTO [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
+                    (WeekStartDate, Attribute)
+                    VALUES (?, ?)
+                """, (last_monday, dedup_attribute))
+                self.db.conn.commit()
+                log_cursor.close()
+                logger.info(f"Dedup log saved for week {last_monday}")
+            except Exception as log_err:
+                logger.warning(f"Failed to write dedup log: {log_err}")
+
+            # Rimuovi file temporaneo
+            try:
+                os.remove(file_path)
+            except:
+                pass
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error sending weekly unauthorized overtime email: {e}", exc_info=True)
+            return False
