@@ -209,6 +209,9 @@ class OvertimeAnalysisWindow(tk.Toplevel):
                 ON ee.EmployeeId = h.EmployeeId
                 AND h.employeerid = 2
                 AND h.EndWorkDate IS NULL
+            LEFT JOIN Employee.dbo.Functions f
+                ON h.FunctionId = f.FunctionId
+            WHERE ISNULL(f.FunctionCode, 0) <= 60
         ),
         CTE_ExtraTimeApprovalStory AS (
             SELECT
