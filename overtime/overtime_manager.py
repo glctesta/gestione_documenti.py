@@ -1172,6 +1172,404 @@ class OvertimeManager:
             logger.error(f"Error generating approval Excel: {e}", exc_info=True)
             return None
 
+    # ==================== SIGNATURE PDF (Romanian) ====================
+
+    def generate_employee_signature_pdf(self, request_id):
+        """
+        Genera un PDF in rumeno con la lista dei dipendenti autorizzati,
+        completo di colonna firma per accettazione individuale.
+
+        Args:
+            request_id: ID richiesta (ExtraHourApprovalId)
+
+        Returns:
+            str: Path del PDF generato, None in caso di errore
+        """
+        try:
+            from reportlab.pdfgen import canvas
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.units import cm, mm
+            from reportlab.platypus import (
+                Image as ReportLabImage, Table, TableStyle, Paragraph
+            )
+            from reportlab.lib import colors
+            from reportlab.lib.styles import ParagraphStyle
+            from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+
+            # ── Register Arial TTF for Romanian diacritics ──────────────
+            FONT = 'Arial'
+            FONT_BOLD = 'Arial-Bold'
+            try:
+                pdfmetrics.registerFont(
+                    TTFont(FONT, r'C:\Windows\Fonts\arial.ttf'))
+                pdfmetrics.registerFont(
+                    TTFont(FONT_BOLD, r'C:\Windows\Fonts\arialbd.ttf'))
+            except Exception as fe:
+                logger.warning(f"Cannot register Arial TTF: {fe}, "
+                               f"falling back to Helvetica")
+                FONT = 'Helvetica'
+                FONT_BOLD = 'Helvetica-Bold'
+
+            # ── Romanian weekday names ──────────────────────────────────
+            RO_DAYS = {
+                0: 'Luni',
+                1: 'Mar\u021bi',
+                2: 'Miercuri',
+                3: 'Joi',
+                4: 'Vineri',
+                5: 'S\u00e2mb\u0103t\u0103',
+                6: 'Duminic\u0103',
+            }
+
+            # ── Query authorization number ───────────────────────────────
+            auth_query = """
+            SELECT DISTINCT
+                r.NumRegistro + '/' + FORMAT(r.DataReg, 'd', 'ro-ro') AS OvertimeRequest,
+                r1.NumRegistro + '/' + FORMAT(r1.DataReg, 'd', 'ro-ro') AS OvertimeApproval
+            FROM ResetServices.dbo.ExtraTimeApproval a
+            INNER JOIN ResetServices.dbo.TbRegistro r
+                ON a.IdRegistro = r.Contatore
+            INNER JOIN ResetServices.dbo.ExtraTimeApprovalStory es
+                ON a.ExtraHourApprovalId = es.ExtraHourApprovalId
+            INNER JOIN ResetServices.dbo.TbRegistro r1
+                ON r1.Contatore = es.ApprovedId
+            WHERE a.ExtraHourApprovalId = ?
+            """
+            cursor = self.db.conn.cursor()
+            cursor.execute(auth_query, (request_id,))
+            auth_row = cursor.fetchone()
+            cursor.close()
+            overtime_request = ''
+            overtime_approval = ''
+            if auth_row:
+                overtime_request = auth_row[0] or ''
+                overtime_approval = auth_row[1] or ''
+
+            # ── Query dati dipendenti ───────────────────────────────────
+            emp_query = """
+            SELECT
+                e.EmployeeSurname,
+                e.EmployeeName,
+                s.DateStart,
+                s.DateEnd,
+                CAST(DATEDIFF(MINUTE, s.DateStart, s.DateEnd) / 60.0
+                     AS DECIMAL(10,2)) AS AuthorizedHours
+            FROM ResetServices.dbo.ExtraTimeApprovalStory s
+            INNER JOIN Employee.dbo.EmployeeHireHistory h
+                ON s.IdEmployee = h.EmployeeHireHistoryId
+            INNER JOIN Employee.dbo.Employees e
+                ON h.EmployeeId = e.EmployeeId
+            WHERE s.ExtraHourApprovalId = ?
+            ORDER BY e.EmployeeSurname, e.EmployeeName, s.DateStart
+            """
+            cursor = self.db.conn.cursor()
+            cursor.execute(emp_query, (request_id,))
+            rows = cursor.fetchall()
+            cursor.close()
+
+            if not rows:
+                logger.warning(
+                    f"generate_employee_signature_pdf: no employees for "
+                    f"request_id={request_id}"
+                )
+                return None
+
+            # ── Resolve logo ────────────────────────────────────────────
+            def resolve_logo_path():
+                base_dir = os.path.dirname(os.path.dirname(__file__))
+                for candidate in (
+                    os.path.join(base_dir, "Logo.png"),
+                    os.path.join(base_dir, "logo.png"),
+                    r"c:\Users\gtesta\PythonProjetcs\Python\PrductionDocumentation\Logo.png",
+                    "Logo.png",
+                    "logo.png",
+                ):
+                    if os.path.exists(candidate):
+                        return candidate
+                return None
+
+            # ── Temp file ───────────────────────────────────────────────
+            temp_file = tempfile.NamedTemporaryFile(
+                prefix=f"SignatureSheet_{request_id}_",
+                suffix=".pdf",
+                delete=False,
+                dir="C:\\Temp"
+            )
+            file_path = temp_file.name
+            temp_file.close()
+
+            c = canvas.Canvas(file_path, pagesize=A4)
+            width, height = A4
+
+            # ── Header bar (draw FIRST) ─────────────────────────────────
+            NAVY = colors.HexColor("#1F3A5F")
+            c.setFillColor(NAVY)
+            c.rect(0, height - 3 * cm, width, 3 * cm, stroke=0, fill=1)
+            c.setFillColor(colors.white)
+            c.setFont(FONT_BOLD, 16)
+            c.drawString(
+                2 * cm, height - 1.8 * cm,
+                "ACORD ORE SUPLIMENTARE"
+            )
+            # Authorization number subtitle
+            auth_label = ''
+            if overtime_request and overtime_approval:
+                auth_label = f"Cerere: {overtime_request}  |  Autoriza\u021bie: {overtime_approval}"
+            elif overtime_approval:
+                auth_label = f"Autoriza\u021bie: {overtime_approval}"
+            c.setFont(FONT_BOLD, 9)
+            c.drawString(
+                2 * cm, height - 2.25 * cm,
+                auth_label
+            )
+            c.setFont(FONT, 7.5)
+            c.drawString(
+                2 * cm, height - 2.65 * cm,
+                f"Generat la {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+            )
+            c.setFillColor(colors.black)
+
+            # ── Logo (draw AFTER header so it appears on top) ───────────
+            logo_path = resolve_logo_path()
+            if logo_path:
+                try:
+                    logo = ReportLabImage(
+                        logo_path, width=1.8 * cm, height=1.8 * cm
+                    )
+                    logo.drawOn(c, width - 3.0 * cm, height - 2.4 * cm)
+                except Exception as le:
+                    logger.warning(f"Cannot load logo: {le}")
+
+            y_pos = height - 4.0 * cm
+
+            # ── Romanian disclaimer text ────────────────────────────────
+            disclaimer_style = ParagraphStyle(
+                name='ro_disclaimer',
+                fontName=FONT,
+                fontSize=10,
+                leading=13,
+                alignment=TA_JUSTIFY,
+                wordWrap='CJK',
+            )
+            disclaimer_text = (
+                "Pentru persoanele de mai jos a fost colectat\u0103 "
+                "aprobarea individual\u0103 "
+                "(fiecare angajat semneaz\u0103 pentru acceptarea "
+                "orelor suplimentare care \u00eel privesc)."
+            )
+            disclaimer_para = Paragraph(disclaimer_text, disclaimer_style)
+            dw, dh = disclaimer_para.wrap(width - 4 * cm, 3 * cm)
+            disclaimer_para.drawOn(c, 2 * cm, y_pos - dh)
+            y_pos -= (dh + 0.8 * cm)
+
+            # ── Cell style for table ────────────────────────────────────
+            cell_style = ParagraphStyle(
+                name='sig_cell',
+                fontName=FONT,
+                fontSize=8,
+                leading=9.5,
+                alignment=TA_CENTER,
+                wordWrap='CJK',
+            )
+            cell_left = ParagraphStyle(
+                name='sig_cell_left',
+                fontName=FONT,
+                fontSize=8,
+                leading=9.5,
+                alignment=TA_LEFT,
+                wordWrap='CJK',
+            )
+
+            # ── Build table data ────────────────────────────────────────
+            header_style = ParagraphStyle(
+                name='sig_header',
+                fontName=FONT_BOLD,
+                fontSize=8,
+                leading=9.5,
+                alignment=TA_CENTER,
+                textColor=colors.white,
+                wordWrap='CJK',
+            )
+            table_data = [[
+                Paragraph('Nr.', header_style),
+                Paragraph('Nume', header_style),
+                Paragraph('Prenume', header_style),
+                Paragraph('Ore', header_style),
+                Paragraph('Data', header_style),
+                Paragraph('De la', header_style),
+                Paragraph('P\u00e2n\u0103 la', header_style),
+                Paragraph('Semn\u0103tur\u0103', header_style),
+            ]]
+
+            total_hours = 0.0
+            for idx, row in enumerate(rows, start=1):
+                surname = row[0] or ''
+                firstname = row[1] or ''
+                date_start = row[2]
+                date_end = row[3]
+                hours = float(row[4]) if row[4] is not None else 0.0
+                total_hours += hours
+
+                # Date + weekday in Romanian
+                if date_start:
+                    weekday = RO_DAYS.get(date_start.weekday(), '')
+                    date_str = (
+                        f"{date_start.strftime('%d/%m/%Y')}<br/>({weekday})"
+                    )
+                    from_str = date_start.strftime('%H:%M')
+                else:
+                    date_str = 'N/A'
+                    from_str = 'N/A'
+
+                to_str = date_end.strftime('%H:%M') if date_end else 'N/A'
+
+                table_data.append([
+                    Paragraph(str(idx), cell_style),
+                    Paragraph(surname, cell_left),
+                    Paragraph(firstname, cell_left),
+                    Paragraph(f"{hours:.1f}", cell_style),
+                    Paragraph(date_str, cell_style),
+                    Paragraph(from_str, cell_style),
+                    Paragraph(to_str, cell_style),
+                    Paragraph('', cell_style),  # empty for signature
+                ])
+
+            # ── Totals row ──────────────────────────────────────────────
+            total_style = ParagraphStyle(
+                name='sig_total',
+                fontName=FONT_BOLD,
+                fontSize=9,
+                leading=10,
+                alignment=TA_CENTER,
+                wordWrap='CJK',
+            )
+            total_left = ParagraphStyle(
+                name='sig_total_left',
+                fontName=FONT_BOLD,
+                fontSize=9,
+                leading=10,
+                alignment=TA_LEFT,
+                wordWrap='CJK',
+            )
+            num_employees = len(rows)
+            table_data.append([
+                Paragraph('', total_style),
+                Paragraph('TOTAL', total_left),
+                Paragraph(f'{num_employees} angaja\u021bi', total_style),
+                Paragraph(f'{total_hours:.1f}', total_style),
+                Paragraph('', total_style),
+                Paragraph('', total_style),
+                Paragraph('', total_style),
+                Paragraph('', total_style),
+            ])
+
+            # ── Draw table ──────────────────────────────────────────────
+            col_widths = [
+                1.0 * cm,   # Nr.
+                3.2 * cm,   # Nume
+                3.2 * cm,   # Prenume
+                1.4 * cm,   # Ore
+                3.0 * cm,   # Data
+                1.5 * cm,   # De la
+                1.5 * cm,   # Pana la
+                3.2 * cm,   # Semnatura
+            ]
+
+            table = Table(table_data, colWidths=col_widths, repeatRows=1)
+            table.setStyle(TableStyle([
+                # Header
+                ('BACKGROUND', (0, 0), (-1, 0), NAVY),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                # Totals row
+                ('BACKGROUND', (0, -1), (-1, -1),
+                 colors.HexColor("#D7DFEB")),
+                ('FONTNAME', (0, -1), (-1, -1), FONT_BOLD),
+                # Body
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('GRID', (0, 0), (-1, -1), 0.6,
+                 colors.HexColor("#A9B9CF")),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -2),
+                 [colors.white, colors.HexColor("#F9FBFD")]),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ('LEFTPADDING', (0, 0), (-1, -1), 4),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+                # Signature column min height for actual signature
+                ('BOTTOMPADDING', (7, 1), (7, -2), 12),
+            ]))
+
+            table.wrapOn(c, width, height)
+            table_height = table._height
+
+            # If table overflows page, start new page
+            if y_pos - table_height < 2.5 * cm:
+                c.showPage()
+                c.setFillColor(NAVY)
+                c.rect(0, height - 2.5 * cm, width, 2.5 * cm,
+                       stroke=0, fill=1)
+                c.setFillColor(colors.white)
+                c.setFont(FONT_BOLD, 14)
+                c.drawString(
+                    2 * cm, height - 1.6 * cm,
+                    "ACORD ORE SUPLIMENTARE - continuare"
+                )
+                c.setFillColor(colors.black)
+                y_pos = height - 3.2 * cm
+
+            table.drawOn(c, 1.4 * cm, y_pos - table_height)
+            y_pos_after_table = y_pos - table_height - 0.6 * cm
+
+            # ── Obligation text (Romanian) after table ──────────────────
+            obligation_style = ParagraphStyle(
+                name='ro_obligation',
+                fontName=FONT,
+                fontSize=9,
+                leading=12,
+                alignment=TA_JUSTIFY,
+                wordWrap='CJK',
+            )
+            obligation_text = (
+                "Acest document, odat\u0103 colectate toate semn\u0103turile "
+                "angaja\u021bilor din prezenta list\u0103, de c\u0103tre "
+                "responsabilul care a solicitat aprobarea orelor "
+                "suplimentare, trebuie predat obligatoriu biroului "
+                "de personal."
+            )
+            obligation_para = Paragraph(obligation_text, obligation_style)
+            ow, oh = obligation_para.wrap(width - 4 * cm, 3 * cm)
+            # Check if enough space; if not, draw on next line area
+            if y_pos_after_table - oh < 2.5 * cm:
+                # Not enough space, skip to footer area
+                pass
+            else:
+                obligation_para.drawOn(c, 2 * cm, y_pos_after_table - oh)
+
+            # ── Footer ──────────────────────────────────────────────────
+            c.setStrokeColor(colors.HexColor("#D7DFEB"))
+            c.line(1.5 * cm, 2.1 * cm, width - 1.5 * cm, 2.1 * cm)
+            c.setFillColor(colors.HexColor("#4D5E73"))
+            c.setFont(FONT, 8)
+            c.drawCentredString(
+                width / 2, 1.6 * cm,
+                "Document generat automat de sistemul TraceabilityRS"
+            )
+
+            c.save()
+            logger.info(
+                f"Employee signature PDF generated: {file_path}"
+            )
+            return file_path
+
+        except Exception as e:
+            logger.error(
+                f"Error generating employee signature PDF: {e}",
+                exc_info=True
+            )
+            return None
+
     # ==================== EMAIL ====================
 
     
@@ -1496,6 +1894,12 @@ class OvertimeManager:
                     {details_rows}
                 </table>
                 {cost_section}
+                {'<div style="background-color: #FFF3CD; border-left: 4px solid #FFC107; padding: 14px; margin: 24px 0; font-family: Arial, sans-serif;">'
+                 '<strong>&#9888; Aten&#539;ie / Attention:</strong><br>'
+                 'Documentul ata&#537;at trebuie predat obligatoriu biroului de personal (HR) '
+                 'cel t&#226;rziu &#238;n ziua anterioar&#259; desf&#259;&#537;ur&#259;rii orelor suplimentare, '
+                 'de c&#259;tre responsabilul care a solicitat aprobarea.'
+                 '</div>' if approved else ''}
                 <p style="margin-top: 30px;">
                     Best regards,<br>
                     <strong>TraceabilityRS System</strong>
@@ -1549,7 +1953,200 @@ class OvertimeManager:
         except Exception as e:
             logger.error(f"Error sending approval notification: {e}", exc_info=True)
             return False
-    
+
+    def send_question_email(self, qa_id, request_id, requester_id, question_text, asker_name):
+        """
+        Invia email con domanda al richiedente dello straordinario.
+
+        Args:
+            qa_id: ID della domanda (ExtraTimeApprovalQA.QAId)
+            request_id: ExtraHourApprovalId
+            requester_id: idanga del richiedente (IdChief)
+            question_text: Testo della domanda
+            asker_name: Nome di chi chiede
+
+        Returns:
+            bool: True se invio riuscito
+        """
+        try:
+            # Recupera email richiedente tramite tbuserkey -> Employee
+            email_query = """
+            SELECT DISTINCT e.employeename + ' ' + e.employeesurname AS Employee,
+                   ea.WorkEmail AS Email
+            FROM resetservices.dbo.tbuserkey u
+            INNER JOIN Employee.dbo.EmployeeHireHistory h
+                ON h.EmployeeHireHistoryId = u.employeehirehistoryid
+                AND h.employeerid = 2 AND h.EndWorkDate IS NULL
+            INNER JOIN Employee.dbo.Employees e
+                ON e.EmployeeId = h.EmployeeId
+            LEFT JOIN Employee.dbo.EmployeeAddress ea
+                ON ea.EmployeeId = e.EmployeeId AND ea.DateOut IS NULL
+            WHERE u.idanga = ?
+            """
+            result = self.db.fetch_one(email_query, (requester_id,))
+
+            if not result or not result[1]:
+                logger.error(f"No email found for requester idanga: {requester_id}")
+                return False
+
+            requester_name = result[0]
+            requester_email = result[1]
+
+            # Recupera RequestNumber da TbRegistro
+            req_query = """
+            SELECT ISNULL(r.NumRegistro, CAST(a.IdRegistro AS VARCHAR)) AS RequestNumber
+            FROM ResetServices.dbo.ExtraTimeApproval a
+            LEFT JOIN ResetServices.dbo.TbRegistro r ON a.IdRegistro = r.Contatore
+            WHERE a.ExtraHourApprovalId = ?
+            """
+            req_result = self.db.fetch_one(req_query, (request_id,))
+            request_number = req_result[0] if req_result else str(request_id)
+
+            subject = f"Question about Overtime Request {request_number}"
+
+            body = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif;">
+                <h2 style="color: #2E5090;">Overtime Request - Question</h2>
+                <p>Dear {requester_name},</p>
+                <p>A question has been raised regarding your overtime request before a decision can be made.</p>
+                <table style="border-collapse: collapse; margin: 20px 0;">
+                    <tr>
+                        <td style="padding: 8px; font-weight: bold; width: 180px;">Request Number:</td>
+                        <td style="padding: 8px;">{request_number}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px; font-weight: bold;">Asked by:</td>
+                        <td style="padding: 8px;">{asker_name}</td>
+                    </tr>
+                </table>
+                <div style="background-color: #E8F4FD; border-left: 4px solid #2E5090; padding: 14px; margin: 20px 0;">
+                    <strong>Question:</strong><br>
+                    <p style="white-space: pre-wrap;">{question_text}</p>
+                </div>
+                <p style="background-color: #FFF3CD; border-left: 4px solid #FFC107; padding: 12px; margin: 20px 0;">
+                    <strong>&#9888; Action Required:</strong> Please reply to this question via:<br>
+                    <strong>ERP &rarr; Operations &rarr; Personnel &rarr; Overtime &rarr; Responses</strong>
+                </p>
+                <p style="margin-top: 30px;">
+                    Best regards,<br>
+                    <strong>TraceabilityRS System</strong>
+                </p>
+            </body>
+            </html>
+            """
+
+            import sys, os
+            sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+            from utils import send_email
+
+            send_email(
+                recipients=[requester_email],
+                subject=subject,
+                body=body,
+                is_html=True
+            )
+
+            logger.info(f"Question email sent to: {requester_email} for request {request_number}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error sending question email: {e}", exc_info=True)
+            return False
+
+    def send_answer_email(self, qa_id, asker_id, answer_text, responder_name, request_number):
+        """
+        Invia email con risposta al mittente della domanda (approver).
+
+        Args:
+            qa_id: ID della domanda
+            asker_id: idanga di chi ha posto la domanda
+            answer_text: Testo della risposta
+            responder_name: Nome di chi risponde
+            request_number: Numero richiesta per riferimento
+
+        Returns:
+            bool: True se invio riuscito
+        """
+        try:
+            # Recupera email dell'approver tramite tbuserkey -> Employee
+            email_query = """
+            SELECT DISTINCT e.employeename + ' ' + e.employeesurname AS Employee,
+                   ea.WorkEmail AS Email
+            FROM resetservices.dbo.tbuserkey u
+            INNER JOIN Employee.dbo.EmployeeHireHistory h
+                ON h.EmployeeHireHistoryId = u.employeehirehistoryid
+                AND h.employeerid = 2 AND h.EndWorkDate IS NULL
+            INNER JOIN Employee.dbo.Employees e
+                ON e.EmployeeId = h.EmployeeId
+            LEFT JOIN Employee.dbo.EmployeeAddress ea
+                ON ea.EmployeeId = e.EmployeeId AND ea.DateOut IS NULL
+            WHERE u.idanga = ?
+            """
+            result = self.db.fetch_one(email_query, (asker_id,))
+
+            if not result or not result[1]:
+                logger.error(f"No email found for asker idanga: {asker_id}")
+                return False
+
+            asker_name = result[0]
+            asker_email = result[1]
+
+            # Recupera la domanda originale
+            q_query = """
+            SELECT q.QuestionText
+            FROM ResetServices.dbo.ExtraTimeApprovalQA q
+            WHERE q.QAId = ?
+            """
+            q_result = self.db.fetch_one(q_query, (qa_id,))
+            original_question = q_result[0] if q_result else "N/A"
+
+            subject = f"Answer to Overtime Question - Request {request_number}"
+
+            body = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif;">
+                <h2 style="color: #28A745;">Overtime Request - Answer Received</h2>
+                <p>Dear {asker_name},</p>
+                <p>Your question regarding overtime request <strong>{request_number}</strong> has been answered.</p>
+                <div style="background-color: #F0F0F0; border-left: 4px solid #6C757D; padding: 14px; margin: 20px 0;">
+                    <strong>Your Question:</strong><br>
+                    <p style="white-space: pre-wrap;">{original_question}</p>
+                </div>
+                <div style="background-color: #D4EDDA; border-left: 4px solid #28A745; padding: 14px; margin: 20px 0;">
+                    <strong>Answer from {responder_name}:</strong><br>
+                    <p style="white-space: pre-wrap;">{answer_text}</p>
+                </div>
+                <p style="background-color: #FFF3CD; border-left: 4px solid #FFC107; padding: 12px; margin: 20px 0;">
+                    <strong>&#9888; Next Steps:</strong> You can now proceed to approve or reject this request, or ask another question via:<br>
+                    <strong>ERP &rarr; Operations &rarr; Personnel &rarr; Overtime &rarr; Authorization</strong>
+                </p>
+                <p style="margin-top: 30px;">
+                    Best regards,<br>
+                    <strong>TraceabilityRS System</strong>
+                </p>
+            </body>
+            </html>
+            """
+
+            import sys, os
+            sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+            from utils import send_email
+
+            send_email(
+                recipients=[asker_email],
+                subject=subject,
+                body=body,
+                is_html=True
+            )
+
+            logger.info(f"Answer email sent to: {asker_email} for request {request_number}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error sending answer email: {e}", exc_info=True)
+            return False
+
     def send_weekly_overtime_analysis_email(self):
         """
         Invia email settimanale con analisi straordinari non autorizzati.

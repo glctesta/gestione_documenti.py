@@ -322,7 +322,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.5.7'  # Versione aggiornata
+APP_VERSION = '2.3.6.0'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -2258,6 +2258,53 @@ class Database:
                 self.conn.rollback()
                 self.last_error_details = str(e)
                 logger.error(f"Error in insert_refill_request: {e}")
+                return False
+
+    def has_kanban_refill_email_sent_today(self) -> bool:
+        """
+        Controlla se è già stata inviata un'email di refill Kanban oggi.
+        Usa la tabella knb.KanBanRefillEmailLog con indice UNIQUE su SentDate.
+        """
+        sql = """
+        SELECT 1 FROM knb.KanBanRefillEmailLog
+        WHERE SentDate = CAST(GETDATE() AS DATE)
+        """
+        with self._lock:
+            try:
+                if not self._ensure_connection():
+                    return False
+                self._clean_cursor()
+                self.cursor.execute(sql)
+                row = self.cursor.fetchone()
+                return row is not None
+            except Exception as e:
+                logger.warning(f"has_kanban_refill_email_sent_today: {e}")
+                return False
+
+    def log_kanban_refill_email_sent(self, recipients_count: int, materials_count: int) -> bool:
+        """
+        Registra l'avvenuto invio email Kanban refill per oggi.
+        L'indice UNIQUE su SentDate impedisce duplicati per lo stesso giorno.
+        """
+        sql = """
+        INSERT INTO knb.KanBanRefillEmailLog (SentDate, SentAt, RecipientsCount, MaterialsCount)
+        VALUES (CAST(GETDATE() AS DATE), GETDATE(), ?, ?)
+        """
+        with self._lock:
+            try:
+                if not self._ensure_connection():
+                    return False
+                self._clean_cursor()
+                self.cursor.execute(sql, (recipients_count, materials_count))
+                self.conn.commit()
+                logger.info(f"KanBanRefillEmailLog: registrato invio email ({materials_count} materiali, {recipients_count} destinatari)")
+                return True
+            except Exception as e:
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    pass
+                logger.warning(f"log_kanban_refill_email_sent: {e}")
                 return False
 
     def get_total_stock_component(self, id_component: int) -> int:
@@ -7452,7 +7499,7 @@ Accedi al sistema per visualizzare i dettagli completi.
     def fetch_equipment_details(self, equipment_id):
         """Recupera i dettagli di una singola macchina per la modifica."""
         query = """SELECT ParentPhaseId, EquipmentTypeId, InternalName, SerialNumber, 
-                          ProductionYear, IsFixture, IsStensil, MustCalibrated 
+                          ProductionYear, IsFixture, IsStensil, MustCalibrated, BrandId 
                    FROM eqp.Equipments 
                    WHERE EquipmentId = ?;"""
         try:
@@ -7464,7 +7511,8 @@ Accedi al sistema per visualizzare i dettagli completi.
 
     def update_and_log_equipment_changes(self, equipment_id, new_phase_id, new_internal_name, new_serial,
                                          change_log_string, user_name, new_equipment_type_id=None, new_production_year=None,
-                                         new_is_fixture=None, new_is_stensil=None, new_must_calibrated=None):
+                                         new_is_fixture=None, new_is_stensil=None, new_must_calibrated=None,
+                                         new_brand_id=None):
         """Aggiorna la macchina e registra la modifica in una transazione."""
         try:
             # Costruisce la query dinamicamente in base ai parametri forniti
@@ -7495,6 +7543,10 @@ Accedi al sistema per visualizzare i dettagli completi.
             if new_must_calibrated is not None:
                 set_clauses.append("MustCalibrated = ?")
                 params.append(1 if new_must_calibrated else 0)
+            
+            if new_brand_id is not None:
+                set_clauses.append("BrandId = ?")
+                params.append(new_brand_id)
             
             # Aggiungi equipment_id alla fine
             params.append(equipment_id)
@@ -11160,12 +11212,21 @@ class App(tk.Tk):
             logger.info(f"NPI Manager inizializzato con engine: {self.db.npi_engine}")
             logger.info(f"Pool size: {self.db.npi_engine.pool.size()}")
             # Avvio notifiche automatiche NPI (task in ritardo/scadenza)
+            # NOTA: Avvio DIFFERITO di 10s per evitare concorrenza DB col thread principale
             try:
                 from npi.npi_auto_notifications import start_notification_service, ensure_notification_config
                 ensure_notification_config('npi_notifications_config.json')
-                self._npi_notification_service = start_notification_service(
-                    self.npi_manager, 'npi_notifications_config.json'
-                )
+                self._npi_notification_service = None
+                def _deferred_npi_start():
+                    try:
+                        self._npi_notification_service = start_notification_service(
+                            self.npi_manager, 'npi_notifications_config.json'
+                        )
+                        logger.info("Servizio notifiche NPI avviato (differito)")
+                    except Exception as e:
+                        logger.error("Errore avvio differito notifiche NPI: %s", e, exc_info=True)
+                self.after(10000, _deferred_npi_start)  # 10s dopo l'avvio
+                logger.info("INIT: NPI notification service programmato per avvio differito (10s)")
             except Exception as e:
                 logger.error(f"Errore avvio servizio notifiche automatiche NPI: {e}", exc_info=True)
         except Exception as e:
@@ -11176,37 +11237,44 @@ class App(tk.Tk):
             self.npi_menu = None
             self._npi_notification_service = None
 
+        logger.info("INIT: NPI block completato, proseguo con TraceabilityManager...")
         if self._splash:
             self._splash.update_progress(65, "Inizializzazione moduli...")
         self.traceability_manager = TraceabilityManager(self, self.db, self.lang)
-        logger.debug("INIT: traceability manager OK")
+        logger.info("INIT: TraceabilityManager OK")
 
         # Aggiungi qui altri moduli principali se necessario...
+        logger.info("INIT: Inizializzazione fct_transfer...")
         self.fct_config = fct_transfer.FCTTransferConfig()
         self.fct_manager = fct_transfer.FCTTransferManager(DB_CONN_STR, self.fct_config)
         self.fct_run_menu_index = None
+        logger.info("INIT: fct_transfer OK")
 
         # === 4. CREAZIONE UI ===
 
-
+        logger.info("INIT: fetch_doc_categories...")
         self.doc_categories = self.db.fetch_doc_categories()
+        logger.info("INIT: fetch_doc_categories OK (%d categorie)", len(self.doc_categories) if self.doc_categories else 0)
         self.logo_label = None
         self.authenticated_user_for_maintenance = None
 
         # Creazione dei widget e dei menu
-        # Ora queste chiamate sono sicure perchÃ© self.npi_manager esiste
+        # Ora queste chiamate sono sicure perché self.npi_manager esiste
         if self._splash:
             self._splash.update_progress(80, "Creazione interfaccia...")
+        logger.info("INIT: _create_widgets...")
         self._create_widgets()
-        logger.debug("INIT: widgets created")
+        logger.info("INIT: widgets created")
+        logger.info("INIT: _create_menu...")
         self._create_menu()
-        logger.debug("INIT: menu created")
+        logger.info("INIT: menu created")
 
         # Aggiornamento testi e UI
         if self._splash:
             self._splash.update_progress(95, "Finalizzazione...")
+        logger.info("INIT: update_texts...")
         self.update_texts()
-        logger.debug("INIT: texts updated")
+        logger.info("INIT: texts updated")
 
         # === 4. COMPITI DI POST-AVVIO E BACKGROUND ===
 
@@ -12010,30 +12078,12 @@ class App(tk.Tk):
                     ))
                 return
 
-            # REGOLA 1 — Check in-memory: evita esecuzioni multiple nella stessa giornata
-            # (protegge anche da richiami ricorsivi dello scheduler ogni N minuti)
+            # REGOLA 1 — Check su DB: una sola email Kanban refill al giorno
+            # Usa tabella knb.KanBanRefillEmailLog con indice UNIQUE su SentDate
             if not manual:
-                from datetime import date as _date
-                today = _date.today()
-                if getattr(self, '_kanban_email_sent_today', None) == today:
-                    log.info("KanbanRefill: email già inviata oggi (flag in-memory). Skip esecuzione automatica.")
+                if self.db.has_kanban_refill_email_sent_today():
+                    log.info("KanbanRefill: email già inviata oggi (DB log). Skip esecuzione automatica.")
                     return
-
-                # REGOLA 1b — Check su DB: protezione aggiuntiva per riavvii dell'applicazione
-                try:
-                    sql_check = """
-                    SELECT COUNT(*) FROM knb.KanBanMaterialRequestes
-                    WHERE CAST(RequestedOn AS DATE) = CAST(GETDATE() AS DATE)
-                    """
-                    self.db.cursor.execute(sql_check)
-                    count_today = self.db.cursor.fetchone()[0]
-                    if count_today > 0:
-                        log.info(f"KanbanRefill: già presenti {count_today} richieste nel DB per oggi. Skip esecuzione automatica.")
-                        # Aggiorna il flag in-memory per evitare ulteriori query
-                        self._kanban_email_sent_today = today
-                        return
-                except Exception as e:
-                    log.warning(f"KanbanRefill: errore verifica richieste giornaliere DB: {e}. Procedo comunque.")
 
             # REGOLA 2 — Controlla che almeno una locazione abbia AskForRefill = 1
             try:
@@ -12194,10 +12244,7 @@ class App(tk.Tk):
 
             log.info(f"KanbanRefill: inseriti {inserts_ok}/{len(requests)} record nel DB.")
 
-            # Aggiorna il flag in-memory SUBITO dopo l'insert (prima ancora di inviare l'email)
-            if not manual:
-                from datetime import date as _date
-                self._kanban_email_sent_today = _date.today()
+            # Il log su DB verrà scritto dopo l'invio email riuscito
 
             # 10. Invia email (con allegato Excel)
             subject = "[Kanban] Refill request - Repair Kanban"
@@ -12229,7 +12276,9 @@ class App(tk.Tk):
                 )
 
                 if success:
-                    log.info("KanbanRefill: email inviata a %d destinatari.", len(recipients))
+                    log.info("KanbanRefill: email inviata a %d destinatari con %d materiali.", len(recipients), len(requests))
+                    # Registra l'invio nel DB per bloccare invii multipli nella stessa giornata
+                    self.db.log_kanban_refill_email_sent(len(recipients), len(requests))
                 else:
                     log.error("KanbanRefill: invio email ha restituito False")
 
@@ -14600,6 +14649,10 @@ class App(tk.Tk):
             label=self.lang.get('overtime_analysis', 'Analisi'),
             command=self.open_overtime_analysis_with_auth
         )
+        overtime_submenu.add_command(
+            label=self.lang.get('overtime_responses', 'Risposte'),
+            command=self.open_overtime_qa_with_auth
+        )
 
         # External Programs (Programmi Esterni)
         self.personnel_menu.add_separator()
@@ -16792,6 +16845,18 @@ class App(tk.Tk):
         self._execute_authorized_action(
             menu_translation_key='overtime_analysis',
             action_callback=lambda: open_overtime_analysis_window(self, self.db, self.lang, self.last_authenticated_user_name)
+        )
+
+    def open_overtime_qa_with_auth(self):
+        """Apre la finestra risposte straordinari con autorizzazione."""
+        from overtime import open_overtime_qa_window
+        self._execute_authorized_action(
+            menu_translation_key='overtime_approval',
+            action_callback=lambda: open_overtime_qa_window(
+                self, self.db, self.lang,
+                self.last_authenticated_user_name,
+                getattr(self, 'last_authorized_user_id', 0)
+            )
         )
 
     # =========================================================================

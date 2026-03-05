@@ -19,11 +19,13 @@ from .overtime_requests_gui import open_overtime_request_window
 from .overtime_approval_gui import open_overtime_approval_window
 from .overtime_reports_gui import open_overtime_reports_window
 from .overtime_analysis_gui import open_overtime_analysis_window
+from .overtime_qa_gui import open_overtime_qa_window
 
 __all__ = [
     'OvertimeManager',
     'open_overtime_request_window',
     'open_overtime_approval_window',
     'open_overtime_reports_window',
-    'open_overtime_analysis_window'
+    'open_overtime_analysis_window',
+    'open_overtime_qa_window'
 ]
