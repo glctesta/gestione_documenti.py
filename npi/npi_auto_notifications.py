@@ -254,20 +254,10 @@ class NpiAutoNotificationService:
             # ── 1. Raccoglie tutti i task overdue / due-tomorrow ────────
             task_owner_map, project_owner_map = self._collect_all_task_notifications()
 
-            # ── 2. Invia 1 email consolidata per ogni TASK OWNER ────────
-            for owner_email, payload in task_owner_map.items():
-                s, sk, f = self._send_consolidated_task_owner_email(
-                    owner_email, payload['owner_name'], payload['tasks']
-                )
-                total_sent += s
-                total_skipped += sk
-                total_failed += f
-
-            # ── 3. Invia 1 email consolidata per ogni PROJECT OWNER ─────
-            for owner_email, payload in project_owner_map.items():
-                s, sk, f = self._send_consolidated_project_owner_email(
-                    owner_email, payload['owner_name'], payload['tasks']
-                )
+            # ── 2. Unifica per PERSONA e invia 1 sola email ────────────
+            unified_map = self._build_unified_person_map(task_owner_map, project_owner_map)
+            for person_email, person_data in unified_map.items():
+                s, sk, f = self._send_unified_person_email(person_email, person_data)
                 total_sent += s
                 total_skipped += sk
                 total_failed += f
@@ -283,6 +273,21 @@ class NpiAutoNotificationService:
             total_sent += sent
             total_skipped += skipped
             total_failed += failed
+
+            # ── SENTINEL: Registra che il ciclo notifiche è stato eseguito oggi ──
+            # Questo è FONDAMENTALE per _is_send_day(): senza questo record,
+            # la prossima istanza dell'app ripasserebbe il gate e invierebbe
+            # email duplicate. Scriviamo SEMPRE, anche se non ci sono ritardi.
+            try:
+                self._ensure_project_delay_email_log_table()
+                self._mark_project_delay_email_sent(
+                    owner_email='__SENTINEL__',
+                    overdue_count=total_sent,
+                    potential_count=total_skipped
+                )
+                logger.info("[SENTINEL] Record sentinella scritto in NpiProjectDelayEmailLog per oggi.")
+            except Exception as sentinel_err:
+                logger.warning(f"[SENTINEL] Impossibile scrivere sentinella: {sentinel_err}")
 
             logger.info("=== FINE CONTROLLO NOTIFICHE NPI (CONSOLIDATE) ===")
             logger.info(f"Totale email inviate: {total_sent}")
@@ -431,23 +436,90 @@ class NpiAutoNotificationService:
         finally:
             session.close()
 
-    # ── Email consolidata per TASK OWNER ─────────────────────────────────
+    # ── Unificazione per persona ──────────────────────────────────────
 
-    def _send_consolidated_task_owner_email(
-        self, owner_email: str, owner_name: str, tasks: List[dict]
+    def _build_unified_person_map(self, task_owner_map: Dict, project_owner_map: Dict) -> Dict:
+        """
+        Unifica task_owner_map e project_owner_map in un unico dict per persona.
+        Ogni persona riceverà 1 sola email con entrambe le sezioni.
+
+        Ritorna:
+            { email: {
+                'name': str,
+                'owned_tasks': [task_info, ...],        # task di cui è responsabile
+                'owned_projects': {
+                    project_id: {
+                        'project_name': str,
+                        'project_code': str,
+                        'project_owner': str,
+                        'tasks': [task_info, ...]
+                    }
+                }
+            }}
+        """
+        unified: Dict[str, dict] = {}
+
+        # Aggiungi task owned
+        for email, payload in task_owner_map.items():
+            unified.setdefault(email, {
+                'name': payload['owner_name'],
+                'owned_tasks': [],
+                'owned_projects': {}
+            })
+            unified[email]['owned_tasks'] = payload['tasks']
+
+        # Aggiungi project owned
+        for email, payload in project_owner_map.items():
+            unified.setdefault(email, {
+                'name': payload['owner_name'],
+                'owned_tasks': [],
+                'owned_projects': {}
+            })
+            # Raggruppa i task per progetto
+            for t in payload['tasks']:
+                pid = t['project_id']
+                unified[email]['owned_projects'].setdefault(pid, {
+                    'project_name': t['project_name'],
+                    'project_code': t['project_code'],
+                    'project_owner': t['project_owner_name'],
+                    'tasks': []
+                })
+                unified[email]['owned_projects'][pid]['tasks'].append(t)
+
+        logger.info(
+            "Mappa unificata: %d persone (da %d task owner + %d project owner)",
+            len(unified), len(task_owner_map), len(project_owner_map)
+        )
+        return unified
+
+    def _send_unified_person_email(
+        self, person_email: str, person_data: dict
     ) -> Tuple[int, int, int]:
-        """Invia 1 unica email al task owner con tutti i suoi task overdue/due-tomorrow."""
+        """
+        Invia 1 UNICA email alla persona con:
+        - Sezione 1: task di cui è responsabile (owned_tasks)
+        - Sezione 2: progetti di cui è owner (owned_projects)
+        """
         from .data_models_notification import NpiTaskNotification
 
-        if not owner_email or not tasks:
+        if not person_email:
+            return 0, 1, 0
+
+        person_name = person_data['name']
+        owned_tasks = person_data.get('owned_tasks', [])
+        owned_projects = person_data.get('owned_projects', {})
+
+        if not owned_tasks and not owned_projects:
             return 0, 1, 0
 
         # Filtra task già notificati oggi
         session = self.npi_manager._get_session()
         try:
             today = date.today()
+
+            # Filtra owned_tasks
             tasks_to_notify = []
-            for t in tasks:
+            for t in owned_tasks:
                 if t['task_owner_id'] is None:
                     continue
                 existing = session.scalars(
@@ -463,41 +535,68 @@ class NpiAutoNotificationService:
                 if not existing:
                     tasks_to_notify.append(t)
 
-            if not tasks_to_notify:
-                logger.info("Tutti i task già notificati oggi a %s, skip", owner_email)
+            # Verifica se email project owner consolidata già inviata oggi
+            project_section_skip = False
+            if owned_projects:
+                existing_po = session.scalars(
+                    select(NpiTaskNotification).where(
+                        and_(
+                            NpiTaskNotification.RecipientEmail == person_email,
+                            NpiTaskNotification.NotificationType == 'ConsolidatedProjectOwner',
+                            NpiTaskNotification.NotificationDate == today
+                        )
+                    )
+                ).first()
+                if existing_po:
+                    project_section_skip = True
+                    logger.info("Sezione progetti già notificata oggi a %s, skip sezione progetti", person_email)
+
+            if not tasks_to_notify and (not owned_projects or project_section_skip):
+                logger.info("Nessun contenuto nuovo per %s, skip email", person_email)
                 return 0, 1, 0
 
-            # Raggruppa per progetto per il template
-            projects_grouped = {}
+            # Raggruppa owned_tasks per progetto per il template
+            task_projects_grouped = {}
             for t in tasks_to_notify:
                 pid = t['project_id']
-                projects_grouped.setdefault(pid, {
+                task_projects_grouped.setdefault(pid, {
                     'project_name': t['project_name'],
                     'project_code': t['project_code'],
                     'project_owner': t['project_owner_name'],
                     'tasks': []
                 })
-                projects_grouped[pid]['tasks'].append(t)
+                task_projects_grouped[pid]['tasks'].append(t)
 
             # Conta totali
-            overdue_count = sum(1 for t in tasks_to_notify if t['notification_type'] == 'TaskOverdue')
-            tomorrow_count = sum(1 for t in tasks_to_notify if t['notification_type'] == 'TaskDueTomorrow')
+            all_relevant_tasks = tasks_to_notify[:]
+            if not project_section_skip:
+                for pdata in owned_projects.values():
+                    all_relevant_tasks.extend(pdata['tasks'])
 
-            # Genera HTML
-            html_body = self._build_consolidated_email_html(
-                owner_name, projects_grouped, overdue_count, tomorrow_count,
-                recipient_role="Task Owner"
+            overdue_count = sum(1 for t in all_relevant_tasks if t['notification_type'] == 'TaskOverdue')
+            tomorrow_count = sum(1 for t in all_relevant_tasks if t['notification_type'] == 'TaskDueTomorrow')
+
+            # Determina progetti da mostrare nella sezione project owner
+            projects_for_po = owned_projects if not project_section_skip else {}
+
+            # Genera HTML unificato
+            html_body = self._build_unified_email_html(
+                person_name, task_projects_grouped, projects_for_po,
+                overdue_count, tomorrow_count
             )
 
-            subject = f"NPI Task Alert - {overdue_count} overdue, {tomorrow_count} due tomorrow ({len(tasks_to_notify)} tasks)"
+            # Subject
+            parts = []
+            if tasks_to_notify:
+                parts.append(f"{len(tasks_to_notify)} task")
+            if projects_for_po:
+                parts.append(f"{len(projects_for_po)} project(s)")
+            subject = f"NPI Alert - {overdue_count} overdue, {tomorrow_count} due tomorrow ({', '.join(parts)})"
 
-            # CC: project owners dei progetti coinvolti + setting
+            # CC: email da setting
             cc_set = set()
-            for t in tasks_to_notify:
-                if t['project_owner_email'] and t['project_owner_email'] != owner_email:
-                    cc_set.add(t['project_owner_email'])
             cc_set.update(e.lower() for e in self._get_setting_email_list('Sys_email_potential_npi_delay'))
-            cc_set.discard(owner_email)
+            cc_set.discard(person_email)
 
             # Invio
             from utils import send_email
@@ -505,7 +604,7 @@ class NpiAutoNotificationService:
             attachments = [('inline', logo_path, 'company_logo')] if logo_path else None
 
             send_email(
-                recipients=[owner_email],
+                recipients=[person_email],
                 subject=subject,
                 body=html_body,
                 is_html=True,
@@ -513,7 +612,7 @@ class NpiAutoNotificationService:
                 attachments=attachments
             )
 
-            # Registra ogni task notificato
+            # Registra task notificati
             for t in tasks_to_notify:
                 try:
                     notif = NpiTaskNotification(
@@ -522,140 +621,68 @@ class NpiAutoNotificationService:
                         RecipientSoggettoID=t['task_owner_id'],
                         NotificationType=t['notification_type'],
                         NotificationDate=today,
-                        RecipientEmail=owner_email,
-                        RecipientName=owner_name,
+                        RecipientEmail=person_email,
+                        RecipientName=person_name,
                         RecipientType='TaskOwner',
                         DeliveryStatus='Sent'
                     )
                     session.add(notif)
                 except Exception:
                     pass
+
+            # Registra sezione project owner
+            if projects_for_po:
+                ref_task = next(iter(next(iter(projects_for_po.values()))['tasks']), None)
+                if ref_task:
+                    try:
+                        notif = NpiTaskNotification(
+                            TaskProdottoID=ref_task['task_id'],
+                            ProgettoID=ref_task['project_id'],
+                            RecipientSoggettoID=None,
+                            NotificationType='ConsolidatedProjectOwner',
+                            NotificationDate=today,
+                            RecipientEmail=person_email,
+                            RecipientName=person_name,
+                            RecipientType='ProjectOwner',
+                            DeliveryStatus='Sent'
+                        )
+                        session.add(notif)
+                    except Exception:
+                        pass
+
             session.commit()
 
             logger.info(
-                "Email consolidata TASK OWNER inviata a %s (%d task, %d progetti)",
-                owner_email, len(tasks_to_notify), len(projects_grouped)
+                "Email unificata inviata a %s (%d task propri, %d progetti)",
+                person_email, len(tasks_to_notify), len(projects_for_po)
             )
             return 1, 0, 0
 
         except Exception as e:
-            logger.error(f"Errore invio email consolidata task owner a {owner_email}: {e}", exc_info=True)
+            logger.error(f"Errore invio email unificata a {person_email}: {e}", exc_info=True)
             return 0, 0, 1
         finally:
             session.close()
 
-    # ── Email consolidata per PROJECT OWNER ──────────────────────────────
+    # ── Template HTML unificato ───────────────────────────────────────────
 
-    def _send_consolidated_project_owner_email(
-        self, owner_email: str, owner_name: str, tasks: List[dict]
-    ) -> Tuple[int, int, int]:
-        """Invia 1 unica email al project owner con tutti i task dei suoi progetti."""
-        from .data_models_notification import NpiTaskNotification
-
-        if not owner_email or not tasks:
-            return 0, 1, 0
-
-        session = self.npi_manager._get_session()
-        try:
-            today = date.today()
-
-            # Verifica se già inviata oggi al project owner (tipo consolidato)
-            existing = session.scalars(
-                select(NpiTaskNotification).where(
-                    and_(
-                        NpiTaskNotification.RecipientEmail == owner_email,
-                        NpiTaskNotification.NotificationType == 'ConsolidatedProjectOwner',
-                        NpiTaskNotification.NotificationDate == today
-                    )
-                )
-            ).first()
-
-            if existing:
-                logger.info("Email consolidata project owner già inviata oggi a %s, skip", owner_email)
-                return 0, 1, 0
-
-            # Raggruppa per progetto
-            projects_grouped = {}
-            for t in tasks:
-                pid = t['project_id']
-                projects_grouped.setdefault(pid, {
-                    'project_name': t['project_name'],
-                    'project_code': t['project_code'],
-                    'project_owner': t['project_owner_name'],
-                    'tasks': []
-                })
-                projects_grouped[pid]['tasks'].append(t)
-
-            overdue_count = sum(1 for t in tasks if t['notification_type'] == 'TaskOverdue')
-            tomorrow_count = sum(1 for t in tasks if t['notification_type'] == 'TaskDueTomorrow')
-
-            html_body = self._build_consolidated_email_html(
-                owner_name, projects_grouped, overdue_count, tomorrow_count,
-                recipient_role="Project Owner"
-            )
-
-            subject = (
-                f"NPI Project Owner Alert - {overdue_count} overdue, "
-                f"{tomorrow_count} due tomorrow across {len(projects_grouped)} project(s)"
-            )
-
-            cc_recipients = [e for e in self._get_setting_email_list('Sys_email_potential_npi_delay')
-                             if e.lower() != owner_email]
-
-            from utils import send_email
-            logo_path = self._resolve_logo_path() if self.config['notification_settings'].get('include_logo', True) else None
-            attachments = [('inline', logo_path, 'company_logo')] if logo_path else None
-
-            send_email(
-                recipients=[owner_email],
-                subject=subject,
-                body=html_body,
-                is_html=True,
-                cc_emails=cc_recipients,
-                attachments=attachments
-            )
-
-            # Registra come notifica consolidata (usa il primo task come riferimento)
-            ref_task = tasks[0]
-            notif = NpiTaskNotification(
-                TaskProdottoID=ref_task['task_id'],
-                ProgettoID=ref_task['project_id'],
-                RecipientSoggettoID=None,
-                NotificationType='ConsolidatedProjectOwner',
-                NotificationDate=today,
-                RecipientEmail=owner_email,
-                RecipientName=owner_name,
-                RecipientType='ProjectOwner',
-                DeliveryStatus='Sent'
-            )
-            session.add(notif)
-            session.commit()
-
-            logger.info(
-                "Email consolidata PROJECT OWNER inviata a %s (%d task, %d progetti)",
-                owner_email, len(tasks), len(projects_grouped)
-            )
-            return 1, 0, 0
-
-        except Exception as e:
-            logger.error(f"Errore invio email consolidata project owner a {owner_email}: {e}", exc_info=True)
-            return 0, 0, 1
-        finally:
-            session.close()
-
-    # ── Template HTML condiviso per email consolidate ────────────────────
-
-    def _build_consolidated_email_html(
-        self, recipient_name: str, projects_grouped: dict,
-        overdue_count: int, tomorrow_count: int,
-        recipient_role: str = "Task Owner"
+    def _build_unified_email_html(
+        self, recipient_name: str,
+        task_projects_grouped: dict,
+        project_owner_projects: dict,
+        overdue_count: int, tomorrow_count: int
     ) -> str:
-        """Genera HTML professionale per email consolidata con tabella per progetto."""
+        """
+        Genera HTML professionale unificato con 2 sezioni:
+        1. 'Your Tasks' - task di cui la persona è responsabile
+        2. 'Your Projects' - progetti di cui è owner con tutti i task e responsabili
+        """
         logo_html = ""
         if self.config['notification_settings'].get('include_logo', True):
             logo_html = '<img src="cid:company_logo" style="max-width:150px;height:auto;" alt="Company Logo">'
 
-        total_tasks = overdue_count + tomorrow_count
+        total_own_tasks = sum(len(p['tasks']) for p in task_projects_grouped.values())
+        total_project_tasks = sum(len(p['tasks']) for p in project_owner_projects.values())
 
         # Badge di riepilogo
         summary_html = f"""
@@ -668,18 +695,20 @@ class NpiAutoNotificationService:
                 <div style="font-size:28px;font-weight:bold;color:#E65100;">{tomorrow_count}</div>
                 <div style="font-size:12px;color:#E65100;">DUE TOMORROW</div>
             </div>
+            <div style="flex:1;background:#E3F2FD;border-radius:8px;padding:14px;text-align:center;">
+                <div style="font-size:28px;font-weight:bold;color:#1565C0;">{total_own_tasks}</div>
+                <div style="font-size:12px;color:#1565C0;">YOUR TASKS</div>
+            </div>
             <div style="flex:1;background:#E8F5E9;border-radius:8px;padding:14px;text-align:center;">
-                <div style="font-size:28px;font-weight:bold;color:#1B5E20;">{len(projects_grouped)}</div>
-                <div style="font-size:12px;color:#1B5E20;">PROJECTS</div>
+                <div style="font-size:28px;font-weight:bold;color:#1B5E20;">{len(project_owner_projects)}</div>
+                <div style="font-size:12px;color:#1B5E20;">YOUR PROJECTS</div>
             </div>
         </div>
         """
 
-        # Tabella per progetto
-        projects_html = ""
-        for pid, pdata in projects_grouped.items():
-            rows_html = ""
-            for t in sorted(pdata['tasks'], key=lambda x: x['due_date']):
+        def _task_rows_html(tasks, show_owner=False):
+            rows = ""
+            for t in sorted(tasks, key=lambda x: x['due_date']):
                 if t['notification_type'] == 'TaskOverdue':
                     icon = "🚨"
                     badge = f'<span style="background:#B30000;color:#fff;padding:2px 8px;border-radius:10px;font-size:11px;">OVERDUE ({t["delay_days"]}d)</span>'
@@ -687,17 +716,22 @@ class NpiAutoNotificationService:
                     icon = "⚠️"
                     badge = '<span style="background:#E65100;color:#fff;padding:2px 8px;border-radius:10px;font-size:11px;">DUE TOMORROW</span>'
 
-                rows_html += f"""
+                owner_col = f'<td style="padding:8px;border:1px solid #e5e7eb;">{t["task_owner_name"]}</td>' if show_owner else ''
+                rows += f"""
                 <tr>
                     <td style="padding:8px;border:1px solid #e5e7eb;">{icon} {t['task_name']}</td>
-                    <td style="padding:8px;border:1px solid #e5e7eb;">{t['task_owner_name']}</td>
+                    {owner_col}
                     <td style="padding:8px;border:1px solid #e5e7eb;text-align:center;">{t['due_date'].strftime('%d/%m/%Y')}</td>
                     <td style="padding:8px;border:1px solid #e5e7eb;text-align:center;">{t['task_status']}</td>
                     <td style="padding:8px;border:1px solid #e5e7eb;text-align:center;">{badge}</td>
                 </tr>
                 """
+            return rows
 
-            projects_html += f"""
+        def _project_block_html(pid, pdata, show_owner=False):
+            owner_th = '<th style="padding:8px;border:1px solid #e5e7eb;text-align:left;">Task Owner</th>' if show_owner else ''
+            rows = _task_rows_html(pdata['tasks'], show_owner=show_owner)
+            return f"""
             <div style="margin:16px 0;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">
                 <div style="background:#1F4E78;color:#fff;padding:10px 14px;">
                     <strong>{pdata['project_name']}</strong>
@@ -708,17 +742,45 @@ class NpiAutoNotificationService:
                     <thead>
                         <tr style="background:#f1f5f9;">
                             <th style="padding:8px;border:1px solid #e5e7eb;text-align:left;">Task</th>
-                            <th style="padding:8px;border:1px solid #e5e7eb;text-align:left;">Task Owner</th>
+                            {owner_th}
                             <th style="padding:8px;border:1px solid #e5e7eb;text-align:center;">Due Date</th>
                             <th style="padding:8px;border:1px solid #e5e7eb;text-align:center;">Status</th>
                             <th style="padding:8px;border:1px solid #e5e7eb;text-align:center;">Alert</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {rows_html}
+                        {rows}
                     </tbody>
                 </table>
             </div>
+            """
+
+        # === SEZIONE 1: I TUOI TASK ===
+        section1_html = ""
+        if task_projects_grouped:
+            blocks = ""
+            for pid, pdata in task_projects_grouped.items():
+                blocks += _project_block_html(pid, pdata, show_owner=False)
+            section1_html = f"""
+            <h3 style="color:#1565C0;margin:24px 0 8px 0;border-bottom:2px solid #1565C0;padding-bottom:6px;">
+                📋 YOUR TASKS ({total_own_tasks} task{'s' if total_own_tasks != 1 else ''})
+            </h3>
+            <p style="color:#555;font-size:13px;">The following tasks assigned to you require attention:</p>
+            {blocks}
+            """
+
+        # === SEZIONE 2: I TUOI PROGETTI ===
+        section2_html = ""
+        if project_owner_projects:
+            blocks = ""
+            for pid, pdata in project_owner_projects.items():
+                blocks += _project_block_html(pid, pdata, show_owner=True)
+            section2_html = f"""
+            <h3 style="color:#1B5E20;margin:24px 0 8px 0;border-bottom:2px solid #1B5E20;padding-bottom:6px;">
+                📁 YOUR PROJECTS ({len(project_owner_projects)} project{'s' if len(project_owner_projects) != 1 else ''})
+            </h3>
+            <p style="color:#555;font-size:13px;">As project owner, the following tasks in your projects require attention:</p>
+            {blocks}
             """
 
         html = f"""
@@ -729,16 +791,18 @@ class NpiAutoNotificationService:
             <div style="max-width:980px;margin:0 auto;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
                 <div style="background:#FFFFFF;color:#0B3A66;padding:20px 24px;border-bottom:3px solid #0B3A66;">
                     {logo_html}
-                    <h2 style="margin:12px 0 4px 0;">NPI Task Notification — {recipient_role}</h2>
-                    <p style="margin:0;opacity:0.92;">Consolidated alert for {total_tasks} task(s) requiring attention.</p>
+                    <h2 style="margin:12px 0 4px 0;">NPI Task Notification</h2>
+                    <p style="margin:0;opacity:0.92;">Consolidated alert for tasks and projects requiring attention.</p>
                 </div>
                 <div style="padding:22px 24px;">
                     <p>Dear <strong>{recipient_name}</strong>,</p>
-                    <p>The NPI monitoring system detected the following tasks that need your attention:</p>
+                    <p>The NPI monitoring system detected the following items that need your attention:</p>
 
                     {summary_html}
 
-                    {projects_html}
+                    {section1_html}
+
+                    {section2_html}
 
                     <div style="background:#e7f3ff;border-left:4px solid #0078d4;padding:15px;margin:20px 0;border-radius:4px;">
                         <h4 style="color:#0078d4;margin:0 0 10px 0;">📌 ACTION REQUIRED</h4>
