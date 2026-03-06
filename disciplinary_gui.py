@@ -25,7 +25,6 @@ class DisciplinaryClaimWindow(tk.Toplevel):
         # Dati correnti
         self.selected_employee_id = None
         self.selected_employee_name = None
-        self.selected_employee_sex = None
         self.selected_employee_cdc = None
         self.selected_cause_id = None
         self.selected_cause_text = None
@@ -49,23 +48,28 @@ class DisciplinaryClaimWindow(tk.Toplevel):
         self.author_department = ""
         self.author_cost_center_id = None
         self.author_email = None
-        self.author_is_global = False
         try:
             with self.db._lock:
                 self.db.cursor.execute("""
-                    SELECT h.EmployeeHireHistoryId, e.EmployeeName, e.EmployeeSurname,
-                           cc.CostCenterDesc, h.CostCenterId, e.WorkEmail
+                    SELECT TOP 1
+                        e.EmployeeName, e.EmployeeSurname,
+                        c.CdcDescription,
+                        ea.WorkEmail
                     FROM Employee.dbo.EmployeeHireHistory h
                     INNER JOIN Employee.dbo.Employees e ON e.EmployeeId = h.EmployeeId
-                    LEFT JOIN Employee.dbo.CostCenters cc ON cc.CostCenterId = h.CostCenterId
-                    WHERE h.DateEnd IS NULL
+                    LEFT JOIN Employee.dbo.EmployeeCdcStories cs
+                        ON cs.EmployeeHireHistoryId = h.EmployeeHireHistoryId AND cs.DateOut IS NULL
+                    LEFT JOIN Employee.dbo.CdcSub s ON s.SubCdcId = cs.SubCdcId
+                    LEFT JOIN Employee.dbo.CostCenters c ON c.CdcId = s.CdcId
+                    LEFT JOIN Employee.dbo.EmployeeAddress ea
+                        ON ea.EmployeeId = e.EmployeeId AND ea.DateOut IS NULL
+                    WHERE h.EndWorkDate IS NULL AND h.EmployeerId = 2
                       AND (e.EmployeeName + ' ' + e.EmployeeSurname = ?
                            OR e.EmployeeSurname + ' ' + e.EmployeeName = ?)
                 """, self.author_name, self.author_name)
                 row = self.db.cursor.fetchone()
                 if row:
-                    self.author_department = row.CostCenterDesc or ""
-                    self.author_cost_center_id = row.CostCenterId
+                    self.author_department = row.CdcDescription or ""
                     self.author_email = row.WorkEmail
         except Exception as e:
             logger.warning(f"Errore caricamento info autore: {e}")
@@ -205,19 +209,23 @@ class DisciplinaryClaimWindow(tk.Toplevel):
         self.save_btn.pack(side=tk.RIGHT, padx=5)
 
     def _load_employees(self):
-        """Carica i dipendenti nel combo (filtro per cost center o tutti)."""
+        """Carica i dipendenti nel combo."""
         try:
             with self.db._lock:
                 self.db.cursor.execute("""
                     SELECT h.EmployeeHireHistoryId,
                            e.EmployeeSurname, e.EmployeeName,
-                           cc.CostCenterDesc,
-                           CASE WHEN e.Sex = 'F' THEN 'Doamna' ELSE 'Domnul' END AS Sex_,
-                           e.WorkEmail
+                           c.CdcDescription,
+                           ea.WorkEmail
                     FROM Employee.dbo.EmployeeHireHistory h
                     INNER JOIN Employee.dbo.Employees e ON e.EmployeeId = h.EmployeeId
-                    LEFT JOIN Employee.dbo.CostCenters cc ON cc.CostCenterId = h.CostCenterId
-                    WHERE h.DateEnd IS NULL
+                    LEFT JOIN Employee.dbo.EmployeeCdcStories cs
+                        ON cs.EmployeeHireHistoryId = h.EmployeeHireHistoryId AND cs.DateOut IS NULL
+                    LEFT JOIN Employee.dbo.CdcSub s ON s.SubCdcId = cs.SubCdcId
+                    LEFT JOIN Employee.dbo.CostCenters c ON c.CdcId = s.CdcId
+                    LEFT JOIN Employee.dbo.EmployeeAddress ea
+                        ON ea.EmployeeId = e.EmployeeId AND ea.DateOut IS NULL
+                    WHERE h.EndWorkDate IS NULL AND h.EmployeerId = 2
                     ORDER BY e.EmployeeSurname
                 """)
                 rows = self.db.cursor.fetchall()
@@ -229,12 +237,11 @@ class DisciplinaryClaimWindow(tk.Toplevel):
                     'id': row.EmployeeHireHistoryId,
                     'surname': row.EmployeeSurname,
                     'name': row.EmployeeName,
-                    'cdc': row.CostCenterDesc or '',
-                    'sex': row.Sex_,
+                    'cdc': row.CdcDescription or '',
                     'email': row.WorkEmail
                 })
                 display_list.append(
-                    f"{row.EmployeeSurname} {row.EmployeeName} - {row.CostCenterDesc or ''}"
+                    f"{row.EmployeeSurname} {row.EmployeeName} - {row.CdcDescription or ''}"
                 )
             self.employee_combo['values'] = display_list
         except Exception as e:
@@ -280,14 +287,13 @@ class DisciplinaryClaimWindow(tk.Toplevel):
             return
         emp = self._employees_data[idx]
         self.selected_employee_id = emp['id']
-        self.selected_employee_name = f"{emp['sex']} {emp['surname']} {emp['name']}"
-        self.selected_employee_sex = emp['sex']
+        self.selected_employee_name = f"{emp['surname']} {emp['name']}"
         self.selected_employee_cdc = emp['cdc']
 
         # Aggiorna testo area con preambolo
         current_text = self.reason_text.get("1.0", tk.END).strip()
         preambolo = (
-            f"{emp['sex']} {emp['surname']} {emp['name']}, "
+            f"{emp['surname']} {emp['name']}, "
             f"aparținând la centrul de cost {emp['cdc']} "
             f"i se întocmește un referat pentru următoarele motive:"
         )
@@ -650,12 +656,12 @@ class DisciplinaryClaimWindow(tk.Toplevel):
             try:
                 with self.db._lock:
                     self.db.cursor.execute("""
-                        SELECT ValueItem FROM Traceability_RS.dbo.Settings
+                        SELECT [VALUE] FROM Traceability_RS.dbo.Settings
                         WHERE Atribute = 'Sys_email_referat' AND DateOut IS NULL
                     """)
                     row = self.db.cursor.fetchone()
-                    if row and row.ValueItem:
-                        cc_emails = [e.strip() for e in row.ValueItem.split(';')
+                    if row and row[0]:
+                        cc_emails = [e.strip() for e in row[0].split(';')
                                      if e.strip()]
             except Exception as e:
                 logger.warning(f"Errore lettura CC email referat: {e}")
@@ -689,6 +695,8 @@ class DisciplinaryClaimWindow(tk.Toplevel):
             """
 
             sender = EmailSender()
+            sender.save_credentials("Accounting@Eutron.it", "9jHgFhSs7Vf+")
+
             primary_to = to_emails[0]
             all_cc = cc_emails + to_emails[1:]
 
