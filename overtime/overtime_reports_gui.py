@@ -371,8 +371,21 @@ PERCENTUALI:
             from reportlab.platypus import Table, TableStyle, Image as ReportLabImage, Paragraph
             from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
             from reportlab.lib import colors
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
             from collections import defaultdict
             from datetime import datetime
+            
+            # Registra font Arial per supporto caratteri rumeni (ă, â, î, ș, ț)
+            font_dir = r'C:\Windows\Fonts'
+            if not pdfmetrics.getRegisteredFontNames() or 'Arial' not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont('Arial', os.path.join(font_dir, 'arial.ttf')))
+                pdfmetrics.registerFont(TTFont('Arial-Bold', os.path.join(font_dir, 'arialbd.ttf')))
+                pdfmetrics.registerFont(TTFont('Arial-Italic', os.path.join(font_dir, 'ariali.ttf')))
+                pdfmetrics.registerFont(TTFont('Arial-BoldItalic', os.path.join(font_dir, 'arialbi.ttf')))
+                from reportlab.pdfbase.pdfmetrics import registerFontFamily
+                registerFontFamily('Arial', normal='Arial', bold='Arial-Bold',
+                                   italic='Arial-Italic', boldItalic='Arial-BoldItalic')
             
             # Recupera prezzi straordinari
             pricing_query = """
@@ -527,7 +540,7 @@ PERCENTUALI:
                     except Exception:
                         pass
                 # Footer text
-                canvas_obj.setFont("Helvetica", 7)
+                canvas_obj.setFont("Arial", 7)
                 canvas_obj.drawCentredString(page_w / 2, 1.2 * cm,
                     "Document generat automat de sistemul TraceabilityRS")
                 # Numero pagina
@@ -545,11 +558,11 @@ PERCENTUALI:
             
             # === TITOLO ===
             title_style = ParagraphStyle(
-                'Title', fontName='Helvetica-Bold', fontSize=16,
+                'Title', fontName='Arial-Bold', fontSize=16,
                 spaceAfter=6, alignment=0
             )
             subtitle_style = ParagraphStyle(
-                'Subtitle', fontName='Helvetica', fontSize=9,
+                'Subtitle', fontName='Arial', fontSize=9,
                 spaceAfter=2, alignment=0
             )
             elements.append(Paragraph("RAPORT ORE SUPLIMENTARE", title_style))
@@ -561,7 +574,7 @@ PERCENTUALI:
             
             # === RIEPILOGO COSTI PER MESE + ANNO side-by-side ===
             section_title = ParagraphStyle(
-                'SectionTitle', fontName='Helvetica-Bold', fontSize=11,
+                'SectionTitle', fontName='Arial-Bold', fontSize=11,
                 spaceAfter=4, spaceBefore=8, alignment=0
             )
             
@@ -618,14 +631,14 @@ PERCENTUALI:
                 ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
                 ('FONTSIZE', (0, 1), (-1, -1), 8),
                 ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor("#FFD700")),
-                ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+                ('FONTNAME', (0, -1), (-1, -1), 'Arial-Bold'),
             ]))
             elements.append(yearly_table)
             elements.append(Spacer(1, 0.3 * cm))
             
             # === IPOTEZE DI CALCOLO ===
             assumption_style = ParagraphStyle(
-                'Assumption', fontName='Helvetica-Oblique', fontSize=8,
+                'Assumption', fontName='Arial-Italic', fontSize=8,
                 spaceAfter=2, spaceBefore=2, alignment=0,
                 textColor=colors.HexColor("#555555")
             )
@@ -640,7 +653,7 @@ PERCENTUALI:
             
             # Stili Paragraph per word-wrap nelle celle PDF
             cell_style = ParagraphStyle(
-                'CellWrap', fontName='Helvetica',
+                'CellWrap', fontName='Arial',
                 fontSize=6, leading=7, alignment=0
             )
             cell_center = ParagraphStyle(
@@ -649,10 +662,10 @@ PERCENTUALI:
             )
             cell_bold = ParagraphStyle(
                 'CellBold', parent=cell_style,
-                fontName='Helvetica-Bold', fontSize=6
+                fontName='Arial-Bold', fontSize=6
             )
             header_style = ParagraphStyle(
-                'HeaderStyle', fontName='Helvetica-Bold', fontSize=6,
+                'HeaderStyle', fontName='Arial-Bold', fontSize=6,
                 textColor=colors.whitesmoke, alignment=1, leading=8
             )
             
