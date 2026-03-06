@@ -311,11 +311,23 @@ PERCENTUALI:
                 ws.column_dimensions[cell.column_letter].width = header_widths[col - 1]
             
             # Dati
+            last_row = 1
             for row_idx, item in enumerate(self.tree.get_children(), 2):
                 values = self.tree.item(item)['values']
                 for col_idx, value in enumerate(values, 1):
                     cell = ws.cell(row=row_idx, column=col_idx, value=value)
                     cell.alignment = wrap_align
+                last_row = row_idx
+            
+            # Riga somma ore (colonna 5 = Ore)
+            sum_row = last_row + 1
+            sum_cell = ws.cell(row=sum_row, column=5, value=f"=SUM(E2:E{last_row})")
+            sum_cell.font = Font(bold=True)
+            sum_cell.alignment = Alignment(wrap_text=True, vertical='center', horizontal='center')
+            ws.cell(row=sum_row, column=4, value="TOTAL:").font = Font(bold=True)
+            
+            # Auto-filtro sulle intestazioni
+            ws.auto_filter.ref = f"A1:F{last_row}"
             
             wb.save(file_path)
             
