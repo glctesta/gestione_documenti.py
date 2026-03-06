@@ -446,13 +446,19 @@ PERCENTUALI:
                 total_cost += cost
                 
                 # Giorno della settimana
-                day_names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+                day_names = ['Lun', 'Mar', 'Mie', 'Joi', 'Vin', 'Sâm', 'Dum']
                 day_name = day_names[date_start.weekday()]
+
+                # Ore inizio e fine
+                time_from = date_start.strftime('%H:%M') if date_start else ''
+                time_to = date_end.strftime('%H:%M') if date_end else ''
 
                 overtime_data.append({
                     'employee': employee,
                     'reason': reason,
-                    'date': date_start.strftime('%d/%m/%Y %H:%M'),
+                    'date': date_start.strftime('%d/%m/%Y'),
+                    'time_from': time_from,
+                    'time_to': time_to,
                     'day': day_name,
                     'date_obj': date_start,
                     'month_key': month_key,
@@ -517,11 +523,11 @@ PERCENTUALI:
                 'Subtitle', fontName='Helvetica', fontSize=9,
                 spaceAfter=2, alignment=0
             )
-            elements.append(Paragraph("OVERTIME REPORT", title_style))
+            elements.append(Paragraph("RAPORT ORE SUPLIMENTARE", title_style))
             elements.append(Paragraph(
-                f"Period: {start_date.strftime('%d/%m/%Y')} - {end_date.strftime('%d/%m/%Y')}", subtitle_style))
+                f"Perioada: {start_date.strftime('%d/%m/%Y')} - {end_date.strftime('%d/%m/%Y')}", subtitle_style))
             elements.append(Paragraph(
-                f"Generated: {datetime.now().strftime('%d/%m/%Y %H:%M')}", subtitle_style))
+                f"Data generării: {datetime.now().strftime('%d/%m/%Y %H:%M')}", subtitle_style))
             elements.append(Spacer(1, 0.5 * cm))
             
             # === RIEPILOGO COSTI PER MESE + ANNO side-by-side ===
@@ -531,8 +537,8 @@ PERCENTUALI:
             )
             
             # Monthly summary
-            elements.append(Paragraph("COST SUMMARY BY MONTH", section_title))
-            monthly_table_data = [['Month', 'Hours', f'Cost ({currency})']]
+            elements.append(Paragraph("REZUMAT COSTURI PE LUNĂ", section_title))
+            monthly_table_data = [['Luna', 'Ore', f'Cost ({currency})']]
             for month in sorted(monthly_costs.keys()):
                 month_name = datetime.strptime(month, '%Y-%m').strftime('%B %Y')
                 monthly_table_data.append([
@@ -557,8 +563,8 @@ PERCENTUALI:
             elements.append(Spacer(1, 0.5 * cm))
             
             # Yearly summary
-            elements.append(Paragraph("COST SUMMARY BY YEAR", section_title))
-            yearly_table_data = [['Year', 'Hours', f'Cost ({currency})']]
+            elements.append(Paragraph("REZUMAT COSTURI PE AN", section_title))
+            yearly_table_data = [['An', 'Ore', f'Cost ({currency})']]
             for year in sorted(yearly_costs.keys()):
                 yearly_table_data.append([
                     year,
@@ -588,13 +594,13 @@ PERCENTUALI:
             elements.append(yearly_table)
             elements.append(Spacer(1, 0.8 * cm))
             
-            # === TABELLA DETTAGLIO STRAORDINARI ===
-            elements.append(Paragraph("OVERTIME DETAIL", section_title))
+            # === TABELLA DETTAGLIO ORE SUPLIMENTARE ===
+            elements.append(Paragraph("DETALIU ORE SUPLIMENTARE", section_title))
             
             # Stili Paragraph per word-wrap nelle celle PDF
             cell_style = ParagraphStyle(
                 'CellWrap', fontName='Helvetica',
-                fontSize=7, leading=8, alignment=0
+                fontSize=6, leading=7, alignment=0
             )
             cell_center = ParagraphStyle(
                 'CellCenter', parent=cell_style,
@@ -602,24 +608,26 @@ PERCENTUALI:
             )
             cell_bold = ParagraphStyle(
                 'CellBold', parent=cell_style,
-                fontName='Helvetica-Bold', fontSize=7
+                fontName='Helvetica-Bold', fontSize=6
             )
             header_style = ParagraphStyle(
-                'HeaderStyle', fontName='Helvetica-Bold', fontSize=7,
-                textColor=colors.whitesmoke, alignment=1, leading=9
+                'HeaderStyle', fontName='Helvetica-Bold', fontSize=6,
+                textColor=colors.whitesmoke, alignment=1, leading=8
             )
             
-            # Larghezze colonne per A4 portrait (18.6 cm disponibili)
-            col_widths = [3.2*cm, 3.5*cm, 2.5*cm, 1.2*cm, 1.1*cm, 1.6*cm, 1.5*cm, 2.0*cm]
+            # 10 colonne per A4 portrait (18.6 cm disponibili)
+            col_widths = [2.8*cm, 2.8*cm, 1.8*cm, 1.1*cm, 1.1*cm, 1.0*cm, 1.0*cm, 1.5*cm, 1.5*cm, 1.8*cm]
             
             detail_table_data = [[
-                Paragraph('Employee', header_style),
-                Paragraph('Reason', header_style),
-                Paragraph('Date', header_style),
-                Paragraph('Day', header_style),
-                Paragraph('Hours', header_style),
-                Paragraph('Type', header_style),
-                Paragraph('Status', header_style),
+                Paragraph('Angajat', header_style),
+                Paragraph('Motiv', header_style),
+                Paragraph('Data', header_style),
+                Paragraph('De la ora', header_style),
+                Paragraph('Până la ora', header_style),
+                Paragraph('Ziua', header_style),
+                Paragraph('Ore', header_style),
+                Paragraph('Tip', header_style),
+                Paragraph('Stare', header_style),
                 Paragraph(f'Cost ({currency})', header_style)
             ]]
             
@@ -637,7 +645,7 @@ PERCENTUALI:
                     month_name = datetime.strptime(current_month, '%Y-%m').strftime('%B %Y')
                     subtotal_rows.append(len(detail_table_data))
                     detail_table_data.append([
-                        Paragraph(f'Subtotal {month_name}', cell_bold), '', '', '',
+                        Paragraph(f'Subtotal {month_name}', cell_bold), '', '', '', '', '',
                         Paragraph(f'{month_hours:.1f}', cell_bold), '', '',
                         Paragraph(f'{month_cost:.2f}', cell_bold)
                     ])
@@ -648,18 +656,21 @@ PERCENTUALI:
                     month_name = datetime.strptime(item_month, '%Y-%m').strftime('%B %Y')
                     month_header_rows.append(len(detail_table_data))
                     detail_table_data.append([
-                        month_name.upper(), '', '', '', '', '', '', ''
+                        month_name.upper(), '', '', '', '', '', '', '', '', ''
                     ])
                     current_month = item_month
                 
+                status_ro = {'Pending': 'În așteptare', 'Approved': 'Aprobat', 'Rejected': 'Respins'}
                 detail_table_data.append([
                     Paragraph(item['employee'] or '', cell_style),
                     Paragraph(item['reason'] or '', cell_style),
                     Paragraph(item['date'], cell_center),
+                    Paragraph(item['time_from'], cell_center),
+                    Paragraph(item['time_to'], cell_center),
                     Paragraph(item['day'], cell_center),
                     Paragraph(f"{item['hours']:.1f}", cell_center),
-                    Paragraph('Weekend' if item['is_weekend'] else 'Weekday', cell_center),
-                    Paragraph(item['status'], cell_center),
+                    Paragraph('Weekend' if item['is_weekend'] else 'Lucr.', cell_center),
+                    Paragraph(status_ro.get(item['status'], item['status']), cell_center),
                     Paragraph(f"{item['cost']:.2f}", cell_center)
                 ])
                 
@@ -670,14 +681,14 @@ PERCENTUALI:
                 month_name = datetime.strptime(current_month, '%Y-%m').strftime('%B %Y')
                 subtotal_rows.append(len(detail_table_data))
                 detail_table_data.append([
-                    Paragraph(f'Subtotal {month_name}', cell_bold), '', '', '',
+                    Paragraph(f'Subtotal {month_name}', cell_bold), '', '', '', '', '',
                     Paragraph(f'{month_hours:.1f}', cell_bold), '', '',
                     Paragraph(f'{month_cost:.2f}', cell_bold)
                 ])
             
             grand_total_row = len(detail_table_data)
             detail_table_data.append([
-                Paragraph('GRAND TOTAL', cell_bold), '', '', '',
+                Paragraph('TOTAL GENERAL', cell_bold), '', '', '', '', '',
                 Paragraph(f'{total_hours:.1f}', cell_bold), '', '',
                 Paragraph(f'{total_cost:.2f}', cell_bold)
             ])
