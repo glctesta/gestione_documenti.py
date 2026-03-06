@@ -117,12 +117,13 @@ class OvertimeReportsWindow(tk.Toplevel):
         table_frame = ttk.Frame(self.notebook)
         self.notebook.add(table_frame, text=self.lang.get('table_view', 'Vista Tabella'))
         
-        columns = ('employee', 'reason', 'date', 'hours', 'status')
+        columns = ('employee', 'reason', 'date', 'day', 'hours', 'status')
         self.tree = ttk.Treeview(table_frame, columns=columns, show='headings')
         
         self.tree.heading('employee', text=self.lang.get('employee', 'Dipendente'))
         self.tree.heading('reason', text=self.lang.get('reason', 'Motivo'))
         self.tree.heading('date', text=self.lang.get('date', 'Data'))
+        self.tree.heading('day', text=self.lang.get('day_of_week', 'Giorno'))
         self.tree.heading('hours', text=self.lang.get('hours', 'Ore'))
         self.tree.heading('status', text=self.lang.get('status', 'Stato'))
         
@@ -172,6 +173,9 @@ class OvertimeReportsWindow(tk.Toplevel):
         end_date = self.end_date.get_date()
         
         # Query base
+        # Mappa nomi giorni settimana
+        day_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
         query = """
         SELECT DISTINCT
             e.EmployeeSurname + ' ' + e.EmployeeName AS EmployeeName,
@@ -204,6 +208,7 @@ class OvertimeReportsWindow(tk.Toplevel):
             
             for row in results:
                 date_str = row[2].strftime('%d/%m/%Y %H:%M') if row[2] else 'N/D'
+                day_name = day_names[row[2].weekday()] if row[2] else ''
                 hours = row[3] if row[3] else 0
                 status = row[4]
                 
@@ -211,6 +216,7 @@ class OvertimeReportsWindow(tk.Toplevel):
                     row[0],  # Employee
                     row[1],  # Reason
                     date_str,  # Date
+                    day_name,  # Day of week
                     hours,  # Hours
                     status  # Status
                 ))
@@ -274,24 +280,29 @@ PERCENTUALI:
         
         try:
             import openpyxl
-            from openpyxl.styles import Font, PatternFill
+            from openpyxl.styles import Font, PatternFill, Alignment
             
             wb = openpyxl.Workbook()
             ws = wb.active
             ws.title = "Straordinari"
             
             # Header
-            headers = ['Dipendente', 'Motivo', 'Data', 'Ore', 'Stato']
+            headers = ['Dipendente', 'Motivo', 'Data', 'Giorno', 'Ore', 'Stato']
+            header_widths = [30, 35, 18, 12, 8, 12]
+            wrap_align = Alignment(wrap_text=True, vertical='top')
             for col, header in enumerate(headers, 1):
                 cell = ws.cell(row=1, column=col, value=header)
                 cell.font = Font(bold=True)
                 cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+                cell.alignment = Alignment(wrap_text=True, vertical='center', horizontal='center')
+                ws.column_dimensions[cell.column_letter].width = header_widths[col - 1]
             
             # Dati
             for row_idx, item in enumerate(self.tree.get_children(), 2):
                 values = self.tree.item(item)['values']
                 for col_idx, value in enumerate(values, 1):
-                    ws.cell(row=row_idx, column=col_idx, value=value)
+                    cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                    cell.alignment = wrap_align
             
             wb.save(file_path)
             
@@ -330,7 +341,8 @@ PERCENTUALI:
             from reportlab.pdfgen import canvas
             from reportlab.lib.pagesizes import A4, landscape
             from reportlab.lib.units import cm
-            from reportlab.platypus import Table, TableStyle, Image as ReportLabImage
+            from reportlab.platypus import Table, TableStyle, Image as ReportLabImage, Paragraph
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
             from reportlab.lib import colors
             from collections import defaultdict
             from datetime import datetime
@@ -428,11 +440,16 @@ PERCENTUALI:
                 total_hours += hours
                 total_cost += cost
                 
+                # Giorno della settimana
+                day_names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+                day_name = day_names[date_start.weekday()]
+
                 overtime_data.append({
                     'employee': employee,
                     'reason': reason,
                     'date': date_start.strftime('%d/%m/%Y %H:%M'),
-                    'date_obj': date_start,  # Per ordinamento
+                    'day': day_name,
+                    'date_obj': date_start,
                     'month_key': month_key,
                     'hours': hours,
                     'status': status,
@@ -551,14 +568,43 @@ PERCENTUALI:
             c.drawString(2 * cm, y_pos, "DETTAGLIO STRAORDINARI")
             y_pos -= 0.5 * cm
             
-            detail_table_data = [['Dipendente', 'Motivo', 'Data', 'Ore', 'Tipo', 'Stato', f'Costo ({currency})']]
+            # Stili Paragraph per word-wrap nelle celle PDF
+            styles = getSampleStyleSheet()
+            cell_style = ParagraphStyle(
+                'CellWrap', parent=styles['Normal'],
+                fontSize=7, leading=8, alignment=0  # LEFT
+            )
+            cell_center = ParagraphStyle(
+                'CellCenter', parent=cell_style,
+                alignment=1  # CENTER
+            )
+            cell_bold = ParagraphStyle(
+                'CellBold', parent=cell_style,
+                fontName='Helvetica-Bold', fontSize=8
+            )
+            header_style = ParagraphStyle(
+                'HeaderStyle', parent=styles['Normal'],
+                fontName='Helvetica-Bold', fontSize=8,
+                textColor=colors.whitesmoke, alignment=1  # CENTER
+            )
+            
+            detail_table_data = [[
+                Paragraph('Employee', header_style),
+                Paragraph('Reason', header_style),
+                Paragraph('Date', header_style),
+                Paragraph('Day', header_style),
+                Paragraph('Hours', header_style),
+                Paragraph('Type', header_style),
+                Paragraph('Status', header_style),
+                Paragraph(f'Cost ({currency})', header_style)
+            ]]
             
             # Raggruppa per mese e aggiungi subtotali
             current_month = None
             month_hours = 0
             month_cost = 0
-            subtotal_rows = []  # Traccia le righe di subtotale per lo styling
-            month_header_rows = []  # Traccia le righe di intestazione mese
+            subtotal_rows = []
+            month_header_rows = []
             
             for item in overtime_data:
                 item_month = item['month_key']
@@ -568,9 +614,9 @@ PERCENTUALI:
                     month_name = datetime.strptime(current_month, '%Y-%m').strftime('%B %Y')
                     subtotal_rows.append(len(detail_table_data))
                     detail_table_data.append([
-                        f'Subtotale {month_name}', '', '', 
-                        f'{month_hours:.1f}', '', '', 
-                        f'{month_cost:.2f}'
+                        Paragraph(f'Subtotale {month_name}', cell_bold), '', '', '',
+                        Paragraph(f'{month_hours:.1f}', cell_bold), '', '',
+                        Paragraph(f'{month_cost:.2f}', cell_bold)
                     ])
                     month_hours = 0
                     month_cost = 0
@@ -580,19 +626,20 @@ PERCENTUALI:
                     month_name = datetime.strptime(item_month, '%Y-%m').strftime('%B %Y')
                     month_header_rows.append(len(detail_table_data))
                     detail_table_data.append([
-                        month_name.upper(), '', '', '', '', '', ''
+                        month_name.upper(), '', '', '', '', '', '', ''
                     ])
                     current_month = item_month
                 
-                # Aggiungi riga dettaglio
+                # Aggiungi riga dettaglio con Paragraph per word-wrap
                 detail_table_data.append([
-                    item['employee'],
-                    item['reason'],
-                    item['date'],
-                    f"{item['hours']:.1f}",
-                    'Weekend' if item['is_weekend'] else 'Weekday',
-                    item['status'],
-                    f"{item['cost']:.2f}"
+                    Paragraph(item['employee'] or '', cell_style),
+                    Paragraph(item['reason'] or '', cell_style),
+                    Paragraph(item['date'], cell_center),
+                    Paragraph(item['day'], cell_center),
+                    Paragraph(f"{item['hours']:.1f}", cell_center),
+                    Paragraph('Weekend' if item['is_weekend'] else 'Weekday', cell_center),
+                    Paragraph(item['status'], cell_center),
+                    Paragraph(f"{item['cost']:.2f}", cell_center)
                 ])
                 
                 month_hours += item['hours']
@@ -603,20 +650,24 @@ PERCENTUALI:
                 month_name = datetime.strptime(current_month, '%Y-%m').strftime('%B %Y')
                 subtotal_rows.append(len(detail_table_data))
                 detail_table_data.append([
-                    f'Subtotale {month_name}', '', '', 
-                    f'{month_hours:.1f}', '', '', 
-                    f'{month_cost:.2f}'
+                    Paragraph(f'Subtotale {month_name}', cell_bold), '', '', '',
+                    Paragraph(f'{month_hours:.1f}', cell_bold), '', '',
+                    Paragraph(f'{month_cost:.2f}', cell_bold)
                 ])
             
             # Aggiungi riga GRAN TOTALE
             grand_total_row = len(detail_table_data)
             detail_table_data.append([
-                'GRAN TOTALE', '', '', 
-                f'{total_hours:.1f}', '', '', 
-                f'{total_cost:.2f}'
+                Paragraph('GRAN TOTALE', cell_bold), '', '', '',
+                Paragraph(f'{total_hours:.1f}', cell_bold), '', '',
+                Paragraph(f'{total_cost:.2f}', cell_bold)
             ])
             
-            detail_table = Table(detail_table_data, colWidths=[4*cm, 3.5*cm, 3*cm, 1.5*cm, 2*cm, 2*cm, 2.5*cm])
+            # 8 colonne: Employee, Reason, Date, Day, Hours, Type, Status, Cost
+            detail_table = Table(
+                detail_table_data,
+                colWidths=[3.8*cm, 3.5*cm, 2.8*cm, 1.4*cm, 1.3*cm, 1.8*cm, 1.8*cm, 2.2*cm]
+            )
             
             # Stile base
             table_style = [
@@ -629,6 +680,10 @@ PERCENTUALI:
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
                 ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
                 ('FONTSIZE', (0, 1), (-1, -1), 7),
+                ('LEFTPADDING', (0, 0), (-1, -1), 3),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 3),
+                ('TOPPADDING', (0, 0), (-1, -1), 2),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
             ]
             
             # Stile per intestazioni mese
@@ -638,7 +693,7 @@ PERCENTUALI:
                     ('TEXTCOLOR', (0, row_idx), (-1, row_idx), colors.whitesmoke),
                     ('FONTNAME', (0, row_idx), (-1, row_idx), 'Helvetica-Bold'),
                     ('FONTSIZE', (0, row_idx), (-1, row_idx), 9),
-                    ('SPAN', (0, row_idx), (-1, row_idx)),  # Unisci tutte le colonne
+                    ('SPAN', (0, row_idx), (-1, row_idx)),
                 ])
             
             # Stile per subtotali mensili
