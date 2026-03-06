@@ -51,24 +51,22 @@ class DisciplinaryClaimWindow(tk.Toplevel):
         self.author_email = None
         self.author_is_global = False
         try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT h.EmployeeHireHistoryId, e.EmployeeName, e.EmployeeSurname,
-                       cc.CostCenterDesc, h.CostCenterId, e.WorkEmail
-                FROM Employee.dbo.EmployeeHireHistory h
-                INNER JOIN Employee.dbo.Employees e ON e.EmployeeId = h.EmployeeId
-                LEFT JOIN Employee.dbo.CostCenters cc ON cc.CostCenterId = h.CostCenterId
-                WHERE h.DateEnd IS NULL
-                  AND (e.EmployeeName + ' ' + e.EmployeeSurname = ?
-                       OR e.EmployeeSurname + ' ' + e.EmployeeName = ?)
-            """, (self.author_name, self.author_name))
-            row = cursor.fetchone()
-            if row:
-                self.author_department = row.CostCenterDesc or ""
-                self.author_cost_center_id = row.CostCenterId
-                self.author_email = row.WorkEmail
-            cursor.close()
+            with self.db._lock:
+                self.db.cursor.execute("""
+                    SELECT h.EmployeeHireHistoryId, e.EmployeeName, e.EmployeeSurname,
+                           cc.CostCenterDesc, h.CostCenterId, e.WorkEmail
+                    FROM Employee.dbo.EmployeeHireHistory h
+                    INNER JOIN Employee.dbo.Employees e ON e.EmployeeId = h.EmployeeId
+                    LEFT JOIN Employee.dbo.CostCenters cc ON cc.CostCenterId = h.CostCenterId
+                    WHERE h.DateEnd IS NULL
+                      AND (e.EmployeeName + ' ' + e.EmployeeSurname = ?
+                           OR e.EmployeeSurname + ' ' + e.EmployeeName = ?)
+                """, self.author_name, self.author_name)
+                row = self.db.cursor.fetchone()
+                if row:
+                    self.author_department = row.CostCenterDesc or ""
+                    self.author_cost_center_id = row.CostCenterId
+                    self.author_email = row.WorkEmail
         except Exception as e:
             logger.warning(f"Errore caricamento info autore: {e}")
 
@@ -83,7 +81,6 @@ class DisciplinaryClaimWindow(tk.Toplevel):
         if os.path.exists(logo_path):
             try:
                 self._logo_image = tk.PhotoImage(file=logo_path)
-                # Ridimensiona se necessario
                 w, h = self._logo_image.width(), self._logo_image.height()
                 if w > 120:
                     factor = max(1, w // 120)
@@ -210,22 +207,20 @@ class DisciplinaryClaimWindow(tk.Toplevel):
     def _load_employees(self):
         """Carica i dipendenti nel combo (filtro per cost center o tutti)."""
         try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor()
-            query = """
-                SELECT h.EmployeeHireHistoryId,
-                       e.EmployeeSurname, e.EmployeeName,
-                       cc.CostCenterDesc,
-                       CASE WHEN e.Sex = 'F' THEN 'Doamna' ELSE 'Domnul' END AS Sex_,
-                       e.WorkEmail
-                FROM Employee.dbo.EmployeeHireHistory h
-                INNER JOIN Employee.dbo.Employees e ON e.EmployeeId = h.EmployeeId
-                LEFT JOIN Employee.dbo.CostCenters cc ON cc.CostCenterId = h.CostCenterId
-                WHERE h.DateEnd IS NULL
-                ORDER BY e.EmployeeSurname
-            """
-            cursor.execute(query)
-            rows = cursor.fetchall()
+            with self.db._lock:
+                self.db.cursor.execute("""
+                    SELECT h.EmployeeHireHistoryId,
+                           e.EmployeeSurname, e.EmployeeName,
+                           cc.CostCenterDesc,
+                           CASE WHEN e.Sex = 'F' THEN 'Doamna' ELSE 'Domnul' END AS Sex_,
+                           e.WorkEmail
+                    FROM Employee.dbo.EmployeeHireHistory h
+                    INNER JOIN Employee.dbo.Employees e ON e.EmployeeId = h.EmployeeId
+                    LEFT JOIN Employee.dbo.CostCenters cc ON cc.CostCenterId = h.CostCenterId
+                    WHERE h.DateEnd IS NULL
+                    ORDER BY e.EmployeeSurname
+                """)
+                rows = self.db.cursor.fetchall()
 
             self._employees_data = []
             display_list = []
@@ -242,7 +237,6 @@ class DisciplinaryClaimWindow(tk.Toplevel):
                     f"{row.EmployeeSurname} {row.EmployeeName} - {row.CostCenterDesc or ''}"
                 )
             self.employee_combo['values'] = display_list
-            cursor.close()
         except Exception as e:
             logger.error(f"Errore caricamento dipendenti: {e}", exc_info=True)
             messagebox.showerror("Eroare", f"Nu s-au putut încărca angajații:\n{e}", parent=self)
@@ -250,18 +244,17 @@ class DisciplinaryClaimWindow(tk.Toplevel):
     def _load_disciplinary_causes(self):
         """Carica le cause disciplinari dal DB."""
         try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT L.[ArticoloLegaleId], [DescriptionTxt], [Articolo],
-                       [Paragrafo], [Lettera], ld.ExplicationTxt
-                FROM [Employee].[dbo].[LawArticles] L
-                LEFT JOIN Employee.dbo.LawArticleDescriptions ld
-                    ON L.ArticoloLegaleId = ld.ArticoloLegaleId
-                WHERE [LegalType] = 'DISCIPLINA'
-                ORDER BY DescriptionTxt
-            """)
-            rows = cursor.fetchall()
+            with self.db._lock:
+                self.db.cursor.execute("""
+                    SELECT L.[ArticoloLegaleId], [DescriptionTxt], [Articolo],
+                           [Paragrafo], [Lettera], ld.ExplicationTxt
+                    FROM [Employee].[dbo].[LawArticles] L
+                    LEFT JOIN Employee.dbo.LawArticleDescriptions ld
+                        ON L.ArticoloLegaleId = ld.ArticoloLegaleId
+                    WHERE [LegalType] = 'DISCIPLINA'
+                    ORDER BY DescriptionTxt
+                """)
+                rows = self.db.cursor.fetchall()
 
             self._causes_data = []
             display_list = []
@@ -276,7 +269,6 @@ class DisciplinaryClaimWindow(tk.Toplevel):
                 })
                 display_list.append(row.DescriptionTxt or '')
             self.cause_combo['values'] = display_list
-            cursor.close()
         except Exception as e:
             logger.error(f"Errore caricamento cause disciplinari: {e}", exc_info=True)
             messagebox.showerror("Eroare", f"Nu s-au putut încărca cauzele:\n{e}", parent=self)
@@ -385,73 +377,67 @@ class DisciplinaryClaimWindow(tk.Toplevel):
             return
 
         try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor()
-
             date_ref = datetime.strptime(self.date_referat_var.get(), '%d-%m-%Y')
             date_event = datetime.strptime(self.date_event_var.get(), '%d-%m-%Y')
             time_event = self.time_event_var.get().strip() or '--'
             reason_text = self.reason_text.get("1.0", tk.END).strip()
             reason_text = reason_text.replace("'", "''")
 
-            # 1. Chiama SP Employee.dbo.Registro per generare documento
             registry_type_id = 60  # Referat
-            cursor.execute("""
-                EXEC Employee.dbo.Registro
-                    @RegistryTypeId = ?,
-                    @anno = ?,
-                    @DataDocumento = ?,
-                    @iussedBy = ?,
-                    @EmployeerId = ?,
-                    @Accessid = NULL,
-                    @DocumentTypeId = NULL
-            """, (
-                registry_type_id,
-                date_ref.year,
-                date_ref.strftime('%Y-%m-%d'),
-                self.author_name,
-                self.selected_employee_id
-            ))
 
-            # 2. Recupera RegistroId e DocName
-            cursor.execute("""
-                SELECT TOP 1 RegistroId, DocName
-                FROM Employee.dbo.Registry
-                WHERE RegistryTypeId = ?
-                ORDER BY RegistroId DESC
-            """, (registry_type_id,))
-            reg_row = cursor.fetchone()
-            if not reg_row:
-                raise Exception("Impossibil de generat numărul documentului!")
+            with self.db._lock:
+                # 1. Chiama SP Employee.dbo.Registro per generare documento
+                self.db.cursor.execute("""
+                    EXEC Employee.dbo.Registro
+                        @RegistryTypeId = ?,
+                        @anno = ?,
+                        @DataDocumento = ?,
+                        @iussedBy = ?,
+                        @EmployeerId = ?,
+                        @Accessid = NULL,
+                        @DocumentTypeId = NULL
+                """, registry_type_id,
+                     date_ref.year,
+                     date_ref.strftime('%Y-%m-%d'),
+                     self.author_name,
+                     self.selected_employee_id)
 
-            self.referat_id = reg_row.RegistroId
-            self.doc_name = reg_row.DocName
+                # 2. Recupera RegistroId e DocName
+                self.db.cursor.execute("""
+                    SELECT TOP 1 RegistroId, DocName
+                    FROM Employee.dbo.Registry
+                    WHERE RegistryTypeId = ?
+                    ORDER BY RegistroId DESC
+                """, registry_type_id)
+                reg_row = self.db.cursor.fetchone()
+                if not reg_row:
+                    raise Exception("Impossibil de generat numărul documentului!")
 
-            # 3. Insert into EmployeeDisciplinaryHistory
-            cursor.execute("""
-                IF NOT EXISTS (
-                    SELECT [RegistroId] FROM Employee.[dbo].[EmployeeDisciplinaryHistory]
-                    WHERE [RegistroId] = ?
-                )
-                INSERT INTO Employee.[dbo].[EmployeeDisciplinaryHistory]
-                    ([EmployeeHireHistoryId], [RegistroId], [DocSavedOn],
-                     [ExplicationNote], [ArticoloLegaleId], [SefID],
-                     [DataAvvenimento], [OraAvvenimento])
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                self.referat_id,
-                self.selected_employee_id,
-                self.referat_id,
-                date_ref.strftime('%Y-%m-%d'),
-                reason_text,
-                self.selected_cause_id,
-                getattr(self, 'last_authorized_user_id', None) or self.author_user_id,
-                date_event.strftime('%Y-%m-%d'),
-                time_event
-            ))
+                self.referat_id = reg_row.RegistroId
+                self.doc_name = reg_row.DocName
 
-            conn.commit()
-            cursor.close()
+                # 3. Insert into EmployeeDisciplinaryHistory
+                self.db.cursor.execute("""
+                    IF NOT EXISTS (
+                        SELECT [RegistroId] FROM Employee.[dbo].[EmployeeDisciplinaryHistory]
+                        WHERE [RegistroId] = ?
+                    )
+                    INSERT INTO Employee.[dbo].[EmployeeDisciplinaryHistory]
+                        ([EmployeeHireHistoryId], [RegistroId], [DocSavedOn],
+                         [ExplicationNote], [ArticoloLegaleId], [SefID],
+                         [DataAvvenimento], [OraAvvenimento])
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, self.referat_id,
+                     self.selected_employee_id,
+                     self.referat_id,
+                     date_ref.strftime('%Y-%m-%d'),
+                     reason_text,
+                     self.selected_cause_id,
+                     self.author_user_id,
+                     date_event.strftime('%Y-%m-%d'),
+                     time_event)
+
+                self.db.conn.commit()
 
             logger.info(
                 f"Nota disciplinară salvată: RegistroId={self.referat_id}, "
@@ -489,7 +475,7 @@ class DisciplinaryClaimWindow(tk.Toplevel):
             from reportlab.pdfbase import pdfmetrics
             from reportlab.pdfbase.ttfonts import TTFont
             from reportlab.lib.styles import ParagraphStyle
-            from reportlab.platypus import Paragraph, Frame
+            from reportlab.platypus import Paragraph
 
             # Registra font Arial per caratteri rumeni
             font_dir = r'C:\Windows\Fonts'
@@ -544,7 +530,7 @@ class DisciplinaryClaimWindow(tk.Toplevel):
             y -= 1.5 * cm
             c.setFont("Arial", 11)
             c.drawString(2 * cm, y,
-                         f"În atenția Domnului ADMINISTRATOR Gianluca Testa,")
+                         "În atenția Domnului ADMINISTRATOR Gianluca Testa,")
 
             # Corpo principale - usa Paragraph per word wrap
             y -= 1.5 * cm
@@ -560,7 +546,6 @@ class DisciplinaryClaimWindow(tk.Toplevel):
                 f"prin fișa postului, doresc vă aduc la cunoștință următoarele:"
             )
 
-            # Draw wrapped body text
             body_para = Paragraph(body_text, body_style)
             w_avail = page_w - 4 * cm
             bw, bh = body_para.wrap(w_avail, 900)
@@ -580,7 +565,6 @@ class DisciplinaryClaimWindow(tk.Toplevel):
             y -= eh + 0.5 * cm
 
             # Reason text (word wrapped)
-            # Pulisci il testo dalle citazioni automatiche
             clean_reason = reason_text.replace("''", "'")
             reason_style = ParagraphStyle(
                 'Reason', fontName='Arial', fontSize=11,
@@ -589,7 +573,6 @@ class DisciplinaryClaimWindow(tk.Toplevel):
             reason_para = Paragraph(clean_reason.replace('\n', '<br/>'), reason_style)
             rw, rh = reason_para.wrap(w_avail, 400)
 
-            # Se supera la pagina, abbrevia
             if y - rh < 5 * cm:
                 rh = y - 5 * cm
             reason_para.drawOn(c, 2 * cm, y - rh)
@@ -665,17 +648,15 @@ class DisciplinaryClaimWindow(tk.Toplevel):
             # CC da settings
             cc_emails = []
             try:
-                conn = self.db.get_connection()
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT ValueItem FROM Traceability_RS.dbo.Settings
-                    WHERE Atribute = 'Sys_email_referat' AND DateOut IS NULL
-                """)
-                row = cursor.fetchone()
-                if row and row.ValueItem:
-                    cc_emails = [e.strip() for e in row.ValueItem.split(';')
-                                 if e.strip()]
-                cursor.close()
+                with self.db._lock:
+                    self.db.cursor.execute("""
+                        SELECT ValueItem FROM Traceability_RS.dbo.Settings
+                        WHERE Atribute = 'Sys_email_referat' AND DateOut IS NULL
+                    """)
+                    row = self.db.cursor.fetchone()
+                    if row and row.ValueItem:
+                        cc_emails = [e.strip() for e in row.ValueItem.split(';')
+                                     if e.strip()]
             except Exception as e:
                 logger.warning(f"Errore lettura CC email referat: {e}")
 
@@ -708,7 +689,6 @@ class DisciplinaryClaimWindow(tk.Toplevel):
             """
 
             sender = EmailSender()
-            # Invio a tutti i destinatari (primo come TO, gli altri in CC)
             primary_to = to_emails[0]
             all_cc = cc_emails + to_emails[1:]
 
@@ -750,13 +730,11 @@ class DisciplinaryClaimWindow(tk.Toplevel):
             return
 
         try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE Employee.dbo.Registry SET IsDeleted = 1 WHERE RegistroId = ?",
-                (self.referat_id,))
-            conn.commit()
-            cursor.close()
+            with self.db._lock:
+                self.db.cursor.execute(
+                    "UPDATE Employee.dbo.Registry SET IsDeleted = 1 WHERE RegistroId = ?",
+                    self.referat_id)
+                self.db.conn.commit()
 
             messagebox.showinfo(
                 "Succes", "Nota disciplinară a fost ștearsă.", parent=self)
@@ -773,18 +751,16 @@ class DisciplinaryClaimWindow(tk.Toplevel):
     def _count_prior_claims(self, employee_hire_history_id):
         """Conta le precedenti note disciplinari per un dipendente."""
         try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT COUNT(DISTINCT d.RegistroId)
-                FROM Employee.[dbo].[EmployeeDisciplinaryHistory] d
-                INNER JOIN Employee.dbo.Registry r ON r.RegistroId = d.RegistroId
-                WHERE d.EmployeeHireHistoryId = ?
-                  AND ISNULL(r.IsDeleted, 0) = 0
-            """, (employee_hire_history_id,))
-            row = cursor.fetchone()
-            cursor.close()
-            return row[0] if row else 0
+            with self.db._lock:
+                self.db.cursor.execute("""
+                    SELECT COUNT(DISTINCT d.RegistroId)
+                    FROM Employee.[dbo].[EmployeeDisciplinaryHistory] d
+                    INNER JOIN Employee.dbo.Registry r ON r.RegistroId = d.RegistroId
+                    WHERE d.EmployeeHireHistoryId = ?
+                      AND ISNULL(r.IsDeleted, 0) = 0
+                """, employee_hire_history_id)
+                row = self.db.cursor.fetchone()
+                return row[0] if row else 0
         except Exception as e:
             logger.warning(f"Errore conteggio referati: {e}")
             return 0
@@ -795,22 +771,20 @@ class DisciplinaryClaimWindow(tk.Toplevel):
             return
 
         try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT DISTINCT
-                    r.DocName,
-                    d.DataAvvenimento,
-                    d.ExplicationNote,
-                    r.RegistroId
-                FROM Employee.[dbo].[EmployeeDisciplinaryHistory] d
-                INNER JOIN Employee.dbo.Registry r ON r.RegistroId = d.RegistroId
-                WHERE d.EmployeeHireHistoryId = ?
-                  AND ISNULL(r.IsDeleted, 0) = 0
-                ORDER BY d.DataAvvenimento DESC
-            """, (self.selected_employee_id,))
-            rows = cursor.fetchall()
-            cursor.close()
+            with self.db._lock:
+                self.db.cursor.execute("""
+                    SELECT DISTINCT
+                        r.DocName,
+                        d.DataAvvenimento,
+                        d.ExplicationNote,
+                        r.RegistroId
+                    FROM Employee.[dbo].[EmployeeDisciplinaryHistory] d
+                    INNER JOIN Employee.dbo.Registry r ON r.RegistroId = d.RegistroId
+                    WHERE d.EmployeeHireHistoryId = ?
+                      AND ISNULL(r.IsDeleted, 0) = 0
+                    ORDER BY d.DataAvvenimento DESC
+                """, self.selected_employee_id)
+                rows = self.db.cursor.fetchall()
 
             if not rows:
                 messagebox.showinfo(
