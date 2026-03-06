@@ -322,7 +322,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.6.3'  # Versione aggiornata
+APP_VERSION = '2.3.6.4'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -14761,6 +14761,18 @@ class App(tk.Tk):
             command=self.open_absence_rules_with_login
         )
         
+        # Note disciplinari
+        self.personnel_menu.add_command(
+            label=self.lang.get('submenu_disciplinary_notes', 'Note disciplinari'),
+            command=self.open_disciplinary_claims_with_auth
+        )
+        
+        # Commissione disciplinare (non attiva per ora)
+        self.personnel_menu.add_command(
+            label=self.lang.get('submenu_disciplinary_commission', 'Commissione disciplinare'),
+            state="disabled"
+        )
+        
         # Messaggi
         self.personnel_menu.add_separator()
         self.personnel_menu.add_command(
@@ -16998,6 +17010,22 @@ class App(tk.Tk):
                 self, self.db, self.lang,
                 self.last_authenticated_user_name,
                 getattr(self, 'last_authorized_user_id', 0)
+            )
+        )
+
+    # =========================================================================
+    # METODI MENU NOTE DISCIPLINARI
+    # =========================================================================
+
+    def open_disciplinary_claims_with_auth(self):
+        """Apre la finestra note disciplinari con autorizzazione."""
+        import disciplinary_gui
+        self._execute_authorized_action(
+            menu_translation_key='emissione_note_disciplinari',
+            action_callback=lambda: disciplinary_gui.open_disciplinary_window(
+                self, self.db, self.lang,
+                self.last_authenticated_user_name,
+                getattr(self, 'last_authorized_user_id', None)
             )
         )
 
