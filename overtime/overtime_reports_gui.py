@@ -280,6 +280,16 @@ PERCENTUALI:
         end_date = self.end_date.get_date()
         filename = f"OvertimeReport_{start_date.strftime('%d-%m-%Y')}_to_{end_date.strftime('%d-%m-%Y')}.xlsx"
         file_path = os.path.join(output_dir, filename)
+        # Se il file è già aperto/bloccato, aggiungi timestamp
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, 'ab') as _test:
+                    pass
+            except PermissionError:
+                from datetime import datetime as dt_now
+                ts = dt_now.now().strftime('%H%M%S')
+                filename = f"OvertimeReport_{start_date.strftime('%d-%m-%Y')}_to_{end_date.strftime('%d-%m-%Y')}_{ts}.xlsx"
+                file_path = os.path.join(output_dir, filename)
         
         try:
             import openpyxl
@@ -481,6 +491,15 @@ PERCENTUALI:
             # Genera nome file automatico basato sulle date
             filename = f"report_overtime_from_{start_date.strftime('%d-%m-%Y')}_to_{end_date.strftime('%d-%m-%Y')}.pdf"
             file_path = os.path.join(output_dir, filename)
+            # Se il file è già aperto/bloccato, aggiungi timestamp
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path, 'ab') as _test:
+                        pass
+                except PermissionError:
+                    ts = datetime.now().strftime('%H%M%S')
+                    filename = f"report_overtime_from_{start_date.strftime('%d-%m-%Y')}_to_{end_date.strftime('%d-%m-%Y')}_{ts}.pdf"
+                    file_path = os.path.join(output_dir, filename)
             
             page_w, page_h = A4  # Portrait
             
