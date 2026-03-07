@@ -827,6 +827,54 @@ class GuestBookingWindow(tk.Toplevel):
         errors = []
         successes = []
 
+        # Crea record VisitorArrivalDetails (dati volo/arrivo)
+        arrival_detail_id = None
+        try:
+            arrival_date = self.arrival_date.get_date()
+            departure_date = self.departure_date.get_date()
+            arrival_time = self.arrival_time_var.get().strip()
+            flight_no = self.flight_number_var.get().strip()
+
+            # FlightCompanyId dalla compagnia selezionata
+            flight_company_id = None
+            airline_name = self.airline_var.get().strip()
+            if airline_name and airline_name in self._airline_ids:
+                flight_company_id = self._airline_ids[airline_name][0]
+
+            # HotelId dal hotel selezionato (SupporterDataId)
+            hotel_id = None
+            if not skip_hotel:
+                hotel = self.hotel_var.get().strip()
+                if hotel and hotel in self._hotel_data:
+                    hotel_id = self._hotel_data[hotel][0]
+
+            # DateTimeArrival = data + ora arrivo
+            dt_arrival = None
+            if arrival_time:
+                try:
+                    dt_arrival = datetime.combine(arrival_date, 
+                                                   datetime.strptime(arrival_time, '%H:%M').time())
+                except ValueError:
+                    dt_arrival = datetime.combine(arrival_date, datetime.min.time())
+            else:
+                dt_arrival = datetime.combine(arrival_date, datetime.min.time())
+
+            cursor = self.db.conn.cursor()
+            cursor.execute("""
+                INSERT INTO Employee.dbo.VisitorArrivalDetails
+                    (HotelId, FlightNumber, FlightCompanyId, DateTimeArrival, DateSys, DateOut)
+                OUTPUT INSERTED.VisitorArrivalDetailId
+                VALUES (?, ?, ?, ?, GETDATE(), ?)
+            """, (hotel_id, flight_no or None, flight_company_id, dt_arrival,
+                  datetime.combine(departure_date, datetime.min.time())))
+            row = cursor.fetchone()
+            arrival_detail_id = row[0] if row else None
+            self.db.conn.commit()
+            cursor.close()
+            logger.info(f"Creato VisitorArrivalDetails ID={arrival_detail_id}")
+        except Exception as e:
+            logger.error(f"Errore creazione VisitorArrivalDetails: {e}")
+
         # Invia email shuttle
         if not skip_shuttle:
             shuttle = self.shuttle_var.get().strip()
@@ -834,6 +882,8 @@ class GuestBookingWindow(tk.Toplevel):
                 try:
                     self._send_shuttle_email(shuttle)
                     successes.append('Shuttle')
+                    if arrival_detail_id:
+                        self._save_booking_record(arrival_detail_id, self._shuttle_data[shuttle][1])
                 except Exception as e:
                     logger.error(f"Errore invio email shuttle: {e}")
                     errors.append(f"Shuttle: {e}")
@@ -845,6 +895,8 @@ class GuestBookingWindow(tk.Toplevel):
                 try:
                     self._send_hotel_email(hotel)
                     successes.append('Hotel')
+                    if arrival_detail_id:
+                        self._save_booking_record(arrival_detail_id, self._hotel_data[hotel][1])
                 except Exception as e:
                     logger.error(f"Errore invio email hotel: {e}")
                     errors.append(f"Hotel: {e}")
@@ -958,9 +1010,6 @@ class GuestBookingWindow(tk.Toplevel):
         )
         logger.info(f"Email shuttle inviata a {reservation_email}")
 
-        # Salva record booking nel DB per ogni ospite
-        self._save_booking_record(reservation_email)
-
     def _send_hotel_email(self, hotel_key):
         """Invia email all'hotel."""
         from email_connector import EmailSender
@@ -1059,29 +1108,21 @@ class GuestBookingWindow(tk.Toplevel):
         )
         logger.info(f"Email hotel inviata a {reservation_email}")
 
-        # Salva record booking nel DB per ogni ospite
-        self._save_booking_record(reservation_email)
-
     # ================================================================
     # SAVE BOOKING RECORD
     # ================================================================
-    def _save_booking_record(self, reservation_email):
-        """Salva il record di booking in VisitorBookingServiceEmails per ogni ospite."""
+    def _save_booking_record(self, arrival_detail_id, reservation_email):
+        """Salva il record di booking in VisitorBookingServiceEmails."""
         try:
             cursor = self.db.conn.cursor()
-            for guest in self.guests_data:
-                visitor_data_id = guest.get('visitor_data_id')
-                if not visitor_data_id:
-                    logger.warning(f"visitor_data_id mancante per {guest.get('guest_name')}, skip INSERT")
-                    continue
-                cursor.execute("""
-                    INSERT INTO Employee.dbo.VisitorBookingServiceEmails
-                        (VisitorArrivalDetailId, EmailRequestBooking, SentOnDate, Confirmed)
-                    VALUES (?, ?, GETDATE(), 0)
-                """, (visitor_data_id, reservation_email))
+            cursor.execute("""
+                INSERT INTO Employee.dbo.VisitorBookingServiceEmails
+                    (VisitorArrivalDetailId, EmailRequestBooking, SentOnDate, Confirmed)
+                VALUES (?, ?, GETDATE(), 0)
+            """, (arrival_detail_id, reservation_email))
             self.db.conn.commit()
             cursor.close()
-            logger.info(f"Salvati {len(self.guests_data)} record booking per {reservation_email}")
+            logger.info(f"Salvato record booking: ArrivalDetailId={arrival_detail_id}, email={reservation_email}")
         except Exception as e:
             logger.error(f"Errore salvataggio record booking: {e}")
 
