@@ -222,6 +222,7 @@ import coating_gui
 import product_checks_gui
 import guests_gui
 import guest_management_gui
+import guest_settings_gui
 import guests_report_generator
 import tempfile
 import assign_submissions_gui
@@ -14752,15 +14753,15 @@ class App(tk.Tk):
         
         self.guests_settings_submenu.add_command(
             label=self.lang.get('guest_settings_hotels', 'Hotels'),
-            command=self._guest_settings_placeholder
+            command=self.open_hotel_settings_with_login
         )
         self.guests_settings_submenu.add_command(
             label=self.lang.get('guest_settings_airlines', 'Compagnie Aeree'),
-            command=self._guest_settings_placeholder
+            command=self.open_airline_settings_with_login
         )
         self.guests_settings_submenu.add_command(
             label=self.lang.get('guest_settings_shuttle', 'Shuttle'),
-            command=self._guest_settings_placeholder
+            command=self.open_shuttle_settings_with_login
         )
         self.guests_settings_submenu.add_command(
             label=self.lang.get('guest_settings_rules', 'Regole'),
@@ -16618,6 +16619,37 @@ class App(tk.Tk):
         self._execute_authorized_action(
             menu_translation_key='manage_guests',
             action_callback=lambda: guest_management_gui.GuestManagementWindow(
+                self, self.db, self.lang, self.last_authenticated_user_name
+            )
+        )
+
+    def open_hotel_settings_with_login(self):
+        """Apre la finestra gestione Hotels con autenticazione."""
+        self._execute_authorized_action(
+            menu_translation_key='manage_guests',
+            action_callback=lambda: guest_settings_gui.SupporterSettingsWindow(
+                self, self.db, self.lang, self.last_authenticated_user_name,
+                supporter_type_id=1,
+                title_label=self.lang.get('hotel_settings_title', 'Gestione Hotels')
+            )
+        )
+
+    def open_shuttle_settings_with_login(self):
+        """Apre la finestra gestione Shuttle con autenticazione."""
+        self._execute_authorized_action(
+            menu_translation_key='manage_guests',
+            action_callback=lambda: guest_settings_gui.SupporterSettingsWindow(
+                self, self.db, self.lang, self.last_authenticated_user_name,
+                supporter_type_id=2,
+                title_label=self.lang.get('shuttle_settings_title', 'Gestione Shuttle')
+            )
+        )
+
+    def open_airline_settings_with_login(self):
+        """Apre la finestra gestione Compagnie Aeree con autenticazione."""
+        self._execute_authorized_action(
+            menu_translation_key='manage_guests',
+            action_callback=lambda: guest_settings_gui.AirlineSettingsWindow(
                 self, self.db, self.lang, self.last_authenticated_user_name
             )
         )
