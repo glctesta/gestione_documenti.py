@@ -884,6 +884,8 @@ class GuestBookingWindow(tk.Toplevel):
                     successes.append('Shuttle')
                     if arrival_detail_id:
                         self._save_booking_record(arrival_detail_id, self._shuttle_data[shuttle][1])
+                    # Invio conferma email agli ospiti
+                    self._send_guest_confirmation_email('Shuttle / Transport', shuttle, arrival_detail_id)
                 except Exception as e:
                     logger.error(f"Errore invio email shuttle: {e}")
                     errors.append(f"Shuttle: {e}")
@@ -897,6 +899,8 @@ class GuestBookingWindow(tk.Toplevel):
                     successes.append('Hotel')
                     if arrival_detail_id:
                         self._save_booking_record(arrival_detail_id, self._hotel_data[hotel][1])
+                    # Invio conferma email agli ospiti
+                    self._send_guest_confirmation_email('Hotel', hotel, arrival_detail_id)
                 except Exception as e:
                     logger.error(f"Errore invio email hotel: {e}")
                     errors.append(f"Hotel: {e}")
@@ -1107,6 +1111,108 @@ class GuestBookingWindow(tk.Toplevel):
             cc_emails=cc
         )
         logger.info(f"Email hotel inviata a {reservation_email}")
+
+    # ================================================================
+    # GUEST CONFIRMATION EMAIL
+    # ================================================================
+    def _send_guest_confirmation_email(self, service_type, service_key, arrival_detail_id):
+        """Invia email di conferma in inglese a ogni ospite che ha un indirizzo email."""
+        from email_connector import EmailSender
+
+        user_email = self._get_user_email()
+        logo_path = os.path.join(os.path.dirname(__file__), 'Logo.png')
+
+        # Dati volo
+        airline_name = self.airline_var.get().strip()
+        flight_no = self.flight_number_var.get().strip()
+        arrival_date = self.arrival_date.get_date().strftime('%d/%m/%Y')
+        departure_date = self.departure_date.get_date().strftime('%d/%m/%Y')
+        arrival_time = self.arrival_time_var.get().strip()
+
+        for guest in self.guests_data:
+            guest_email = guest.get('email', '').strip()
+            guest_name = guest.get('guest_name', '')
+
+            if not guest_email:
+                logger.info(f"Ospite {guest_name}: nessuna email, skip conferma {service_type}")
+                continue
+
+            try:
+                flight_info = ''
+                if airline_name:
+                    flight_info += f"<strong>Airline:</strong> {airline_name}<br/>"
+                if flight_no:
+                    flight_info += f"<strong>Flight:</strong> {flight_no}<br/>"
+                if arrival_time:
+                    flight_info += f"<strong>Arrival Time:</strong> {arrival_time}<br/>"
+
+                body_html = f"""
+                <html>
+                <body style="font-family: Arial, sans-serif; font-size: 13px; color: #333;">
+                    <img src="cid:company_logo" alt="Vandewiele" style="width: 160px; margin-bottom: 15px;" /><br/>
+
+                    <h2 style="color: #1565C0;">{service_type} Booking Confirmation</h2>
+
+                    <p>Dear <strong>{guest_name}</strong>,</p>
+
+                    <p>We are pleased to inform you that a <strong>{service_type}</strong> booking 
+                    has been requested on your behalf for your upcoming visit:</p>
+
+                    <table style="border-collapse: collapse; margin: 15px 0; font-size: 13px;">
+                        <tr style="background-color: #E3F2FD;">
+                            <td style="padding: 8px 15px; font-weight: bold;">Service</td>
+                            <td style="padding: 8px 15px;">{service_type}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 8px 15px; font-weight: bold;">Arrival Date</td>
+                            <td style="padding: 8px 15px;">{arrival_date}</td>
+                        </tr>
+                        <tr style="background-color: #E3F2FD;">
+                            <td style="padding: 8px 15px; font-weight: bold;">Departure Date</td>
+                            <td style="padding: 8px 15px;">{departure_date}</td>
+                        </tr>
+                    </table>
+
+                    {f'<p>{flight_info}</p>' if flight_info else ''}
+
+                    <p>If you have any questions or need to make changes, please contact 
+                    <strong>{user_email if user_email else 'your host'}</strong>.</p>
+
+                    <p>We look forward to welcoming you!</p>
+
+                    <p style="margin-top: 20px;">Kind regards,<br/>
+                    <em>Vandewiele Romania — Guest Services</em></p>
+
+                    <hr style="border: 1px solid #ddd; margin-top: 20px;"/>
+                    <p style="color: #999; font-size: 10px;">
+                        This is an automated message from TraceabilityRS — {self.user_name}</p>
+                </body>
+                </html>
+                """
+
+                sender = EmailSender()
+                attachments = []
+                if os.path.exists(logo_path):
+                    attachments.append(('inline', logo_path, 'company_logo'))
+
+                cc = user_email if user_email else None
+
+                sender.send_email(
+                    to_email=guest_email,
+                    subject=f"{service_type} Booking Confirmation — {arrival_date}",
+                    body=body_html,
+                    is_html=True,
+                    attachments=attachments if attachments else None,
+                    cc_emails=cc
+                )
+                logger.info(f"Conferma {service_type} inviata a {guest_name} ({guest_email})")
+
+                # Salva record email ospite in VisitorBookingServiceEmails
+                if arrival_detail_id:
+                    self._save_booking_record(arrival_detail_id, guest_email)
+
+            except Exception as e:
+                logger.error(f"Errore invio conferma {service_type} a {guest_name}: {e}")
 
     # ================================================================
     # SAVE BOOKING RECORD
