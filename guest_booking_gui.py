@@ -428,7 +428,11 @@ class GuestBookingWindow(tk.Toplevel):
         pass
 
     def _do_flight_search(self, flight_no, iata_code, arrival_date, airline_name):
-        """Esegue la ricerca del volo in background."""
+        """Esegue la ricerca del volo in background.
+        
+        Se iata_code contiene più codici separati da ';' (es. 'LH;VL'),
+        prova ciascun codice in sequenza finché non trova risultati.
+        """
         import urllib.request
         import urllib.parse
         import json
@@ -442,45 +446,34 @@ class GuestBookingWindow(tk.Toplevel):
             flights = []
 
             if api_key:
-                # ---- Ricerca con AviationStack API ----
                 base_url = 'http://api.aviationstack.com/v1/flights'
-                params = {
-                    'access_key': api_key,
-                    'flight_date': arrival_date.strftime('%Y-%m-%d'),
-                    'limit': 50
-                }
 
                 if flight_no:
-                    # Cerca solo per numero volo (senza vincolo aeroporto)
-                    params['flight_iata'] = flight_no.upper().replace(' ', '')
+                    # Cerca solo per numero volo
+                    params = {
+                        'access_key': api_key,
+                        'flight_date': arrival_date.strftime('%Y-%m-%d'),
+                        'flight_iata': flight_no.upper().replace(' ', ''),
+                        'limit': 50
+                    }
+                    flights = self._fetch_flights(base_url, params)
                 elif iata_code:
-                    # Cerca per compagnia + arrivo a Timisoara TSR
-                    params['airline_iata'] = iata_code.upper()
-                    params['arr_iata'] = 'TSR'
-
-                url = f"{base_url}?{urllib.parse.urlencode(params)}"
-                req = urllib.request.Request(url)
-                with urllib.request.urlopen(req, timeout=15) as response:
-                    data = json.loads(response.read().decode('utf-8'))
-                    for item in data.get('data', []):
-                        arr = item.get('arrival', {})
-                        dep = item.get('departure', {})
-                        flight = item.get('flight', {})
-                        airline = item.get('airline', {})
-
-                        arr_time = arr.get('estimated') or arr.get('scheduled') or ''
-                        if arr_time and 'T' in arr_time:
-                            arr_time = arr_time.split('T')[1][:5]
-
-                        flights.append({
-                            'flight_iata': flight.get('iata', ''),
-                            'flight_number': flight.get('number', ''),
-                            'airline_name': airline.get('name', ''),
-                            'arrival_time': arr_time,
-                            'arrival_airport': arr.get('airport', ''),
-                            'departure_airport': dep.get('airport', ''),
-                            'status': item.get('flight_status', '')
-                        })
+                    # Prova ciascun codice IATA separato da ';'
+                    codes = [c.strip() for c in iata_code.split(';') if c.strip()]
+                    for code in codes:
+                        logger.info(f"Tentativo ricerca con airline_iata={code}")
+                        params = {
+                            'access_key': api_key,
+                            'flight_date': arrival_date.strftime('%Y-%m-%d'),
+                            'airline_iata': code.upper(),
+                            'arr_iata': 'TSR',
+                            'limit': 50
+                        }
+                        flights = self._fetch_flights(base_url, params)
+                        if flights:
+                            logger.info(f"Trovati {len(flights)} voli con codice {code}")
+                            break
+                        logger.info(f"Nessun volo trovato con codice {code}, provo il successivo")
 
             # Mostra risultati nella UI (thread-safe)
             self.after(0, self._handle_flight_results, flights, airline_name, flight_no)
@@ -488,6 +481,38 @@ class GuestBookingWindow(tk.Toplevel):
         except Exception as e:
             logger.error(f"Errore ricerca volo: {e}")
             self.after(0, self._handle_flight_search_error, str(e))
+
+    def _fetch_flights(self, base_url, params):
+        """Esegue una singola chiamata API e restituisce la lista voli."""
+        import urllib.request
+        import urllib.parse
+        import json
+
+        url = f"{base_url}?{urllib.parse.urlencode(params)}"
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=15) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            flights = []
+            for item in data.get('data', []):
+                arr = item.get('arrival', {})
+                dep = item.get('departure', {})
+                flight = item.get('flight', {})
+                airline = item.get('airline', {})
+
+                arr_time = arr.get('estimated') or arr.get('scheduled') or ''
+                if arr_time and 'T' in arr_time:
+                    arr_time = arr_time.split('T')[1][:5]
+
+                flights.append({
+                    'flight_iata': flight.get('iata', ''),
+                    'flight_number': flight.get('number', ''),
+                    'airline_name': airline.get('name', ''),
+                    'arrival_time': arr_time,
+                    'arrival_airport': arr.get('airport', ''),
+                    'departure_airport': dep.get('airport', ''),
+                    'status': item.get('flight_status', '')
+                })
+            return flights
 
     def _get_setting(self, attribute):
         """Recupera un valore dalla tabella settings."""
