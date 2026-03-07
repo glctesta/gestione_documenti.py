@@ -314,10 +314,14 @@ class EditMachineWindow(tk.Toplevel):
         self.original_data = {}
         self.phases_data = {}
         self.equipment_types_data = {}
+        self.brands_data = {}       # brand_id -> {name, company_name, company_id}
+        self.companies_data = {}    # company_id -> company_name
 
         # Variabili di controllo
         self.phase_var = tk.StringVar()
         self.equipment_type_var = tk.StringVar()
+        self.brand_var = tk.StringVar()
+        self.company_var = tk.StringVar()
         self.serial_var = tk.StringVar()
         self.internal_name_var = tk.StringVar()
         self.production_year_var = tk.StringVar()
@@ -326,7 +330,7 @@ class EditMachineWindow(tk.Toplevel):
         self.must_calibrated_var = tk.BooleanVar()
 
         self.title(self.lang.get('submenu_edit_machine'))
-        self.geometry("550x400")
+        self.geometry("550x520")
         self.transient(parent)
         self.grab_set()
 
@@ -346,18 +350,27 @@ class EditMachineWindow(tk.Toplevel):
         self.type_combo = ttk.Combobox(frame, textvariable=self.equipment_type_var, state='readonly')
         self.type_combo.grid(row=1, column=1, sticky=tk.EW, pady=5)
 
-        ttk.Label(frame, text=self.lang.get('internal_name_label')).grid(row=2, column=0, sticky=tk.W, pady=5)
-        self.internal_name_entry = ttk.Entry(frame, textvariable=self.internal_name_var)
-        self.internal_name_entry.grid(row=2, column=1, sticky=tk.EW, pady=5)
+        ttk.Label(frame, text=self.lang.get('brand_label', 'Brand:')).grid(row=2, column=0, sticky=tk.W, pady=5)
+        self.brand_combo = ttk.Combobox(frame, textvariable=self.brand_var, state='readonly')
+        self.brand_combo.grid(row=2, column=1, sticky=tk.EW, pady=5)
+        self.brand_combo.bind("<<ComboboxSelected>>", self._on_brand_changed)
 
-        ttk.Label(frame, text=self.lang.get('serial_number_label')).grid(row=3, column=0, sticky=tk.W, pady=5)
+        ttk.Label(frame, text=self.lang.get('company_label', 'Company:')).grid(row=3, column=0, sticky=tk.W, pady=5)
+        self.company_entry = ttk.Entry(frame, textvariable=self.company_var, state='readonly')
+        self.company_entry.grid(row=3, column=1, sticky=tk.EW, pady=5)
+
+        ttk.Label(frame, text=self.lang.get('internal_name_label')).grid(row=4, column=0, sticky=tk.W, pady=5)
+        self.internal_name_entry = ttk.Entry(frame, textvariable=self.internal_name_var)
+        self.internal_name_entry.grid(row=4, column=1, sticky=tk.EW, pady=5)
+
+        ttk.Label(frame, text=self.lang.get('serial_number_label')).grid(row=5, column=0, sticky=tk.W, pady=5)
         self.serial_entry = ttk.Entry(frame, textvariable=self.serial_var)
-        self.serial_entry.grid(row=3, column=1, sticky=tk.EW, pady=5)
+        self.serial_entry.grid(row=5, column=1, sticky=tk.EW, pady=5)
 
         # Campo Anno Produzione
-        ttk.Label(frame, text=self.lang.get('production_year_label', 'Anno Produzione:')).grid(row=4, column=0, sticky=tk.W, pady=5)
+        ttk.Label(frame, text=self.lang.get('production_year_label', 'Anno Produzione:')).grid(row=6, column=0, sticky=tk.W, pady=5)
         self.production_year_combo = ttk.Combobox(frame, textvariable=self.production_year_var, state='readonly')
-        self.production_year_combo.grid(row=4, column=1, sticky=tk.EW, pady=5)
+        self.production_year_combo.grid(row=6, column=1, sticky=tk.EW, pady=5)
         
         # Popola con anni da (anno corrente - 15) a anno corrente
         current_year = datetime.now().year
@@ -366,16 +379,16 @@ class EditMachineWindow(tk.Toplevel):
         self.production_year_combo['values'] = [''] + years  # Aggiungi opzione vuota
 
         # Checkbox IsFixture
-        ttk.Checkbutton(frame, text="Is Fixture", variable=self.is_fixture_var).grid(row=5, column=0, columnspan=2, sticky=tk.W, pady=5)
+        ttk.Checkbutton(frame, text="Is Fixture", variable=self.is_fixture_var).grid(row=7, column=0, columnspan=2, sticky=tk.W, pady=5)
         
         # Checkbox IsStensil
-        ttk.Checkbutton(frame, text="Is Stensil", variable=self.is_stensil_var).grid(row=6, column=0, columnspan=2, sticky=tk.W, pady=5)
+        ttk.Checkbutton(frame, text="Is Stensil", variable=self.is_stensil_var).grid(row=8, column=0, columnspan=2, sticky=tk.W, pady=5)
         
         # Checkbox MustCalibrated
-        ttk.Checkbutton(frame, text="Must be Calibrated", variable=self.must_calibrated_var).grid(row=7, column=0, columnspan=2, sticky=tk.W, pady=5)
+        ttk.Checkbutton(frame, text="Must be Calibrated", variable=self.must_calibrated_var).grid(row=9, column=0, columnspan=2, sticky=tk.W, pady=5)
 
         button_frame = ttk.Frame(frame)
-        button_frame.grid(row=8, column=1, sticky=tk.E, pady=(20, 0))
+        button_frame.grid(row=10, column=1, sticky=tk.E, pady=(20, 0))
         ttk.Button(button_frame, text=self.lang.get('save_button'), command=self._save_changes).pack(side=tk.LEFT,
                                                                                                      padx=5)
         ttk.Button(button_frame, text=self.lang.get('cancel_button'), command=self.destroy).pack(side=tk.LEFT)
@@ -404,7 +417,21 @@ class EditMachineWindow(tk.Toplevel):
             self.equipment_types_data = {row[0]: {'name': row[1], 'is_test': row[2], 'end_of_life_cycle': row[3]} for row in rows}
             self.type_combo['values'] = [v['name'] for v in self.equipment_types_data.values()]
         except Exception as e:
-            print(f"Errore caricamento tipi equipaggiamento: {e}")
+            logger.error(f"Errore caricamento tipi equipaggiamento: {e}")
+
+        # Carica i brand con le company associate
+        try:
+            brands_rows = self.db.fetch_brands_with_company_name()
+            if brands_rows:
+                for row in brands_rows:
+                    self.brands_data[row.EquipmentBrandId] = {
+                        'name': row.Brand,
+                        'company_name': row.CompanyName,
+                        'company_id': row.CompanyId
+                    }
+                self.brand_combo['values'] = [v['name'] for v in self.brands_data.values()]
+        except Exception as e:
+            logger.error(f"Errore caricamento brands: {e}")
 
         # Carica i dettagli della macchina specifica
         details = self.db.fetch_equipment_details(self.equipment_id)
@@ -418,6 +445,12 @@ class EditMachineWindow(tk.Toplevel):
             if hasattr(details, 'EquipmentTypeId') and details.EquipmentTypeId:
                 type_data = self.equipment_types_data.get(details.EquipmentTypeId, {})
                 self.equipment_type_var.set(type_data.get('name', ""))
+            
+            # Imposta il brand e la company se presente
+            if hasattr(details, 'BrandId') and details.BrandId:
+                brand_data = self.brands_data.get(details.BrandId, {})
+                self.brand_var.set(brand_data.get('name', ""))
+                self.company_var.set(brand_data.get('company_name', ""))
             
             self.internal_name_var.set(details.InternalName or "")
             self.serial_var.set(details.SerialNumber or "")
@@ -438,6 +471,15 @@ class EditMachineWindow(tk.Toplevel):
                                  parent=self)
             self.destroy()
 
+    def _on_brand_changed(self, event=None):
+        """Aggiorna il campo Company quando si seleziona un brand diverso."""
+        selected_brand = self.brand_var.get()
+        for brand_id, data in self.brands_data.items():
+            if data['name'] == selected_brand:
+                self.company_var.set(data.get('company_name', ''))
+                return
+        self.company_var.set('')
+
     def _save_changes(self):
         """Costruisce il log delle modifiche e salva nel database."""
         # Recupera i nuovi valori
@@ -449,6 +491,12 @@ class EditMachineWindow(tk.Toplevel):
         new_equipment_type_id = None
         if new_equipment_type_name:
             new_equipment_type_id = [k for k, v in self.equipment_types_data.items() if v.get('name') == new_equipment_type_name][0]
+        
+        # Recupera il nuovo brand
+        new_brand_name = self.brand_var.get()
+        new_brand_id = None
+        if new_brand_name:
+            new_brand_id = [k for k, v in self.brands_data.items() if v.get('name') == new_brand_name][0]
         
         new_name = self.internal_name_var.get()
         new_serial = self.serial_var.get()
@@ -484,6 +532,14 @@ class EditMachineWindow(tk.Toplevel):
             original_type_name = original_type_data.get('name', 'N/D')
             new_type_name = new_equipment_type_name if new_equipment_type_name else 'N/D'
             change_log.append(f"Tipo Equipaggiamento cambiato da '{original_type_name}' a '{new_type_name}'.")
+
+        # Controlla se il brand è cambiato
+        original_brand_id = getattr(self.original_data, 'BrandId', None)
+        if new_brand_id != original_brand_id:
+            original_brand_data = self.brands_data.get(original_brand_id, {}) if original_brand_id else {}
+            original_brand_name = original_brand_data.get('name', 'N/D')
+            new_brand_display = new_brand_name if new_brand_name else 'N/D'
+            change_log.append(f"Brand cambiato da '{original_brand_name}' a '{new_brand_display}'.")
 
         if new_name != self.original_data.InternalName:
             change_log.append(f"Nome Interno cambiato da '{self.original_data.InternalName}' a '{new_name}'.")
@@ -531,7 +587,8 @@ class EditMachineWindow(tk.Toplevel):
             new_production_year=new_production_year,
             new_is_fixture=new_is_fixture,
             new_is_stensil=new_is_stensil,
-            new_must_calibrated=new_must_calibrated
+            new_must_calibrated=new_must_calibrated,
+            new_brand_id=new_brand_id
         )
 
         if success:

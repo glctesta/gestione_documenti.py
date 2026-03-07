@@ -226,6 +226,7 @@ class DisciplinaryClaimWindow(tk.Toplevel):
                     LEFT JOIN Employee.dbo.EmployeeAddress ea
                         ON ea.EmployeeId = e.EmployeeId AND ea.DateOut IS NULL
                     WHERE h.EndWorkDate IS NULL AND h.EmployeerId = 2
+                    and e.EmployeeName not like 'ANONYM%'
                     ORDER BY e.EmployeeSurname
                 """)
                 rows = self.db.cursor.fetchall()

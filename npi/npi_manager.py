@@ -65,6 +65,21 @@ class GestoreNPI:
                     ADD [External] bit NOT NULL CONSTRAINT DF_Soggetti_External DEFAULT(0);
                 END
                 """))
+                # Aggiorna la view vw_Soggetti se non espone ancora la colonna External
+                # (sp_refreshview aggiorna i metadati di una view basata su SELECT *)
+                try:
+                    conn.execute(text("""
+                    IF NOT EXISTS (
+                        SELECT 1 FROM sys.columns
+                        WHERE object_id = OBJECT_ID('dbo.vw_Soggetti')
+                          AND name = 'External'
+                    )
+                    BEGIN
+                        EXEC sp_refreshview 'dbo.vw_Soggetti';
+                    END
+                    """))
+                except Exception:
+                    pass  # Vista potrebbe non supportare sp_refreshview
                 # 🆕 Colonna DateOut per soft-delete dei progetti NPI
                 conn.execute(text("""
                 IF COL_LENGTH('dbo.ProgettiNPI', 'DateOut') IS NULL

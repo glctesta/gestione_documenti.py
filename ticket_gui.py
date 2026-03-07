@@ -54,7 +54,7 @@ def _get_log_tail(n: int = 50) -> str:
 
 def _capture_screenshot(widget) -> str | None:
     """
-    Cattura uno screenshot dell'intera finestra e lo salva in _TICKET_DIR.
+    Cattura uno screenshot dell'intero schermo e lo salva in _TICKET_DIR.
     Restituisce il percorso del file PNG oppure None in caso di errore.
     """
     try:
@@ -63,13 +63,8 @@ def _capture_screenshot(widget) -> str | None:
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         path = os.path.join(_TICKET_DIR, f"ticket_{ts}.png")
 
-        # Aspetta che la geometria sia aggiornata
-        widget.update_idletasks()
-        x = widget.winfo_rootx()
-        y = widget.winfo_rooty()
-        w = widget.winfo_width()
-        h = widget.winfo_height()
-        img = ImageGrab.grab(bbox=(x, y, x + w, y + h))
+        # Cattura l'intero schermo
+        img = ImageGrab.grab()
         img.save(path, "PNG")
         return path
     except ImportError:
@@ -172,6 +167,8 @@ def _send_ticket_email(db, ticket_id: int, recipient: str, title: str,
             attachments = []
             if screenshot_path and os.path.exists(screenshot_path):
                 attachments.append(screenshot_path)
+            if os.path.exists(_LOG_FILE):
+                attachments.append(_LOG_FILE)
 
             sender.send_email(
                 to_email=recipient,
