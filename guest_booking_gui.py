@@ -441,30 +441,60 @@ class GuestBookingWindow(tk.Toplevel):
         try:
             all_flights = []
 
-            # --- Tentativo 1: FlightLabs Flights Schedules ---
+            # --- Tentativo 1: FlightLabs ---
             flightlabs_key = self._get_setting('FlightLabs_API_Key')
             if flightlabs_key:
-                try:
-                    base_url = 'https://www.goflightlabs.com/flights-schedules'
-                    params = {
-                        'access_key': flightlabs_key,
-                        'iataCode': 'TSR',
-                        'type': 'arrival'
+                # Prova prima /advanced-future-flights, poi /flights
+                endpoints = [
+                    {
+                        'url': 'https://www.goflightlabs.com/advanced-flights-schedules',
+                        'params': {
+                            'access_key': flightlabs_key,
+                            'iataCode': 'TSR',
+                            'type': 'arrival',
+                            'date': arrival_date.strftime('%Y-%m-%d')
+                        },
+                        'name': 'future-flights',
+                        'parser': 'realtime'
+                    },
+                    {
+                        'url': 'https://www.goflightlabs.com/flights',
+                        'params': {
+                            'access_key': flightlabs_key,
+                            'arr_iata': 'TSR'
+                        },
+                        'name': '/flights',
+                        'parser': 'realtime'
                     }
-                    url = f"{base_url}?{urllib.parse.urlencode(params)}"
-                    logger.info(f"FlightLabs API call: TSR arrivals")
-                    req = urllib.request.Request(url)
-                    with urllib.request.urlopen(req, timeout=20) as response:
-                        data = json.loads(response.read().decode('utf-8'))
-                    if data.get('success') and data.get('data'):
+                ]
+
+                for ep in endpoints:
+                    if all_flights:
+                        break
+                    try:
+                        url = f"{ep['url']}?{urllib.parse.urlencode(ep['params'])}"
+                        logger.info(f"FlightLabs {ep['name']}: {url[:80]}...")
+                        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                        with urllib.request.urlopen(req, timeout=20) as response:
+                            raw = response.read().decode('utf-8')
+                        logger.info(f"FlightLabs {ep['name']} response: {len(raw)} chars, {raw[:200]}")
+
+                        if not raw or len(raw) < 10:
+                            continue
+                        data = json.loads(raw)
+                        items = data.get('data', [])
+                        if not items:
+                            continue
+
                         date_str = arrival_date.strftime('%Y-%m-%d')
-                        for item in data['data']:
-                            # Filtra per data
-                            arr_time_full = item.get('arr_time', '')
-                            if not arr_time_full.startswith(date_str):
+                        skip_date_filter = 'date' in ep['params']
+
+                        for item in items:
+                            arr_time_full = item.get('arr_time', '') or ''
+                            if not skip_date_filter and date_str and not arr_time_full.startswith(date_str):
                                 continue
                             arr_time = arr_time_full[11:16] if len(arr_time_full) >= 16 else ''
-                            dep_time_full = item.get('dep_time', '')
+                            dep_time_full = item.get('dep_time', '') or ''
                             dep_time = dep_time_full[11:16] if len(dep_time_full) >= 16 else ''
                             all_flights.append({
                                 'flight_iata': item.get('flight_iata', ''),
@@ -473,13 +503,17 @@ class GuestBookingWindow(tk.Toplevel):
                                 'airline_name': item.get('airline_iata', ''),
                                 'arrival_time': arr_time,
                                 'departure_time': dep_time,
-                                'arrival_airport': f"Timisoara (TSR)",
+                                'arrival_airport': 'Timisoara (TSR)',
                                 'departure_airport': item.get('dep_iata', ''),
                                 'status': item.get('status', 'scheduled')
                             })
-                        logger.info(f"FlightLabs: {len(all_flights)} voli trovati per {date_str}")
-                except Exception as e:
-                    logger.warning(f"FlightLabs non disponibile: {e}")
+
+                        logger.info(f"FlightLabs {ep['name']}: {len(all_flights)} voli trovati")
+                        # Log codici compagnie per diagnostica
+                        codes_found = set(f['airline_code'] for f in all_flights)
+                        logger.info(f"Codici compagnia trovati: {codes_found}")
+                    except Exception as e:
+                        logger.warning(f"FlightLabs {ep['name']} errore: {e}")
 
             # --- Tentativo 2: AviationStack ---
             if not all_flights:
@@ -495,7 +529,7 @@ class GuestBookingWindow(tk.Toplevel):
                         }
                         url = f"{base_url}?{urllib.parse.urlencode(params)}"
                         logger.info(f"AviationStack API call: TSR arrivals {arrival_date}")
-                        req = urllib.request.Request(url)
+                        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
                         with urllib.request.urlopen(req, timeout=15) as response:
                             data = json.loads(response.read().decode('utf-8'))
                         for item in data.get('data', []):
@@ -539,6 +573,10 @@ class GuestBookingWindow(tk.Toplevel):
                     logger.info(f"Filtro airline_code={code}: {len(flights)} voli")
                     if flights:
                         break
+                # Se nessun codice corrisponde, mostra tutti i voli disponibili
+                if not flights and all_flights:
+                    logger.info(f"Nessun volo per {codes}, mostro tutti i {len(all_flights)} voli TSR")
+                    flights = all_flights
             else:
                 flights = all_flights
 
