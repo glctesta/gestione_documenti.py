@@ -400,13 +400,14 @@ class GuestBookingWindow(tk.Toplevel):
 
     def _do_flight_search(self, flight_no, iata_code, arrival_date, airline_name):
         """Esegue la ricerca del volo in background."""
-        import requests
+        import urllib.request
+        import urllib.parse
+        import json
 
         try:
             # Leggi API key dalla tabella settings
             api_key = self._get_setting('AviationStack_API_Key')
             if not api_key:
-                # Fallback: cerca nei settings locali
                 api_key = ''
 
             flights = []
@@ -426,9 +427,10 @@ class GuestBookingWindow(tk.Toplevel):
                 elif iata_code:
                     params['airline_iata'] = iata_code.upper()
 
-                response = requests.get(base_url, params=params, timeout=15)
-                if response.status_code == 200:
-                    data = response.json()
+                url = f"{base_url}?{urllib.parse.urlencode(params)}"
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    data = json.loads(response.read().decode('utf-8'))
                     for item in data.get('data', []):
                         arr = item.get('arrival', {})
                         dep = item.get('departure', {})
@@ -448,8 +450,6 @@ class GuestBookingWindow(tk.Toplevel):
                             'departure_airport': dep.get('airport', ''),
                             'status': item.get('flight_status', '')
                         })
-                else:
-                    logger.warning(f"AviationStack API error: {response.status_code}")
 
             # Mostra risultati nella UI (thread-safe)
             self.after(0, self._handle_flight_results, flights, airline_name, flight_no)
@@ -462,9 +462,9 @@ class GuestBookingWindow(tk.Toplevel):
         """Recupera un valore dalla tabella settings."""
         try:
             query = """
-                SELECT SettingValue
+                SELECT [value]
                 FROM Traceability_RS.dbo.Settings
-                WHERE Attribute = ?
+                WHERE atribute = ?
             """
             cursor = self.db.conn.cursor()
             cursor.execute(query, (attribute,))

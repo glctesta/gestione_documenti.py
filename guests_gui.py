@@ -507,7 +507,8 @@ class GuestRegistrationWindow(tk.Toplevel):
                 import traceback
                 logger.error(traceback.format_exc())
         
-        # Se non ci sono ospiti, vai direttamente al prompt sala riunioni
+        # Se non ci sono ospiti, chiudi e poi chiedi per sala riunioni
+        self.destroy()
         self._prompt_room_booking()
 
     def _after_booking_closed(self):
@@ -523,9 +524,7 @@ class GuestRegistrationWindow(tk.Toplevel):
         
         if response is True:
             self._open_room_booking()
-        elif response is False:
-            pass  # finestra già distrutta o non necessaria
-        # else: Annulla
+        # No o Annulla: non fare nulla, finestra già chiusa
     
     def _open_room_booking(self):
         """Apre la finestra di prenotazione sale con dati preimpostati"""
