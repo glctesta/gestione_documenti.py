@@ -29,6 +29,12 @@ class GuestRegistrationWindow(tk.Toplevel):
         self.transient(parent)
 
         self._current_visitor_id = None
+        # Dizionari per tracciare gli ID delle tabelle normalizzate
+        self._company_ids = {}      # {CompanyName: VisitorPlanToChargeID}
+        self._guest_data = {}       # {GuestName: (VisitorDataID, EmailAddress)}
+        # Lista ospiti registrati in questa sessione (per il booking)
+        self._session_visitors = []
+
         self._build_ui()
         self._load_companies()
         self._load_sponsors()
@@ -228,20 +234,27 @@ class GuestRegistrationWindow(tk.Toplevel):
             pass
 
     def _load_companies(self):
-        """Carica le società distinte dal database"""
+        """Carica le società da VisitorPlanToCharges"""
         try:
             query = """
-                SELECT DISTINCT CompanyName 
-                FROM Employee.dbo.Visitors 
-                WHERE CompanyName IS NOT NULL 
-                ORDER BY CompanyName
+                SELECT DISTINCT
+                    vpc.VisitorPlanToChargeID,
+                    vpc.CompanyName
+                FROM Employee.dbo.VisitorPlanToCharges vpc
+                WHERE vpc.CompanyName IS NOT NULL
+                ORDER BY vpc.CompanyName
             """
             cursor = self.db.conn.cursor()
             cursor.execute(query)
-            companies = [row.CompanyName for row in cursor.fetchall()]
+            self._company_ids = {}
+            companies = []
+            for row in cursor.fetchall():
+                self._company_ids[row.CompanyName] = row.VisitorPlanToChargeID
+                companies.append(row.CompanyName)
             self._all_companies = companies
             self.company_combo['values'] = companies
             cursor.close()
+            logger.info(f"Caricate {len(companies)} società da VisitorPlanToCharges")
         except Exception as e:
             logger.error(f"Errore caricamento società: {e}")
             messagebox.showerror(
@@ -249,23 +262,84 @@ class GuestRegistrationWindow(tk.Toplevel):
                 f"Errore caricamento società: {str(e)}"
             )
 
-    def _load_guests_by_company(self, company_name):
-        """Carica gli ospiti filtrati per società"""
+    def _create_new_company(self, company_name):
+        """Crea una nuova società in VisitorPlanToCharges e ritorna il nuovo ID"""
         try:
             query = """
-                SELECT DISTINCT GuestName 
-                FROM Employee.dbo.Visitors 
-                WHERE CompanyName = ? AND GuestName IS NOT NULL
-                ORDER BY GuestName
+                INSERT INTO Employee.dbo.VisitorPlanToCharges (CompanyName, MustCharged)
+                OUTPUT INSERTED.VisitorPlanToChargeID
+                VALUES (?, 0)
             """
             cursor = self.db.conn.cursor()
             cursor.execute(query, (company_name,))
-            guests = [row.GuestName for row in cursor.fetchall()]
+            row = cursor.fetchone()
+            self.db.conn.commit()
+            cursor.close()
+            new_id = row[0] if row else None
+            if new_id:
+                logger.info(f"Nuova società creata: '{company_name}' ID={new_id}")
+                self._company_ids[company_name] = new_id
+                self._load_companies()  # Refresh combo
+                self.company_var.set(company_name)
+            return new_id
+        except Exception as e:
+            logger.error(f"Errore creazione società: {e}")
+            messagebox.showerror(self.lang.get('error', 'Errore'), f"Errore creazione società: {e}")
+            return None
+
+    def _load_guests_by_company(self, plan_to_charge_id):
+        """Carica gli ospiti da VisitorData filtrati per VisitorPlanToChargeID"""
+        try:
+            query = """
+                SELECT DISTINCT
+                    vd.VisitorDataID,
+                    vd.GuestName,
+                    vd.EmailAddress
+                FROM Employee.dbo.VisitorData vd
+                INNER JOIN Employee.dbo.VisitorPlanToCharges vpc
+                    ON vd.VisitorPlanToChargeID = vpc.VisitorPlanToChargeID
+                WHERE vpc.VisitorPlanToChargeID = ?
+                ORDER BY vd.GuestName
+            """
+            cursor = self.db.conn.cursor()
+            cursor.execute(query, (plan_to_charge_id,))
+            self._guest_data = {}
+            guests = []
+            for row in cursor.fetchall():
+                name = row.GuestName or ''
+                self._guest_data[name] = (row.VisitorDataID, row.EmailAddress)
+                guests.append(name)
             self._all_guests = guests
             self.guest_combo['values'] = guests
             cursor.close()
+            logger.info(f"Caricati {len(guests)} ospiti per PlanToChargeID={plan_to_charge_id}")
         except Exception as e:
             logger.error(f"Errore caricamento ospiti: {e}")
+
+    def _create_new_guest(self, guest_name, plan_to_charge_id):
+        """Crea un nuovo ospite in VisitorData e ritorna il nuovo ID"""
+        try:
+            query = """
+                INSERT INTO Employee.dbo.VisitorData (GuestName, VisitorPlanToChargeID)
+                OUTPUT INSERTED.VisitorDataID
+                VALUES (?, ?)
+            """
+            cursor = self.db.conn.cursor()
+            cursor.execute(query, (guest_name, plan_to_charge_id))
+            row = cursor.fetchone()
+            self.db.conn.commit()
+            cursor.close()
+            new_id = row[0] if row else None
+            if new_id:
+                logger.info(f"Nuovo ospite creato: '{guest_name}' ID={new_id}")
+                self._guest_data[guest_name] = (new_id, None)
+                self._load_guests_by_company(plan_to_charge_id)  # Refresh combo
+                self.guest_var.set(guest_name)
+            return new_id
+        except Exception as e:
+            logger.error(f"Errore creazione ospite: {e}")
+            messagebox.showerror(self.lang.get('error', 'Errore'), f"Errore creazione ospite: {e}")
+            return None
 
     def _load_sponsors(self):
         """Carica i dipendenti attivi come sponsor"""
@@ -366,8 +440,8 @@ class GuestRegistrationWindow(tk.Toplevel):
     def _on_company_selected(self, event):
         """Gestisce la selezione della società"""
         company = self.company_var.get()
-        if company:
-            self._load_guests_by_company(company)
+        if company and company in self._company_ids:
+            self._load_guests_by_company(self._company_ids[company])
 
     def _on_select(self, event):
         """Gestisce la selezione di un visitatore dalla lista"""
@@ -383,8 +457,8 @@ class GuestRegistrationWindow(tk.Toplevel):
         self.guest_var.set(values[2])
         
         # Carica gli ospiti per la società selezionata
-        if values[1]:
-            self._load_guests_by_company(values[1])
+        if values[1] and values[1] in self._company_ids:
+            self._load_guests_by_company(self._company_ids[values[1]])
 
         # Parse dates
         if values[3]:
@@ -416,21 +490,42 @@ class GuestRegistrationWindow(tk.Toplevel):
         self.guest_combo['values'] = []
 
     def _on_close(self):
-        """Gestisce la chiusura della finestra con prompt per prenotazione sala riunioni"""
-        # Chiedi se l'utente vuole prenotare una meeting room
-        # askyesnocancel ritorna: True=Sì, False=No, None=Annulla
+        """Gestisce la chiusura: Booking ospiti → Sala riunioni"""
+        # Se ci sono ospiti registrati in questa sessione, apri il booking
+        if self._session_visitors:
+            try:
+                from guest_booking_gui import GuestBookingWindow
+                GuestBookingWindow(
+                    self.master, self.db, self.lang, self.user_name,
+                    self._session_visitors,
+                    on_close_callback=self._after_booking_closed
+                )
+                self.destroy()
+                return
+            except Exception as e:
+                logger.error(f"Errore apertura booking: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+        
+        # Se non ci sono ospiti, vai direttamente al prompt sala riunioni
+        self._prompt_room_booking()
+
+    def _after_booking_closed(self):
+        """Callback chiamata dopo la chiusura del booking window"""
+        self._prompt_room_booking()
+
+    def _prompt_room_booking(self):
+        """Prompt per prenotazione sala riunioni"""
         response = messagebox.askyesnocancel(
             self.lang.get('book_meeting_room', 'Prenotazione Sala'),
             self.lang.get('book_meeting_room_question', 'Vuoi prenotare una sala riunioni?')
         )
         
         if response is True:
-            # Sì: Apri la finestra di prenotazione sale con dati preimpostati
             self._open_room_booking()
         elif response is False:
-            # No: Chiudi la finestra senza prenotare
-            self.destroy()
-        # else: response is None (Annulla): non fare nulla, la finestra rimane aperta
+            pass  # finestra già distrutta o non necessaria
+        # else: Annulla
     
     def _open_room_booking(self):
         """Apre la finestra di prenotazione sale con dati preimpostati"""
@@ -840,6 +935,30 @@ class GuestRegistrationWindow(tk.Toplevel):
                 )
                 return
 
+            # --- Gestione società (auto-create se nuova) ---
+            plan_to_charge_id = self._company_ids.get(company)
+            if not plan_to_charge_id:
+                if not messagebox.askyesno(
+                    self.lang.get('confirm', 'Conferma'),
+                    self.lang.get('confirm_new_company',
+                                  f'La società "{company}" non esiste. Crearla?')
+                ):
+                    return
+                plan_to_charge_id = self._create_new_company(company)
+                if not plan_to_charge_id:
+                    return
+
+            # --- Gestione ospite (auto-create se nuovo) ---
+            visitor_data_id = None
+            guest_email = None
+            if guest in self._guest_data:
+                visitor_data_id, guest_email = self._guest_data[guest]
+            else:
+                # Nuovo ospite
+                visitor_data_id = self._create_new_guest(guest, plan_to_charge_id)
+                if not visitor_data_id:
+                    return
+
             # Calcola ShowFrom e ShowUntil
             show_from = datetime.combine(start_visit, datetime.strptime('08:30', '%H:%M').time())
             show_until = datetime.combine(end_visit, datetime.strptime('17:00', '%H:%M').time())
@@ -859,35 +978,48 @@ class GuestRegistrationWindow(tk.Toplevel):
                         WelcomeMessage = ?,
                         SponsorGuy = ?,
                         ShowFrom = ?,
-                        ShowUntil = ?
+                        ShowUntil = ?,
+                        VisitorDataId = ?
                     WHERE VisitorId = ?
                 """
                 cursor = self.db.conn.cursor()
                 cursor.execute(query, (
                     company, guest, start_visit, end_visit,
                     pourpose, welcome, sponsor, show_from, show_until,
-                    self._current_visitor_id
+                    visitor_data_id, self._current_visitor_id
                 ))
                 self.db.conn.commit()
                 cursor.close()
                 message = self.lang.get('visitor_updated', 'Visitatore aggiornato con successo')
             else:
-                # Insert
+                # Insert con VisitorDataId
                 query = """
                     INSERT INTO Employee.dbo.Visitors (
                         RegistryId, CompanyName, GuestName, StartVisit, EndVisit,
                         Pourpose, WelcomeMessage, ShowFrom, ShowUntil, 
-                        IsActive, CreatedAt, SponsorGuy
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, GETDATE(), ?)
+                        IsActive, CreatedAt, SponsorGuy, VisitorDataId
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, GETDATE(), ?, ?)
                 """
                 cursor = self.db.conn.cursor()
                 cursor.execute(query, (
                     registry_id, company, guest, start_visit, end_visit,
-                    pourpose, welcome, show_from, show_until, sponsor
+                    pourpose, welcome, show_from, show_until, sponsor,
+                    visitor_data_id
                 ))
                 self.db.conn.commit()
                 cursor.close()
                 message = self.lang.get('visitor_saved', 'Visitatore registrato con successo')
+
+                # Aggiungi alla lista sessione per il booking
+                self._session_visitors.append({
+                    'guest_name': guest,
+                    'company': company,
+                    'email': guest_email,
+                    'start_visit': start_visit,
+                    'end_visit': end_visit,
+                    'sponsor': sponsor,
+                    'visitor_data_id': visitor_data_id
+                })
 
             messagebox.showinfo(self.lang.get('success', 'Successo'), message)
             

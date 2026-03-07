@@ -1,0 +1,637 @@
+# -*- coding: utf-8 -*-
+"""
+Modulo per la gestione booking ospiti (voli, shuttle, hotel).
+Si apre automaticamente alla chiusura di GuestRegistrationWindow
+quando ci sono ospiti registrati nella sessione.
+"""
+
+import tkinter as tk
+from tkinter import ttk, messagebox
+from tkcalendar import DateEntry
+from datetime import datetime, timedelta
+import logging
+import os
+
+logger = logging.getLogger("TraceabilityRS")
+
+
+class GuestBookingWindow(tk.Toplevel):
+    """Finestra per gestire booking: volo, shuttle, hotel per gli ospiti registrati."""
+
+    def __init__(self, parent, db, lang, user_name, guests_data, on_close_callback=None):
+        super().__init__(parent)
+        self.db = db
+        self.lang = lang
+        self.user_name = user_name
+        self.guests_data = guests_data  # Lista dizionari ospiti dalla sessione
+        self.on_close_callback = on_close_callback
+
+        self.title(self.lang.get('guest_booking_title', 'Booking Ospiti — Volo, Shuttle, Hotel'))
+        self.geometry('900x750')
+        self.transient(parent)
+        self.grab_set()
+
+        # Dati compagnie aeree
+        self._airline_ids = {}  # {CompanyName: (FlightCompanyId, FlightIdentifyCode)}
+        # Dati supporters
+        self._shuttle_data = {}  # {Name: (SupporterDataId, ReservationEmail, TownName)}
+        self._hotel_data = {}    # {Name: (SupporterDataId, ReservationEmail, TownName)}
+        # Dati aziendali
+        self._company_info = None
+
+        self._build_ui()
+        self._load_airlines()
+        self._load_supporters()
+        self._load_company_info()
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ================================================================
+    # UI
+    # ================================================================
+    def _build_ui(self):
+        """Costruisce l'interfaccia con 3 sezioni: Volo, Shuttle, Hotel."""
+        # Header con lista ospiti
+        header = ttk.Frame(self)
+        header.pack(fill='x', padx=10, pady=5)
+        ttk.Label(header, text=f"{self.lang.get('logged_user', 'Utente')}: {self.user_name}",
+                  font=('Arial', 10, 'bold')).pack(side='left')
+
+        guests_names = ', '.join([g['guest_name'] for g in self.guests_data])
+        ttk.Label(header, text=f"  |  {self.lang.get('guests', 'Ospiti')}: {guests_names}",
+                  font=('Arial', 9)).pack(side='left', padx=10)
+
+        # Notebook per le sezioni
+        notebook = ttk.Notebook(self)
+        notebook.pack(fill='both', expand=True, padx=10, pady=5)
+
+        # --- Tab 1: Volo ---
+        flight_frame = ttk.Frame(notebook, padding=15)
+        notebook.add(flight_frame, text=self.lang.get('flight_tab', '✈ Volo'))
+        self._build_flight_section(flight_frame)
+
+        # --- Tab 2: Shuttle ---
+        shuttle_frame = ttk.Frame(notebook, padding=15)
+        notebook.add(shuttle_frame, text=self.lang.get('shuttle_tab', '🚐 Shuttle'))
+        self._build_shuttle_section(shuttle_frame)
+
+        # --- Tab 3: Hotel ---
+        hotel_frame = ttk.Frame(notebook, padding=15)
+        notebook.add(hotel_frame, text=self.lang.get('hotel_tab', '🏨 Hotel'))
+        self._build_hotel_section(hotel_frame)
+
+        # Pulsanti in basso
+        btn_frame = ttk.Frame(self, padding=10)
+        btn_frame.pack(fill='x', padx=10, pady=5)
+
+        ttk.Button(btn_frame, text=self.lang.get('btn_send_bookings', '📧 Invia Prenotazioni'),
+                   command=self._send_all_bookings).pack(side='right', padx=5)
+        ttk.Button(btn_frame, text=self.lang.get('btn_skip_booking', 'Salta Booking'),
+                   command=self._on_close).pack(side='right', padx=5)
+
+    def _build_flight_section(self, parent):
+        """Sezione informazioni volo."""
+        row = 0
+
+        # Compagnia aerea
+        ttk.Label(parent, text=self.lang.get('airline', 'Compagnia Aerea')).grid(
+            row=row, column=0, sticky='w', padx=5, pady=5)
+        self.airline_var = tk.StringVar()
+        self.airline_combo = ttk.Combobox(parent, textvariable=self.airline_var, width=40)
+        self.airline_combo.grid(row=row, column=1, padx=5, pady=5, sticky='ew')
+        self._all_airlines = []
+        self.airline_var.trace('w', self._filter_airlines)
+        row += 1
+
+        # Numero volo
+        ttk.Label(parent, text=self.lang.get('flight_number', 'Numero Volo')).grid(
+            row=row, column=0, sticky='w', padx=5, pady=5)
+        self.flight_number_var = tk.StringVar()
+        ttk.Entry(parent, textvariable=self.flight_number_var, width=20).grid(
+            row=row, column=1, padx=5, pady=5, sticky='w')
+        ttk.Button(parent, text=self.lang.get('btn_search_flight', '🔍 Cerca Orario'),
+                   command=self._search_flight_time).grid(row=row, column=2, padx=5, pady=5)
+        row += 1
+
+        # Data arrivo (default = start_visit del primo ospite)
+        default_date = self.guests_data[0]['start_visit'] if self.guests_data else datetime.now().date()
+        ttk.Label(parent, text=self.lang.get('arrival_date', 'Data Arrivo')).grid(
+            row=row, column=0, sticky='w', padx=5, pady=5)
+        self.arrival_date = DateEntry(parent, width=20, background='darkblue',
+                                      foreground='white', borderwidth=2,
+                                      date_pattern='yyyy-mm-dd')
+        self.arrival_date.set_date(default_date)
+        self.arrival_date.grid(row=row, column=1, padx=5, pady=5, sticky='w')
+        row += 1
+
+        # Ora arrivo
+        ttk.Label(parent, text=self.lang.get('arrival_time', 'Ora Arrivo (HH:MM)')).grid(
+            row=row, column=0, sticky='w', padx=5, pady=5)
+        self.arrival_time_var = tk.StringVar()
+        ttk.Entry(parent, textvariable=self.arrival_time_var, width=10).grid(
+            row=row, column=1, padx=5, pady=5, sticky='w')
+        row += 1
+
+        # Data partenza (default = end_visit del primo ospite)
+        default_end = self.guests_data[0]['end_visit'] if self.guests_data else datetime.now().date()
+        ttk.Label(parent, text=self.lang.get('departure_date', 'Data Partenza')).grid(
+            row=row, column=0, sticky='w', padx=5, pady=5)
+        self.departure_date = DateEntry(parent, width=20, background='darkblue',
+                                         foreground='white', borderwidth=2,
+                                         date_pattern='yyyy-mm-dd')
+        self.departure_date.set_date(default_end)
+        self.departure_date.grid(row=row, column=1, padx=5, pady=5, sticky='w')
+        row += 1
+
+        # Ora partenza
+        ttk.Label(parent, text=self.lang.get('departure_time', 'Ora Partenza (HH:MM)')).grid(
+            row=row, column=0, sticky='w', padx=5, pady=5)
+        self.departure_time_var = tk.StringVar()
+        ttk.Entry(parent, textvariable=self.departure_time_var, width=10).grid(
+            row=row, column=1, padx=5, pady=5, sticky='w')
+
+        parent.columnconfigure(1, weight=1)
+
+    def _build_shuttle_section(self, parent):
+        """Sezione prenotazione shuttle."""
+        row = 0
+
+        ttk.Label(parent, text=self.lang.get('select_shuttle', 'Servizio Shuttle')).grid(
+            row=row, column=0, sticky='w', padx=5, pady=5)
+        self.shuttle_var = tk.StringVar()
+        self.shuttle_combo = ttk.Combobox(parent, textvariable=self.shuttle_var,
+                                           state='readonly', width=40)
+        self.shuttle_combo.grid(row=row, column=1, padx=5, pady=5, sticky='ew')
+        row += 1
+
+        ttk.Label(parent, text=self.lang.get('shuttle_notes', 'Note Shuttle')).grid(
+            row=row, column=0, sticky='nw', padx=5, pady=5)
+        self.shuttle_notes = tk.Text(parent, height=4, width=40)
+        self.shuttle_notes.grid(row=row, column=1, padx=5, pady=5, sticky='ew')
+        row += 1
+
+        # Info box
+        info_label = ttk.Label(parent,
+            text=self.lang.get('shuttle_info',
+                '⚠ Se l\'arrivo è dopo le 16:00 la destinazione sarà l\'Hotel.\n'
+                'Altrimenti la destinazione sarà la fabbrica.'),
+            foreground='#B22222', font=('Arial', 9, 'italic'))
+        info_label.grid(row=row, column=0, columnspan=2, sticky='w', padx=5, pady=10)
+
+        parent.columnconfigure(1, weight=1)
+
+    def _build_hotel_section(self, parent):
+        """Sezione prenotazione hotel."""
+        row = 0
+
+        ttk.Label(parent, text=self.lang.get('select_hotel', 'Hotel')).grid(
+            row=row, column=0, sticky='w', padx=5, pady=5)
+        self.hotel_var = tk.StringVar()
+        self.hotel_combo = ttk.Combobox(parent, textvariable=self.hotel_var,
+                                         state='readonly', width=40)
+        self.hotel_combo.grid(row=row, column=1, padx=5, pady=5, sticky='ew')
+        row += 1
+
+        # Date check-in / check-out
+        default_start = self.guests_data[0]['start_visit'] if self.guests_data else datetime.now().date()
+        default_end = self.guests_data[0]['end_visit'] if self.guests_data else datetime.now().date()
+
+        ttk.Label(parent, text='Check-in').grid(
+            row=row, column=0, sticky='w', padx=5, pady=5)
+        self.checkin_date = DateEntry(parent, width=20, background='darkblue',
+                                      foreground='white', borderwidth=2,
+                                      date_pattern='yyyy-mm-dd')
+        self.checkin_date.set_date(default_start)
+        self.checkin_date.grid(row=row, column=1, padx=5, pady=5, sticky='w')
+        row += 1
+
+        ttk.Label(parent, text='Check-out').grid(
+            row=row, column=0, sticky='w', padx=5, pady=5)
+        self.checkout_date = DateEntry(parent, width=20, background='darkblue',
+                                       foreground='white', borderwidth=2,
+                                       date_pattern='yyyy-mm-dd')
+        self.checkout_date.set_date(default_end)
+        self.checkout_date.grid(row=row, column=1, padx=5, pady=5, sticky='w')
+        row += 1
+
+        ttk.Label(parent, text=self.lang.get('hotel_notes', 'Note Hotel')).grid(
+            row=row, column=0, sticky='nw', padx=5, pady=5)
+        self.hotel_notes = tk.Text(parent, height=4, width=40)
+        self.hotel_notes.grid(row=row, column=1, padx=5, pady=5, sticky='ew')
+
+        parent.columnconfigure(1, weight=1)
+
+    # ================================================================
+    # DATA LOADING
+    # ================================================================
+    def _load_airlines(self):
+        """Carica le compagnie aeree da FlyghtCompanies."""
+        try:
+            query = """
+                SELECT FlightCompanyId, CompanyName, FlightIdentifyCode
+                FROM Employee.dbo.FlyghtCompanies
+                ORDER BY CompanyName
+            """
+            cursor = self.db.conn.cursor()
+            cursor.execute(query)
+            self._airline_ids = {}
+            airlines = []
+            for row in cursor.fetchall():
+                name = row.CompanyName or ''
+                self._airline_ids[name] = (row.FlightCompanyId, row.FlightIdentifyCode)
+                airlines.append(name)
+            self._all_airlines = airlines
+            self.airline_combo['values'] = airlines
+            cursor.close()
+            logger.info(f"Caricate {len(airlines)} compagnie aeree")
+        except Exception as e:
+            logger.error(f"Errore caricamento compagnie aeree: {e}")
+
+    def _filter_airlines(self, *args):
+        """Filtra le compagnie aeree durante la digitazione."""
+        typed = self.airline_var.get().lower()
+        if not typed:
+            self.airline_combo['values'] = self._all_airlines
+        else:
+            filtered = [a for a in self._all_airlines if typed in a.lower()]
+            self.airline_combo['values'] = filtered
+
+    def _create_new_airline(self, airline_name):
+        """Crea una nuova compagnia aerea in FlyghtCompanies."""
+        try:
+            code = airline_name[:2].upper() if len(airline_name) >= 2 else airline_name.upper()
+            query = """
+                INSERT INTO Employee.dbo.FlyghtCompanies (CompanyName, FlightIdentifyCode)
+                OUTPUT INSERTED.FlightCompanyId
+                VALUES (?, ?)
+            """
+            cursor = self.db.conn.cursor()
+            cursor.execute(query, (airline_name, code))
+            row = cursor.fetchone()
+            self.db.conn.commit()
+            cursor.close()
+            new_id = row[0] if row else None
+            if new_id:
+                logger.info(f"Nuova compagnia aerea creata: '{airline_name}' Code={code} ID={new_id}")
+                self._airline_ids[airline_name] = (new_id, code)
+                self._load_airlines()
+                self.airline_var.set(airline_name)
+            return new_id
+        except Exception as e:
+            logger.error(f"Errore creazione compagnia aerea: {e}")
+            messagebox.showerror(self.lang.get('error', 'Errore'), f"Errore: {e}")
+            return None
+
+    def _load_supporters(self):
+        """Carica shuttle e hotel da VisitorSupportersData."""
+        try:
+            query = """
+                SELECT
+                    vsd.SupporterDataId, vsd.SupporterTypeID,
+                    vsd.Name, vsd.ReservationEmail,
+                    t.TownName, c.CountyName, n.NationName
+                FROM Employee.dbo.VisitorSupportersData vsd
+                INNER JOIN Employee.dbo.SupporterTypes st
+                    ON vsd.SupporterTypeID = st.SupporterTypeID
+                INNER JOIN Geo.Towns t ON vsd.CityId = t.TownId
+                INNER JOIN Geo.Counties c ON t.CountyId = c.CountyId
+                INNER JOIN Geo.Nations n ON c.NationId = n.NationId
+                WHERE vsd.DateOut IS NULL
+            """
+            cursor = self.db.conn.cursor()
+            cursor.execute(query)
+
+            self._shuttle_data = {}
+            self._hotel_data = {}
+            shuttles = []
+            hotels = []
+
+            for row in cursor.fetchall():
+                name = row.Name or ''
+                display = f"{name} — {row.TownName}"
+                entry = (row.SupporterDataId, row.ReservationEmail, row.TownName)
+
+                if row.SupporterTypeID == 1:  # Hotel
+                    self._hotel_data[display] = entry
+                    hotels.append(display)
+                elif row.SupporterTypeID == 2:  # Shuttle
+                    self._shuttle_data[display] = entry
+                    shuttles.append(display)
+
+            self.shuttle_combo['values'] = shuttles
+            self.hotel_combo['values'] = hotels
+            cursor.close()
+            logger.info(f"Caricati {len(shuttles)} shuttle, {len(hotels)} hotel")
+        except Exception as e:
+            logger.error(f"Errore caricamento supporters: {e}")
+
+    def _load_company_info(self):
+        """Carica i dati della società ospitante (Vandewiele Romania)."""
+        try:
+            query = """
+                SELECT EmployeerName, [Address], t.TownName, c.CountyName,
+                       EmployeerFiscalCode, ChamberOfCommercNo
+                FROM Employee.dbo.Employeers e
+                INNER JOIN Geo.Towns t ON e.TownId = t.TownId
+                INNER JOIN Geo.Counties c ON t.CountyId = c.CountyId
+                WHERE EmployeerId = 2
+            """
+            cursor = self.db.conn.cursor()
+            cursor.execute(query)
+            row = cursor.fetchone()
+            cursor.close()
+            if row:
+                self._company_info = {
+                    'name': row.EmployeerName,
+                    'address': row.Address,
+                    'town': row.TownName,
+                    'county': row.CountyName,
+                    'fiscal_code': row.EmployeerFiscalCode,
+                    'chamber': row.ChamberOfCommercNo
+                }
+                logger.info(f"Dati aziendali caricati: {self._company_info['name']}")
+        except Exception as e:
+            logger.error(f"Errore caricamento dati aziendali: {e}")
+
+    # ================================================================
+    # FLIGHT SEARCH
+    # ================================================================
+    def _search_flight_time(self):
+        """Cerca l'orario del volo online (placeholder — tentativo API)."""
+        flight_no = self.flight_number_var.get().strip()
+        if not flight_no:
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('enter_flight_number', 'Inserire il numero del volo')
+            )
+            return
+
+        # Tentativo di ricerca online (placeholder per integrazione futura)
+        logger.info(f"Ricerca orario per volo: {flight_no}")
+        messagebox.showinfo(
+            self.lang.get('info', 'Informazione'),
+            self.lang.get('flight_search_manual',
+                          f'Ricerca automatica non disponibile per il volo {flight_no}.\n'
+                          'Inserire data e ora di arrivo manualmente.')
+        )
+
+    # ================================================================
+    # EMAIL SENDING
+    # ================================================================
+    def _get_user_email(self):
+        """Recupera l'email dell'utente loggato."""
+        try:
+            query = """
+                SELECT ea.WorkEmail
+                FROM Employee.dbo.Employees e
+                INNER JOIN Employee.dbo.EmployeeAddress ea ON ea.EmployeeId = e.EmployeeId
+                    AND ea.DateOut IS NULL
+                WHERE UPPER(e.EmployeeSurname + ' ' + e.EmployeeName) = ?
+            """
+            cursor = self.db.conn.cursor()
+            cursor.execute(query, (self.user_name.upper(),))
+            row = cursor.fetchone()
+            cursor.close()
+            return row.WorkEmail if row and row.WorkEmail else None
+        except Exception as e:
+            logger.error(f"Errore recupero email utente: {e}")
+            return None
+
+    def _send_all_bookings(self):
+        """Invia tutte le prenotazioni (shuttle + hotel)."""
+        # Validazione: almeno la compagnia aerea
+        airline_name = self.airline_var.get().strip()
+
+        # Auto-create compagnia aerea se nuova
+        if airline_name and airline_name not in self._airline_ids:
+            if messagebox.askyesno(
+                self.lang.get('confirm', 'Conferma'),
+                self.lang.get('confirm_new_airline',
+                              f'La compagnia "{airline_name}" non esiste. Crearla?')
+            ):
+                if not self._create_new_airline(airline_name):
+                    return
+            else:
+                return
+
+        errors = []
+        successes = []
+
+        # Invia email shuttle
+        shuttle = self.shuttle_var.get().strip()
+        if shuttle and shuttle in self._shuttle_data:
+            try:
+                self._send_shuttle_email(shuttle)
+                successes.append('Shuttle')
+            except Exception as e:
+                logger.error(f"Errore invio email shuttle: {e}")
+                errors.append(f"Shuttle: {e}")
+
+        # Invia email hotel
+        hotel = self.hotel_var.get().strip()
+        if hotel and hotel in self._hotel_data:
+            try:
+                self._send_hotel_email(hotel)
+                successes.append('Hotel')
+            except Exception as e:
+                logger.error(f"Errore invio email hotel: {e}")
+                errors.append(f"Hotel: {e}")
+
+        # Report
+        if successes:
+            msg = f"Prenotazioni inviate: {', '.join(successes)}"
+            if errors:
+                msg += f"\n\nErrori: {', '.join(errors)}"
+            messagebox.showinfo(self.lang.get('success', 'Successo'), msg)
+        elif errors:
+            messagebox.showerror(self.lang.get('error', 'Errore'),
+                                 f"Errori: {', '.join(errors)}")
+        else:
+            messagebox.showinfo(self.lang.get('info', 'Informazione'),
+                                self.lang.get('no_booking_selected',
+                                              'Nessuna prenotazione selezionata.'))
+
+        self._on_close()
+
+    def _send_shuttle_email(self, shuttle_key):
+        """Invia email al servizio shuttle."""
+        from email_connector import EmailSender
+
+        supporter_id, reservation_email, town = self._shuttle_data[shuttle_key]
+        if not reservation_email:
+            raise ValueError("Nessuna email di prenotazione per lo shuttle selezionato")
+
+        user_email = self._get_user_email()
+        airline_name = self.airline_var.get().strip()
+        flight_no = self.flight_number_var.get().strip()
+        arrival_time = self.arrival_time_var.get().strip()
+        arrival_date = self.arrival_date.get_date()
+        departure_date = self.departure_date.get_date()
+        departure_time = self.departure_time_var.get().strip()
+
+        # Determina destinazione: dopo le 16:00 → Hotel, altrimenti → Fabbrica
+        destination = 'Hotel'
+        try:
+            if arrival_time:
+                hour = int(arrival_time.split(':')[0])
+                if hour < 16:
+                    destination = self._company_info['name'] if self._company_info else 'Fabbrica'
+        except (ValueError, IndexError):
+            pass
+
+        guests_list = '\n'.join([f"  • {g['guest_name']} ({g['company']})" for g in self.guests_data])
+        guests_html = ''.join([
+            f"<li><strong>{g['guest_name']}</strong> — {g['company']}</li>"
+            for g in self.guests_data
+        ])
+
+        flight_info = ''
+        if airline_name:
+            flight_info = f"<strong>Compagnia aerea:</strong> {airline_name}<br/>"
+        if flight_no:
+            flight_info += f"<strong>Numero volo:</strong> {flight_no}<br/>"
+
+        # Logo path
+        logo_path = os.path.join(os.path.dirname(__file__), 'Logo.png')
+
+        body_html = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; font-size: 12px;">
+            <img src="cid:company_logo" alt="Logo" style="width: 150px; margin-bottom: 10px;" /><br/>
+            <h3 style="color: #1565C0;">Cerere transport / Transport Request</h3>
+            <p>Bună ziua,</p>
+            <p>Vă rugăm să asigurați transportul pentru următorii oaspeți:</p>
+
+            <h4>Oaspeți ({len(self.guests_data)} persoane):</h4>
+            <ul>{guests_html}</ul>
+
+            {flight_info}
+            <p><strong>Data sosire:</strong> {arrival_date.strftime('%d/%m/%Y')}</p>
+            <p><strong>Ora sosire:</strong> {arrival_time if arrival_time else 'De confirmat'}</p>
+            <p><strong>Destinația:</strong> <span style="color: #B22222; font-weight: bold;">{destination}</span></p>
+
+            <p><strong>Data plecare:</strong> {departure_date.strftime('%d/%m/%Y')}</p>
+            <p><strong>Ora plecare:</strong> {departure_time if departure_time else 'De confirmat'}</p>
+
+            <hr style="border: 1px solid #ddd;"/>
+            <p style="color: #888; font-size: 10px;">
+                Email generată automat de TraceabilityRS — {self.user_name}</p>
+        </body>
+        </html>
+        """
+
+        sender = EmailSender()
+
+        attachments = []
+        if os.path.exists(logo_path):
+            attachments.append(('inline', logo_path, 'company_logo'))
+
+        cc = user_email if user_email else None
+
+        sender.send_email(
+            to_email=reservation_email,
+            subject=f"Transport Request — {len(self.guests_data)} oaspeți — {arrival_date.strftime('%d/%m/%Y')}",
+            body=body_html,
+            is_html=True,
+            attachments=attachments if attachments else None,
+            cc_emails=cc
+        )
+        logger.info(f"Email shuttle inviata a {reservation_email}")
+
+    def _send_hotel_email(self, hotel_key):
+        """Invia email all'hotel."""
+        from email_connector import EmailSender
+
+        supporter_id, reservation_email, town = self._hotel_data[hotel_key]
+        if not reservation_email:
+            raise ValueError("Nessuna email di prenotazione per l'hotel selezionato")
+
+        user_email = self._get_user_email()
+        checkin = self.checkin_date.get_date()
+        checkout = self.checkout_date.get_date()
+        hotel_notes_text = self.hotel_notes.get('1.0', 'end-1c').strip()
+
+        guests_html = ''.join([
+            f"<li><strong>{g['guest_name']}</strong> — {g['company']}</li>"
+            for g in self.guests_data
+        ])
+
+        # Dati aziendali
+        company_html = ''
+        if self._company_info:
+            ci = self._company_info
+            company_html = f"""
+            <h4>Date companie gazdă:</h4>
+            <table style="border-collapse: collapse;">
+                <tr><td style="padding: 3px 10px; font-weight: bold;">Companie:</td>
+                    <td>{ci['name']}</td></tr>
+                <tr><td style="padding: 3px 10px; font-weight: bold;">Adresă:</td>
+                    <td>{ci['address']}, {ci['town']}, {ci['county']}</td></tr>
+                <tr><td style="padding: 3px 10px; font-weight: bold;">CUI:</td>
+                    <td>{ci['fiscal_code']}</td></tr>
+                <tr><td style="padding: 3px 10px; font-weight: bold;">Nr. Reg. Comerț:</td>
+                    <td>{ci['chamber']}</td></tr>
+            </table>
+            """
+
+        notes_html = f"<p><strong>Note:</strong> {hotel_notes_text}</p>" if hotel_notes_text else ""
+
+        logo_path = os.path.join(os.path.dirname(__file__), 'Logo.png')
+
+        num_nights = (checkout - checkin).days
+        body_html = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; font-size: 12px;">
+            <img src="cid:company_logo" alt="Logo" style="width: 150px; margin-bottom: 10px;" /><br/>
+            <h3 style="color: #2E7D32;">Cerere rezervare hotel / Hotel Reservation Request</h3>
+            <p>Bună ziua,</p>
+            <p>Vă rugăm să faceți o rezervare pentru următorii oaspeți:</p>
+
+            <h4>Oaspeți ({len(self.guests_data)} persoane):</h4>
+            <ul>{guests_html}</ul>
+
+            <p><strong>Check-in:</strong> {checkin.strftime('%d/%m/%Y')}</p>
+            <p><strong>Check-out:</strong> {checkout.strftime('%d/%m/%Y')}</p>
+            <p><strong>Număr nopți:</strong> {num_nights}</p>
+            <p><strong>Număr camere:</strong> {len(self.guests_data)}</p>
+
+            {notes_html}
+
+            {company_html}
+
+            <hr style="border: 1px solid #ddd;"/>
+            <p style="color: #888; font-size: 10px;">
+                Email generată automat de TraceabilityRS — {self.user_name}</p>
+        </body>
+        </html>
+        """
+
+        sender = EmailSender()
+
+        attachments = []
+        if os.path.exists(logo_path):
+            attachments.append(('inline', logo_path, 'company_logo'))
+
+        cc = user_email if user_email else None
+
+        sender.send_email(
+            to_email=reservation_email,
+            subject=f"Rezervare Hotel — {len(self.guests_data)} oaspeți — {checkin.strftime('%d/%m/%Y')} - {checkout.strftime('%d/%m/%Y')}",
+            body=body_html,
+            is_html=True,
+            attachments=attachments if attachments else None,
+            cc_emails=cc
+        )
+        logger.info(f"Email hotel inviata a {reservation_email}")
+
+    # ================================================================
+    # CLOSE
+    # ================================================================
+    def _on_close(self):
+        """Chiude la finestra e chiama il callback."""
+        self.destroy()
+        if self.on_close_callback:
+            try:
+                self.on_close_callback()
+            except Exception as e:
+                logger.error(f"Errore nel callback post-booking: {e}")
