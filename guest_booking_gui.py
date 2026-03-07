@@ -428,8 +428,9 @@ class GuestBookingWindow(tk.Toplevel):
         pass
 
     def _do_flight_search(self, flight_no, iata_code, arrival_date, airline_name):
-        """Esegue la ricerca del volo in background tramite FlightLabs API.
+        """Esegue la ricerca del volo in background.
         
+        Prova FlightLabs (date future), poi AviationStack come fallback.
         Se iata_code contiene più codici separati da ';' (es. 'LH;VL'),
         filtra i risultati per ciascun codice in sequenza.
         """
@@ -438,76 +439,109 @@ class GuestBookingWindow(tk.Toplevel):
         import json
 
         try:
-            # Leggi API key dalla tabella settings
-            api_key = self._get_setting('FlightLabs_API_Key')
-            if not api_key:
-                # Fallback: prova la vecchia chiave AviationStack
-                api_key = self._get_setting('AviationStack_API_Key')
+            all_flights = []
 
+            # --- Tentativo 1: FlightLabs Flights Schedules ---
+            flightlabs_key = self._get_setting('FlightLabs_API_Key')
+            if flightlabs_key:
+                try:
+                    base_url = 'https://www.goflightlabs.com/flights-schedules'
+                    params = {
+                        'access_key': flightlabs_key,
+                        'iataCode': 'TSR',
+                        'type': 'arrival'
+                    }
+                    url = f"{base_url}?{urllib.parse.urlencode(params)}"
+                    logger.info(f"FlightLabs API call: TSR arrivals")
+                    req = urllib.request.Request(url)
+                    with urllib.request.urlopen(req, timeout=20) as response:
+                        data = json.loads(response.read().decode('utf-8'))
+                    if data.get('success') and data.get('data'):
+                        date_str = arrival_date.strftime('%Y-%m-%d')
+                        for item in data['data']:
+                            # Filtra per data
+                            arr_time_full = item.get('arr_time', '')
+                            if not arr_time_full.startswith(date_str):
+                                continue
+                            arr_time = arr_time_full[11:16] if len(arr_time_full) >= 16 else ''
+                            dep_time_full = item.get('dep_time', '')
+                            dep_time = dep_time_full[11:16] if len(dep_time_full) >= 16 else ''
+                            all_flights.append({
+                                'flight_iata': item.get('flight_iata', ''),
+                                'flight_number': item.get('flight_number', ''),
+                                'airline_code': item.get('airline_iata', ''),
+                                'airline_name': item.get('airline_iata', ''),
+                                'arrival_time': arr_time,
+                                'departure_time': dep_time,
+                                'arrival_airport': f"Timisoara (TSR)",
+                                'departure_airport': item.get('dep_iata', ''),
+                                'status': item.get('status', 'scheduled')
+                            })
+                        logger.info(f"FlightLabs: {len(all_flights)} voli trovati per {date_str}")
+                except Exception as e:
+                    logger.warning(f"FlightLabs non disponibile: {e}")
+
+            # --- Tentativo 2: AviationStack ---
+            if not all_flights:
+                avstack_key = self._get_setting('AviationStack_API_Key')
+                if avstack_key:
+                    try:
+                        base_url = 'http://api.aviationstack.com/v1/flights'
+                        params = {
+                            'access_key': avstack_key,
+                            'arr_iata': 'TSR',
+                            'flight_date': arrival_date.strftime('%Y-%m-%d'),
+                            'limit': 100
+                        }
+                        url = f"{base_url}?{urllib.parse.urlencode(params)}"
+                        logger.info(f"AviationStack API call: TSR arrivals {arrival_date}")
+                        req = urllib.request.Request(url)
+                        with urllib.request.urlopen(req, timeout=15) as response:
+                            data = json.loads(response.read().decode('utf-8'))
+                        for item in data.get('data', []):
+                            arr = item.get('arrival', {})
+                            dep = item.get('departure', {})
+                            flight = item.get('flight', {})
+                            airline_d = item.get('airline', {})
+                            arr_time = arr.get('estimated') or arr.get('scheduled') or ''
+                            if arr_time and 'T' in arr_time:
+                                arr_time = arr_time.split('T')[1][:5]
+                            all_flights.append({
+                                'flight_iata': flight.get('iata', ''),
+                                'flight_number': flight.get('number', ''),
+                                'airline_code': flight.get('iata', '')[:2] if flight.get('iata') else '',
+                                'airline_name': airline_d.get('name', ''),
+                                'arrival_time': arr_time,
+                                'departure_time': '',
+                                'arrival_airport': arr.get('airport', ''),
+                                'departure_airport': dep.get('airport', ''),
+                                'status': item.get('flight_status', '')
+                            })
+                        logger.info(f"AviationStack: {len(all_flights)} voli trovati")
+                    except Exception as e:
+                        logger.warning(f"AviationStack non disponibile: {e}")
+
+            if not all_flights:
+                logger.warning("Nessuna API disponibile o nessun volo trovato")
+
+            # --- Filtra risultati ---
             flights = []
-
-            if api_key:
-                # ---- FlightLabs Future Flights API ----
-                base_url = 'https://goflightlabs.com/advanced-future-flights'
-                params = {
-                    'access_key': api_key,
-                    'iataCode': 'TSR',   # Aeroporto Timisoara
-                    'type': 'arrival',
-                    'date': arrival_date.strftime('%Y-%m-%d')
-                }
-
-                url = f"{base_url}?{urllib.parse.urlencode(params)}"
-                logger.info(f"FlightLabs API call: iataCode=TSR, date={arrival_date}, "
-                             f"flight_no={flight_no}, iata_codes={iata_code}")
-
-                req = urllib.request.Request(url)
-                with urllib.request.urlopen(req, timeout=20) as response:
-                    data = json.loads(response.read().decode('utf-8'))
-
-                all_flights = []
-                for item in data.get('data', []):
-                    carrier = item.get('carrier', {})
-                    arr_time_obj = item.get('arrivalTime', {})
-                    dep_time_obj = item.get('departureTime', {})
-                    airport = item.get('airport', {})
-
-                    flight_iata = f"{carrier.get('fs', '')}{carrier.get('flightNumber', '')}"
-                    arr_time = arr_time_obj.get('time24', '')
-
-                    all_flights.append({
-                        'flight_iata': flight_iata,
-                        'flight_number': carrier.get('flightNumber', ''),
-                        'airline_code': carrier.get('fs', ''),
-                        'airline_name': carrier.get('name', ''),
-                        'arrival_time': arr_time,
-                        'departure_time': dep_time_obj.get('time24', ''),
-                        'arrival_airport': 'Timisoara (TSR)',
-                        'departure_airport': f"{airport.get('city', '')} ({airport.get('fs', '')})",
-                        'operated_by': item.get('operatedBy', ''),
-                        'status': 'scheduled'
-                    })
-
-                logger.info(f"FlightLabs: {len(all_flights)} voli totali in arrivo a TSR")
-
-                if flight_no:
-                    # Filtra per numero volo specifico
-                    flight_no_upper = flight_no.upper().replace(' ', '')
+            if flight_no:
+                flight_no_upper = flight_no.upper().replace(' ', '')
+                flights = [f for f in all_flights
+                           if f['flight_iata'].upper() == flight_no_upper]
+                logger.info(f"Filtro flight_no={flight_no_upper}: {len(flights)} trovati")
+            elif iata_code:
+                codes = [c.strip().upper() for c in iata_code.split(';') if c.strip()]
+                for code in codes:
                     flights = [f for f in all_flights
-                               if f['flight_iata'].upper() == flight_no_upper]
-                    logger.info(f"Filtro per flight_no={flight_no_upper}: {len(flights)} trovati")
-                elif iata_code:
-                    # Prova ciascun codice IATA separato da ';'
-                    codes = [c.strip().upper() for c in iata_code.split(';') if c.strip()]
-                    for code in codes:
-                        flights = [f for f in all_flights
-                                   if f['airline_code'].upper() == code]
-                        logger.info(f"Filtro airline_code={code}: {len(flights)} voli")
-                        if flights:
-                            break
-                else:
-                    flights = all_flights
+                               if f['airline_code'].upper() == code]
+                    logger.info(f"Filtro airline_code={code}: {len(flights)} voli")
+                    if flights:
+                        break
+            else:
+                flights = all_flights
 
-            # Mostra risultati nella UI (thread-safe)
             self.after(0, self._handle_flight_results, flights, airline_name, flight_no)
 
         except Exception as e:
