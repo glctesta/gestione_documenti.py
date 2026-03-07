@@ -293,9 +293,9 @@ class GuestBookingWindow(tk.Toplevel):
                 FROM Employee.dbo.VisitorSupportersData vsd
                 INNER JOIN Employee.dbo.SupporterTypes st
                     ON vsd.SupporterTypeID = st.SupporterTypeID
-                INNER JOIN Geo.Towns t ON vsd.CityId = t.TownId
-                INNER JOIN Geo.Counties c ON t.CountyId = c.CountyId
-                INNER JOIN Geo.Nations n ON c.NationId = n.NationId
+                INNER JOIN Employee.Geo.Towns t ON vsd.CityId = t.TownId
+                INNER JOIN Employee.Geo.Counties c ON t.CountyId = c.CountyId
+                INNER JOIN Employee.Geo.Nations n ON c.NationId = n.NationId
                 WHERE vsd.DateOut IS NULL
             """
             cursor = self.db.conn.cursor()
@@ -332,8 +332,8 @@ class GuestBookingWindow(tk.Toplevel):
                 SELECT EmployeerName, [Address], t.TownName, c.CountyName,
                        EmployeerFiscalCode, ChamberOfCommercNo
                 FROM Employee.dbo.Employeers e
-                INNER JOIN Geo.Towns t ON e.TownId = t.TownId
-                INNER JOIN Geo.Counties c ON t.CountyId = c.CountyId
+                INNER JOIN Employee.Geo.Towns t ON e.TownId = t.TownId
+                INNER JOIN Employee.Geo.Counties c ON t.CountyId = c.CountyId
                 WHERE EmployeerId = 2
             """
             cursor = self.db.conn.cursor()
