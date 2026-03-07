@@ -97,6 +97,9 @@ class UpdateProgressWindow(tk.Tk):
         self.progress_bar["value"] = value
         self._file_var.set(file_text)
 
+    # File da NON sovrascrivere (configurazioni utente locali)
+    PRESERVE_FILES = {'updater.exe', 'printer_config.json', 'user_settings.json'}
+
     def _copy_worker(self, file_list):
         """
         Worker eseguito in un thread separato.
@@ -108,8 +111,9 @@ class UpdateProgressWindow(tk.Tk):
             # Aggiorna la GUI tramite after (thread-safe)
             self.after(0, self._set_progress, i + 1, f"Copia di: {name}")
 
-            # Salta l'updater stesso per non sovrascriversi
-            if name.lower() == 'updater.exe':
+            # Salta file di configurazione locale che non devono essere sovrascritti
+            if name.lower() in self.PRESERVE_FILES:
+                log(f"Preservato file locale: {name}")
                 continue
 
             try:
