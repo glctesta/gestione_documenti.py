@@ -62,22 +62,22 @@ class GuestBookingWindow(tk.Toplevel):
                   font=('Arial', 9)).pack(side='left', padx=10)
 
         # Notebook per le sezioni
-        notebook = ttk.Notebook(self)
-        notebook.pack(fill='both', expand=True, padx=10, pady=5)
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill='both', expand=True, padx=10, pady=5)
 
         # --- Tab 1: Volo ---
-        flight_frame = ttk.Frame(notebook, padding=15)
-        notebook.add(flight_frame, text=self.lang.get('flight_tab', '✈ Volo'))
+        flight_frame = ttk.Frame(self.notebook, padding=15)
+        self.notebook.add(flight_frame, text=self.lang.get('flight_tab', '✈ Volo'))
         self._build_flight_section(flight_frame)
 
         # --- Tab 2: Shuttle ---
-        shuttle_frame = ttk.Frame(notebook, padding=15)
-        notebook.add(shuttle_frame, text=self.lang.get('shuttle_tab', '🚐 Shuttle'))
+        shuttle_frame = ttk.Frame(self.notebook, padding=15)
+        self.notebook.add(shuttle_frame, text=self.lang.get('shuttle_tab', '🚐 Shuttle'))
         self._build_shuttle_section(shuttle_frame)
 
         # --- Tab 3: Hotel ---
-        hotel_frame = ttk.Frame(notebook, padding=15)
-        notebook.add(hotel_frame, text=self.lang.get('hotel_tab', '🏨 Hotel'))
+        hotel_frame = ttk.Frame(self.notebook, padding=15)
+        self.notebook.add(hotel_frame, text=self.lang.get('hotel_tab', '🏨 Hotel'))
         self._build_hotel_section(hotel_frame)
 
         # Pulsanti in basso
@@ -185,6 +185,14 @@ class GuestBookingWindow(tk.Toplevel):
         """Sezione prenotazione shuttle."""
         row = 0
 
+        # Checkbox per skippare il servizio shuttle
+        self.skip_shuttle_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(parent,
+            text=self.lang.get('skip_shuttle', 'Non richiedere servizio shuttle'),
+            variable=self.skip_shuttle_var).grid(
+            row=row, column=0, columnspan=2, sticky='w', padx=5, pady=(5, 10))
+        row += 1
+
         ttk.Label(parent, text=self.lang.get('select_shuttle', 'Servizio Shuttle')).grid(
             row=row, column=0, sticky='w', padx=5, pady=5)
         self.shuttle_var = tk.StringVar()
@@ -212,6 +220,14 @@ class GuestBookingWindow(tk.Toplevel):
     def _build_hotel_section(self, parent):
         """Sezione prenotazione hotel."""
         row = 0
+
+        # Checkbox per skippare il servizio hotel
+        self.skip_hotel_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(parent,
+            text=self.lang.get('skip_hotel', 'Non richiedere servizio hotel'),
+            variable=self.skip_hotel_var).grid(
+            row=row, column=0, columnspan=2, sticky='w', padx=5, pady=(5, 10))
+        row += 1
 
         ttk.Label(parent, text=self.lang.get('select_hotel', 'Hotel')).grid(
             row=row, column=0, sticky='w', padx=5, pady=5)
@@ -730,28 +746,67 @@ class GuestBookingWindow(tk.Toplevel):
             return None
 
     def _send_all_bookings(self):
-        """Invia tutte le prenotazioni (shuttle + hotel)."""
-        # Validazione date
+        """Invia tutte le prenotazioni (shuttle + hotel).
+        
+        Se mancano dati obbligatori, naviga alla tab incompleta.
+        I servizi con flag 'skip' attivo vengono saltati.
+        """
+        skip_shuttle = self.skip_shuttle_var.get()
+        skip_hotel = self.skip_hotel_var.get()
+
+        # Se entrambi sono skippati, chiedi conferma e chiudi
+        if skip_shuttle and skip_hotel:
+            if messagebox.askyesno(
+                self.lang.get('confirm', 'Conferma'),
+                self.lang.get('skip_all_bookings',
+                              'Entrambi i servizi sono disattivati. Chiudere senza prenotazioni?')):
+                self._on_close()
+            return
+
+        # --- Validazione dati volo (Tab 0) ---
         arrival = self.arrival_date.get_date()
         departure = self.departure_date.get_date()
-        checkin = self.checkin_date.get_date()
-        checkout = self.checkout_date.get_date()
 
         if departure < arrival:
             messagebox.showwarning(
                 self.lang.get('warning', 'Attenzione'),
                 self.lang.get('invalid_date_range',
-                              'La data di partenza non può essere anteriore alla data di arrivo.')
-            )
+                              'La data di partenza non può essere anteriore alla data di arrivo.'))
+            self.notebook.select(0)
             return
 
-        if checkout < checkin:
-            messagebox.showwarning(
-                self.lang.get('warning', 'Attenzione'),
-                self.lang.get('invalid_checkout_date',
-                              'La data di check-out non può essere anteriore alla data di check-in.')
-            )
-            return
+        # --- Validazione shuttle (Tab 1) ---
+        if not skip_shuttle:
+            shuttle = self.shuttle_var.get().strip()
+            if not shuttle or shuttle not in self._shuttle_data:
+                messagebox.showwarning(
+                    self.lang.get('warning', 'Attenzione'),
+                    self.lang.get('shuttle_required',
+                                  'Selezionare un servizio shuttle oppure disattivare il servizio.'))
+                self.notebook.select(1)
+                return
+
+        # --- Validazione hotel (Tab 2) ---
+        if not skip_hotel:
+            hotel = self.hotel_var.get().strip()
+            checkin = self.checkin_date.get_date()
+            checkout = self.checkout_date.get_date()
+
+            if not hotel or hotel not in self._hotel_data:
+                messagebox.showwarning(
+                    self.lang.get('warning', 'Attenzione'),
+                    self.lang.get('hotel_required',
+                                  'Selezionare un hotel oppure disattivare il servizio.'))
+                self.notebook.select(2)
+                return
+
+            if checkout < checkin:
+                messagebox.showwarning(
+                    self.lang.get('warning', 'Attenzione'),
+                    self.lang.get('invalid_checkout_date',
+                                  'La data di check-out non può essere anteriore alla data di check-in.'))
+                self.notebook.select(2)
+                return
 
         # Validazione: compagnia aerea
         airline_name = self.airline_var.get().strip()
@@ -768,28 +823,31 @@ class GuestBookingWindow(tk.Toplevel):
             else:
                 return
 
+        # --- Invio prenotazioni ---
         errors = []
         successes = []
 
         # Invia email shuttle
-        shuttle = self.shuttle_var.get().strip()
-        if shuttle and shuttle in self._shuttle_data:
-            try:
-                self._send_shuttle_email(shuttle)
-                successes.append('Shuttle')
-            except Exception as e:
-                logger.error(f"Errore invio email shuttle: {e}")
-                errors.append(f"Shuttle: {e}")
+        if not skip_shuttle:
+            shuttle = self.shuttle_var.get().strip()
+            if shuttle and shuttle in self._shuttle_data:
+                try:
+                    self._send_shuttle_email(shuttle)
+                    successes.append('Shuttle')
+                except Exception as e:
+                    logger.error(f"Errore invio email shuttle: {e}")
+                    errors.append(f"Shuttle: {e}")
 
         # Invia email hotel
-        hotel = self.hotel_var.get().strip()
-        if hotel and hotel in self._hotel_data:
-            try:
-                self._send_hotel_email(hotel)
-                successes.append('Hotel')
-            except Exception as e:
-                logger.error(f"Errore invio email hotel: {e}")
-                errors.append(f"Hotel: {e}")
+        if not skip_hotel:
+            hotel = self.hotel_var.get().strip()
+            if hotel and hotel in self._hotel_data:
+                try:
+                    self._send_hotel_email(hotel)
+                    successes.append('Hotel')
+                except Exception as e:
+                    logger.error(f"Errore invio email hotel: {e}")
+                    errors.append(f"Hotel: {e}")
 
         # Report
         if successes:
@@ -800,10 +858,6 @@ class GuestBookingWindow(tk.Toplevel):
         elif errors:
             messagebox.showerror(self.lang.get('error', 'Errore'),
                                  f"Errori: {', '.join(errors)}")
-        else:
-            messagebox.showinfo(self.lang.get('info', 'Informazione'),
-                                self.lang.get('no_booking_selected',
-                                              'Nessuna prenotazione selezionata.'))
 
         self._on_close()
 
