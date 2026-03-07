@@ -221,6 +221,7 @@ import scrap_reports_gui
 import coating_gui
 import product_checks_gui
 import guests_gui
+import guest_management_gui
 import guests_report_generator
 import tempfile
 import assign_submissions_gui
@@ -322,7 +323,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.6.4'  # Versione aggiornata
+APP_VERSION = '2.3.6.5'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -14767,7 +14768,7 @@ class App(tk.Tk):
         )
         self.guests_settings_submenu.add_command(
             label=self.lang.get('guest_settings_management', 'Gestione Ospiti'),
-            command=self._guest_settings_placeholder
+            command=self.open_guest_management_with_login
         )
         
         # Sottomenu Assenze
@@ -16610,6 +16611,15 @@ class App(tk.Tk):
             self.lang.get('info', 'Informazione'),
             'Funcționalitate în curs de dezvoltare.\n\n'
             'Questa funzionalità è in fase di sviluppo.'
+        )
+
+    def open_guest_management_with_login(self):
+        """Apre la finestra Gestione Ospiti con autenticazione."""
+        self._execute_authorized_action(
+            menu_translation_key='manage_guests',
+            action_callback=lambda: guest_management_gui.GuestManagementWindow(
+                self, self.db, self.lang, self.last_authenticated_user_name
+            )
         )
 
     def generate_guests_pdf_report_with_login(self):
