@@ -353,27 +353,231 @@ class GuestBookingWindow(tk.Toplevel):
         except Exception as e:
             logger.error(f"Errore caricamento dati aziendali: {e}")
 
-    # ================================================================
-    # FLIGHT SEARCH
-    # ================================================================
     def _search_flight_time(self):
-        """Cerca l'orario del volo online (placeholder — tentativo API)."""
+        """Cerca l'orario del volo online tramite AviationStack API.
+        
+        Cerca per:
+        1. Numero volo specifico (se inserito)
+        2. Compagnia aerea + data arrivo (anche senza numero volo)
+        Se più risultati → mostra lista selezione.
+        """
+        import threading
+
+        airline_name = self.airline_var.get().strip()
         flight_no = self.flight_number_var.get().strip()
-        if not flight_no:
+        arrival_date = self.arrival_date.get_date()
+
+        if not airline_name and not flight_no:
             messagebox.showwarning(
                 self.lang.get('warning', 'Attenzione'),
-                self.lang.get('enter_flight_number', 'Inserire il numero del volo')
+                self.lang.get('enter_airline_or_flight',
+                              'Inserire la compagnia aerea o il numero del volo.')
             )
             return
 
-        # Tentativo di ricerca online (placeholder per integrazione futura)
-        logger.info(f"Ricerca orario per volo: {flight_no}")
+        # Recupera IATA code dalla compagnia selezionata
+        iata_code = ''
+        if airline_name and airline_name in self._airline_ids:
+            _, iata_code = self._airline_ids[airline_name]
+            iata_code = iata_code or ''
+
+        logger.info(f"Ricerca volo: airline={airline_name} IATA={iata_code} "
+                     f"flight={flight_no} date={arrival_date}")
+
+        # Esegui ricerca in un thread separato per non bloccare la UI
+        self._set_search_status(True)
+        thread = threading.Thread(
+            target=self._do_flight_search,
+            args=(flight_no, iata_code, arrival_date, airline_name),
+            daemon=True
+        )
+        thread.start()
+
+    def _set_search_status(self, searching):
+        """Abilita/disabilita UI durante la ricerca."""
+        # Placeholder — potrebbe mostrare un indicatore di caricamento
+        pass
+
+    def _do_flight_search(self, flight_no, iata_code, arrival_date, airline_name):
+        """Esegue la ricerca del volo in background."""
+        import requests
+
+        try:
+            # Leggi API key dalla tabella settings
+            api_key = self._get_setting('AviationStack_API_Key')
+            if not api_key:
+                # Fallback: cerca nei settings locali
+                api_key = ''
+
+            flights = []
+
+            if api_key:
+                # ---- Ricerca con AviationStack API ----
+                base_url = 'http://api.aviationstack.com/v1/flights'
+                params = {
+                    'access_key': api_key,
+                    'arr_iata': 'OTP',  # Aeroporto Otopeni Bucarest (default)
+                    'flight_date': arrival_date.strftime('%Y-%m-%d'),
+                    'limit': 50
+                }
+
+                if flight_no:
+                    params['flight_iata'] = flight_no.upper().replace(' ', '')
+                elif iata_code:
+                    params['airline_iata'] = iata_code.upper()
+
+                response = requests.get(base_url, params=params, timeout=15)
+                if response.status_code == 200:
+                    data = response.json()
+                    for item in data.get('data', []):
+                        arr = item.get('arrival', {})
+                        dep = item.get('departure', {})
+                        flight = item.get('flight', {})
+                        airline = item.get('airline', {})
+
+                        arr_time = arr.get('estimated') or arr.get('scheduled') or ''
+                        if arr_time and 'T' in arr_time:
+                            arr_time = arr_time.split('T')[1][:5]
+
+                        flights.append({
+                            'flight_iata': flight.get('iata', ''),
+                            'flight_number': flight.get('number', ''),
+                            'airline_name': airline.get('name', ''),
+                            'arrival_time': arr_time,
+                            'arrival_airport': arr.get('airport', ''),
+                            'departure_airport': dep.get('airport', ''),
+                            'status': item.get('flight_status', '')
+                        })
+                else:
+                    logger.warning(f"AviationStack API error: {response.status_code}")
+
+            # Mostra risultati nella UI (thread-safe)
+            self.after(0, self._handle_flight_results, flights, airline_name, flight_no)
+
+        except Exception as e:
+            logger.error(f"Errore ricerca volo: {e}")
+            self.after(0, self._handle_flight_search_error, str(e))
+
+    def _get_setting(self, attribute):
+        """Recupera un valore dalla tabella settings."""
+        try:
+            query = """
+                SELECT SettingValue
+                FROM Traceability_RS.dbo.Settings
+                WHERE Attribute = ?
+            """
+            cursor = self.db.conn.cursor()
+            cursor.execute(query, (attribute,))
+            row = cursor.fetchone()
+            cursor.close()
+            return row[0] if row else None
+        except Exception as e:
+            logger.warning(f"Errore lettura setting '{attribute}': {e}")
+            return None
+
+    def _handle_flight_search_error(self, error_msg):
+        """Gestisce errore ricerca volo — propone inserimento manuale."""
+        self._set_search_status(False)
         messagebox.showinfo(
             self.lang.get('info', 'Informazione'),
             self.lang.get('flight_search_manual',
-                          f'Ricerca automatica non disponibile per il volo {flight_no}.\n'
+                          f'Ricerca automatica non disponibile.\n'
+                          f'Errore: {error_msg}\n'
                           'Inserire data e ora di arrivo manualmente.')
         )
+
+    def _handle_flight_results(self, flights, airline_name, flight_no):
+        """Gestisce i risultati della ricerca volo."""
+        self._set_search_status(False)
+
+        if not flights:
+            # Nessun risultato — inserimento manuale
+            messagebox.showinfo(
+                self.lang.get('info', 'Informazione'),
+                self.lang.get('no_flights_found',
+                              'Nessun volo trovato per i criteri specificati.\n'
+                              'Inserire data e ora manualmente.')
+            )
+            return
+
+        if len(flights) == 1:
+            # Un solo risultato → chiedi conferma
+            f = flights[0]
+            display = (f"{f['flight_iata']} — {f['airline_name']}\n"
+                       f"Da: {f['departure_airport']}\n"
+                       f"Arrivo: {f['arrival_time']}\n"
+                       f"Stato: {f['status']}")
+
+            if messagebox.askyesno(
+                self.lang.get('confirm_flight', 'Conferma Volo'),
+                f"{self.lang.get('confirm_flight_details', 'Confermi questo volo?')}\n\n{display}"
+            ):
+                self._apply_flight_data(f)
+        else:
+            # Più risultati → mostra lista selezione
+            self._show_flight_selection_dialog(flights)
+
+    def _show_flight_selection_dialog(self, flights):
+        """Mostra un dialog per selezionare tra più voli trovati."""
+        dialog = tk.Toplevel(self)
+        dialog.title(self.lang.get('select_flight', 'Seleziona Volo'))
+        dialog.geometry('650x400')
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text=self.lang.get('multiple_flights_found',
+                  'Trovati più voli. Selezionarne uno:'),
+                  font=('Arial', 10, 'bold')).pack(padx=10, pady=10)
+
+        # Treeview con i voli
+        columns = ('flight', 'airline', 'from', 'arrival', 'status')
+        tree = ttk.Treeview(dialog, columns=columns, show='headings', height=12)
+        tree.heading('flight', text='Volo')
+        tree.heading('airline', text='Compagnia')
+        tree.heading('from', text='Da')
+        tree.heading('arrival', text='Arrivo')
+        tree.heading('status', text='Stato')
+
+        tree.column('flight', width=80)
+        tree.column('airline', width=150)
+        tree.column('from', width=180)
+        tree.column('arrival', width=80)
+        tree.column('status', width=80)
+
+        for f in flights:
+            tree.insert('', 'end', values=(
+                f['flight_iata'],
+                f['airline_name'],
+                f['departure_airport'],
+                f['arrival_time'],
+                f['status']
+            ))
+
+        tree.pack(fill='both', expand=True, padx=10, pady=5)
+
+        def on_select():
+            selection = tree.selection()
+            if not selection:
+                return
+            idx = tree.index(selection[0])
+            self._apply_flight_data(flights[idx])
+            dialog.destroy()
+
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(fill='x', padx=10, pady=10)
+        ttk.Button(btn_frame, text=self.lang.get('confirm', 'Conferma'),
+                   command=on_select).pack(side='right', padx=5)
+        ttk.Button(btn_frame, text=self.lang.get('cancel', 'Annulla'),
+                   command=dialog.destroy).pack(side='right', padx=5)
+
+    def _apply_flight_data(self, flight_data):
+        """Applica i dati del volo selezionato ai campi della form."""
+        if flight_data.get('flight_iata'):
+            self.flight_number_var.set(flight_data['flight_iata'])
+        if flight_data.get('arrival_time'):
+            self.arrival_time_var.set(flight_data['arrival_time'])
+        logger.info(f"Volo selezionato: {flight_data['flight_iata']} "
+                     f"arrivo {flight_data['arrival_time']}")
 
     # ================================================================
     # EMAIL SENDING
