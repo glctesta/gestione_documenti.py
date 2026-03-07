@@ -421,16 +421,16 @@ class GuestManagementWindow(tk.Toplevel):
         try:
             cursor = self.db.conn.cursor()
             cursor.execute("""
-                SELECT PlanToChargeId, DescrCharge
-                FROM Employee.dbo.VisitorPlanToCharges
-                WHERE DateOut IS NULL
-                ORDER BY DescrCharge
+                SELECT DISTINCT vpc.VisitorPlanToChargeID, vpc.CompanyName
+                FROM Employee.dbo.VisitorPlanToCharges vpc
+                WHERE vpc.CompanyName IS NOT NULL
+                ORDER BY vpc.CompanyName
             """)
             companies = []
             self._company_ids = {}
             for row in cursor.fetchall():
-                companies.append(row.DescrCharge)
-                self._company_ids[row.DescrCharge] = row.PlanToChargeId
+                companies.append(row.CompanyName)
+                self._company_ids[row.CompanyName] = row.VisitorPlanToChargeID
             self.company_filter_combo['values'] = companies
             cursor.close()
         except Exception as e:
@@ -456,10 +456,10 @@ class GuestManagementWindow(tk.Toplevel):
             query = """
                 SELECT
                     vd.VisitorDataID, vd.GuestName, vd.EmailAddress,
-                    vd.TelephonNumber, ptc.DescrCharge
+                    vd.TelephonNumber, vpc.CompanyName
                 FROM Employee.dbo.VisitorData vd
-                LEFT JOIN Employee.dbo.VisitorPlanToCharges ptc
-                    ON vd.VisitorPlanToChargeID = ptc.PlanToChargeId
+                LEFT JOIN Employee.dbo.VisitorPlanToCharges vpc
+                    ON vd.VisitorPlanToChargeID = vpc.VisitorPlanToChargeID
                 WHERE vd.DateOut IS NULL
             """
             params = []
@@ -478,7 +478,7 @@ class GuestManagementWindow(tk.Toplevel):
                     row.GuestName or '',
                     row.EmailAddress or '',
                     row.TelephonNumber or '',
-                    row.DescrCharge or ''
+                    row.CompanyName or ''
                 ))
 
             cursor.close()
