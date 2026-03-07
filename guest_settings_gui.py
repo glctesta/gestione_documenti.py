@@ -44,21 +44,19 @@ class SupporterSettingsWindow(tk.Toplevel):
         tree_frame = ttk.Frame(self, padding=10)
         tree_frame.pack(fill='both', expand=True)
 
-        columns = ('id', 'name', 'email', 'phone', 'city')
+        columns = ('id', 'name', 'email', 'city')
         self.tree = ttk.Treeview(tree_frame, columns=columns, show='headings',
                                   selectmode='browse', height=15)
 
         self.tree.heading('id', text='ID')
         self.tree.heading('name', text=self.lang.get('col_name', 'Nome'))
         self.tree.heading('email', text='Email')
-        self.tree.heading('phone', text=self.lang.get('col_phone', 'Telefono'))
         self.tree.heading('city', text=self.lang.get('col_city', 'Città'))
 
         self.tree.column('id', width=50, anchor='center')
-        self.tree.column('name', width=220)
-        self.tree.column('email', width=250)
-        self.tree.column('phone', width=150)
-        self.tree.column('city', width=180)
+        self.tree.column('name', width=250)
+        self.tree.column('email', width=300)
+        self.tree.column('city', width=250)
 
         scrollbar = ttk.Scrollbar(tree_frame, orient='vertical', command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
@@ -83,17 +81,11 @@ class SupporterSettingsWindow(tk.Toplevel):
         ttk.Entry(form, textvariable=self.email_var, width=30).grid(
             row=0, column=3, padx=5, pady=3, sticky='ew')
 
-        ttk.Label(form, text=self.lang.get('col_phone', 'Telefono:')).grid(
-            row=1, column=0, sticky='w', padx=5, pady=3)
-        self.phone_var = tk.StringVar()
-        ttk.Entry(form, textvariable=self.phone_var, width=20).grid(
-            row=1, column=1, padx=5, pady=3, sticky='w')
-
         ttk.Label(form, text=self.lang.get('col_city', 'Città:')).grid(
-            row=1, column=2, sticky='w', padx=5, pady=3)
+            row=1, column=0, sticky='w', padx=5, pady=3)
         self.city_var = tk.StringVar()
         self.city_combo = ttk.Combobox(form, textvariable=self.city_var, width=28, state='readonly')
-        self.city_combo.grid(row=1, column=3, padx=5, pady=3, sticky='ew')
+        self.city_combo.grid(row=1, column=1, padx=5, pady=3, sticky='ew')
 
         form.columnconfigure(1, weight=1)
         form.columnconfigure(3, weight=1)
@@ -143,7 +135,7 @@ class SupporterSettingsWindow(tk.Toplevel):
             cursor = self.db.conn.cursor()
             cursor.execute("""
                 SELECT vsd.SupporterDataId, vsd.Name, vsd.ReservationEmail,
-                       vsd.Telephon, t.TownName, n.NationName
+                       t.TownName, n.NationName
                 FROM Employee.dbo.VisitorSupportersData vsd
                 LEFT JOIN Employee.Geo.Towns t ON vsd.CityId = t.TownId
                 LEFT JOIN Employee.Geo.Counties c ON t.CountyId = c.CountyId
@@ -159,7 +151,6 @@ class SupporterSettingsWindow(tk.Toplevel):
                     row.SupporterDataId,
                     row.Name or '',
                     row.ReservationEmail or '',
-                    row.Telephon or '',
                     city_display
                 ))
             cursor.close()
@@ -179,15 +170,13 @@ class SupporterSettingsWindow(tk.Toplevel):
         self._selected_id = int(values[0])
         self.name_var.set(values[1])
         self.email_var.set(values[2])
-        self.phone_var.set(values[3])
-        self.city_var.set(values[4])
+        self.city_var.set(values[3])
 
     def _clear_form(self):
         """Pulisce il form."""
         self._selected_id = None
         self.name_var.set('')
         self.email_var.set('')
-        self.phone_var.set('')
         self.city_var.set('')
 
     def _on_new(self):
@@ -199,7 +188,6 @@ class SupporterSettingsWindow(tk.Toplevel):
         """Salva (INSERT o UPDATE) il record."""
         name = self.name_var.get().strip()
         email = self.email_var.get().strip()
-        phone = self.phone_var.get().strip()
         city_display = self.city_var.get().strip()
 
         if not name:
@@ -216,17 +204,17 @@ class SupporterSettingsWindow(tk.Toplevel):
                 # UPDATE
                 cursor.execute("""
                     UPDATE Employee.dbo.VisitorSupportersData
-                    SET Name = ?, ReservationEmail = ?, Telephon = ?, CityId = ?
+                    SET Name = ?, ReservationEmail = ?, CityId = ?
                     WHERE SupporterDataId = ?
-                """, (name, email or None, phone or None, city_id, self._selected_id))
+                """, (name, email or None, city_id, self._selected_id))
                 logger.info(f"Aggiornato supporter ID={self._selected_id}")
             else:
                 # INSERT
                 cursor.execute("""
                     INSERT INTO Employee.dbo.VisitorSupportersData
-                        (Name, ReservationEmail, CityId, SupporterTypeID, Telephon)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (name, email or None, city_id, self.supporter_type_id, phone or None))
+                        (Name, ReservationEmail, CityId, SupporterTypeID)
+                    VALUES (?, ?, ?, ?)
+                """, (name, email or None, city_id, self.supporter_type_id))
                 logger.info(f"Nuovo supporter creato: {name}")
             self.db.conn.commit()
             cursor.close()
