@@ -14550,6 +14550,7 @@ class App(tk.Tk):
         # Menu Personale
         self.personnel_menu = tk.Menu(self.operations_menu, tearoff=0)
         self.guests_submenu = tk.Menu(self.personnel_menu, tearoff=0)
+        self.guests_settings_submenu = tk.Menu(self.guests_submenu, tearoff=0)
         
         # Menu Assenze
         self.absences_submenu = tk.Menu(self.personnel_menu, tearoff=0)
@@ -14738,6 +14739,35 @@ class App(tk.Tk):
         self.guests_submenu.add_command(
             label=self.lang.get('submenu_guest_report', 'Report Ospiti'),
             command=self.generate_guests_pdf_report_with_login #open_guest_report_with_login
+        )
+        
+        # --- Sottomenu Settings Ospiti ---
+        self.guests_submenu.add_separator()
+        self.guests_submenu.add_cascade(
+            label=self.lang.get('submenu_guest_settings', 'Settings'),
+            menu=self.guests_settings_submenu
+        )
+        self.guests_settings_submenu.delete(0, 'end')
+        
+        self.guests_settings_submenu.add_command(
+            label=self.lang.get('guest_settings_hotels', 'Hotels'),
+            command=self._guest_settings_placeholder
+        )
+        self.guests_settings_submenu.add_command(
+            label=self.lang.get('guest_settings_airlines', 'Compagnie Aeree'),
+            command=self._guest_settings_placeholder
+        )
+        self.guests_settings_submenu.add_command(
+            label=self.lang.get('guest_settings_shuttle', 'Shuttle'),
+            command=self._guest_settings_placeholder
+        )
+        self.guests_settings_submenu.add_command(
+            label=self.lang.get('guest_settings_rules', 'Regole'),
+            command=self._guest_settings_placeholder
+        )
+        self.guests_settings_submenu.add_command(
+            label=self.lang.get('guest_settings_management', 'Gestione Ospiti'),
+            command=self._guest_settings_placeholder
         )
         
         # Sottomenu Assenze
@@ -16572,6 +16602,14 @@ class App(tk.Tk):
     def open_guest_report_with_login(self):
         self._execute_simple_login(
             action_callback=lambda user_name: guests_gui.GuestReportWindow(self, self.db, self.lang)
+        )
+
+    def _guest_settings_placeholder(self):
+        """Placeholder per le voci Settings Ospiti - in fase di sviluppo."""
+        messagebox.showinfo(
+            self.lang.get('info', 'Informazione'),
+            'Funcționalitate în curs de dezvoltare.\n\n'
+            'Questa funzionalità è in fase di sviluppo.'
         )
 
     def generate_guests_pdf_report_with_login(self):
