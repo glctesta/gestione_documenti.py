@@ -491,10 +491,12 @@ class GuestRegistrationWindow(tk.Toplevel):
 
     def _on_close(self):
         """Gestisce la chiusura: Booking ospiti → Sala riunioni"""
+        logger.info(f"_on_close chiamato. Session visitors: {len(self._session_visitors)}")
         # Se ci sono ospiti registrati in questa sessione, apri il booking
         if self._session_visitors:
             try:
                 from guest_booking_gui import GuestBookingWindow
+                logger.info("Apertura GuestBookingWindow...")
                 GuestBookingWindow(
                     self.master, self.db, self.lang, self.user_name,
                     self._session_visitors,
@@ -507,24 +509,30 @@ class GuestRegistrationWindow(tk.Toplevel):
                 import traceback
                 logger.error(traceback.format_exc())
         
-        # Se non ci sono ospiti, chiudi e poi chiedi per sala riunioni
+        # Nessun nuovo ospite inserito → chiudi senza prompt
+        logger.info("Nessun nuovo ospite inserito in sessione, chiudo la finestra")
         self.destroy()
-        self._prompt_room_booking()
 
     def _after_booking_closed(self):
         """Callback chiamata dopo la chiusura del booking window"""
+        logger.info("Booking chiuso, prompt sala riunioni")
         self._prompt_room_booking()
 
     def _prompt_room_booking(self):
         """Prompt per prenotazione sala riunioni"""
+        logger.info("Mostra prompt prenotazione sala riunioni")
         response = messagebox.askyesnocancel(
             self.lang.get('book_meeting_room', 'Prenotazione Sala'),
             self.lang.get('book_meeting_room_question', 'Vuoi prenotare una sala riunioni?')
         )
+        logger.info(f"Risposta prompt sala riunioni: {response}")
         
         if response is True:
+            logger.info("Utente ha scelto Sì → apri prenotazione sala")
             self._open_room_booking()
         # No o Annulla: non fare nulla, finestra già chiusa
+        else:
+            logger.info("Utente ha scelto No/Annulla → nessuna azione")
     
     def _open_room_booking(self):
         """Apre la finestra di prenotazione sale con dati preimpostati"""

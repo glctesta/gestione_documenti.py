@@ -122,6 +122,7 @@ class GuestBookingWindow(tk.Toplevel):
                                       date_pattern='yyyy-mm-dd')
         self.arrival_date.set_date(default_date)
         self.arrival_date.grid(row=row, column=1, padx=5, pady=5, sticky='w')
+        self.arrival_date.bind('<<DateEntrySelected>>', self._validate_arrival_date)
         row += 1
 
         # Ora arrivo
@@ -141,6 +142,7 @@ class GuestBookingWindow(tk.Toplevel):
                                          date_pattern='yyyy-mm-dd')
         self.departure_date.set_date(default_end)
         self.departure_date.grid(row=row, column=1, padx=5, pady=5, sticky='w')
+        self.departure_date.bind('<<DateEntrySelected>>', self._validate_departure_date)
         row += 1
 
         # Ora partenza
@@ -151,6 +153,33 @@ class GuestBookingWindow(tk.Toplevel):
             row=row, column=1, padx=5, pady=5, sticky='w')
 
         parent.columnconfigure(1, weight=1)
+
+    def _validate_arrival_date(self, event=None):
+        """Valida la data di arrivo: non può essere nel passato."""
+        today = datetime.now().date()
+        arrival = self.arrival_date.get_date()
+        if arrival < today:
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('arrival_not_past', 'La data di arrivo non può essere nel passato.')
+            )
+            self.arrival_date.set_date(today)
+        # Aggiorna anche partenza se necessario
+        departure = self.departure_date.get_date()
+        if departure < self.arrival_date.get_date():
+            self.departure_date.set_date(self.arrival_date.get_date())
+
+    def _validate_departure_date(self, event=None):
+        """Valida la data di partenza: non può essere anteriore alla data di arrivo."""
+        arrival = self.arrival_date.get_date()
+        departure = self.departure_date.get_date()
+        if departure < arrival:
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('departure_before_arrival',
+                              'La data di partenza non può essere anteriore alla data di arrivo.')
+            )
+            self.departure_date.set_date(arrival)
 
     def _build_shuttle_section(self, parent):
         """Sezione prenotazione shuttle."""
@@ -417,15 +446,17 @@ class GuestBookingWindow(tk.Toplevel):
                 base_url = 'http://api.aviationstack.com/v1/flights'
                 params = {
                     'access_key': api_key,
-                    'arr_iata': 'OTP',  # Aeroporto Otopeni Bucarest (default)
                     'flight_date': arrival_date.strftime('%Y-%m-%d'),
                     'limit': 50
                 }
 
                 if flight_no:
+                    # Cerca solo per numero volo (senza vincolo aeroporto)
                     params['flight_iata'] = flight_no.upper().replace(' ', '')
                 elif iata_code:
+                    # Cerca per compagnia + arrivo a Timisoara TSR
                     params['airline_iata'] = iata_code.upper()
+                    params['arr_iata'] = 'TSR'
 
                 url = f"{base_url}?{urllib.parse.urlencode(params)}"
                 req = urllib.request.Request(url)
@@ -603,7 +634,29 @@ class GuestBookingWindow(tk.Toplevel):
 
     def _send_all_bookings(self):
         """Invia tutte le prenotazioni (shuttle + hotel)."""
-        # Validazione: almeno la compagnia aerea
+        # Validazione date
+        arrival = self.arrival_date.get_date()
+        departure = self.departure_date.get_date()
+        checkin = self.checkin_date.get_date()
+        checkout = self.checkout_date.get_date()
+
+        if departure < arrival:
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('invalid_date_range',
+                              'La data di partenza non può essere anteriore alla data di arrivo.')
+            )
+            return
+
+        if checkout < checkin:
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('invalid_checkout_date',
+                              'La data di check-out non può essere anteriore alla data di check-in.')
+            )
+            return
+
+        # Validazione: compagnia aerea
         airline_name = self.airline_var.get().strip()
 
         # Auto-create compagnia aerea se nuova
