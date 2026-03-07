@@ -921,6 +921,18 @@ class GuestBookingWindow(tk.Toplevel):
             <p><strong>Data plecare:</strong> {departure_date.strftime('%d/%m/%Y')}</p>
             <p><strong>Ora plecare:</strong> {departure_time if departure_time else 'De confirmat'}</p>
 
+            <div style="background-color: #FFF3E0; border-left: 4px solid #E65100; padding: 10px; margin: 15px 0;">
+                <p style="color: #B71C1C; font-weight: bold; font-size: 12px;">⚠ IMPORTANT / IMPORTANT:</p>
+                <p style="color: #333; font-size: 11px;">
+                    Vă rugăm să confirmați primirea acestei cereri de transport și că serviciul a fost rezervat.<br/>
+                    Vă rugăm să trimiteți confirmarea la adresa: <strong>{user_email if user_email else 'expeditorul acestui email'}</strong>
+                </p>
+                <p style="color: #333; font-size: 11px; font-style: italic;">
+                    Please confirm receipt of this transport request and that the service has been booked.<br/>
+                    Please send confirmation to: <strong>{user_email if user_email else 'the sender of this email'}</strong>
+                </p>
+            </div>
+
             <hr style="border: 1px solid #ddd;"/>
             <p style="color: #888; font-size: 10px;">
                 Email generată automat de TraceabilityRS — {self.user_name}</p>
@@ -1006,6 +1018,18 @@ class GuestBookingWindow(tk.Toplevel):
             {notes_html}
 
             {company_html}
+
+            <div style="background-color: #E8F5E9; border-left: 4px solid #2E7D32; padding: 10px; margin: 15px 0;">
+                <p style="color: #B71C1C; font-weight: bold; font-size: 12px;">⚠ IMPORTANT / IMPORTANT:</p>
+                <p style="color: #333; font-size: 11px;">
+                    Vă rugăm să confirmați primirea acestei cereri de rezervare și că serviciul a fost rezervat.<br/>
+                    Vă rugăm să trimiteți confirmarea la adresa: <strong>{user_email if user_email else 'expeditorul acestui email'}</strong>
+                </p>
+                <p style="color: #333; font-size: 11px; font-style: italic;">
+                    Please confirm receipt of this reservation request and that the rooms have been booked.<br/>
+                    Please send confirmation to: <strong>{user_email if user_email else 'the sender of this email'}</strong>
+                </p>
+            </div>
 
             <hr style="border: 1px solid #ddd;"/>
             <p style="color: #888; font-size: 10px;">
