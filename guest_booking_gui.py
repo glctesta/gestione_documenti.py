@@ -958,6 +958,9 @@ class GuestBookingWindow(tk.Toplevel):
         )
         logger.info(f"Email shuttle inviata a {reservation_email}")
 
+        # Salva record booking nel DB per ogni ospite
+        self._save_booking_record(reservation_email)
+
     def _send_hotel_email(self, hotel_key):
         """Invia email all'hotel."""
         from email_connector import EmailSender
@@ -1055,6 +1058,32 @@ class GuestBookingWindow(tk.Toplevel):
             cc_emails=cc
         )
         logger.info(f"Email hotel inviata a {reservation_email}")
+
+        # Salva record booking nel DB per ogni ospite
+        self._save_booking_record(reservation_email)
+
+    # ================================================================
+    # SAVE BOOKING RECORD
+    # ================================================================
+    def _save_booking_record(self, reservation_email):
+        """Salva il record di booking in VisitorBookingServiceEmails per ogni ospite."""
+        try:
+            cursor = self.db.conn.cursor()
+            for guest in self.guests_data:
+                visitor_data_id = guest.get('visitor_data_id')
+                if not visitor_data_id:
+                    logger.warning(f"visitor_data_id mancante per {guest.get('guest_name')}, skip INSERT")
+                    continue
+                cursor.execute("""
+                    INSERT INTO Employee.dbo.VisitorBookingServiceEmails
+                        (VisitorArrivalDetailId, EmailRequestBooking, SentOnDate, Confirmed)
+                    VALUES (?, ?, GETDATE(), 0)
+                """, (visitor_data_id, reservation_email))
+            self.db.conn.commit()
+            cursor.close()
+            logger.info(f"Salvati {len(self.guests_data)} record booking per {reservation_email}")
+        except Exception as e:
+            logger.error(f"Errore salvataggio record booking: {e}")
 
     # ================================================================
     # CLOSE
