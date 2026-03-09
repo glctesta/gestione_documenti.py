@@ -325,7 +325,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.6.5'  # Versione aggiornata
+APP_VERSION = '2.3.6.7'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -16658,7 +16658,7 @@ class App(tk.Tk):
     def open_guest_rules_with_login(self):
         """Apre la finestra Regole Ospiti con autenticazione."""
         self._execute_authorized_action(
-            menu_translation_key='manage_guests',
+            menu_translation_key='gestisci_contratti_consulenza',
             action_callback=lambda: guest_rules_gui.GuestRulesWindow(
                 self, self.db, self.lang, self.last_authenticated_user_name
             )
