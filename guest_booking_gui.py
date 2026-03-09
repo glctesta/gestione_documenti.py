@@ -486,10 +486,26 @@ class GuestBookingWindow(tk.Toplevel):
             # --- Tentativo 1: FlightLabs ---
             flightlabs_key = self._get_setting('FlightLabs_API_Key')
             if flightlabs_key:
-                # Prova prima /advanced-future-flights, poi /flights
+                # Endpoint 1: advanced-future-flights (per date future, richiede date >= domani)
+                # Endpoint 2: advanced-flights-schedules (solo oggi, con filtri opzionali)
+                # Endpoint 3: /flights (fallback generico)
+                
+                # Parametri opzionali per filtrare meglio
+                first_iata = iata_code.split(';')[0].strip() if iata_code else ''
+                
+                schedules_params = {
+                    'access_key': flightlabs_key,
+                    'iataCode': 'TSR',
+                    'type': 'arrival'
+                }
+                if first_iata:
+                    schedules_params['airline_iata'] = first_iata
+                if flight_no:
+                    schedules_params['flight_iata'] = flight_no
+                
                 endpoints = [
                     {
-                        'url': 'https://www.goflightlabs.com/advanced-flights-schedules',
+                        'url': 'https://app.goflightlabs.com/advanced-future-flights',
                         'params': {
                             'access_key': flightlabs_key,
                             'iataCode': 'TSR',
@@ -497,6 +513,12 @@ class GuestBookingWindow(tk.Toplevel):
                             'date': arrival_date.strftime('%Y-%m-%d')
                         },
                         'name': 'future-flights',
+                        'parser': 'realtime'
+                    },
+                    {
+                        'url': 'https://www.goflightlabs.com/advanced-flights-schedules',
+                        'params': schedules_params,
+                        'name': 'schedules-today',
                         'parser': 'realtime'
                     },
                     {
