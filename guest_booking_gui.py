@@ -853,6 +853,9 @@ class GuestBookingWindow(tk.Toplevel):
                     f"Vuoi procedere comunque con l'invio?"))
             if not proceed:
                 return
+
+        logger.info(f"=== BOOKING START === skip_shuttle={skip_shuttle}, skip_hotel={skip_hotel}")
+        logger.info(f"Guests data: {[g.get('guest_name','?') for g in self.guests_data]}")
         errors = []
         successes = []
 
@@ -928,7 +931,10 @@ class GuestBookingWindow(tk.Toplevel):
         # Invia email shuttle
         if not skip_shuttle:
             shuttle = self.shuttle_var.get().strip()
+            logger.info(f"Shuttle selezionato: '{shuttle}', presente in _shuttle_data: {shuttle in self._shuttle_data}")
             if shuttle and shuttle in self._shuttle_data:
+                shuttle_info = self._shuttle_data[shuttle]
+                logger.info(f"Shuttle data: ID={shuttle_info[0]}, email='{shuttle_info[1]}', town='{shuttle_info[2]}'")
                 try:
                     self._send_shuttle_email(shuttle)
                     successes.append('Shuttle')
@@ -938,12 +944,17 @@ class GuestBookingWindow(tk.Toplevel):
                     self._send_guest_confirmation_email('Shuttle / Transport', shuttle, arrival_detail_id)
                 except Exception as e:
                     logger.error(f"Errore invio email shuttle: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
                     errors.append(f"Shuttle: {e}")
 
         # Invia email hotel
         if not skip_hotel:
             hotel = self.hotel_var.get().strip()
+            logger.info(f"Hotel selezionato: '{hotel}', presente in _hotel_data: {hotel in self._hotel_data}")
             if hotel and hotel in self._hotel_data:
+                hotel_info = self._hotel_data[hotel]
+                logger.info(f"Hotel data: ID={hotel_info[0]}, email='{hotel_info[1]}', town='{hotel_info[2]}'")
                 try:
                     self._send_hotel_email(hotel)
                     successes.append('Hotel')
@@ -953,6 +964,8 @@ class GuestBookingWindow(tk.Toplevel):
                     self._send_guest_confirmation_email('Hotel', hotel, arrival_detail_id)
                 except Exception as e:
                     logger.error(f"Errore invio email hotel: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
                     errors.append(f"Hotel: {e}")
 
         # Report
@@ -965,7 +978,7 @@ class GuestBookingWindow(tk.Toplevel):
             messagebox.showerror(self.lang.get('error', 'Errore'),
                                  f"Errori: {', '.join(errors)}")
 
-        self._on_close()
+        self._on_close_after_send()
 
     def _send_shuttle_email(self, shuttle_key):
         """Invia email al servizio shuttle."""
@@ -1292,7 +1305,16 @@ class GuestBookingWindow(tk.Toplevel):
     # CLOSE
     # ================================================================
     def _on_close(self):
-        """Chiude la finestra e chiama il callback."""
+        """Chiude la finestra senza inviare booking (chiusura manuale)."""
+        if messagebox.askyesno(
+            self.lang.get('confirm', 'Conferma'),
+            self.lang.get('close_without_booking',
+                          'Chiudere senza inviare le prenotazioni?')):
+            self.destroy()
+            # NON chiamare callback: l'utente ha annullato
+
+    def _on_close_after_send(self):
+        """Chiude dopo invio riuscito e chiama il callback per il prossimo gruppo."""
         self.destroy()
         if self.on_close_callback:
             try:
