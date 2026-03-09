@@ -99,4 +99,28 @@ INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, T
 IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'btn_cancel' AND LanguageCode = 'sv')
 INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('btn_cancel', 'sv', N'Avbryt');
 
+-- col_service
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'col_service' AND LanguageCode = 'it')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('col_service', 'it', N'Servizio');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'col_service' AND LanguageCode = 'ro')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('col_service', 'ro', N'Serviciu');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'col_service' AND LanguageCode = 'en')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('col_service', 'en', N'Service');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'col_service' AND LanguageCode = 'de')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('col_service', 'de', N'Dienst');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'col_service' AND LanguageCode = 'sv')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('col_service', 'sv', N'Tjänst');
+
+-- close_without_booking
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'close_without_booking' AND LanguageCode = 'it')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('close_without_booking', 'it', N'Chiudere senza inviare le prenotazioni?');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'close_without_booking' AND LanguageCode = 'ro')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('close_without_booking', 'ro', N'Închideți fără a trimite rezervările?');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'close_without_booking' AND LanguageCode = 'en')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('close_without_booking', 'en', N'Close without sending bookings?');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'close_without_booking' AND LanguageCode = 'de')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('close_without_booking', 'de', N'Schließen ohne Buchungen zu senden?');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'close_without_booking' AND LanguageCode = 'sv')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('close_without_booking', 'sv', N'Stäng utan att skicka bokningar?');
+
 PRINT 'Traduzioni guest management nuovi bottoni inserite con successo.';
