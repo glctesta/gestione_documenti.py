@@ -233,11 +233,19 @@ class GuestBookingWindow(tk.Toplevel):
         self.shuttle_notes.grid(row=row, column=1, padx=5, pady=5, sticky='ew')
         row += 1
 
+        # Checkbox per forzare destinazione fabbrica
+        self.force_factory_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(parent,
+            text=self.lang.get('force_factory', 'Destinazione fabbrica (anche dopo le 16:00)'),
+            variable=self.force_factory_var).grid(
+            row=row, column=0, columnspan=2, sticky='w', padx=5, pady=(5, 0))
+        row += 1
+
         # Info box
         info_label = ttk.Label(parent,
             text=self.lang.get('shuttle_info',
-                '⚠ Se l\'arrivo è dopo le 16:00 la destinazione sarà l\'Hotel.\n'
-                'Altrimenti la destinazione sarà la fabbrica.'),
+                '⚠ Default: arrivo dopo le 16:00 → Hotel, prima → Fabbrica.\n'
+                'Seleziona la casella sopra per forzare la destinazione in fabbrica.'),
             foreground='#B22222', font=('Arial', 9, 'italic'))
         info_label.grid(row=row, column=0, columnspan=2, sticky='w', padx=5, pady=10)
 
@@ -1143,14 +1151,19 @@ class GuestBookingWindow(tk.Toplevel):
         departure_time = self.departure_time_var.get().strip()
 
         # Determina destinazione: dopo le 16:00 → Hotel, altrimenti → Fabbrica
-        destination = 'Hotel'
-        try:
-            if arrival_time:
-                hour = int(arrival_time.split(':')[0])
-                if hour < 16:
-                    destination = self._company_info['name'] if self._company_info else 'Fabbrica'
-        except (ValueError, IndexError):
-            pass
+        # Se force_factory è attivo, destinazione sempre Fabbrica
+        factory_name = self._company_info['name'] if self._company_info else 'Fabbrica'
+        if self.force_factory_var.get():
+            destination = factory_name
+        else:
+            destination = 'Hotel'
+            try:
+                if arrival_time:
+                    hour = int(arrival_time.split(':')[0])
+                    if hour < 16:
+                        destination = factory_name
+            except (ValueError, IndexError):
+                pass
 
         guests_list = '\n'.join([f"  • {g['guest_name']} ({g['company']})" for g in self.guests_data])
         guests_html = ''.join([

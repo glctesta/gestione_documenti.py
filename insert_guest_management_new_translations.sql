@@ -197,4 +197,12 @@ INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, T
 IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'sending_hotel' AND LanguageCode = 'en')
 INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('sending_hotel', 'en', N'Sending hotel booking...');
 
+-- force_factory (checkbox destinazione fabbrica)
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'force_factory' AND LanguageCode = 'it')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('force_factory', 'it', N'Destinazione fabbrica (anche dopo le 16:00)');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'force_factory' AND LanguageCode = 'ro')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('force_factory', 'ro', N'Destinația fabrică (chiar și după 16:00)');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'force_factory' AND LanguageCode = 'en')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('force_factory', 'en', N'Factory destination (even after 4 PM)');
+
 PRINT 'Traduzioni flight dialog e progress bar inserite con successo.';
