@@ -1172,10 +1172,10 @@ class GuestRegistrationWindow(tk.Toplevel):
             visit_date = row.VisitDate
             today = datetime.now().date()
             
-            if visit_date != today:
+            if visit_date < today:
                 messagebox.showwarning(
                     self.lang.get('warning', 'Attenzione'),
-                    self.lang.get('cannot_delete_old_visitor', 'È possibile eliminare solo i visitatori del giorno corrente')
+                    self.lang.get('cannot_delete_old_visitor', 'È possibile eliminare solo i visitatori del giorno corrente o futuri')
                 )
                 return
             
