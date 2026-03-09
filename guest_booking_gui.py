@@ -1058,6 +1058,10 @@ class GuestBookingWindow(tk.Toplevel):
             for g in self.guests_data
         ])
 
+        # Note shuttle
+        shuttle_notes_text = self.shuttle_notes.get('1.0', 'end-1c').strip()
+        notes_html = f"<p><strong>Note:</strong> {shuttle_notes_text}</p>" if shuttle_notes_text else ""
+
         flight_info = ''
         if airline_name:
             flight_info = f"<strong>Compagnia aerea:</strong> {airline_name}<br/>"
@@ -1085,6 +1089,8 @@ class GuestBookingWindow(tk.Toplevel):
 
             <p><strong>Data plecare:</strong> {departure_date.strftime('%d/%m/%Y')}</p>
             <p><strong>Ora plecare:</strong> {departure_time if departure_time else 'De confirmat'}</p>
+
+            {notes_html}
 
             <div style="background-color: #FFF3E0; border-left: 4px solid #E65100; padding: 10px; margin: 15px 0;">
                 <p style="color: #B71C1C; font-weight: bold; font-size: 12px;">⚠ IMPORTANT / IMPORTANT:</p>
