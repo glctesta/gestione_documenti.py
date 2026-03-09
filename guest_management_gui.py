@@ -89,12 +89,13 @@ class GuestManagementWindow(tk.Toplevel):
                    command=self._generate_booking).pack(side='right', padx=5)
 
         # TreeView
-        columns = ('id', 'flight', 'arrival_date', 'departure_date', 'service_email',
+        columns = ('id', 'service', 'flight', 'arrival_date', 'departure_date', 'service_email',
                    'sent_date', 'confirmed')
         self.booking_tree = ttk.Treeview(parent, columns=columns, show='headings',
                                           selectmode='browse', height=18)
 
         self.booking_tree.heading('id', text='ID')
+        self.booking_tree.heading('service', text=self.lang.get('col_service', 'Servizio'))
         self.booking_tree.heading('flight', text=self.lang.get('col_flight', 'Volo'))
         self.booking_tree.heading('arrival_date', text=self.lang.get('col_arrival_date', 'Data Arrivo'))
         self.booking_tree.heading('departure_date', text=self.lang.get('col_departure_date', 'Data Partenza'))
@@ -103,12 +104,13 @@ class GuestManagementWindow(tk.Toplevel):
         self.booking_tree.heading('confirmed', text=self.lang.get('col_confirmed', 'Confermato'))
 
         self.booking_tree.column('id', width=50, anchor='center')
+        self.booking_tree.column('service', width=80, anchor='center')
         self.booking_tree.column('flight', width=120, anchor='center')
         self.booking_tree.column('arrival_date', width=130, anchor='center')
         self.booking_tree.column('departure_date', width=130, anchor='center')
-        self.booking_tree.column('service_email', width=250)
-        self.booking_tree.column('sent_date', width=140, anchor='center')
-        self.booking_tree.column('confirmed', width=80, anchor='center')
+        self.booking_tree.column('service_email', width=220)
+        self.booking_tree.column('sent_date', width=130, anchor='center')
+        self.booking_tree.column('confirmed', width=70, anchor='center')
 
         scrollbar = ttk.Scrollbar(parent, orient='vertical', command=self.booking_tree.yview)
         self.booking_tree.configure(yscrollcommand=scrollbar.set)
@@ -136,12 +138,19 @@ class GuestManagementWindow(tk.Toplevel):
                     vad.FlightNumber,
                     vad.DateTimeArrival,
                     vad.DateOut,
-                    fc.CompanyName AS AirlineName
+                    fc.CompanyName AS AirlineName,
+                    CASE 
+                        WHEN vsd.SupporterTypeID = 1 THEN 'Hotel'
+                        WHEN vsd.SupporterTypeID = 2 THEN 'Shuttle'
+                        ELSE 'Ospite'
+                    END AS ServiceType
                 FROM Employee.dbo.VisitorBookingServiceEmails bse
                 INNER JOIN Employee.dbo.VisitorArrivalDetails vad
                     ON bse.VisitorArrivalDetailId = vad.VisitorArrivalDetailId
                 LEFT JOIN Employee.dbo.FlyghtCompanies fc
                     ON vad.FlightCompanyId = fc.FlightCompanyId
+                LEFT JOIN Employee.dbo.VisitorSupporterData vsd
+                    ON vsd.ReservationEmail = bse.EmailRequestBooking
             """
             if not show_all:
                 query += " WHERE bse.Confirmed = 0"
@@ -156,13 +165,17 @@ class GuestManagementWindow(tk.Toplevel):
                 if row.AirlineName:
                     flight_info = f"{row.AirlineName} {flight_info}"
 
+                service_type = row.ServiceType if row.ServiceType else 'Ospite'
                 arr_date = row.DateTimeArrival.strftime('%d/%m/%Y %H:%M') if row.DateTimeArrival else ''
                 dep_date = row.DateOut.strftime('%d/%m/%Y') if row.DateOut else ''
                 sent_date = row.SentOnDate.strftime('%d/%m/%Y %H:%M') if row.SentOnDate else ''
                 confirmed = '✅' if row.Confirmed else '❌'
 
+                # Icona servizio
+                service_icon = {'Hotel': '🏨 Hotel', 'Shuttle': '🚐 Shuttle'}.get(service_type, '👤 Ospite')
+
                 iid = self.booking_tree.insert('', 'end', values=(
-                    booking_id, flight_info, arr_date, dep_date,
+                    booking_id, service_icon, flight_info, arr_date, dep_date,
                     row.EmailRequestBooking or '', sent_date, confirmed
                 ))
 
@@ -175,6 +188,7 @@ class GuestManagementWindow(tk.Toplevel):
                     'airline_name': row.AirlineName,
                     'arrival_date': row.DateTimeArrival,
                     'departure_date': row.DateOut,
+                    'service_type': service_type,
                 }
 
             cursor.close()
