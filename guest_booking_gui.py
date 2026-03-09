@@ -880,26 +880,36 @@ class GuestBookingWindow(tk.Toplevel):
                 if hotel and hotel in self._hotel_data:
                     hotel_id = self._hotel_data[hotel][0]
 
-            # Recupera AirportCityId per TSR (Timisoara)
+            # Recupera AirportCityId (= TownId da Geo.Towns) per Timisoara
             airport_city_id = None
             try:
                 ac_cursor = self.db.conn.cursor()
                 ac_cursor.execute("""
-                    SELECT TOP 1 AirportCityId 
-                    FROM Employee.dbo.AirportCities 
-                    WHERE AirportIATACode = 'TSR'
+                    SELECT TOP 1 TownId 
+                    FROM Employee.Geo.Towns 
+                    WHERE TownName LIKE '%Timisoara%' OR TownName LIKE '%Timi%oara%'
                 """)
                 ac_row = ac_cursor.fetchone()
                 if ac_row:
                     airport_city_id = ac_row[0]
+                    logger.info(f"AirportCityId (TownId) per Timisoara: {airport_city_id}")
+                else:
+                    # Fallback: prendi il primo TownId disponibile
+                    ac_cursor.execute("SELECT TOP 1 TownId FROM Employee.Geo.Towns")
+                    ac_row = ac_cursor.fetchone()
+                    if ac_row:
+                        airport_city_id = ac_row[0]
+                        logger.warning(f"Timisoara non trovata in Geo.Towns, uso TownId fallback: {airport_city_id}")
                 ac_cursor.close()
             except Exception as ac_err:
-                logger.warning(f"Cannot lookup AirportCityId for TSR: {ac_err}")
+                logger.warning(f"Cannot lookup TownId for Timisoara: {ac_err}")
 
-            # Se non trovato, prova con ID fisso o usa 0
             if airport_city_id is None:
-                airport_city_id = 0
-                logger.warning("AirportCityId not found for TSR, using default 0")
+                logger.error("AirportCityId (TownId) non trovato! INSERT potrebbe fallire.")
+                messagebox.showwarning(
+                    self.lang.get('warning', 'Attenzione'),
+                    "Città aeroporto (Timisoara) non trovata nel database. Contattare l'amministratore.")
+                return
 
             # DateTimeArrival = data + ora arrivo
             dt_arrival = None
