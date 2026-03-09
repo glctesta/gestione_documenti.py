@@ -937,6 +937,10 @@ class GuestBookingWindow(tk.Toplevel):
             logger.info(f"Creato VisitorArrivalDetails ID={arrival_detail_id}")
         except Exception as e:
             logger.error(f"Errore creazione VisitorArrivalDetails: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+        logger.info(f"arrival_detail_id = {arrival_detail_id}")
 
         # Invia email shuttle
         if not skip_shuttle:
@@ -950,6 +954,8 @@ class GuestBookingWindow(tk.Toplevel):
                     successes.append('Shuttle')
                     if arrival_detail_id:
                         self._save_booking_record(arrival_detail_id, self._shuttle_data[shuttle][1])
+                    else:
+                        logger.warning("Shuttle: booking record NON salvato perché arrival_detail_id è None")
                     # Invio conferma email agli ospiti
                     self._send_guest_confirmation_email('Shuttle / Transport', shuttle, arrival_detail_id)
                 except Exception as e:
@@ -970,6 +976,8 @@ class GuestBookingWindow(tk.Toplevel):
                     successes.append('Hotel')
                     if arrival_detail_id:
                         self._save_booking_record(arrival_detail_id, self._hotel_data[hotel][1])
+                    else:
+                        logger.warning("Hotel: booking record NON salvato perché arrival_detail_id è None")
                     # Invio conferma email agli ospiti
                     self._send_guest_confirmation_email('Hotel', hotel, arrival_detail_id)
                 except Exception as e:
