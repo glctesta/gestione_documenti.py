@@ -85,6 +85,8 @@ class GuestManagementWindow(tk.Toplevel):
                    command=self._confirm_booking).pack(side='right', padx=5)
         ttk.Button(toolbar, text=self.lang.get('btn_resend_email', '📧 Reinvia Email'),
                    command=self._resend_booking_email).pack(side='right', padx=5)
+        ttk.Button(toolbar, text=self.lang.get('btn_generate_booking', '➕ Genera Booking'),
+                   command=self._generate_booking).pack(side='right', padx=5)
 
         # TreeView
         columns = ('id', 'flight', 'arrival_date', 'departure_date', 'service_email',
@@ -317,6 +319,176 @@ class GuestManagementWindow(tk.Toplevel):
         except Exception as e:
             logger.error(f"Errore reinvio email: {e}")
             messagebox.showerror(self.lang.get('error', 'Errore'), f"Errore: {e}")
+    def _generate_booking(self):
+        """Genera booking per ospiti attivi (correnti/futuri) senza prenotazione."""
+        try:
+            from datetime import date
+            today = date.today()
+
+            # Trova ospiti con visita corrente/futura che NON hanno booking
+            query = """
+                SELECT
+                    v.VisitorId,
+                    v.GuestName,
+                    v.CompanyName,
+                    v.StartVisit,
+                    v.EndVisit,
+                    v.SponsorGuy,
+                    vd.EmailAddress
+                FROM Employee.dbo.Visitors v
+                LEFT JOIN Employee.dbo.VisitorData vd
+                    ON v.VisitorDataId = vd.VisitorDataID
+                WHERE v.EndVisit >= ?
+                  AND v.VisitorId NOT IN (
+                      SELECT DISTINCT v2.VisitorId
+                      FROM Employee.dbo.Visitors v2
+                      INNER JOIN Employee.dbo.VisitorArrivalDetails vad
+                          ON CAST(v2.StartVisit AS DATE) = CAST(vad.DateTimeArrival AS DATE)
+                      INNER JOIN Employee.dbo.VisitorBookingServiceEmails bse
+                          ON bse.VisitorArrivalDetailId = vad.VisitorArrivalDetailId
+                  )
+                ORDER BY v.StartVisit, v.GuestName
+            """
+            cursor = self.db.conn.cursor()
+            cursor.execute(query, (today,))
+
+            visitors = []
+            for row in cursor.fetchall():
+                visitors.append({
+                    'visitor_id': row.VisitorId,
+                    'guest_name': row.GuestName or '',
+                    'company': row.CompanyName or '',
+                    'start_visit': row.StartVisit,
+                    'end_visit': row.EndVisit,
+                    'sponsor': row.SponsorGuy or '',
+                    'email': row.EmailAddress or ''
+                })
+            cursor.close()
+
+            if not visitors:
+                messagebox.showinfo(
+                    self.lang.get('info', 'Informazione'),
+                    self.lang.get('no_visitors_without_booking',
+                                  'Tutti gli ospiti attivi hanno già una prenotazione.'))
+                return
+
+            # Raggruppa per data di arrivo
+            from collections import defaultdict
+            groups = defaultdict(list)
+            for v in visitors:
+                key = v['start_visit'].strftime('%d/%m/%Y') if v['start_visit'] else '?'
+                groups[key].append(v)
+
+            # Mostra dialog di selezione
+            sel_win = tk.Toplevel(self)
+            sel_win.title(self.lang.get('select_guests_booking', 'Seleziona ospiti per booking'))
+            sel_win.geometry('550x400')
+            sel_win.transient(self)
+            sel_win.grab_set()
+
+            ttk.Label(sel_win,
+                text=self.lang.get('guests_without_booking',
+                    f'{len(visitors)} ospiti senza prenotazione:'),
+                font=('Arial', 10, 'bold')).pack(padx=10, pady=5, anchor='w')
+
+            # Treeview con checkbox via tag
+            cols = ('sel', 'guest', 'company', 'arrival', 'departure')
+            tree = ttk.Treeview(sel_win, columns=cols, show='headings', height=12)
+            tree.heading('sel', text='✓')
+            tree.heading('guest', text=self.lang.get('col_guest_name', 'Ospite'))
+            tree.heading('company', text=self.lang.get('col_company', 'Società'))
+            tree.heading('arrival', text=self.lang.get('col_arrival_date', 'Arrivo'))
+            tree.heading('departure', text=self.lang.get('col_departure_date', 'Partenza'))
+            tree.column('sel', width=30, anchor='center')
+            tree.column('guest', width=180)
+            tree.column('company', width=150)
+            tree.column('arrival', width=90, anchor='center')
+            tree.column('departure', width=90, anchor='center')
+
+            # Inserisci tutti selezionati di default
+            selected_items = set()
+            for v in visitors:
+                arr = v['start_visit'].strftime('%d/%m/%Y') if v['start_visit'] else ''
+                dep = v['end_visit'].strftime('%d/%m/%Y') if v['end_visit'] else ''
+                iid = tree.insert('', 'end', values=(
+                    '☑', v['guest_name'], v['company'], arr, dep
+                ))
+                selected_items.add(iid)
+
+            def toggle_selection(event):
+                item = tree.identify_row(event.y)
+                if item:
+                    vals = list(tree.item(item, 'values'))
+                    if item in selected_items:
+                        selected_items.discard(item)
+                        vals[0] = '☐'
+                    else:
+                        selected_items.add(item)
+                        vals[0] = '☑'
+                    tree.item(item, values=vals)
+
+            tree.bind('<Button-1>', toggle_selection)
+            tree.pack(fill='both', expand=True, padx=10, pady=5)
+
+            def on_generate():
+                # Raccogli ospiti selezionati
+                chosen = []
+                for i, v in enumerate(visitors):
+                    iid = tree.get_children()[i]
+                    if iid in selected_items:
+                        chosen.append(v)
+
+                if not chosen:
+                    messagebox.showwarning(
+                        self.lang.get('warning', 'Attenzione'),
+                        self.lang.get('select_at_least_one', 'Selezionare almeno un ospite.'))
+                    return
+
+                sel_win.destroy()
+
+                # Raggruppa per data arrivo e apri booking sequenziale
+                grp = defaultdict(list)
+                for c in chosen:
+                    key = str(c.get('start_visit', ''))
+                    grp[key].append(c)
+
+                booking_groups = list(grp.values())
+                self._pending_booking_groups = booking_groups
+                self._pending_booking_index = 0
+                self._open_pending_booking()
+
+            btn_frame = ttk.Frame(sel_win)
+            btn_frame.pack(fill='x', padx=10, pady=10)
+            ttk.Button(btn_frame,
+                text=self.lang.get('btn_generate_booking', '➕ Genera Booking'),
+                command=on_generate).pack(side='right', padx=5)
+            ttk.Button(btn_frame,
+                text=self.lang.get('btn_cancel', 'Annulla'),
+                command=sel_win.destroy).pack(side='right', padx=5)
+
+        except Exception as e:
+            logger.error(f"Errore genera booking: {e}")
+            messagebox.showerror(self.lang.get('error', 'Errore'), f"Errore: {e}")
+
+    def _open_pending_booking(self):
+        """Apre il booking form per il prossimo gruppo."""
+        from guest_booking_gui import GuestBookingWindow
+
+        if self._pending_booking_index >= len(self._pending_booking_groups):
+            self._load_bookings()
+            messagebox.showinfo(
+                self.lang.get('info', 'Informazione'),
+                self.lang.get('all_bookings_generated', 'Tutti i booking sono stati generati.'))
+            return
+
+        group = self._pending_booking_groups[self._pending_booking_index]
+        self._pending_booking_index += 1
+
+        GuestBookingWindow(
+            self, self.db, self.lang, self.user_name,
+            group,
+            on_close_callback=self._open_pending_booking
+        )
 
     def _get_user_email(self):
         """Recupera l'email dell'utente loggato."""
