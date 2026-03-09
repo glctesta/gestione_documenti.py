@@ -140,17 +140,23 @@ class GuestManagementWindow(tk.Toplevel):
                     vad.DateOut,
                     fc.CompanyName AS AirlineName,
                     CASE 
-                        WHEN vsd.SupporterTypeID = 1 THEN 'Hotel'
-                        WHEN vsd.SupporterTypeID = 2 THEN 'Shuttle'
-                        ELSE 'Ospite'
+                        WHEN EXISTS (
+                            SELECT 1 FROM Employee.dbo.VisitorSupportersData vs2 
+                            WHERE vs2.ReservationEmail = bse.EmailRequestBooking 
+                              AND vs2.SupporterTypeID = 2 AND vs2.DateOut IS NULL
+                        ) THEN 'Shuttle'
+                        WHEN EXISTS (
+                            SELECT 1 FROM Employee.dbo.VisitorSupportersData vs2 
+                            WHERE vs2.ReservationEmail = bse.EmailRequestBooking 
+                              AND vs2.SupporterTypeID = 1 AND vs2.DateOut IS NULL
+                        ) THEN 'Hotel'
+                        ELSE 'Guest'
                     END AS ServiceType
                 FROM Employee.dbo.VisitorBookingServiceEmails bse
                 INNER JOIN Employee.dbo.VisitorArrivalDetails vad
                     ON bse.VisitorArrivalDetailId = vad.VisitorArrivalDetailId
                 LEFT JOIN Employee.dbo.FlyghtCompanies fc
                     ON vad.FlightCompanyId = fc.FlightCompanyId
-                LEFT JOIN Employee.dbo.VisitorSupportersData vsd
-                    ON vsd.ReservationEmail = bse.EmailRequestBooking
             """
             if not show_all:
                 query += " WHERE bse.Confirmed = 0"
@@ -172,7 +178,7 @@ class GuestManagementWindow(tk.Toplevel):
                 confirmed = '✅' if row.Confirmed else '❌'
 
                 # Icona servizio
-                service_icon = {'Hotel': '🏨 Hotel', 'Shuttle': '🚐 Shuttle'}.get(service_type, '👤 Ospite')
+                service_icon = {'Hotel': '🏨 Hotel', 'Shuttle': '🚐 Shuttle'}.get(service_type, '👤 Guest')
 
                 iid = self.booking_tree.insert('', 'end', values=(
                     booking_id, service_icon, flight_info, arr_date, dep_date,

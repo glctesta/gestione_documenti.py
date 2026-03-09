@@ -95,14 +95,25 @@ class GuestBookingWindow(tk.Toplevel):
         self.notebook.add(hotel_frame, text=self.lang.get('hotel_tab', '🏨 Hotel'))
         self._build_hotel_section(hotel_frame)
 
+        # Barra di avanzamento
+        self.progress_frame = ttk.Frame(self, padding=(10, 0))
+        self.progress_frame.pack(fill='x', padx=10)
+        self.progress_label = ttk.Label(self.progress_frame, text='', font=('Arial', 9))
+        self.progress_label.pack(side='left', padx=5)
+        self.progress_bar = ttk.Progressbar(self.progress_frame, mode='indeterminate', length=300)
+        self.progress_bar.pack(side='left', fill='x', expand=True, padx=5)
+        self.progress_frame.pack_forget()  # Nascosta di default
+
         # Pulsanti in basso
         btn_frame = ttk.Frame(self, padding=10)
         btn_frame.pack(fill='x', padx=10, pady=5)
 
-        ttk.Button(btn_frame, text=self.lang.get('btn_send_bookings', '📧 Invia Prenotazioni'),
-                   command=self._send_all_bookings).pack(side='right', padx=5)
-        ttk.Button(btn_frame, text=self.lang.get('btn_skip_booking', 'Salta Booking'),
-                   command=self._on_close).pack(side='right', padx=5)
+        self.btn_send = ttk.Button(btn_frame, text=self.lang.get('btn_send_bookings', '📧 Invia Prenotazioni'),
+                   command=self._send_all_bookings)
+        self.btn_send.pack(side='right', padx=5)
+        self.btn_skip = ttk.Button(btn_frame, text=self.lang.get('btn_skip_booking', 'Salta Booking'),
+                   command=self._on_close)
+        self.btn_skip.pack(side='right', padx=5)
 
     def _build_flight_section(self, parent):
         """Sezione informazioni volo."""
@@ -789,6 +800,23 @@ class GuestBookingWindow(tk.Toplevel):
             logger.error(f"Errore recupero email utente: {e}")
             return None
 
+    def _show_progress(self, text=''):
+        """Mostra la barra di avanzamento."""
+        self.progress_label.config(text=text)
+        self.progress_frame.pack(fill='x', padx=10, before=self.btn_send.master)
+        self.progress_bar.start(15)
+        self.btn_send.config(state='disabled')
+        self.btn_skip.config(state='disabled')
+        self.update_idletasks()
+
+    def _hide_progress(self):
+        """Nasconde la barra di avanzamento."""
+        self.progress_bar.stop()
+        self.progress_frame.pack_forget()
+        self.btn_send.config(state='normal')
+        self.btn_skip.config(state='normal')
+        self.update_idletasks()
+
     def _send_all_bookings(self):
         """Invia tutte le prenotazioni (shuttle + hotel).
         
@@ -884,6 +912,8 @@ class GuestBookingWindow(tk.Toplevel):
 
         logger.info(f"=== BOOKING START === skip_shuttle={skip_shuttle}, skip_hotel={skip_hotel}")
         logger.info(f"Guests data: {[g.get('guest_name','?') for g in self.guests_data]}")
+        
+        self._show_progress(self.lang.get('booking_in_progress', 'Invio prenotazioni in corso...'))
         errors = []
         successes = []
 
@@ -977,6 +1007,8 @@ class GuestBookingWindow(tk.Toplevel):
             if shuttle and shuttle in self._shuttle_data:
                 shuttle_info = self._shuttle_data[shuttle]
                 logger.info(f"Shuttle data: ID={shuttle_info[0]}, email='{shuttle_info[1]}', town='{shuttle_info[2]}'")
+                self.progress_label.config(text=self.lang.get('sending_shuttle', 'Invio prenotazione shuttle...'))
+                self.update_idletasks()
                 try:
                     self._send_shuttle_email(shuttle)
                     successes.append('Shuttle')
@@ -999,6 +1031,8 @@ class GuestBookingWindow(tk.Toplevel):
             if hotel and hotel in self._hotel_data:
                 hotel_info = self._hotel_data[hotel]
                 logger.info(f"Hotel data: ID={hotel_info[0]}, email='{hotel_info[1]}', town='{hotel_info[2]}'")
+                self.progress_label.config(text=self.lang.get('sending_hotel', 'Invio prenotazione hotel...'))
+                self.update_idletasks()
                 try:
                     self._send_hotel_email(hotel)
                     successes.append('Hotel')
@@ -1015,6 +1049,7 @@ class GuestBookingWindow(tk.Toplevel):
                     errors.append(f"Hotel: {e}")
 
         # Report
+        self._hide_progress()
         if successes:
             msg = f"Prenotazioni inviate: {', '.join(successes)}"
             if errors:
