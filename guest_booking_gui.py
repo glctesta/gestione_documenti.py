@@ -1079,6 +1079,7 @@ class GuestBookingWindow(tk.Toplevel):
 
         # Supporta email multiple separate da ';'
         email_addresses = [e.strip() for e in reservation_email.split(';') if e.strip()]
+        logger.info(f"Shuttle email CC (utente loggato): {cc}")
         for addr in email_addresses:
             sender.send_email(
                 to_email=addr,
@@ -1088,7 +1089,7 @@ class GuestBookingWindow(tk.Toplevel):
                 attachments=attachments if attachments else None,
                 cc_emails=cc
             )
-            logger.info(f"Email shuttle inviata a {addr}")
+            logger.info(f"Email shuttle inviata a {addr}, CC={cc}")
 
     def _send_hotel_email(self, hotel_key):
         """Invia email all'hotel."""
@@ -1180,6 +1181,7 @@ class GuestBookingWindow(tk.Toplevel):
 
         # Supporta email multiple separate da ';'
         email_addresses = [e.strip() for e in reservation_email.split(';') if e.strip()]
+        logger.info(f"Hotel email CC (utente loggato): {cc}")
         for addr in email_addresses:
             sender.send_email(
                 to_email=addr,
@@ -1189,7 +1191,7 @@ class GuestBookingWindow(tk.Toplevel):
                 attachments=attachments if attachments else None,
                 cc_emails=cc
             )
-            logger.info(f"Email hotel inviata a {addr}")
+            logger.info(f"Email hotel inviata a {addr}, CC={cc}")
 
     # ================================================================
     # GUEST CONFIRMATION EMAIL
