@@ -750,18 +750,41 @@ class GuestBookingWindow(tk.Toplevel):
     def _get_user_email(self):
         """Recupera l'email dell'utente loggato."""
         try:
+            logger.info(f"Ricerca email per utente: '{self.user_name}'")
+            
+            # Prova formato: Surname + Name (come in DB)
             query = """
-                SELECT ea.WorkEmail
+                SELECT TOP 1 ea.WorkEmail
                 FROM Employee.dbo.Employees e
                 INNER JOIN Employee.dbo.EmployeeAddress ea ON ea.EmployeeId = e.EmployeeId
                     AND ea.DateOut IS NULL
                 WHERE UPPER(e.EmployeeSurname + ' ' + e.EmployeeName) = ?
+                   OR UPPER(e.EmployeeName + ' ' + e.EmployeeSurname) = ?
             """
             cursor = self.db.conn.cursor()
-            cursor.execute(query, (self.user_name.upper(),))
+            user_upper = self.user_name.upper().strip()
+            cursor.execute(query, (user_upper, user_upper))
             row = cursor.fetchone()
+            
+            # Fallback: ricerca LIKE per cognome
+            if not row or not row.WorkEmail:
+                parts = self.user_name.strip().split()
+                if parts:
+                    like_pattern = f"%{parts[-1]}%"  # usa l'ultimo token (cognome)
+                    cursor.execute("""
+                        SELECT TOP 1 ea.WorkEmail
+                        FROM Employee.dbo.Employees e
+                        INNER JOIN Employee.dbo.EmployeeAddress ea ON ea.EmployeeId = e.EmployeeId
+                            AND ea.DateOut IS NULL
+                        WHERE UPPER(e.EmployeeSurname) LIKE ?
+                          AND ea.WorkEmail IS NOT NULL
+                    """, (like_pattern.upper(),))
+                    row = cursor.fetchone()
+            
             cursor.close()
-            return row.WorkEmail if row and row.WorkEmail else None
+            email = row.WorkEmail if row and row.WorkEmail else None
+            logger.info(f"Email utente trovata: {email}")
+            return email
         except Exception as e:
             logger.error(f"Errore recupero email utente: {e}")
             return None
