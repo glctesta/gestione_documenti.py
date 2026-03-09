@@ -544,6 +544,11 @@ class GuestBookingWindow(tk.Toplevel):
                         # Log codici compagnie per diagnostica
                         codes_found = set(f['airline_code'] for f in all_flights)
                         logger.info(f"Codici compagnia trovati: {codes_found}")
+                        # Log date dei primi voli per diagnostica
+                        sample_times = [(item.get('flight_iata',''), item.get('arr_time','')) 
+                                        for item in items[:3]]
+                        logger.info(f"Date/orari primi 3 voli API (raw): {sample_times}")
+                        logger.info(f"Data richiesta: {date_str}, skip_date_filter={skip_date_filter}")
                     except Exception as e:
                         logger.warning(f"FlightLabs {ep['name']} errore: {e}")
 
