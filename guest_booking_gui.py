@@ -1032,15 +1032,18 @@ class GuestBookingWindow(tk.Toplevel):
 
         cc = user_email if user_email else None
 
-        sender.send_email(
-            to_email=reservation_email,
-            subject=f"Transport Request — {len(self.guests_data)} oaspeți — {arrival_date.strftime('%d/%m/%Y')}",
-            body=body_html,
-            is_html=True,
-            attachments=attachments if attachments else None,
-            cc_emails=cc
-        )
-        logger.info(f"Email shuttle inviata a {reservation_email}")
+        # Supporta email multiple separate da ';'
+        email_addresses = [e.strip() for e in reservation_email.split(';') if e.strip()]
+        for addr in email_addresses:
+            sender.send_email(
+                to_email=addr,
+                subject=f"Transport Request — {len(self.guests_data)} oaspeți — {arrival_date.strftime('%d/%m/%Y')}",
+                body=body_html,
+                is_html=True,
+                attachments=attachments if attachments else None,
+                cc_emails=cc
+            )
+            logger.info(f"Email shuttle inviata a {addr}")
 
     def _send_hotel_email(self, hotel_key):
         """Invia email all'hotel."""
@@ -1130,15 +1133,18 @@ class GuestBookingWindow(tk.Toplevel):
 
         cc = user_email if user_email else None
 
-        sender.send_email(
-            to_email=reservation_email,
-            subject=f"Rezervare Hotel — {len(self.guests_data)} oaspeți — {checkin.strftime('%d/%m/%Y')} - {checkout.strftime('%d/%m/%Y')}",
-            body=body_html,
-            is_html=True,
-            attachments=attachments if attachments else None,
-            cc_emails=cc
-        )
-        logger.info(f"Email hotel inviata a {reservation_email}")
+        # Supporta email multiple separate da ';'
+        email_addresses = [e.strip() for e in reservation_email.split(';') if e.strip()]
+        for addr in email_addresses:
+            sender.send_email(
+                to_email=addr,
+                subject=f"Rezervare Hotel — {len(self.guests_data)} oaspeți — {checkin.strftime('%d/%m/%Y')} - {checkout.strftime('%d/%m/%Y')}",
+                body=body_html,
+                is_html=True,
+                attachments=attachments if attachments else None,
+                cc_emails=cc
+            )
+            logger.info(f"Email hotel inviata a {addr}")
 
     # ================================================================
     # GUEST CONFIRMATION EMAIL
