@@ -223,6 +223,7 @@ import product_checks_gui
 import guests_gui
 import guest_management_gui
 import guest_settings_gui
+import guest_rules_gui
 import guests_report_generator
 import tempfile
 import assign_submissions_gui
@@ -14765,7 +14766,7 @@ class App(tk.Tk):
         )
         self.guests_settings_submenu.add_command(
             label=self.lang.get('guest_settings_rules', 'Regole'),
-            command=self._guest_settings_placeholder
+            command=self.open_guest_rules_with_login
         )
         self.guests_settings_submenu.add_command(
             label=self.lang.get('guest_settings_management', 'Gestione Ospiti'),
@@ -16650,6 +16651,15 @@ class App(tk.Tk):
         self._execute_authorized_action(
             menu_translation_key='manage_guests',
             action_callback=lambda: guest_settings_gui.AirlineSettingsWindow(
+                self, self.db, self.lang, self.last_authenticated_user_name
+            )
+        )
+
+    def open_guest_rules_with_login(self):
+        """Apre la finestra Regole Ospiti con autenticazione."""
+        self._execute_authorized_action(
+            menu_translation_key='manage_guests',
+            action_callback=lambda: guest_rules_gui.GuestRulesWindow(
                 self, self.db, self.lang, self.last_authenticated_user_name
             )
         )
