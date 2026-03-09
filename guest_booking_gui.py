@@ -1089,8 +1089,6 @@ class GuestBookingWindow(tk.Toplevel):
                         self._save_booking_record(arrival_detail_id, self._shuttle_data[shuttle][1])
                     else:
                         logger.warning("Shuttle: booking record NON salvato perché arrival_detail_id è None")
-                    # Invio conferma email agli ospiti
-                    self._send_guest_confirmation_email('Shuttle / Transport', shuttle, arrival_detail_id)
                 except Exception as e:
                     logger.error(f"Errore invio email shuttle: {e}")
                     import traceback
@@ -1113,13 +1111,17 @@ class GuestBookingWindow(tk.Toplevel):
                         self._save_booking_record(arrival_detail_id, self._hotel_data[hotel][1])
                     else:
                         logger.warning("Hotel: booking record NON salvato perché arrival_detail_id è None")
-                    # Invio conferma email agli ospiti
-                    self._send_guest_confirmation_email('Hotel', hotel, arrival_detail_id)
                 except Exception as e:
                     logger.error(f"Errore invio email hotel: {e}")
                     import traceback
                     logger.error(traceback.format_exc())
                     errors.append(f"Hotel: {e}")
+
+        # Invio conferma unica agli ospiti (combinata Hotel + Shuttle)
+        if successes and arrival_detail_id:
+            self.progress_label.config(text=self.lang.get('sending_guest_confirm', 'Invio conferma ospiti...'))
+            self.update_idletasks()
+            self._send_guest_confirmation_email(successes, arrival_detail_id)
 
         # Report
         self._hide_progress()
@@ -1351,8 +1353,8 @@ class GuestBookingWindow(tk.Toplevel):
     # ================================================================
     # GUEST CONFIRMATION EMAIL
     # ================================================================
-    def _send_guest_confirmation_email(self, service_type, service_key, arrival_detail_id):
-        """Invia email di conferma in inglese a ogni ospite che ha un indirizzo email."""
+    def _send_guest_confirmation_email(self, services, arrival_detail_id):
+        """Invia UNA email di conferma combinata (Hotel + Shuttle) a ogni ospite."""
         from email_connector import EmailSender
 
         user_email = self._get_user_email()
@@ -1365,12 +1367,14 @@ class GuestBookingWindow(tk.Toplevel):
         departure_date = self.departure_date.get_date().strftime('%d/%m/%Y')
         arrival_time = self.arrival_time_var.get().strip()
 
+        services_label = ' & '.join(services)
+
         for guest in self.guests_data:
             guest_email = guest.get('email', '').strip()
             guest_name = guest.get('guest_name', '')
 
             if not guest_email:
-                logger.info(f"Ospite {guest_name}: nessuna email, skip conferma {service_type}")
+                logger.info(f"Ospite {guest_name}: nessuna email, skip conferma {services_label}")
                 continue
 
             try:
@@ -1382,29 +1386,37 @@ class GuestBookingWindow(tk.Toplevel):
                 if arrival_time:
                     flight_info += f"<strong>Arrival Time:</strong> {arrival_time}<br/>"
 
+                # Righe servizi
+                svc_rows = ''
+                for i, svc in enumerate(services):
+                    bg = ' style="background-color: #E3F2FD;"' if i % 2 == 0 else ''
+                    icon = '🏨' if svc == 'Hotel' else '🚐'
+                    svc_rows += f'<tr{bg}><td style="padding: 8px 15px; font-weight: bold;">{icon} {svc}</td><td style="padding: 8px 15px;">✅ Confirmed</td></tr>\n'
+
                 body_html = f"""
                 <html>
                 <body style="font-family: Arial, sans-serif; font-size: 13px; color: #333;">
                     <img src="cid:company_logo" alt="Vandewiele" style="width: 160px; margin-bottom: 15px;" /><br/>
 
-                    <h2 style="color: #1565C0;">{service_type} Booking Confirmation</h2>
+                    <h2 style="color: #1565C0;">Booking Confirmation</h2>
 
                     <p>Dear <strong>{guest_name}</strong>,</p>
 
-                    <p>We are pleased to inform you that a <strong>{service_type}</strong> booking 
-                    has been requested on your behalf for your upcoming visit:</p>
+                    <p>We are pleased to inform you that the following booking(s)
+                    have been requested on your behalf for your upcoming visit:</p>
 
-                    <table style="border-collapse: collapse; margin: 15px 0; font-size: 13px;">
-                        <tr style="background-color: #E3F2FD;">
-                            <td style="padding: 8px 15px; font-weight: bold;">Service</td>
-                            <td style="padding: 8px 15px;">{service_type}</td>
+                    <table style="border-collapse: collapse; margin: 15px 0; font-size: 13px; width: 100%;">
+                        <tr style="background-color: #1565C0; color: white;">
+                            <th style="padding: 8px 15px; text-align: left;">Service</th>
+                            <th style="padding: 8px 15px; text-align: left;">Status</th>
                         </tr>
+                        {svc_rows}
                         <tr>
-                            <td style="padding: 8px 15px; font-weight: bold;">Arrival Date</td>
+                            <td style="padding: 8px 15px; font-weight: bold;">📅 Arrival Date</td>
                             <td style="padding: 8px 15px;">{arrival_date}</td>
                         </tr>
                         <tr style="background-color: #E3F2FD;">
-                            <td style="padding: 8px 15px; font-weight: bold;">Departure Date</td>
+                            <td style="padding: 8px 15px; font-weight: bold;">📅 Departure Date</td>
                             <td style="padding: 8px 15px;">{departure_date}</td>
                         </tr>
                     </table>
@@ -1435,20 +1447,20 @@ class GuestBookingWindow(tk.Toplevel):
 
                 sender.send_email(
                     to_email=guest_email,
-                    subject=f"{service_type} Booking Confirmation — {arrival_date}",
+                    subject=f"{services_label} Booking Confirmation — {arrival_date}",
                     body=body_html,
                     is_html=True,
                     attachments=attachments if attachments else None,
                     cc_emails=cc
                 )
-                logger.info(f"Conferma {service_type} inviata a {guest_name} ({guest_email})")
+                logger.info(f"Conferma {services_label} inviata a {guest_name} ({guest_email})")
 
                 # Salva record email ospite in VisitorBookingServiceEmails
                 if arrival_detail_id:
                     self._save_booking_record(arrival_detail_id, guest_email)
 
             except Exception as e:
-                logger.error(f"Errore invio conferma {service_type} a {guest_name}: {e}")
+                logger.error(f"Errore invio conferma {services_label} a {guest_name}: {e}")
 
     # ================================================================
     # SAVE BOOKING RECORD
