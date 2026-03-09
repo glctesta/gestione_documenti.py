@@ -405,15 +405,14 @@ class GuestManagementWindow(tk.Toplevel):
             tree.column('arrival', width=90, anchor='center')
             tree.column('departure', width=90, anchor='center')
 
-            # Inserisci tutti selezionati di default
+            # Inserisci tutti deselezionati di default
             selected_items = set()
             for v in visitors:
                 arr = v['start_visit'].strftime('%d/%m/%Y') if v['start_visit'] else ''
                 dep = v['end_visit'].strftime('%d/%m/%Y') if v['end_visit'] else ''
                 iid = tree.insert('', 'end', values=(
-                    '☑', v['guest_name'], v['company'], arr, dep
+                    '☐', v['guest_name'], v['company'], arr, dep
                 ))
-                selected_items.add(iid)
 
             def toggle_selection(event):
                 item = tree.identify_row(event.y)
