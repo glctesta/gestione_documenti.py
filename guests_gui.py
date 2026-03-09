@@ -490,18 +490,27 @@ class GuestRegistrationWindow(tk.Toplevel):
         self.guest_combo['values'] = []
 
     def _on_close(self):
-        """Gestisce la chiusura: Booking ospiti → Sala riunioni"""
+        """Gestisce la chiusura: Booking ospiti (raggruppati per data arrivo) → Sala riunioni"""
         logger.info(f"_on_close chiamato. Session visitors: {len(self._session_visitors)}")
         # Se ci sono ospiti registrati in questa sessione, apri il booking
         if self._session_visitors:
             try:
-                from guest_booking_gui import GuestBookingWindow
-                logger.info("Apertura GuestBookingWindow...")
-                GuestBookingWindow(
-                    self.master, self.db, self.lang, self.user_name,
-                    self._session_visitors,
-                    on_close_callback=self._after_booking_closed
-                )
+                from collections import defaultdict
+
+                # Raggruppa ospiti per data di arrivo (start_visit)
+                groups = defaultdict(list)
+                for guest in self._session_visitors:
+                    arrival_key = str(guest.get('start_visit', ''))
+                    groups[arrival_key].append(guest)
+
+                self._booking_groups = list(groups.values())
+                self._booking_group_index = 0
+
+                n_groups = len(self._booking_groups)
+                if n_groups > 1:
+                    logger.info(f"Rilevati {n_groups} gruppi di arrivo diversi, apertura booking sequenziali")
+
+                self._open_next_booking_group()
                 self.destroy()
                 return
             except Exception as e:
@@ -512,6 +521,33 @@ class GuestRegistrationWindow(tk.Toplevel):
         # Nessun nuovo ospite inserito → chiudi senza prompt
         logger.info("Nessun nuovo ospite inserito in sessione, chiudo la finestra")
         self.destroy()
+
+    def _open_next_booking_group(self):
+        """Apre il form di booking per il prossimo gruppo di arrivo."""
+        from guest_booking_gui import GuestBookingWindow
+
+        if self._booking_group_index >= len(self._booking_groups):
+            # Tutti i gruppi processati → prompt sala riunioni
+            self._after_booking_closed()
+            return
+
+        group = self._booking_groups[self._booking_group_index]
+        group_num = self._booking_group_index + 1
+        total_groups = len(self._booking_groups)
+
+        if total_groups > 1:
+            arrival_date = group[0].get('start_visit', '?')
+            names = ', '.join([g['guest_name'] for g in group])
+            logger.info(f"Apertura booking gruppo {group_num}/{total_groups}: "
+                        f"arrivo {arrival_date}, ospiti: {names}")
+
+        self._booking_group_index += 1
+
+        GuestBookingWindow(
+            self.master, self.db, self.lang, self.user_name,
+            group,
+            on_close_callback=self._open_next_booking_group
+        )
 
     def _after_booking_closed(self):
         """Callback chiamata dopo la chiusura del booking window"""

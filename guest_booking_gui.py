@@ -25,8 +25,23 @@ class GuestBookingWindow(tk.Toplevel):
         self.user_name = user_name
         self.guests_data = guests_data  # Lista dizionari ospiti dalla sessione
         self.on_close_callback = on_close_callback
-
-        self.title(self.lang.get('guest_booking_title', 'Booking Ospiti — Volo, Shuttle, Hotel'))
+        # Titolo con nomi ospiti e data arrivo per chiarezza
+        guest_names = ', '.join([g.get('guest_name', '?') for g in guests_data[:3]])
+        if len(guests_data) > 3:
+            guest_names += f' +{len(guests_data) - 3}'
+        arrival_info = ''
+        if guests_data:
+            sv = guests_data[0].get('start_visit', '')
+            if sv:
+                try:
+                    from datetime import datetime as _dt
+                    if isinstance(sv, str):
+                        arrival_info = f" — Arrivo: {_dt.strptime(sv, '%Y-%m-%d').strftime('%d/%m/%Y')}"
+                    else:
+                        arrival_info = f" — Arrivo: {sv.strftime('%d/%m/%Y')}"
+                except:
+                    arrival_info = f" — {sv}"
+        self.title(f"{self.lang.get('guest_booking_title', 'Booking Ospiti')}: {guest_names}{arrival_info}")
         self.geometry('900x750')
         self.transient(parent)
         self.grab_set()
