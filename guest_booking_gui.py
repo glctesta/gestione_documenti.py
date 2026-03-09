@@ -556,30 +556,34 @@ class GuestBookingWindow(tk.Toplevel):
                         for item in items:
                             # Parser per advanced-future-flights (formato diverso)
                             if ep['name'] == 'future-flights':
-                                # Log primo item per debug
+                                # Log primo item completo per debug
                                 if item == items[0]:
-                                    logger.info(f"Primo volo raw keys: {list(item.keys())}")
-                                    carrier_debug = item.get('carrier', {})
-                                    logger.info(f"Carrier raw: {carrier_debug}")
+                                    logger.info(f"Primo volo COMPLETO: {json.dumps(item, default=str)[:500]}")
                                 
                                 arr_time_obj = item.get('arrivalTime', {})
                                 dep_time_obj = item.get('departureTime', {})
                                 carrier = item.get('carrier', {})
                                 
-                                # Codice compagnia: preferisci IATA, poi fs
-                                carrier_iata = carrier.get('iata', '') or carrier.get('fs', '')
-                                carrier_name = carrier.get('name', carrier_iata)
+                                # Codice IATA compagnia: prova carrier.iata, poi primi 2 char di fs
+                                carrier_fs = carrier.get('fs', '')
+                                carrier_iata = carrier.get('iata', '')
+                                if not carrier_iata and len(carrier_fs) >= 2:
+                                    carrier_iata = carrier_fs[:2]  # LHX → LH
+                                carrier_name = carrier.get('name', carrier_iata or carrier_fs)
                                 
                                 # Numero volo
                                 flight_num = str(item.get('flightNumber', ''))
-                                flight_iata = f"{carrier_iata}{flight_num}" if carrier_iata else flight_num
+                                flight_iata = f"{carrier_iata}{flight_num}" if carrier_iata else f"{carrier_fs}{flight_num}"
                                 
                                 arr_time = arr_time_obj.get('time24', '')
                                 dep_time = dep_time_obj.get('time24', '')
                                 
-                                # Aeroporto partenza
-                                dep_airport_obj = item.get('departureAirport', {})
-                                dep_airport = dep_airport_obj.get('iata', '') or dep_airport_obj.get('fs', '') if dep_airport_obj else ''
+                                # Aeroporto partenza: prova diversi campi
+                                dep_airport_obj = item.get('departureAirport', {}) or {}
+                                dep_airport = (dep_airport_obj.get('iata', '') 
+                                              or dep_airport_obj.get('fs', '') 
+                                              or dep_airport_obj.get('name', '')
+                                              or item.get('departureAirportFsCode', ''))
                                 
                                 all_flights.append({
                                     'flight_iata': flight_iata,
