@@ -149,7 +149,7 @@ class GuestManagementWindow(tk.Toplevel):
                     ON bse.VisitorArrivalDetailId = vad.VisitorArrivalDetailId
                 LEFT JOIN Employee.dbo.FlyghtCompanies fc
                     ON vad.FlightCompanyId = fc.FlightCompanyId
-                LEFT JOIN Employee.dbo.VisitorSupporterData vsd
+                LEFT JOIN Employee.dbo.VisitorSupportersData vsd
                     ON vsd.ReservationEmail = bse.EmailRequestBooking
             """
             if not show_all:
