@@ -492,7 +492,8 @@ class GuestBookingWindow(tk.Toplevel):
                         'url': 'https://www.goflightlabs.com/flights',
                         'params': {
                             'access_key': flightlabs_key,
-                            'arr_iata': 'TSR'
+                            'arr_iata': 'TSR',
+                            'flight_date': arrival_date.strftime('%Y-%m-%d')
                         },
                         'name': '/flights',
                         'parser': 'realtime'
@@ -876,6 +877,27 @@ class GuestBookingWindow(tk.Toplevel):
                 if hotel and hotel in self._hotel_data:
                     hotel_id = self._hotel_data[hotel][0]
 
+            # Recupera AirportCityId per TSR (Timisoara)
+            airport_city_id = None
+            try:
+                ac_cursor = self.db.conn.cursor()
+                ac_cursor.execute("""
+                    SELECT TOP 1 AirportCityId 
+                    FROM Employee.dbo.AirportCities 
+                    WHERE AirportIATACode = 'TSR'
+                """)
+                ac_row = ac_cursor.fetchone()
+                if ac_row:
+                    airport_city_id = ac_row[0]
+                ac_cursor.close()
+            except Exception as ac_err:
+                logger.warning(f"Cannot lookup AirportCityId for TSR: {ac_err}")
+
+            # Se non trovato, prova con ID fisso o usa 0
+            if airport_city_id is None:
+                airport_city_id = 0
+                logger.warning("AirportCityId not found for TSR, using default 0")
+
             # DateTimeArrival = data + ora arrivo
             dt_arrival = None
             if arrival_time:
@@ -890,10 +912,10 @@ class GuestBookingWindow(tk.Toplevel):
             cursor = self.db.conn.cursor()
             cursor.execute("""
                 INSERT INTO Employee.dbo.VisitorArrivalDetails
-                    (HotelId, FlightNumber, FlightCompanyId, DateTimeArrival, DateSys, DateOut)
+                    (AirportCityId, HotelId, FlightNumber, FlightCompanyId, DateTimeArrival, DateSys, DateOut)
                 OUTPUT INSERTED.VisitorArrivalDetailId
-                VALUES (?, ?, ?, ?, GETDATE(), ?)
-            """, (hotel_id, flight_no or None, flight_company_id, dt_arrival,
+                VALUES (?, ?, ?, ?, ?, GETDATE(), ?)
+            """, (airport_city_id, hotel_id, flight_no or None, flight_company_id, dt_arrival,
                   datetime.combine(departure_date, datetime.min.time())))
             row = cursor.fetchone()
             arrival_detail_id = row[0] if row else None
