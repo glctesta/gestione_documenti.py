@@ -1504,23 +1504,72 @@ class OvertimeManager:
             table.wrapOn(c, width, height)
             table_height = table._height
 
-            # If table overflows page, start new page
-            if y_pos - table_height < 2.5 * cm:
-                c.showPage()
-                c.setFillColor(NAVY)
-                c.rect(0, height - 2.5 * cm, width, 2.5 * cm,
-                       stroke=0, fill=1)
-                c.setFillColor(colors.white)
-                c.setFont(FONT_BOLD, 14)
-                c.drawString(
-                    2 * cm, height - 1.6 * cm,
-                    "ACORD ORE SUPLIMENTARE - continuare"
-                )
-                c.setFillColor(colors.black)
-                y_pos = height - 3.2 * cm
-
-            table.drawOn(c, 1.4 * cm, y_pos - table_height)
-            y_pos_after_table = y_pos - table_height - 0.6 * cm
+            # Disegna la tabella, splitta su più pagine se necessario
+            available_height = y_pos - 2.5 * cm
+            if table_height <= available_height:
+                # Tabella entra nella pagina corrente
+                table.drawOn(c, 1.4 * cm, y_pos - table_height)
+                y_pos -= table_height
+            else:
+                # Split tabella su più pagine
+                split_tables = table.split(width - 2.8 * cm, available_height)
+                if split_tables:
+                    # Disegna prima parte sulla pagina corrente
+                    split_tables[0].wrapOn(c, width, height)
+                    first_h = split_tables[0]._height
+                    split_tables[0].drawOn(c, 1.4 * cm, y_pos - first_h)
+                    
+                    # Pagine successive per le parti rimanenti
+                    remaining = split_tables[1] if len(split_tables) > 1 else None
+                    while remaining:
+                        c.showPage()
+                        c.setFillColor(NAVY)
+                        c.rect(0, height - 2.5 * cm, width, 2.5 * cm,
+                               stroke=0, fill=1)
+                        c.setFillColor(colors.white)
+                        c.setFont(FONT_BOLD, 14)
+                        c.drawString(
+                            2 * cm, height - 1.6 * cm,
+                            "ACORD ORE SUPLIMENTARE - continuare"
+                        )
+                        c.setFillColor(colors.black)
+                        y_pos = height - 3.2 * cm
+                        
+                        avail = y_pos - 2.5 * cm
+                        remaining.wrapOn(c, width, height)
+                        rem_h = remaining._height
+                        
+                        if rem_h <= avail:
+                            remaining.drawOn(c, 1.4 * cm, y_pos - rem_h)
+                            y_pos -= rem_h
+                            remaining = None
+                        else:
+                            parts = remaining.split(width - 2.8 * cm, avail)
+                            if parts:
+                                parts[0].wrapOn(c, width, height)
+                                ph = parts[0]._height
+                                parts[0].drawOn(c, 1.4 * cm, y_pos - ph)
+                                remaining = parts[1] if len(parts) > 1 else None
+                            else:
+                                remaining.drawOn(c, 1.4 * cm, y_pos - rem_h)
+                                remaining = None
+                else:
+                    # Fallback: se split non funziona, nuova pagina intera
+                    c.showPage()
+                    c.setFillColor(NAVY)
+                    c.rect(0, height - 2.5 * cm, width, 2.5 * cm,
+                           stroke=0, fill=1)
+                    c.setFillColor(colors.white)
+                    c.setFont(FONT_BOLD, 14)
+                    c.drawString(
+                        2 * cm, height - 1.6 * cm,
+                        "ACORD ORE SUPLIMENTARE - continuare"
+                    )
+                    c.setFillColor(colors.black)
+                    y_pos = height - 3.2 * cm
+                    table.drawOn(c, 1.4 * cm, y_pos - table_height)
+                    y_pos -= table_height
+            y_pos_after_table = y_pos - 0.6 * cm
 
             # ── Obligation text (Romanian) after table ──────────────────
             obligation_style = ParagraphStyle(
