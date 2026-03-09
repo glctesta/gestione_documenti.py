@@ -823,7 +823,20 @@ class GuestBookingWindow(tk.Toplevel):
             else:
                 return
 
-        # --- Invio prenotazioni ---
+        # --- Verifica email ospiti: avvisa se mancano ---
+        guests_no_email = [g['guest_name'] for g in self.guests_data
+                           if not g.get('email', '').strip()]
+        if guests_no_email:
+            names_list = '\n'.join([f"  • {n}" for n in guests_no_email])
+            proceed = messagebox.askyesno(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('guests_no_email_warning',
+                    f"I seguenti ospiti non hanno un indirizzo email registrato e "
+                    f"NON riceveranno la conferma di prenotazione:\n\n"
+                    f"{names_list}\n\n"
+                    f"Vuoi procedere comunque con l'invio?"))
+            if not proceed:
+                return
         errors = []
         successes = []
 
