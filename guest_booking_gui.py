@@ -571,19 +571,18 @@ class GuestBookingWindow(tk.Toplevel):
                                     carrier_iata = carrier_fs[:2]  # LHX → LH
                                 carrier_name = carrier.get('name', carrier_iata or carrier_fs)
                                 
-                                # Numero volo
-                                flight_num = str(item.get('flightNumber', ''))
+                                # Numero volo: è dentro carrier.flightNumber
+                                flight_num = str(carrier.get('flightNumber', '') or item.get('flightNumber', ''))
                                 flight_iata = f"{carrier_iata}{flight_num}" if carrier_iata else f"{carrier_fs}{flight_num}"
                                 
                                 arr_time = arr_time_obj.get('time24', '')
                                 dep_time = dep_time_obj.get('time24', '')
                                 
-                                # Aeroporto partenza: prova diversi campi
-                                dep_airport_obj = item.get('departureAirport', {}) or {}
-                                dep_airport = (dep_airport_obj.get('iata', '') 
-                                              or dep_airport_obj.get('fs', '') 
-                                              or dep_airport_obj.get('name', '')
-                                              or item.get('departureAirportFsCode', ''))
+                                # Aeroporto partenza: è sotto "airport" (non "departureAirport")
+                                airport_obj = item.get('airport', {}) or {}
+                                dep_airport = airport_obj.get('fs', '')
+                                dep_city = airport_obj.get('city', '')
+                                dep_display = f"{dep_airport} ({dep_city})" if dep_city else dep_airport
                                 
                                 all_flights.append({
                                     'flight_iata': flight_iata,
@@ -593,7 +592,7 @@ class GuestBookingWindow(tk.Toplevel):
                                     'arrival_time': arr_time,
                                     'departure_time': dep_time,
                                     'arrival_airport': 'Timisoara (TSR)',
-                                    'departure_airport': dep_airport,
+                                    'departure_airport': dep_display,
                                     'status': 'scheduled'
                                 })
                             else:
