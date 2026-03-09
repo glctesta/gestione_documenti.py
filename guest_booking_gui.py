@@ -554,24 +554,60 @@ class GuestBookingWindow(tk.Toplevel):
                         date_str = arrival_date.strftime('%Y-%m-%d')
 
                         for item in items:
-                            arr_time_full = item.get('arr_time', '') or ''
-                            # Filtra sempre per data: se arr_time contiene una data diversa, salta
-                            if len(arr_time_full) >= 10 and not arr_time_full.startswith(date_str):
-                                continue
-                            arr_time = arr_time_full[11:16] if len(arr_time_full) >= 16 else ''
-                            dep_time_full = item.get('dep_time', '') or ''
-                            dep_time = dep_time_full[11:16] if len(dep_time_full) >= 16 else ''
-                            all_flights.append({
-                                'flight_iata': item.get('flight_iata', ''),
-                                'flight_number': item.get('flight_number', ''),
-                                'airline_code': item.get('airline_iata', ''),
-                                'airline_name': item.get('airline_iata', ''),
-                                'arrival_time': arr_time,
-                                'departure_time': dep_time,
-                                'arrival_airport': 'Timisoara (TSR)',
-                                'departure_airport': item.get('dep_iata', ''),
-                                'status': item.get('status', 'scheduled')
-                            })
+                            # Parser per advanced-future-flights (formato diverso)
+                            if ep['name'] == 'future-flights':
+                                arr_time_obj = item.get('arrivalTime', {})
+                                dep_time_obj = item.get('departureTime', {})
+                                carrier = item.get('carrier', {})
+                                operated = item.get('operatedBy', {})
+                                
+                                # Codice volo: carrier.fs + flight number
+                                carrier_fs = carrier.get('fs', '')
+                                flight_num = str(item.get('flightNumber', ''))
+                                flight_iata = f"{carrier_fs}{flight_num}" if carrier_fs else ''
+                                
+                                # Codice compagnia: usa carrier.fs o operatedBy
+                                airline_code = carrier_fs
+                                airline_name_val = carrier.get('name', carrier_fs)
+                                
+                                arr_time = arr_time_obj.get('time24', '')
+                                dep_time = dep_time_obj.get('time24', '')
+                                
+                                # Aeroporto partenza
+                                dep_airport_obj = item.get('departureAirport', {})
+                                dep_airport = dep_airport_obj.get('fs', '') if dep_airport_obj else ''
+                                
+                                all_flights.append({
+                                    'flight_iata': flight_iata,
+                                    'flight_number': flight_num,
+                                    'airline_code': airline_code,
+                                    'airline_name': airline_name_val,
+                                    'arrival_time': arr_time,
+                                    'departure_time': dep_time,
+                                    'arrival_airport': 'Timisoara (TSR)',
+                                    'departure_airport': dep_airport,
+                                    'status': 'scheduled'
+                                })
+                            else:
+                                # Parser standard (advanced-flights-schedules, /flights)
+                                arr_time_full = item.get('arr_time', '') or ''
+                                # Filtra per data
+                                if len(arr_time_full) >= 10 and not arr_time_full.startswith(date_str):
+                                    continue
+                                arr_time = arr_time_full[11:16] if len(arr_time_full) >= 16 else ''
+                                dep_time_full = item.get('dep_time', '') or ''
+                                dep_time = dep_time_full[11:16] if len(dep_time_full) >= 16 else ''
+                                all_flights.append({
+                                    'flight_iata': item.get('flight_iata', ''),
+                                    'flight_number': item.get('flight_number', ''),
+                                    'airline_code': item.get('airline_iata', ''),
+                                    'airline_name': item.get('airline_iata', ''),
+                                    'arrival_time': arr_time,
+                                    'departure_time': dep_time,
+                                    'arrival_airport': 'Timisoara (TSR)',
+                                    'departure_airport': item.get('dep_iata', ''),
+                                    'status': item.get('status', 'scheduled')
+                                })
 
                         logger.info(f"FlightLabs {ep['name']}: {len(all_flights)} voli trovati")
                         # Log codici compagnie per diagnostica
