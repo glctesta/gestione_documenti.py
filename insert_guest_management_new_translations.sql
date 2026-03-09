@@ -148,3 +148,53 @@ IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE Translati
 INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('confirm_flight_details', 'sv', N'Bekräfta detta flyg?');
 
 PRINT 'Traduzioni guest management nuovi bottoni inserite con successo.';
+
+-- select_flight (titolo dialog selezione voli)
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'select_flight' AND LanguageCode = 'it')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('select_flight', 'it', N'Seleziona Volo');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'select_flight' AND LanguageCode = 'ro')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('select_flight', 'ro', N'Selectați Zborul');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'select_flight' AND LanguageCode = 'en')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('select_flight', 'en', N'Select Flight');
+
+-- multiple_flights_found
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'multiple_flights_found' AND LanguageCode = 'it')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('multiple_flights_found', 'it', N'Trovati più voli. Selezionarne uno:');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'multiple_flights_found' AND LanguageCode = 'ro')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('multiple_flights_found', 'ro', N'Mai multe zboruri găsite. Selectați unul:');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'multiple_flights_found' AND LanguageCode = 'en')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('multiple_flights_found', 'en', N'Multiple flights found. Select one:');
+
+-- no_flights_found
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'no_flights_found' AND LanguageCode = 'it')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('no_flights_found', 'it', N'Nessun volo trovato. Inserire data e ora manualmente.');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'no_flights_found' AND LanguageCode = 'ro')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('no_flights_found', 'ro', N'Niciun zbor găsit. Introduceți data și ora manual.');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'no_flights_found' AND LanguageCode = 'en')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('no_flights_found', 'en', N'No flights found. Enter date and time manually.');
+
+-- booking_in_progress
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'booking_in_progress' AND LanguageCode = 'it')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('booking_in_progress', 'it', N'Invio prenotazioni in corso...');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'booking_in_progress' AND LanguageCode = 'ro')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('booking_in_progress', 'ro', N'Trimiterea rezervărilor în curs...');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'booking_in_progress' AND LanguageCode = 'en')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('booking_in_progress', 'en', N'Sending bookings...');
+
+-- sending_shuttle
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'sending_shuttle' AND LanguageCode = 'it')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('sending_shuttle', 'it', N'Invio prenotazione shuttle...');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'sending_shuttle' AND LanguageCode = 'ro')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('sending_shuttle', 'ro', N'Trimitere rezervare shuttle...');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'sending_shuttle' AND LanguageCode = 'en')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('sending_shuttle', 'en', N'Sending shuttle booking...');
+
+-- sending_hotel
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'sending_hotel' AND LanguageCode = 'it')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('sending_hotel', 'it', N'Invio prenotazione hotel...');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'sending_hotel' AND LanguageCode = 'ro')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('sending_hotel', 'ro', N'Trimitere rezervare hotel...');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'sending_hotel' AND LanguageCode = 'en')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('sending_hotel', 'en', N'Sending hotel booking...');
+
+PRINT 'Traduzioni flight dialog e progress bar inserite con successo.';
