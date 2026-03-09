@@ -1068,7 +1068,21 @@ class GuestRegistrationWindow(tk.Toplevel):
             
             # Ricarica le liste
             self._load_companies()
+
+            # Auto-filtra il treeview alla data di arrivo del nuovo ospite
+            self.filter_date.set_date(start_visit)
             self._load_recent_visitors()
+
+            # Evidenzia l'ospite appena salvato nel treeview
+            saved_name = guest.strip().upper()
+            for item_id in self.tree.get_children():
+                vals = self.tree.item(item_id, 'values')
+                if vals and str(vals[2]).strip().upper() == saved_name:
+                    self.tree.selection_set(item_id)
+                    self.tree.focus(item_id)
+                    self.tree.see(item_id)
+                    break
+
             self._on_new()
 
         except Exception as e:
