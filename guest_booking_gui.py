@@ -519,11 +519,11 @@ class GuestBookingWindow(tk.Toplevel):
                             continue
 
                         date_str = arrival_date.strftime('%Y-%m-%d')
-                        skip_date_filter = 'date' in ep['params']
 
                         for item in items:
                             arr_time_full = item.get('arr_time', '') or ''
-                            if not skip_date_filter and date_str and not arr_time_full.startswith(date_str):
+                            # Filtra sempre per data: se arr_time contiene una data diversa, salta
+                            if len(arr_time_full) >= 10 and not arr_time_full.startswith(date_str):
                                 continue
                             arr_time = arr_time_full[11:16] if len(arr_time_full) >= 16 else ''
                             dep_time_full = item.get('dep_time', '') or ''
@@ -548,7 +548,7 @@ class GuestBookingWindow(tk.Toplevel):
                         sample_times = [(item.get('flight_iata',''), item.get('arr_time','')) 
                                         for item in items[:3]]
                         logger.info(f"Date/orari primi 3 voli API (raw): {sample_times}")
-                        logger.info(f"Data richiesta: {date_str}, skip_date_filter={skip_date_filter}")
+                        logger.info(f"Data richiesta: {date_str}")
                     except Exception as e:
                         logger.warning(f"FlightLabs {ep['name']} errore: {e}")
 

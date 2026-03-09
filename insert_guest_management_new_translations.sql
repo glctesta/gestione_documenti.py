@@ -123,4 +123,28 @@ INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, T
 IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'close_without_booking' AND LanguageCode = 'sv')
 INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('close_without_booking', 'sv', N'Stäng utan att skicka bokningar?');
 
+-- confirm_flight
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'confirm_flight' AND LanguageCode = 'it')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('confirm_flight', 'it', N'Conferma Volo');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'confirm_flight' AND LanguageCode = 'ro')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('confirm_flight', 'ro', N'Confirmă Zborul');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'confirm_flight' AND LanguageCode = 'en')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('confirm_flight', 'en', N'Confirm Flight');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'confirm_flight' AND LanguageCode = 'de')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('confirm_flight', 'de', N'Flug Bestätigen');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'confirm_flight' AND LanguageCode = 'sv')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('confirm_flight', 'sv', N'Bekräfta Flyg');
+
+-- confirm_flight_details
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'confirm_flight_details' AND LanguageCode = 'it')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('confirm_flight_details', 'it', N'Confermi questo volo?');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'confirm_flight_details' AND LanguageCode = 'ro')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('confirm_flight_details', 'ro', N'Confirmați acest zbor?');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'confirm_flight_details' AND LanguageCode = 'en')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('confirm_flight_details', 'en', N'Do you confirm this flight?');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'confirm_flight_details' AND LanguageCode = 'de')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('confirm_flight_details', 'de', N'Diesen Flug bestätigen?');
+IF NOT EXISTS (SELECT 1 FROM traceability_rs.dbo.AppTranslations WHERE TranslationKey = 'confirm_flight_details' AND LanguageCode = 'sv')
+INSERT INTO traceability_rs.dbo.AppTranslations (TranslationKey, LanguageCode, TranslationValue) VALUES ('confirm_flight_details', 'sv', N'Bekräfta detta flyg?');
+
 PRINT 'Traduzioni guest management nuovi bottoni inserite con successo.';
