@@ -317,15 +317,53 @@ class GuestRegistrationWindow(tk.Toplevel):
             logger.error(f"Errore caricamento ospiti: {e}")
 
     def _create_new_guest(self, guest_name, plan_to_charge_id):
-        """Crea un nuovo ospite in VisitorData e ritorna il nuovo ID"""
+        """Crea un nuovo ospite in VisitorData oppure riutilizza uno esistente.
+        
+        Cerca prima nel DB per evitare violazione dell'indice univoco.
+        Se il nome esiste già, aggiorna il VisitorPlanToChargeID e restituisce l'ID.
+        """
         try:
-            query = """
+            cursor = self.db.conn.cursor()
+
+            # 1. Cerca se esiste già un record con lo stesso GuestName
+            cursor.execute("""
+                SELECT VisitorDataID, VisitorPlanToChargeID, EmailAddress
+                FROM Employee.dbo.VisitorData
+                WHERE UPPER(GuestName) = UPPER(?)
+            """, (guest_name,))
+            existing = cursor.fetchone()
+
+            if existing:
+                existing_id = existing.VisitorDataID
+                existing_plan_id = existing.VisitorPlanToChargeID
+                existing_email = existing.EmailAddress
+
+                # Se il VisitorPlanToChargeID è diverso o NULL, aggiorniamolo
+                if existing_plan_id != plan_to_charge_id:
+                    cursor.execute("""
+                        UPDATE Employee.dbo.VisitorData
+                        SET VisitorPlanToChargeID = ?
+                        WHERE VisitorDataID = ?
+                    """, (plan_to_charge_id, existing_id))
+                    self.db.conn.commit()
+                    logger.info(
+                        f"Ospite esistente '{guest_name}' (ID={existing_id}) "
+                        f"aggiornato PlanToChargeID: {existing_plan_id} → {plan_to_charge_id}"
+                    )
+
+                cursor.close()
+                self._guest_data[guest_name] = (existing_id, existing_email)
+                self._load_guests_by_company(plan_to_charge_id)
+                self.guest_var.set(guest_name)
+                logger.info(f"Ospite esistente riutilizzato: '{guest_name}' ID={existing_id}")
+                return existing_id
+
+            # 2. Ospite veramente nuovo → INSERT
+            cursor.execute("""
                 INSERT INTO Employee.dbo.VisitorData (GuestName, VisitorPlanToChargeID)
                 OUTPUT INSERTED.VisitorDataID
                 VALUES (?, ?)
-            """
-            cursor = self.db.conn.cursor()
-            cursor.execute(query, (guest_name, plan_to_charge_id))
+            """, (guest_name, plan_to_charge_id))
             row = cursor.fetchone()
             self.db.conn.commit()
             cursor.close()
@@ -333,7 +371,7 @@ class GuestRegistrationWindow(tk.Toplevel):
             if new_id:
                 logger.info(f"Nuovo ospite creato: '{guest_name}' ID={new_id}")
                 self._guest_data[guest_name] = (new_id, None)
-                self._load_guests_by_company(plan_to_charge_id)  # Refresh combo
+                self._load_guests_by_company(plan_to_charge_id)
                 self.guest_var.set(guest_name)
             return new_id
         except Exception as e:

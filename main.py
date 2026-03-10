@@ -325,7 +325,7 @@ except ImportError:
 
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.6.7'  # Versione aggiornata
+APP_VERSION = '2.3.6.9'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -9298,9 +9298,7 @@ def migrate_printer_config(cfg: dict) -> dict:
     cfg.setdefault("label_cm", [5, 5])   # [Larghezza, Altezza] in cm
     cfg.setdefault("text_pt", 12)
     cfg.setdefault("language", "ZPL")
-    # NUOVO: scheduling refill Kanban
-    cfg.setdefault("kanban_refill_enabled", True)
-    cfg.setdefault("kanban_refill_check_minutes", 60)
+
     return cfg
 
 def load_printer_config() -> dict | None:
@@ -11367,8 +11365,6 @@ class App(tk.Tk):
         self._fai_fails_email_last_sent = None  # Track last send date
         self._start_fai_fails_email_background_task()
 
-        # Flag in-memory per evitare invii multipli email Kanban refill nella stessa giornata
-        self._kanban_email_sent_today = None  # type: datetime.date | None
 
         # Inizializza il thread per l'email settimanale NPI Overview
         self._weekly_npi_email_thread = None
@@ -12166,29 +12162,19 @@ class App(tk.Tk):
 
     def _schedule_kanban_refill_check(self, manual=False):
         """
-        Pianifica il controllo refill Kanban su base configurabile (JSON stampante).
+        Pianifica il controllo refill Kanban.
+        Intervallo fisso 60 min, solo giorni lavorativi.
         """
         # Verifica se Ã¨ giorno lavorativo
         if not should_send_notification(country_code='IT'):
-            logger.info("Report non inviato: oggi non Ã¨ un giorno lavorativo")
-            return
-        try:
-            cfg = load_printer_config() or {}
-            enabled = bool(cfg.get("kanban_refill_enabled", True))
-            minutes = int(cfg.get("kanban_refill_check_minutes", 60))
-        except Exception:
-            enabled = True
-            minutes = 60
-
-        if not enabled or minutes <= 0:
+            logger.info("KanbanRefill: oggi non Ã¨ un giorno lavorativo - skip")
             return
 
-        # Esegui subito la prima volta in background
+        # Esegui subito in background
         self._kanban_refill_check_async(manual=manual)
 
-        # Pianifica ripetizione
-        interval_ms = max(60_000, minutes * 60 * 1000)
-        # Salva l'id per eventuale cancel
+        # Ripianifica ogni 60 minuti
+        interval_ms = 60 * 60 * 1000  # 60 minuti fissi
         self.kanban_refill_job_id = self.after(interval_ms, self._schedule_kanban_refill_check)
 
     def _kanban_refill_check_async(self, manual=False):
@@ -14397,9 +14383,19 @@ class App(tk.Tk):
                 # Determina se l'update Ã¨ obbligatorio
                 # L'update Ã¨ obbligatorio se:
                 # 1. Il campo Must Ã¨ True, OPPURE
-                # 2. L'utente ha giÃ  saltato l'update 3 volte
+                # 2. L'utente ha giÃ  saltato l'update 3 volte
                 force_update = is_mandatory or skip_count >= 3
-                
+
+                # ── Chiudi la splash PRIMA di mostrare dialoghi di update ──
+                # Altrimenti la messagebox/trigger_update appare dietro la splash
+                # e l'utente non la vede (sembra bloccato).
+                if hasattr(self, '_splash') and self._splash:
+                    try:
+                        self._splash.destroy()
+                    except Exception:
+                        pass
+                    self._splash = None
+
                 if force_update:
                     # Update obbligatorio: usa il dialogo unificato _trigger_update
                     logger.info(f"check_version: update obbligatorio (mandatory={is_mandatory}, skip={skip_count})")

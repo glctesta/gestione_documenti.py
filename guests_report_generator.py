@@ -30,25 +30,59 @@ def generate_guests_pdf_report(db_handler):
         from reportlab.pdfbase.ttfonts import TTFont
         
         # Registra font Unicode per supportare caratteri rumeni (ă, â, î, ș, ț)
-        try:
-            # Prova a usare DejaVuSans (disponibile su Windows)
-            pdfmetrics.registerFont(TTFont('DejaVuSans', 'DejaVuSans.ttf'))
-            pdfmetrics.registerFont(TTFont('DejaVuSans-Bold', 'DejaVuSans-Bold.ttf'))
-            font_name = 'DejaVuSans'
-            font_name_bold = 'DejaVuSans-Bold'
-            logger.info("Font DejaVuSans registrato con successo")
-        except:
+        # Cerca i file TTF in più percorsi per garantire la compatibilità su tutti i PC
+        def _find_font(filename):
+            """Cerca un file font in percorsi noti."""
+            candidates = [
+                # 1. Cartella del progetto
+                os.path.join(os.path.dirname(__file__), filename),
+                # 2. Cartella fonts del progetto
+                os.path.join(os.path.dirname(__file__), 'fonts', filename),
+                # 3. Cartella Fonts di Windows
+                os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts', filename),
+                # 4. CWD (comportamento precedente)
+                filename,
+            ]
+            for path in candidates:
+                if os.path.isfile(path):
+                    return path
+            return None
+
+        font_name = 'Helvetica'
+        font_name_bold = 'Helvetica-Bold'
+
+        # Tentativo 1: Arial (presente su TUTTI i PC Windows, supporta diacritici rumeni)
+        arial_path = _find_font('arial.ttf')
+        arialbd_path = _find_font('arialbd.ttf')
+        if arial_path and arialbd_path:
             try:
-                # Fallback: prova Arial Unicode MS
-                pdfmetrics.registerFont(TTFont('ArialUnicode', 'ARIALUNI.TTF'))
-                font_name = 'ArialUnicode'
-                font_name_bold = 'ArialUnicode'
-                logger.info("Font Arial Unicode registrato con successo")
-            except:
-                # Ultimo fallback: usa font standard (potrebbero non mostrare tutti i caratteri)
-                font_name = 'Helvetica'
-                font_name_bold = 'Helvetica-Bold'
-                logger.warning("Impossibile registrare font Unicode, alcuni caratteri rumeni potrebbero non essere visualizzati correttamente")
+                pdfmetrics.registerFont(TTFont('ArialRO', arial_path))
+                pdfmetrics.registerFont(TTFont('ArialRO-Bold', arialbd_path))
+                font_name = 'ArialRO'
+                font_name_bold = 'ArialRO-Bold'
+                logger.info("Font Arial registrato da: %s", arial_path)
+            except Exception as e:
+                logger.warning("Errore registrazione Arial: %s", e)
+
+        # Tentativo 2: DejaVuSans (se distribuito col progetto)
+        if font_name == 'Helvetica':
+            dejavu_path = _find_font('DejaVuSans.ttf')
+            dejavubd_path = _find_font('DejaVuSans-Bold.ttf')
+            if dejavu_path and dejavubd_path:
+                try:
+                    pdfmetrics.registerFont(TTFont('DejaVuSans', dejavu_path))
+                    pdfmetrics.registerFont(TTFont('DejaVuSans-Bold', dejavubd_path))
+                    font_name = 'DejaVuSans'
+                    font_name_bold = 'DejaVuSans-Bold'
+                    logger.info("Font DejaVuSans registrato da: %s", dejavu_path)
+                except Exception as e:
+                    logger.warning("Errore registrazione DejaVuSans: %s", e)
+
+        if font_name == 'Helvetica':
+            logger.warning(
+                "ATTENZIONE: nessun font Unicode trovato! "
+                "I caratteri rumeni (ă, â, î, ș, ț) potrebbero non essere visualizzati."
+            )
         
         # Ottieni la data corrente
         today = datetime.now()
