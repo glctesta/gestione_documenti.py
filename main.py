@@ -11374,7 +11374,10 @@ class App(tk.Tk):
         self._weekly_overtime_email_thread = None
         self._weekly_overtime_email_stop_event = threading.Event()
         self._start_weekly_overtime_email_background_task()
-        
+
+
+        # Batch generazione rapporti attività ospiti (da 1 gen a ieri)
+        self.after(15000, self._start_activity_reports_batch)        
         logger.info("INIT: App initialization complete.")
 
         # Imposta la gestione della chiusura della finestra una sola volta
@@ -11396,6 +11399,26 @@ class App(tk.Tk):
         except Exception:
             title = 'Informazione'
         messagebox.showinfo(title, f"{section} - {action}: funzione non ancora implementata.", parent=self)
+
+    def _start_activity_reports_batch(self):
+        """Avvia in background la generazione batch dei rapporti attivita' ospiti."""
+        from business_days import should_send_notification
+        if not should_send_notification(country_code='IT'):
+            logger.info("Activity reports batch: oggi non e' un giorno lavorativo, skip")
+            return
+
+        def _worker():
+            try:
+                from guest_activity_reports import GuestActivityReportGenerator
+                gen = GuestActivityReportGenerator(self.db)
+                count = gen.process_departed_visitors()  # default: 1 gen -> ieri
+                logger.info(f"Activity reports batch completato: {count} report generati")
+            except Exception as e:
+                logger.error(f"Errore activity reports batch: {e}")
+
+        t = threading.Thread(target=_worker, daemon=True, name="ActivityReportsBatch")
+        t.start()
+        logger.info("Background batch rapporti attivita' ospiti avviato")
 
     def _start_product_check_background_task(self):
         """Avvia il thread per il controllo periodico dei prodotti"""

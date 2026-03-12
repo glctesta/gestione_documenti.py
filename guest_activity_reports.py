@@ -615,44 +615,58 @@ class GuestActivityReportGenerator:
             return False
 
     # --------------------------------------------------------
-    # Batch: processa tutti i visitatori partiti ieri
+    # Batch: processa visitatori partiti in un intervallo
     # --------------------------------------------------------
-    def process_departed_visitors(self):
+    def process_departed_visitors(self, from_date=None, to_date=None):
         """
-        Cerca visitatori partiti ieri con società MustCharged=1
-        e genera i documenti se non già generati.
+        Cerca visitatori partiti nell'intervallo [from_date, to_date]
+        con società MustCharged=1 e genera i documenti se non già generati.
+
+        Default: dal 1° gennaio dell'anno corrente a ieri.
         """
         try:
-            yesterday = date.today() - timedelta(days=1)
+            if to_date is None:
+                to_date = date.today() - timedelta(days=1)
+            if from_date is None:
+                from_date = date(to_date.year, 1, 1)
+
+            logger.info(f"Batch rapporti attività: periodo {from_date} → {to_date}")
+
             cursor = self.db.conn.cursor()
             cursor.execute("""
-                SELECT v.VisitorId, v.CompanyName
+                SELECT v.VisitorId, v.CompanyName, v.GuestName
                 FROM Employee.dbo.Visitors v
                 INNER JOIN Employee.dbo.VisitorPlanToCharges vpc
                     ON v.CompanyName = vpc.CompanyName
-                WHERE CAST(v.EndVisit AS DATE) = ?
+                WHERE CAST(v.EndVisit AS DATE) BETWEEN ? AND ?
                   AND vpc.MustCharged = 1
                   AND v.IsActive = 1
                   AND NOT EXISTS (
                       SELECT 1 FROM Employee.dbo.VisitorActivityReports var
                       WHERE var.VisitorId = v.VisitorId
                   )
-            """, (yesterday,))
+            """, (from_date, to_date))
 
             visitors = cursor.fetchall()
             cursor.close()
 
+            logger.info(f"Batch: trovati {len(visitors)} visitatori senza report")
+
             count = 0
             for v in visitors:
-                report_id = self.process_visitor(v.VisitorId, created_by='AutoBatch')
-                if report_id:
-                    self.send_activity_email(report_id)
-                    count += 1
+                try:
+                    report_id = self.process_visitor(v.VisitorId, created_by='AutoBatch')
+                    if report_id:
+                        self.send_activity_email(report_id)
+                        count += 1
+                        logger.info(f"Batch: report generato per {v.GuestName} ({v.CompanyName})")
+                except Exception as ve:
+                    logger.error(f"Batch: errore per VisitorId={v.VisitorId}: {ve}")
 
-            if count > 0:
-                logger.info(f"Batch rapporti attività: {count} documenti generati")
+            logger.info(f"Batch rapporti attività completato: {count}/{len(visitors)} generati")
             return count
 
         except Exception as e:
             logger.error(f"Errore batch rapporti attività: {e}")
             return 0
+
