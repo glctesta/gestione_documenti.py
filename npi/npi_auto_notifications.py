@@ -2144,9 +2144,11 @@ class NpiAutoNotificationService:
     def _build_global_view_email_html(self, stats: dict, logo_html: str) -> str:
         """Genera HTML professionale con KPI globali e tabella per cliente."""
         today_str = date.today().strftime('%d/%m/%Y')
+        num_clients = len(stats.get('clients', {}))
+        avg_per_client = round(stats['total'] / num_clients, 1) if num_clients > 0 else 0
 
-        # KPI cards
-        kpi_style = "display:inline-block;width:22%;text-align:center;padding:16px 8px;border-radius:8px;margin:4px;"
+        # KPI cards — 2 righe da 3
+        kpi_style = "display:inline-block;width:30%;text-align:center;padding:16px 8px;border-radius:8px;margin:4px;"
         kpi_cards = f"""
         <div style="margin:18px 0;">
             <div style="{kpi_style}background:#EEF4FB;border:1px solid #B0C8E8;">
@@ -2161,24 +2163,48 @@ class NpiAutoNotificationService:
                 <div style="font-size:32px;font-weight:bold;color:#555;">{stats['closed']}</div>
                 <div style="color:#555;margin-top:4px;">Closed</div>
             </div>
+        </div>
+        <div style="margin:4px 0 18px 0;">
             <div style="{kpi_style}background:#FFF0F0;border:1px solid #F5A0A0;">
                 <div style="font-size:32px;font-weight:bold;color:#C00000;">{stats['overdue']}</div>
                 <div style="color:#555;margin-top:4px;">Overdue</div>
+            </div>
+            <div style="{kpi_style}background:#FFF8E1;border:1px solid #FFD54F;">
+                <div style="font-size:32px;font-weight:bold;color:#E65100;">{stats['potential_delay']}</div>
+                <div style="color:#555;margin-top:4px;">Potential Delay</div>
+            </div>
+            <div style="{kpi_style}background:#E3F2FD;border:1px solid #90CAF9;">
+                <div style="font-size:32px;font-weight:bold;color:#0D47A1;">{num_clients}</div>
+                <div style="color:#555;margin-top:4px;">Total Customers</div>
             </div>
         </div>"""
 
         # Per-client table rows
         client_rows = ""
+        row_idx = 0
         for client, c in sorted(stats["clients"].items()):
             overdue_cell_style = "color:#C00000;font-weight:bold;" if c['overdue'] > 0 else "color:#333;"
+            bg = "#f9f9f9" if row_idx % 2 == 1 else "#fff"
             client_rows += f"""
-            <tr>
+            <tr style="background:{bg};">
                 <td style="padding:8px 12px;border:1px solid #ddd;">{client}</td>
                 <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;">{c['total']}</td>
                 <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;color:#2E7D32;">{c['active']}</td>
                 <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;color:#555;">{c['closed']}</td>
                 <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;{overdue_cell_style}">{c['overdue']}</td>
             </tr>"""
+            row_idx += 1
+
+        # Totals footer row
+        tot_overdue_style = "color:#C00000;font-weight:bold;" if stats['overdue'] > 0 else "color:#333;font-weight:bold;"
+        client_rows += f"""
+        <tr style="background:#E8EAF6;font-weight:bold;">
+            <td style="padding:8px 12px;border:1px solid #ddd;">TOTAL ({num_clients} customers, avg {avg_per_client} proj/customer)</td>
+            <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;">{stats['total']}</td>
+            <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;color:#2E7D32;">{stats['active']}</td>
+            <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;color:#555;">{stats['closed']}</td>
+            <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;{tot_overdue_style}">{stats['overdue']}</td>
+        </tr>"""
 
         client_table = f"""
         <table style="border-collapse:collapse;width:100%;margin:12px 0;">
@@ -2206,9 +2232,6 @@ class NpiAutoNotificationService:
                 <div style="padding:24px 26px;">
                     <h3 style="color:#1F4E78;margin-top:0;">Global Overview</h3>
                     {kpi_cards}
-                    <p style="color:#555;font-size:13px;margin-top:6px;">
-                        Additionally, <strong>{stats['potential_delay']}</strong> active project(s) have open tasks already past their due date (potential delay).
-                    </p>
                     <h3 style="color:#1F4E78;margin-top:24px;">Breakdown by Customer / Product</h3>
                     {client_table}
                     <p style="color:#6b7280;font-size:12px;margin-top:24px;">

@@ -55,7 +55,6 @@ class LabelPrintWindow(tk.Toplevel):
         self.phases_list = []
         
         self._create_widgets()
-        self._load_orders()
     
     def _create_widgets(self):
         """Crea i widget della finestra."""
@@ -69,20 +68,41 @@ class LabelPrintWindow(tk.Toplevel):
         main_frame = ttk.Frame(self, padding="20")
         main_frame.pack(fill='both', expand=True)
         
-        # Selezione ordine (editabile con filtro)
+        # Ricerca ordine con text box
         ttk.Label(main_frame, text=self.lang.get('order_label', 'Ordine') + ' *').grid(
             row=0, column=0, sticky='w', padx=5, pady=5)
         
-        self.order_combo = ttk.Combobox(main_frame, width=40)
-        self.order_combo.grid(row=0, column=1, padx=5, pady=5, sticky='ew')
-        self.order_combo.bind('<<ComboboxSelected>>', self._on_order_selected)
-        self.order_combo.bind('<Return>', self._on_order_confirm)
-        self.order_combo.bind('<FocusOut>', self._on_order_filter)
+        search_frame = ttk.Frame(main_frame)
+        search_frame.grid(row=0, column=1, padx=5, pady=5, sticky='ew')
+        
+        self.order_search_var = tk.StringVar()
+        self.order_search_entry = ttk.Entry(search_frame, textvariable=self.order_search_var, width=30)
+        self.order_search_entry.pack(side='left', fill='x', expand=True)
+        self.order_search_entry.bind('<Return>', lambda e: self._search_orders())
+        
+        ttk.Button(search_frame, text=self.lang.get('search_button', '🔍 Cerca'),
+                   command=self._search_orders).pack(side='left', padx=(5, 0))
+        
+        # Treeview per i risultati della ricerca
+        results_frame = ttk.Frame(main_frame)
+        results_frame.grid(row=1, column=0, columnspan=2, sticky='nsew', padx=5, pady=5)
+        
+        self.orders_tree = ttk.Treeview(results_frame, columns=('OrderNumber',), show='headings', height=5)
+        self.orders_tree.heading('OrderNumber', text=self.lang.get('order_number', 'Numero Ordine'))
+        self.orders_tree.column('OrderNumber', width=300)
+        self.orders_tree.pack(side='left', fill='both', expand=True)
+        
+        scrollbar = ttk.Scrollbar(results_frame, orient='vertical', command=self.orders_tree.yview)
+        scrollbar.pack(side='right', fill='y')
+        self.orders_tree.configure(yscrollcommand=scrollbar.set)
+        
+        self.orders_tree.bind('<<TreeviewSelect>>', self._on_order_selected)
+        self.orders_tree.bind('<Double-1>', self._on_order_selected)
         
         # Frame per informazioni ordine
         info_frame = ttk.LabelFrame(main_frame, text=self.lang.get('order_info', 'Informazioni Ordine'), 
                                      padding="10")
-        info_frame.grid(row=1, column=0, columnspan=2, sticky='ew', padx=5, pady=10)
+        info_frame.grid(row=2, column=0, columnspan=2, sticky='ew', padx=5, pady=10)
         
         # Numero ordine
         ttk.Label(info_frame, text=self.lang.get('order_number', 'Numero Ordine') + ':').grid(
@@ -104,32 +124,34 @@ class LabelPrintWindow(tk.Toplevel):
         
         # Selezione fase
         ttk.Label(main_frame, text=self.lang.get('phase_label', 'Fase') + ' *').grid(
-            row=2, column=0, sticky='w', padx=5, pady=5)
+            row=3, column=0, sticky='w', padx=5, pady=5)
         
         self.phase_combo = ttk.Combobox(main_frame, state='disabled', width=40)
-        self.phase_combo.grid(row=2, column=1, padx=5, pady=5, sticky='ew')
+        self.phase_combo.grid(row=3, column=1, padx=5, pady=5, sticky='ew')
         self.phase_combo.bind('<<ComboboxSelected>>', self._on_phase_selected)
         
         # Label per conteggio componenti
         ttk.Label(main_frame, text=self.lang.get('components_count_label', 'Componenti disponibili') + ':').grid(
-            row=2, column=2, sticky='w', padx=5, pady=5)
+            row=3, column=2, sticky='w', padx=5, pady=5)
         self.components_count_label = ttk.Label(main_frame, text='-', font=('Arial', 9, 'bold'))
-        self.components_count_label.grid(row=2, column=3, sticky='w', padx=5, pady=2)
+        self.components_count_label.grid(row=3, column=3, sticky='w', padx=5, pady=2)
         
         # Codice componente
         ttk.Label(main_frame, text=self.lang.get('component_code', 'Codice Componente') + ' *').grid(
-            row=3, column=0, sticky='w', padx=5, pady=5)
+            row=4, column=0, sticky='w', padx=5, pady=5)
         
         self.component_code_var = tk.StringVar()
         self.component_code_entry = ttk.Entry(main_frame, textvariable=self.component_code_var, width=40)
-        self.component_code_entry.grid(row=3, column=1, padx=5, pady=5, sticky='ew')
+        self.component_code_entry.grid(row=4, column=1, padx=5, pady=5, sticky='ew')
         # Premendo Invio nel campo Codice Componente si avvia la stampa
         self.component_code_entry.bind('<Return>', lambda e: self._on_print())
         
         main_frame.columnconfigure(1, weight=1)
         
         # Spacer
-        ttk.Label(main_frame, text='').grid(row=4, column=0, columnspan=2, pady=10)
+        ttk.Label(main_frame, text='').grid(row=5, column=0, columnspan=2, pady=10)
+        
+        main_frame.rowconfigure(1, weight=1)
         
         # Frame pulsanti
         button_frame = ttk.Frame(self, padding="10")
@@ -140,85 +162,72 @@ class LabelPrintWindow(tk.Toplevel):
         ttk.Button(button_frame, text=self.lang.get('cancel_button', 'Annulla'),
                   command=self._on_cancel).pack(side='right', padx=5)
     
-    def _load_orders(self):
-        """Carica gli ordini dal database."""
+    def _search_orders(self):
+        """Cerca gli ordini nel database usando LIKE senza limiti di data."""
+        search_text = self.order_search_var.get().strip()
+        if not search_text:
+            messagebox.showwarning(
+                self.lang.get('warning_title', 'Attenzione'),
+                self.lang.get('enter_order_search', 'Inserisci un numero ordine o parte di esso'),
+                parent=self
+            )
+            return
+        
         try:
             cursor = self.db.conn.cursor()
-            # Query ottimizzata: carica solo ordini recenti senza filtro produzione (più veloce)
-            # Il filtro sulla produzione può essere fatto dopo, se necessario
             query = """
-            SELECT TOP 200 IDOrder, OrderNumber
+            SELECT TOP 100 IDOrder, OrderNumber
             FROM [Traceability_RS].[dbo].[Orders]
-            WHERE CAST(orderdate AS DATE) >= DATEADD(MONTH, -3, GETDATE())
+            WHERE OrderNumber LIKE ?
             ORDER BY OrderNumber DESC
             """
-            cursor.execute(query)
+            cursor.execute(query, f'%{search_text}%')
             rows = cursor.fetchall()
             cursor.close()
             
-            # Popola il dizionario e il combo
+            # Pulisci risultati precedenti
             self.orders_dict = {}
-            order_list = []
+            for item in self.orders_tree.get_children():
+                self.orders_tree.delete(item)
+            self._reset_order_info()
             
             for row in rows:
                 order_id, order_number = row
                 self.orders_dict[order_number] = order_id
-                order_list.append(order_number)
+                self.orders_tree.insert('', 'end', values=(order_number,))
             
-            self._all_orders = order_list
-            self.order_combo['values'] = order_list
-            
-            if order_list:
-                logger.info(f"Caricati {len(order_list)} ordini (ultimi 3 mesi)")
+            if rows:
+                logger.info(f"Trovati {len(rows)} ordini per ricerca '{search_text}'")
             else:
-                logger.warning("Nessun ordine trovato negli ultimi 3 mesi")
+                logger.warning(f"Nessun ordine trovato per ricerca '{search_text}'")
                 messagebox.showinfo(
                     self.lang.get('info_title', 'Informazione'),
-                    self.lang.get('no_orders_found', 'Nessun ordine trovato negli ultimi 3 mesi'),
+                    self.lang.get('no_orders_found_search', search_text),
                     parent=self
                 )
         
         except Exception as e:
-            logger.error(f"Errore caricamento ordini: {e}")
+            logger.error(f"Errore ricerca ordini: {e}")
             messagebox.showerror(
                 self.lang.get('error_title', 'Errore'),
-                f"Errore caricamento ordini:\n{e}",
+                f"Errore ricerca ordini:\n{e}",
                 parent=self
             )
     
     def _on_order_selected(self, event=None):
-        """Gestisce la selezione di un ordine."""
-        order_number = self.order_combo.get()
+        """Gestisce la selezione di un ordine dalla Treeview."""
+        selection = self.orders_tree.selection()
+        if not selection:
+            return
+        
+        item = selection[0]
+        order_number = self.orders_tree.item(item, 'values')[0]
+        
         if order_number and order_number in self.orders_dict:
-            self.selected_order_id = self.orders_dict.get(order_number)
+            self.selected_order_id = self.orders_dict[order_number]
             self.selected_order_number = order_number
             logger.info(f"Ordine selezionato: {order_number} (ID: {self.selected_order_id})")
-            # Chiude il dropdown dopo selezione
-            self.order_combo.set(order_number)
-            # Carica i dati dell'ordine
             self._load_order_data()
-
-    def _on_order_filter(self, event=None):
-        """Filtra la lista ordini (attivato su FocusOut o Return)."""
-        typed = self.order_combo.get().strip().upper()
-        all_orders = getattr(self, '_all_orders', [])
-        if not typed:
-            self.order_combo['values'] = all_orders
-        else:
-            filtered = [o for o in all_orders if typed in str(o).upper()]
-            self.order_combo['values'] = filtered
-
-    def _on_order_confirm(self, event=None):
-        """Conferma la selezione quando si preme Invio nel campo ordine."""
-        self._on_order_filter()
-        order_number = self.order_combo.get().strip()
-        if order_number in self.orders_dict:
-            self._on_order_selected()
-        elif self.order_combo['values']:
-            # Se c'è un solo risultato filtrato, selezionalo automaticamente
-            if len(self.order_combo['values']) == 1:
-                self.order_combo.set(self.order_combo['values'][0])
-                self._on_order_selected()
     
     def _on_phase_selected(self, event=None):
         """Gestisce la selezione di una fase."""
@@ -394,7 +403,7 @@ class LabelPrintWindow(tk.Toplevel):
         logger.info("🖱️ GUI: Utente ha cliccato sul pulsante Stampa")
         
         # Validazione
-        if not self.order_combo.get():
+        if not self.selected_order_number:
             logger.warning("🖱️ GUI: Validazione fallita - Nessun ordine selezionato")
             messagebox.showwarning(
                 self.lang.get('warning_title', 'Attenzione'),

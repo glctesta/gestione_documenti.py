@@ -5,7 +5,7 @@ Form per la creazione di richieste di straordinario
 
 import tkinter as tk
 from tkinter import ttk, messagebox
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 from tkcalendar import DateEntry
 import logging
 
@@ -130,7 +130,8 @@ class OvertimeRequestWindow(tk.Toplevel):
             background='darkblue',
             foreground='white',
             borderwidth=2,
-            date_pattern='dd/mm/yyyy'
+            date_pattern='dd/mm/yyyy',
+            mindate=date.today()
         )
         self.start_date.pack(side=tk.LEFT, padx=2)
         
@@ -155,7 +156,8 @@ class OvertimeRequestWindow(tk.Toplevel):
             background='darkblue',
             foreground='white',
             borderwidth=2,
-            date_pattern='dd/mm/yyyy'
+            date_pattern='dd/mm/yyyy',
+            mindate=date.today()
         )
         self.end_date.pack(side=tk.LEFT, padx=2)
         
@@ -451,13 +453,25 @@ class OvertimeRequestWindow(tk.Toplevel):
             return
         
         # VALIDAZIONE: La richiesta non può essere retroattiva
+        # Ammessa la data odierna con orario >= ora attuale
         now = datetime.now()
-        if start_dt < now:
+        if start_dt.date() == now.date():
+            # Stesso giorno: l'ora deve essere >= ora attuale
+            if start_dt.time() < now.time():
+                messagebox.showerror(
+                    self.lang.get('validation_error', 'Errore Validazione'),
+                    self.lang.get('no_retroactive_requests',
+                        'Le richieste di straordinario non possono essere retroattive.\n'
+                        'L\'ora di inizio deve essere uguale o successiva all\'ora attuale.'),
+                    parent=self
+                )
+                return
+        elif start_dt.date() < now.date():
             messagebox.showerror(
                 self.lang.get('validation_error', 'Errore Validazione'),
-                self.lang.get('no_retroactive_requests', 
+                self.lang.get('no_retroactive_requests',
                     'Le richieste di straordinario non possono essere retroattive.\n'
-                    'La data/ora di inizio deve essere nel futuro.'),
+                    'La data di inizio non puo\' essere antecedente ad oggi.'),
                 parent=self
             )
             return

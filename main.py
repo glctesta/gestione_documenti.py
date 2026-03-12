@@ -1,4 +1,4 @@
-﻿#import configparser
+#import configparser
 # --- StdIO safeguard + Faulthandler sicuro per exe windowed ---
 import shutil
 import sys, os, atexit
@@ -323,9 +323,8 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
-
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.6.9'  # Versione aggiornata
+APP_VERSION = '2.3.7.2'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -8195,7 +8194,7 @@ Accedi al sistema per visualizzare i dettagli completi.
                 ON LM.EquipmentID = E.EquipmentId
             WHERE 
                 S.ScanTimeFinish BETWEEN 
-                    COALESCE(LM.LastDateStop, DATEFROMPARTS(E.ProductionYear,1,1))
+                    COALESCE(LM.LastDateStop, DATEFROMPARTS(isnull(E.ProductionYear,year(getdate())-1),1,1))
                     AND GETDATE()
                 AND Ph.IDPhase IN (102,103)
                 AND E.EquipmentId = ?
@@ -12888,6 +12887,54 @@ class App(tk.Tk):
             action_callback=lambda user_name: self.traceability_manager.open_manage_links()
         )
 
+    def _is_source_file_ready(self, source_path, exe_name):
+        """Verifica che il file sorgente sulla rete sia completo e non in fase di copia.
+        
+        Esegue due controlli:
+        1. Stabilità dimensione file (2 read a distanza di 2 secondi)
+        2. Lock esclusivo (verifica che nessun processo stia scrivendo il file)
+        
+        Returns:
+            (bool, str): (pronto, motivo_errore)
+        """
+        source_file = os.path.join(source_path, exe_name)
+        
+        if not os.path.exists(source_file):
+            logger.warning(f"File sorgente non trovato: {source_file}")
+            return False, "File sorgente non trovato"
+        
+        # Check 1: Stabilità della dimensione del file (2 secondi di intervallo)
+        try:
+            size1 = os.path.getsize(source_file)
+            time.sleep(2)
+            size2 = os.path.getsize(source_file)
+            if size1 != size2:
+                logger.warning(f"Dimensione file instabile: {size1} → {size2} bytes")
+                return False, "Il file è ancora in fase di copia (dimensione instabile)"
+        except OSError as e:
+            logger.warning(f"Errore accesso file sorgente: {e}")
+            return False, f"Errore accesso file: {e}"
+        
+        # Check 2: Tentativo di lock esclusivo (verifica che il file non sia bloccato)
+        try:
+            import msvcrt
+            fd = os.open(source_file, os.O_RDONLY | os.O_NOINHERIT)
+            try:
+                lock_size = max(size2, 1)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, lock_size)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, lock_size)
+            except (IOError, OSError):
+                os.close(fd)
+                logger.warning(f"File sorgente bloccato da un altro processo: {source_file}")
+                return False, "Il file è bloccato da un altro processo (copia in corso)"
+            os.close(fd)
+        except OSError as e:
+            logger.warning(f"Impossibile aprire il file sorgente: {e}")
+            return False, f"Impossibile aprire il file: {e}"
+        
+        logger.info(f"File sorgente pronto per l'aggiornamento: {source_file} ({size2} bytes)")
+        return True, ""
+
     def _trigger_update(self, version_info, mandatory=True):
         """
         Mostra un dialogo pre-aggiornamento, poi lancia l'updater.
@@ -12911,6 +12958,17 @@ class App(tk.Tk):
             messagebox.showerror(
                 self.lang.get('error', 'Errore Critico'),
                 "File updater.exe non trovato! Impossibile aggiornare.",
+                parent=self
+            )
+            return False
+
+        # ── Verifica integrità file sorgente ──────────────────────────────────
+        file_ready, reason = self._is_source_file_ready(source, exe_name)
+        if not file_ready:
+            logger.warning(f"_trigger_update: file sorgente non pronto - {reason}")
+            messagebox.showwarning(
+                self.lang.get('update_postponed_title', 'Aggiornamento Posticipato'),
+                self.lang.get('update_postponed_message', reason),
                 parent=self
             )
             return False
@@ -14624,6 +14682,9 @@ class App(tk.Tk):
         self.language_menu.add_command(label="Deutsch", command=lambda: self._change_language('de'))
         self.language_menu.add_command(label="Svenska", command=lambda: self._change_language('sv'))
 
+        # Menu Manuali
+        self.manuals_menu = tk.Menu(self.help_menu, tearoff=0)
+
     def _add_main_menus_to_bar(self):
         """Aggiunge i menu principali alla barra dei menu"""
         self.menubar.add_cascade(label=self.lang.get('menu_documents', "Documenti di Produzione"),
@@ -15590,8 +15651,283 @@ class App(tk.Tk):
         )
 
         self.help_menu.add_separator()
+
+        # ── Menu Manuali ──────────────────────────────────────────
+        self.help_menu.add_cascade(
+            label=self.lang.get('menu_manuals', 'Manuali'),
+            menu=self.manuals_menu
+        )
+        self._build_manuals_menu()
+
+        self.help_menu.add_separator()
         about_menu_label = f"{self.lang.get('menu_about')} {APP_VERSION}"
         self.help_menu.add_command(label=about_menu_label, command=self._show_about)
+
+    # ══════════════════════════════════════════════════════════════
+    #  MENU MANUALI - Struttura completa
+    # ══════════════════════════════════════════════════════════════
+    def _build_manuals_menu(self):
+        """Costruisce il menu Manuali rispecchiando la struttura del menu principale (ordine alfabetico)."""
+        self.manuals_menu.delete(0, 'end')
+
+        # ── 1. Documenti di Produzione ─────────────────────────────
+        docs_menu = tk.Menu(self.manuals_menu, tearoff=0)
+        self.manuals_menu.add_cascade(
+            label=self.lang.get('menu_documents', 'Documenti di Produzione'), menu=docs_menu)
+        docs_menu.add_command(
+            label=self.lang.get('menu_insert_doc', 'Inserisci Documenti'),
+            command=lambda: self._open_manual('documenti_inserisci'))
+        docs_menu.add_command(
+            label=self.lang.get('menu_view_doc', 'Visualizza Documenti'),
+            command=lambda: self._open_manual('documenti_visualizza'))
+
+        # ── 2. Documenti Generali ──────────────────────────────────
+        gen_docs_menu = tk.Menu(self.manuals_menu, tearoff=0)
+        self.manuals_menu.add_cascade(
+            label=self.lang.get('menu_general_docs', 'Documenti Generali'), menu=gen_docs_menu)
+        gen_docs_menu.add_command(
+            label=self.lang.get('submenu_add_edit', 'Aggiungi/Modifica'),
+            command=lambda: self._open_manual('documenti_generali_modifica'))
+        gen_docs_menu.add_command(
+            label=self.lang.get('submenu_view', 'Visualizza'),
+            command=lambda: self._open_manual('documenti_generali_visualizza'))
+
+        # ── 3. Manutenzione ────────────────────────────────────────
+        maint_menu = tk.Menu(self.manuals_menu, tearoff=0)
+        self.manuals_menu.add_cascade(
+            label=self.lang.get('menu_maintenance', 'Manutenzione'), menu=maint_menu)
+
+        # 3a. Macchine
+        machines_menu = tk.Menu(maint_menu, tearoff=0)
+        maint_menu.add_cascade(
+            label=self.lang.get('submenu_machines', 'Gestione Macchine'), menu=machines_menu)
+        machines_menu.add_command(
+            label=self.lang.get('submenu_add_machine', 'Aggiungi Macchina'),
+            command=lambda: self._open_manual('manutenzione_aggiungi_macchina'))
+        machines_menu.add_command(
+            label=self.lang.get('submenu_equipment_types', 'Gestione Tipi Macchine'),
+            command=lambda: self._open_manual('manutenzione_tipi_macchine'))
+        machines_menu.add_command(
+            label=self.lang.get('submenu_edit_machine', 'Modifica Macchina'),
+            command=lambda: self._open_manual('manutenzione_modifica_macchina'))
+        machines_menu.add_command(
+            label=self.lang.get('submenu_view_machines', 'Visualizza Macchine'),
+            command=lambda: self._open_manual('manutenzione_visualizza_macchine'))
+        # Fixture
+        fixture_manual_menu = tk.Menu(machines_menu, tearoff=0)
+        machines_menu.add_cascade(
+            label=self.lang.get('submenu_fixture', 'Fixture'), menu=fixture_manual_menu)
+        fixture_manual_menu.add_command(
+            label=self.lang.get('submenu_fixture_rules', 'Regole Fixture'),
+            command=lambda: self._open_manual('manutenzione_fixture_regole'))
+        fixture_manual_menu.add_command(
+            label=self.lang.get('submenu_assign_products_fixture', 'Assegnazione prodotti'),
+            command=lambda: self._open_manual('manutenzione_fixture_assegnazione'))
+
+        # 3b. Task di Manutenzione
+        tasks_manual_menu = tk.Menu(maint_menu, tearoff=0)
+        maint_menu.add_cascade(
+            label=self.lang.get('submenu_maintenance_tasks_header', 'Task di Manutenzione'), menu=tasks_manual_menu)
+        tasks_manual_menu.add_command(
+            label=self.lang.get('submenu_manage_maint_task', 'Gestione Task'),
+            command=lambda: self._open_manual('manutenzione_gestione_task'))
+        tasks_manual_menu.add_command(
+            label=self.lang.get('submenu_manage_task_cycles', 'Gestione Voci Task'),
+            command=lambda: self._open_manual('manutenzione_voci_task'))
+        tasks_manual_menu.add_command(
+            label=self.lang.get('submenu_assign_responsibles', 'Assegna Responsabili'),
+            command=lambda: self._open_manual('manutenzione_assegna_responsabili'))
+
+        # 3c. Compila Schede
+        maint_menu.add_command(
+            label=self.lang.get('submenu_fill_templates', 'Compila Schede'),
+            command=lambda: self._open_manual('manutenzione_compila_schede'))
+
+        # 3d. Rapporti
+        maint_reports_menu = tk.Menu(maint_menu, tearoff=0)
+        maint_menu.add_cascade(
+            label=self.lang.get('submenu_reports_header', 'Rapporti'), menu=maint_reports_menu)
+        maint_reports_menu.add_command(
+            label=self.lang.get('submenu_reports', 'Report Panoramica'),
+            command=lambda: self._open_manual('manutenzione_report_panoramica'))
+        maint_reports_menu.add_command(
+            label=self.lang.get('submenu_fixtures_report', 'Rapporti Fixtures'),
+            command=lambda: self._open_manual('manutenzione_rapporti_fixtures'))
+
+        # ── 4. Operazioni ──────────────────────────────────────────
+        ops_menu = tk.Menu(self.manuals_menu, tearoff=0)
+        self.manuals_menu.add_cascade(
+            label=self.lang.get('menu_operations', 'Operazioni'), menu=ops_menu)
+
+        # 4a. Gestione Reclami
+        ops_menu.add_command(
+            label=self.lang.get('menu_complaints_management', 'Gestione Reclami'),
+            command=lambda: self._open_manual('operazioni_gestione_reclami'))
+
+        # 4b. NPI Management
+        ops_menu.add_command(
+            label=self.lang.get('menu_npi_management', 'NPI Management'),
+            command=lambda: self._open_manual('operazioni_npi'))
+
+        # 4c. Ordini
+        ops_menu.add_command(
+            label=self.lang.get('menu_orders', 'Ordini'),
+            command=lambda: self._open_manual('operazioni_ordini'))
+
+        # 4d. Personale
+        personnel_manual_menu = tk.Menu(ops_menu, tearoff=0)
+        ops_menu.add_cascade(
+            label=self.lang.get('menu_personnel', 'Personale'), menu=personnel_manual_menu)
+
+        personnel_manual_menu.add_command(
+            label=self.lang.get('submenu_absences', 'Assenze'),
+            command=lambda: self._open_manual('personale_assenze'))
+        personnel_manual_menu.add_command(
+            label=self.lang.get('submenu_news', 'Messaggi'),
+            command=lambda: self._open_manual('personale_messaggi'))
+        personnel_manual_menu.add_command(
+            label=self.lang.get('submenu_disciplinary_notes', 'Note Disciplinari'),
+            command=lambda: self._open_manual('personale_note_disciplinari'))
+        personnel_manual_menu.add_command(
+            label=self.lang.get('submenu_guests', 'Ospiti'),
+            command=lambda: self._open_manual('personale_ospiti'))
+        personnel_manual_menu.add_command(
+            label=self.lang.get('submenu_overtime', 'Straordinari'),
+            command=lambda: self._open_manual('personale_straordinari'))
+        personnel_manual_menu.add_command(
+            label=self.lang.get('submenu_external_programs', 'Programmi Esterni'),
+            command=lambda: self._open_manual('personale_programmi_esterni'))
+
+        # 4e. Produzione
+        prod_manual_menu = tk.Menu(ops_menu, tearoff=0)
+        ops_menu.add_cascade(
+            label=self.lang.get('submenu_production_ops', 'Produzione'), menu=prod_manual_menu)
+
+        prod_manual_menu.add_command(
+            label=self.lang.get('submenu_calibrations', 'Calibrazioni'),
+            command=lambda: self._open_manual('produzione_calibrazioni'))
+        prod_manual_menu.add_command(
+            label=self.lang.get('menu_coating', 'Coating'),
+            command=lambda: self._open_manual('produzione_coating'))
+        # Dichiarazioni (sub-cascade)
+        decl_manual_menu = tk.Menu(prod_manual_menu, tearoff=0)
+        prod_manual_menu.add_cascade(
+            label=self.lang.get('submenu_declarations', 'Dichiarazioni'), menu=decl_manual_menu)
+        decl_manual_menu.add_command(
+            label=self.lang.get('submenu_interruptions', 'Interruzioni di produzione'),
+            command=lambda: self._open_manual('operazioni_interruzioni'))
+        decl_manual_menu.add_command(
+            label=self.lang.get('submenu_scrap_declaration', 'Dichiarazione scarti'),
+            command=lambda: self._open_manual('operazioni_dichiarazione_scarti'))
+        decl_manual_menu.add_command(
+            label=self.lang.get('submenu_scrap_validation', 'Validazione scarti'),
+            command=lambda: self._open_manual('operazioni_validazione_scarti'))
+        # Validazione Linea (FAI) sub-cascade
+        fai_manual_menu = tk.Menu(decl_manual_menu, tearoff=0)
+        decl_manual_menu.add_cascade(
+            label=self.lang.get('submenu_line_validation', 'Validazione linea'), menu=fai_manual_menu)
+        fai_manual_menu.add_command(
+            label=self.lang.get('gestione_template_fai', 'Gestione Template'),
+            command=lambda: self._open_manual('operazioni_gestione_template_fai'))
+        fai_manual_menu.add_command(
+            label=self.lang.get('validazione_line', 'Validazioni'),
+            command=lambda: self._open_manual('operazioni_validazioni_fai'))
+        fai_manual_menu.add_command(
+            label=self.lang.get('storico_validazioni_fai', 'Storico Validazioni FAI'),
+            command=lambda: self._open_manual('operazioni_storico_validazioni_fai'))
+        fai_manual_menu.add_command(
+            label=self.lang.get('rapporto_fai_fails', 'Rapporto FAI fails'),
+            command=lambda: self._open_manual('operazioni_rapporto_fai_fails'))
+        prod_manual_menu.add_command(
+            label=self.lang.get('submenu_kanban', 'KanBan'),
+            command=lambda: self._open_manual('produzione_kanban'))
+        prod_manual_menu.add_command(
+            label=self.lang.get('menu_paste', 'Paste'),
+            command=lambda: self._open_manual('produzione_paste'))
+        prod_manual_menu.add_command(
+            label=self.lang.get('submenu_reports_prod', 'Rapporti'),
+            command=lambda: self._open_manual('produzione_rapporti'))
+        prod_manual_menu.add_command(
+            label=self.lang.get('submenu_traceability', 'Tracciabilita'),
+            command=lambda: self._open_manual('produzione_tracciabilita'))
+        prod_manual_menu.add_command(
+            label=self.lang.get('menu_product_checks', 'Verifiche Prodotti'),
+            command=lambda: self._open_manual('produzione_verifiche'))
+
+        # ── 5. Segnalazioni ────────────────────────────────────────
+        submissions_manual_menu = tk.Menu(self.manuals_menu, tearoff=0)
+        self.manuals_menu.add_cascade(
+            label=self.lang.get('menu_submissions', 'Segnalazioni'), menu=submissions_manual_menu)
+        submissions_manual_menu.add_command(
+            label=self.lang.get('submenu_new_submission', 'Nuova Segnalazione'),
+            command=lambda: self._open_manual('segnalazioni_nuova'))
+        submissions_manual_menu.add_command(
+            label=self.lang.get('submenu_assign', 'Assegna'),
+            command=lambda: self._open_manual('segnalazioni_assegna'))
+        submissions_manual_menu.add_command(
+            label=self.lang.get('menu_submissions_management', 'Gestione'),
+            command=lambda: self._open_manual('segnalazioni_gestione'))
+
+        # ── 6. Strumenti ───────────────────────────────────────────
+        tools_manual_menu = tk.Menu(self.manuals_menu, tearoff=0)
+        self.manuals_menu.add_cascade(
+            label=self.lang.get('menu_tools', 'Strumenti'), menu=tools_manual_menu)
+        tools_manual_menu.add_command(
+            label=self.lang.get('submenu_permissions', 'Autorizzazioni'),
+            command=lambda: self._open_manual('strumenti_autorizzazioni'))
+        tools_manual_menu.add_command(
+            label=self.lang.get('menu_materials', 'Materiali'),
+            command=lambda: self._open_manual('strumenti_materiali'))
+        tools_manual_menu.add_command(
+            label=self.lang.get('menu_room_booking', 'Room Booking'),
+            command=lambda: self._open_manual('strumenti_room_booking'))
+        tools_manual_menu.add_command(
+            label=self.lang.get('submenu_scrap_types', 'Tipi Scrap'),
+            command=lambda: self._open_manual('strumenti_tipi_scrap'))
+        tools_manual_menu.add_command(
+            label=self.lang.get('submenu_suppliers', 'Produttori'),
+            command=lambda: self._open_manual('strumenti_produttori'))
+        tools_manual_menu.add_command(
+            label=self.lang.get('manage_translations', 'Gestione Traduzioni'),
+            command=lambda: self._open_manual('strumenti_traduzioni'))
+        tools_manual_menu.add_command(
+            label=self.lang.get('submenu_settings_email', 'Manage Setting Emails'),
+            command=lambda: self._open_manual('strumenti_settings_email'))
+
+    def _open_manual(self, section_key):
+        """Apre il manuale PDF corrispondente nella lingua corrente.
+        Cerca in manuals/{lang}/{section_key}.pdf
+        Se non trovato, mostra un messaggio placeholder."""
+        lang_code = self.lang.current_language if hasattr(self.lang, 'current_language') else 'it'
+        app_dir = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__))
+        manual_path = os.path.join(app_dir, 'manuals', lang_code, f'{section_key}.pdf')
+
+        if os.path.exists(manual_path):
+            try:
+                os.startfile(manual_path)
+                logger.info(f"Aperto manuale: {manual_path}")
+            except Exception as e:
+                logger.error(f"Errore apertura manuale {manual_path}: {e}")
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire il manuale: {e}",
+                    parent=self)
+        else:
+            # Prova fallback su italiano
+            fallback_path = os.path.join(app_dir, 'manuals', 'it', f'{section_key}.pdf')
+            if lang_code != 'it' and os.path.exists(fallback_path):
+                try:
+                    os.startfile(fallback_path)
+                    logger.info(f"Aperto manuale (fallback IT): {fallback_path}")
+                except Exception as e:
+                    logger.error(f"Errore apertura manuale fallback {fallback_path}: {e}")
+            else:
+                messagebox.showinfo(
+                    self.lang.get('menu_manuals', 'Manuali'),
+                    self.lang.get('manual_not_available',
+                                 f"Il manuale per '{section_key}' non e' ancora disponibile.\n\n"
+                                  "Verra' aggiunto in un prossimo aggiornamento."),
+                    parent=self)
 
 
     def _open_logs_viewer(self):

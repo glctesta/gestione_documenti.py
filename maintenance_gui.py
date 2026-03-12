@@ -947,7 +947,7 @@ class FillTemplateWindow(tk.Toplevel):
         self.phase_combo.bind("<<ComboboxSelected>>", lambda e: self._load_equipments())
 
         ttk.Label(selection_frame, text=self.lang.get('select_machine_label')).pack(side=tk.LEFT, padx=5)
-        self.equipment_combo = ttk.Combobox(selection_frame, textvariable=self.equipment_var, state='normal', width=40)
+        self.equipment_combo = ttk.Combobox(selection_frame, textvariable=self.equipment_var, state='normal', width=65)
         self.equipment_combo.pack(side=tk.LEFT, padx=5)
         self.equipment_combo.bind("<<ComboboxSelected>>", self._on_equipment_select)
         self.equipment_combo.bind('<KeyRelease>', self._filter_equipment_combo)
