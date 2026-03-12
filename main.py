@@ -324,7 +324,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.7.2'  # Versione aggiornata
+APP_VERSION = '2.3.7.3'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 
 # # --- CONFIGURAZIONE DATABASE ---
@@ -14402,8 +14402,31 @@ class App(tk.Tk):
         try:
             app_name = os.path.basename(sys.executable)
             logger.info(f"check_version: Inizio controllo versione per: {app_name}")
-            logger.info(f"check_version: Chiamata a fetch_latest_version_info...")
-            version_info = self.db.fetch_latest_version_info(app_name)
+            # ── Fetch versione in un thread separato con timeout ──────────
+            # Evita il blocco del thread principale (splash freeze)
+            # se la query DB o il lock impiegano troppo tempo.
+            version_result = [None]
+            fetch_error = [None]
+
+            def _fetch_version():
+                try:
+                    version_result[0] = self.db.fetch_latest_version_info(app_name)
+                except Exception as e:
+                    fetch_error[0] = e
+
+            fetch_thread = threading.Thread(target=_fetch_version, daemon=True)
+            fetch_thread.start()
+            fetch_thread.join(timeout=10)  # Max 10 secondi
+
+            if fetch_thread.is_alive():
+                logger.warning("check_version: timeout raggiunto (10s). Controllo versione saltato.")
+                return True  # Procedi normalmente, il periodic check riproverà
+
+            if fetch_error[0]:
+                logger.error(f"check_version: errore nel fetch: {fetch_error[0]}")
+                return True
+
+            version_info = version_result[0]
             logger.info(f"check_version: fetch_latest_version_info completata. Result: {version_info}")
 
             if not version_info or not version_info.Version or not version_info.MainPath:
