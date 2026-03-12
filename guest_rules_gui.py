@@ -8,6 +8,7 @@ Tab 2: Storico (processi eseguiti, documenti, rilancio)
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+from tkcalendar import DateEntry
 import logging
 import os
 import tempfile
@@ -34,6 +35,7 @@ class GuestRulesWindow(tk.Toplevel):
 
         self._build_ui()
         self._load_settings()
+        self._load_chi_invia_companies()
         self._load_contracts()
         self._load_reports()
 
@@ -71,18 +73,28 @@ class GuestRulesWindow(tk.Toplevel):
         self._add_setting_row(vr_frame, 2, 'chi_richiede_email',
             'Email:')
 
-        # --- Firmatario società esterna ---
+        # --- Firmatario società esterna (legato a una società) ---
         ext_frame = ttk.LabelFrame(tab,
             text=self.lang.get('config_ext_signatory', 'Firmatario Società Esterna (Chi Invia)'),
             padding=10)
         ext_frame.pack(fill='x', pady=(0, 10))
 
-        self._add_setting_row(ext_frame, 0, 'chi_invia',
+        ttk.Label(ext_frame, text=self.lang.get('lbl_company', 'Società:')).grid(
+            row=0, column=0, sticky='w', padx=5, pady=3)
+        self.chi_invia_company_var = tk.StringVar()
+        self.chi_invia_company_combo = ttk.Combobox(
+            ext_frame, textvariable=self.chi_invia_company_var,
+            width=40, state='readonly')
+        self.chi_invia_company_combo.grid(row=0, column=1, padx=5, pady=3, sticky='ew')
+        self.chi_invia_company_combo.bind('<<ComboboxSelected>>', self._on_chi_invia_company_changed)
+
+        self._add_setting_row(ext_frame, 1, 'chi_invia',
             self.lang.get('lbl_name', 'Nome e Cognome:'))
-        self._add_setting_row(ext_frame, 1, 'chi_invia_titolo',
+        self._add_setting_row(ext_frame, 2, 'chi_invia_titolo',
             self.lang.get('lbl_title', 'Funzione/Titolo:'))
-        self._add_setting_row(ext_frame, 2, 'chi_invia_email',
+        self._add_setting_row(ext_frame, 3, 'chi_invia_email',
             'Email:')
+        ext_frame.columnconfigure(1, weight=1)
 
         # Bottone Salva Settings
         ttk.Button(tab, text=self.lang.get('btn_save_settings', '💾 Salva Impostazioni'),
@@ -132,9 +144,11 @@ class GuestRulesWindow(tk.Toplevel):
 
         ttk.Label(cf, text=self.lang.get('col_contract_date', 'Data:')).grid(
             row=0, column=4, sticky='w', padx=3)
-        self.contract_date_var = tk.StringVar()
-        ttk.Entry(cf, textvariable=self.contract_date_var, width=12).grid(
-            row=0, column=5, padx=3, sticky='w')
+        self.contract_date_entry = DateEntry(
+            cf, width=12, date_pattern='dd/mm/yyyy',
+            locale='it_IT', firstweekday='monday')
+        self.contract_date_entry.grid(row=0, column=5, padx=3, sticky='w')
+        self.contract_date_entry.delete(0, 'end')  # inizia vuoto
 
         ttk.Label(cf, text=self.lang.get('col_description', 'Desc:')).grid(
             row=1, column=0, sticky='w', padx=3, pady=3)
@@ -225,6 +239,45 @@ class GuestRulesWindow(tk.Toplevel):
             except Exception as e:
                 logger.error(f"Errore lettura setting '{key}': {e}")
 
+    def _load_chi_invia_companies(self):
+        """Carica le società nel combo 'Chi Invia' e seleziona quella salvata."""
+        try:
+            cursor = self.db.conn.cursor()
+            cursor.execute("""
+                SELECT CompanyName
+                FROM Employee.dbo.VisitorPlanToCharges
+                WHERE CompanyName IS NOT NULL
+                ORDER BY CompanyName
+            """)
+            companies = [row.CompanyName for row in cursor.fetchall()]
+            cursor.close()
+            self.chi_invia_company_combo['values'] = companies
+
+            # Seleziona la società salvata nei settings
+            saved_company = ''
+            try:
+                cursor = self.db.conn.cursor()
+                cursor.execute(
+                    "SELECT [value] FROM traceability_rs.dbo.Settings WHERE atribute = 'chi_invia_company'")
+                row = cursor.fetchone()
+                cursor.close()
+                if row and row[0]:
+                    saved_company = row[0]
+            except Exception:
+                pass
+
+            if saved_company and saved_company in companies:
+                self.chi_invia_company_var.set(saved_company)
+        except Exception as e:
+            logger.error(f"Errore caricamento società chi_invia: {e}")
+
+    def _on_chi_invia_company_changed(self, event=None):
+        """Quando l'utente seleziona una società, logga la selezione.
+        I campi nome/titolo/email restano editabili manualmente."""
+        company = self.chi_invia_company_var.get()
+        if company:
+            logger.info(f"Società 'Chi Invia' selezionata: {company}")
+
     def _load_contracts(self):
         """Carica i contratti delle società fatturanti."""
         try:
@@ -311,9 +364,10 @@ class GuestRulesWindow(tk.Toplevel):
     # SETTINGS ACTIONS
     # ================================================================
     def _save_settings(self):
-        """Salva tutti i settings nel DB."""
+        """Salva tutti i settings nel DB (inclusa la società selezionata)."""
         try:
             cursor = self.db.conn.cursor()
+            # Salva settings standard
             for key, var in self._settings_vars.items():
                 value = var.get().strip()
                 cursor.execute("""
@@ -322,6 +376,14 @@ class GuestRulesWindow(tk.Toplevel):
                     ELSE
                         INSERT INTO traceability_rs.dbo.Settings (atribute, [value]) VALUES (?, ?)
                 """, (key, value, key, key, value))
+            # Salva anche la società selezionata per chi_invia
+            company_val = self.chi_invia_company_var.get().strip()
+            cursor.execute("""
+                IF EXISTS (SELECT 1 FROM traceability_rs.dbo.Settings WHERE atribute = 'chi_invia_company')
+                    UPDATE traceability_rs.dbo.Settings SET [value] = ? WHERE atribute = 'chi_invia_company'
+                ELSE
+                    INSERT INTO traceability_rs.dbo.Settings (atribute, [value]) VALUES ('chi_invia_company', ?)
+            """, (company_val, company_val))
             self.db.conn.commit()
             cursor.close()
             messagebox.showinfo(
@@ -342,20 +404,22 @@ class GuestRulesWindow(tk.Toplevel):
         values = self.contract_tree.item(sel[0], 'values')
         self.contract_company_var.set(values[1])
         self.contract_no_var.set(values[2])
-        self.contract_date_var.set(values[3])
+        # Imposta il DateEntry
+        self.contract_date_entry.delete(0, 'end')
+        if values[3]:
+            self.contract_date_entry.insert(0, values[3])
         self.contract_desc_var.set(values[4])
 
     def _new_contract(self):
         self.contract_tree.selection_remove(*self.contract_tree.selection())
         self.contract_company_var.set('')
         self.contract_no_var.set('')
-        self.contract_date_var.set('')
+        self.contract_date_entry.delete(0, 'end')
         self.contract_desc_var.set('')
 
     def _save_contract(self):
         company = self.contract_company_var.get().strip()
         contract_no = self.contract_no_var.get().strip()
-        date_str = self.contract_date_var.get().strip()
         desc = self.contract_desc_var.get().strip()
 
         if not company:
@@ -369,14 +433,15 @@ class GuestRulesWindow(tk.Toplevel):
                 'Società non trovata.')
             return
 
+        # Leggi data dal DateEntry
         contract_date = None
+        date_str = self.contract_date_entry.get().strip()
         if date_str:
             try:
-                from datetime import datetime
-                contract_date = datetime.strptime(date_str, '%d/%m/%Y').date()
-            except ValueError:
+                contract_date = self.contract_date_entry.get_date()
+            except Exception:
                 messagebox.showwarning(self.lang.get('warning', 'Attenzione'),
-                    self.lang.get('invalid_date', 'Formato data non valido (GG/MM/AAAA).'))
+                    self.lang.get('invalid_date', 'Formato data non valido.'))
                 return
 
         try:

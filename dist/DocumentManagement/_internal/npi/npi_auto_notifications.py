@@ -1,0 +1,2365 @@
+# npi/npi_auto_notifications.py
+"""
+Sistema di notifiche automatiche giornaliere per task NPI in scadenza o scaduti.
+Invia email professionali ai responsabili dei task e ai responsabili dei progetti.
+"""
+
+import logging
+import json
+import os
+from datetime import datetime, timedelta, date
+from pathlib import Path
+import threading
+import time
+import tempfile
+from typing import Dict, List, Tuple, Optional
+
+from sqlalchemy import select, and_, or_, text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import joinedload, subqueryload
+
+logger = logging.getLogger(__name__)
+
+
+class NpiAutoNotificationService:
+    """
+    Servizio per notifiche automatiche giornaliere per task NPI.
+    Controlla task in scadenza (domani) e scaduti, inviando email ai responsabili.
+    """
+    
+    def __init__(self, npi_manager, config_path='npi_notifications_config.json'):
+        self.npi_manager = npi_manager
+        self.config_path = config_path
+        self.config = self._load_config()
+        self.running = False
+        self.thread = None
+        
+    def _load_config(self) -> dict:
+        """Carica la configurazione dal file JSON."""
+        try:
+            if os.path.exists(self.config_path):
+                with open(self.config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                logger.info(f"Configurazione notifiche caricata da {self.config_path}")
+                return config
+            else:
+                logger.warning(f"File configurazione {self.config_path} non trovato. Uso configurazione default.")
+                return self._get_default_config()
+        except Exception as e:
+            logger.error(f"Errore caricamento configurazione: {e}")
+            return self._get_default_config()
+    
+    def _get_default_config(self) -> dict:
+        """Restituisce configurazione default."""
+        return {
+            "notification_settings": {
+                "enabled": True,
+                "check_time": "08:00",
+                "email_sender_name": "NPI Project Management System",
+                "include_logo": True,
+                "logo_path": "logo.png"
+            },
+            "schedule": {
+                "send_every_n_working_days": 2,
+                "working_day_check_db": "Employee"
+            },
+            "recipient_types": {
+                "Interno": {"send_email": True},
+                "Cliente": {"send_email": False},
+                "Fornitore": {"send_email": False}
+            },
+            "notification_types": {
+                "task_due_tomorrow": {"enabled": True, "days_before": 1},
+                "task_overdue": {"enabled": True}
+            }
+        }
+
+    # ── Schedule helpers ──────────────────────────────────────────────────────
+
+    def _is_today_working_day(self) -> bool:
+        """
+        Chiama Employee.dbo.NoNOTWorkingDaysBetWeenGivenDate(oggi, NULL).
+        Ritorna 0 se oggi è un giorno lavorativo, >0 se è festivo/weekend.
+        """
+        try:
+            db_name = self.config.get('schedule', {}).get('working_day_check_db', 'Employee')
+            session = self.npi_manager._get_session()
+            try:
+                result = session.execute(
+                    text(f"SELECT [{db_name}].[dbo].[NoNOTWorkingDaysBetWeenGivenDate](:d, NULL)"),
+                    {"d": date.today()}
+                ).scalar()
+                is_working = (result == 0)
+                if not is_working:
+                    logger.info(f"[SCHEDULE] Oggi ({date.today()}) non è un giorno lavorativo (DB result={result}). Email NPI saltata.")
+                return is_working
+            finally:
+                session.close()
+        except Exception as e:
+            logger.warning(f"[SCHEDULE] Impossibile verificare giorno lavorativo via DB: {e}. Procedo comunque.")
+            return True  # In caso di errore, non blocca l'invio
+
+    def _working_days_since_last_send(self) -> int:
+        """
+        Conta i giorni lavorativi trascorsi dall'ultimo invio registrato
+        in NpiProjectDelayEmailLog. Usa la funzione DB per escludere festivi.
+        Ritorna 9999 se non ci sono invii precedenti (primo avvio → invia).
+        """
+        try:
+            db_name = self.config.get('schedule', {}).get('working_day_check_db', 'Employee')
+            session = self.npi_manager._get_session()
+            try:
+                # Trova la data dell'ultimo invio
+                row = session.execute(
+                    text("SELECT MAX([NotificationDate]) FROM [dbo].[NpiProjectDelayEmailLog]")
+                ).scalar()
+
+                if row is None:
+                    logger.info("[SCHEDULE] Nessun invio precedente trovato. Primo avvio: invio consentito.")
+                    return 9999
+
+                last_send: date = row if isinstance(row, date) else row.date()
+                today = date.today()
+
+                if last_send >= today:
+                    # Già inviato oggi
+                    return 0
+
+                # Calcola giorni calendario tra last_send e oggi
+                calendar_days = (today - last_send).days
+
+                # Sottrai i giorni NON lavorativi tra last_send e oggi
+                non_working = session.execute(
+                    text(f"SELECT [{db_name}].[dbo].[NoNOTWorkingDaysBetWeenGivenDate](:from_d, :to_d)"),
+                    {"from_d": last_send, "to_d": today}
+                ).scalar() or 0
+
+                working_days = max(0, calendar_days - non_working)
+                logger.info(
+                    f"[SCHEDULE] Ultimo invio: {last_send} | Oggi: {today} | "
+                    f"Calendario: {calendar_days}gg | Non-lavorativi: {non_working} | Lavorativi: {working_days}"
+                )
+                return working_days
+            finally:
+                session.close()
+        except Exception as e:
+            logger.warning(f"[SCHEDULE] Impossibile calcolare giorni lavorativi dall'ultimo invio: {e}. Procedo comunque.")
+            return 9999
+
+    def _is_send_day(self) -> bool:
+        """
+        Gate principale: ritorna True solo se:
+        1. Oggi è un giorno lavorativo (non festivo, non weekend)
+        2. Sono trascorsi almeno send_every_n_working_days dall'ultimo invio
+        """
+        n = int(self.config.get('schedule', {}).get('send_every_n_working_days', 2))
+
+        if not self._is_today_working_day():
+            return False
+
+        days_since = self._working_days_since_last_send()
+        if days_since < n:
+            logger.info(
+                f"[SCHEDULE] Giorni lavorativi dall'ultimo invio: {days_since} (richiesti: {n}). Email NPI saltata."
+            )
+            return False
+
+        logger.info(f"[SCHEDULE] Condizioni soddisfatte (giorni lavorativi: {days_since} >= {n}). Invio email NPI.")
+        return True
+    
+    def start(self):
+        """Avvia il servizio di notifiche in background."""
+        if self.running:
+            logger.warning("Servizio notifiche già in esecuzione")
+            return
+        
+        if not self.config['notification_settings']['enabled']:
+            logger.info("Servizio notifiche disabilitato nella configurazione")
+            return
+
+        if self.npi_manager is None:
+            logger.error("Servizio notifiche NPI non avviato: npi_manager non disponibile")
+            return
+        
+        self.running = True
+        self.thread = threading.Thread(target=self._run_service, daemon=True, name="NPINotificationService")
+        self.thread.start()
+        logger.info("Servizio notifiche automatiche NPI avviato")
+    
+    def stop(self):
+        """Ferma il servizio di notifiche."""
+        self.running = False
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=5)
+        logger.info("Servizio notifiche automatiche NPI fermato")
+    
+    def _run_service(self):
+        """Loop principale del servizio (esegue in thread separato)."""
+        logger.info("Thread servizio notifiche in esecuzione")
+        
+        # Esegui immediatamente al primo avvio
+        self._check_and_send_notifications()
+        
+        # Poi controlla ogni ora se è il momento di inviare
+        check_time_str = self.config['notification_settings']['check_time']
+        target_hour, target_minute = map(int, check_time_str.split(':'))
+        
+        while self.running:
+            try:
+                now = datetime.now()
+                
+                # Controlla se è l'ora configurata
+                if now.hour == target_hour and now.minute == target_minute:
+                    logger.info(f"Ora configurata raggiunta ({check_time_str}), avvio controllo notifiche")
+                    self._check_and_send_notifications()
+                    # Dormi un minuto per evitare esecuzioni multiple
+                    time.sleep(60)
+                else:
+                    # Controlla ogni 30 secondi
+                    time.sleep(30)
+                    
+            except Exception as e:
+                logger.error(f"Errore nel loop del servizio notifiche: {e}", exc_info=True)
+                time.sleep(300)  # Attendi 5 minuti in caso di errore
+
+    def _to_date(self, value):
+        """Converte datetime/date in date; ritorna None se valore non valido."""
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        if hasattr(value, "date"):
+            try:
+                return value.date()
+            except Exception:
+                return None
+        return None
+    
+    def _check_and_send_notifications(self):
+        """Controlla task e invia notifiche consolidate (1 email per Project Owner)."""
+        # Verifica schedule: giorno lavorativo + intervallo minimo
+        if not self._is_send_day():
+            logger.info("[SCHEDULE] Invio email NPI non dovuto oggi. Controllo saltato.")
+            return
+
+        logger.info("=== INIZIO CONTROLLO NOTIFICHE NPI (CONSOLIDATE) ===")
+
+        try:
+            total_sent = 0
+            total_skipped = 0
+            total_failed = 0
+
+            # ── 1. Raccoglie task overdue/due-tomorrow raggruppati per Project Owner ──
+            project_owner_map = self._collect_all_task_notifications()
+
+            # ── 2. Invia 1 email per Project Owner ──────────────────────
+            for owner_email, owner_data in project_owner_map.items():
+                s, sk, f = self._send_project_owner_email(owner_email, owner_data)
+                total_sent += s
+                total_skipped += sk
+                total_failed += f
+
+            # ── 3. Raccoglie e invia 1 email per Task Owner ──────────────
+            task_owner_map = self._collect_task_owner_notifications()
+            for to_email, to_data in task_owner_map.items():
+                s, sk, f = self._send_task_owner_email(to_email, to_data)
+                total_sent += s
+                total_skipped += sk
+                total_failed += f
+
+
+            # ── 4. Panoramica globale NPI (ogni lunedì non festivo) ──────
+            sent, skipped, failed = self._send_global_npi_view_email()
+            total_sent += sent
+            total_skipped += skipped
+            total_failed += failed
+
+            # ── SENTINEL: Registra che il ciclo notifiche è stato eseguito oggi ──
+            try:
+                self._ensure_project_delay_email_log_table()
+                self._mark_project_delay_email_sent(
+                    owner_email='__SENTINEL__',
+                    overdue_count=total_sent,
+                    potential_count=total_skipped
+                )
+                logger.info("[SENTINEL] Record sentinella scritto in NpiProjectDelayEmailLog per oggi.")
+            except Exception as sentinel_err:
+                logger.warning(f"[SENTINEL] Impossibile scrivere sentinella: {sentinel_err}")
+
+            logger.info("=== FINE CONTROLLO NOTIFICHE NPI (CONSOLIDATE) ===")
+            logger.info(f"Totale email inviate: {total_sent}")
+            logger.info(f"Totale email saltate: {total_skipped}")
+            logger.info(f"Totale email fallite: {total_failed}")
+
+        except Exception as e:
+            logger.error(f"Errore durante controllo notifiche: {e}", exc_info=True)
+
+    # ── Raccolta dati consolidata (raw SQL) ──────────────────────────────
+
+    def _collect_all_task_notifications(self) -> Dict:
+        """
+        Raccoglie TUTTI i task overdue / due-tomorrow di tutti i progetti attivi
+        usando la query SQL corretta. Raggruppa per Project Owner → Task Owner.
+
+        Ritorna:
+            {
+                project_owner_email: {
+                    'owner_name': str,
+                    'tasks_by_task_owner': {
+                        task_owner_name: [task_info, ...]
+                    }
+                }
+            }
+        """
+        today = date.today()
+        tomorrow = today + timedelta(
+            days=int(self.config['notification_types']
+                     .get('task_due_tomorrow', {}).get('days_before', 1))
+        )
+
+        project_owner_map: Dict[str, dict] = {}
+
+        session = self.npi_manager._get_session()
+        try:
+            sql = text("""
+                SELECT DISTINCT
+                    prod.NomeProdotto,
+                    prod.CodiceProdotto,
+                    owner.NomeSoggetto  AS OwnerNome,
+                    owner.Email         AS OwnerEmail,
+                    t.TaskProdottoID,
+                    t.Stato,
+                    t.DataScadenza,
+                    t.OwnerID,
+                    tc.NomeTask,
+                    task_owner.NomeSoggetto AS TaskOwnerNome,
+                    task_owner.Email        AS TaskOwnerEmail,
+                    task_owner.Tipo         AS TaskOwnerTipo
+                FROM dbo.ProgettiNPI p
+                JOIN dbo.Prodotti prod           ON prod.ProdottoID = p.ProdottoID
+                LEFT JOIN dbo.vw_Soggetti owner  ON owner.SoggettoId = p.OwnerID
+                JOIN dbo.WaveNPI w               ON w.ProgettoID = p.ProgettoID
+                JOIN dbo.TaskProdotto t           ON t.WaveID = w.WaveID
+                LEFT JOIN dbo.TaskCatalogo tc     ON tc.TaskID = t.TaskID
+                LEFT JOIN dbo.vw_Soggetti task_owner ON task_owner.SoggettoId = t.OwnerID
+                WHERE p.StatoProgetto != 'Chiuso'
+                  AND t.OwnerID IS NOT NULL
+                  AND (p.OnHold IS NULL OR p.OnHold = 0)
+                ORDER BY owner.NomeSoggetto, task_owner.NomeSoggetto, t.DataScadenza
+            """)
+
+            rows = session.execute(sql).fetchall()
+            logger.info("[COLLECT] Query SQL eseguita: %d righe trovate", len(rows))
+
+            for row in rows:
+                (product_name, product_code, owner_name, owner_email,
+                 task_prodotto_id, stato, data_scadenza, owner_id,
+                 task_name, task_owner_name, task_owner_email, task_owner_tipo) = row
+
+                # Escludi task completati
+                if (stato or '').strip().lower() == 'completato':
+                    continue
+
+                # Escludi task senza scadenza
+                due_date = self._to_date(data_scadenza)
+                if not due_date:
+                    continue
+
+                # Determina tipo di notifica
+                notification_type = None
+                check_overdue = self.config['notification_types'].get('task_overdue', {}).get('enabled', True)
+                check_tomorrow = self.config['notification_types'].get('task_due_tomorrow', {}).get('enabled', True)
+
+                if check_overdue and due_date < today:
+                    notification_type = 'TaskOverdue'
+                elif check_tomorrow and due_date == tomorrow:
+                    notification_type = 'TaskDueTomorrow'
+
+                if not notification_type:
+                    continue
+
+                # Verifica tipo soggetto (solo Interno)
+                recipient_category = task_owner_tipo or 'Interno'
+                if not self.config['recipient_types'].get(recipient_category, {}).get('send_email', False):
+                    continue
+
+                # Normalizza email project owner
+                po_email = (owner_email or '').strip().lower()
+                if not po_email:
+                    continue
+
+                delay_days = (today - due_date).days if due_date < today else 0
+
+                task_info = {
+                    'task_id': task_prodotto_id,
+                    'task_name': task_name or 'N/A',
+                    'task_status': stato or 'Not Started',
+                    'due_date': due_date,
+                    'delay_days': delay_days,
+                    'notification_type': notification_type,
+                    'product_name': product_name or 'N/A',
+                    'product_code': product_code or 'N/A',
+                    'task_owner_name': task_owner_name or 'Unassigned',
+                    'task_owner_email': (task_owner_email or '').strip().lower(),
+                }
+
+                # Raggruppa per Project Owner → Task Owner
+                if po_email not in project_owner_map:
+                    project_owner_map[po_email] = {
+                        'owner_name': owner_name or 'N/A',
+                        'tasks_by_task_owner': {}
+                    }
+
+                to_name = task_owner_name or 'Unassigned'
+                if to_name not in project_owner_map[po_email]['tasks_by_task_owner']:
+                    project_owner_map[po_email]['tasks_by_task_owner'][to_name] = []
+                project_owner_map[po_email]['tasks_by_task_owner'][to_name].append(task_info)
+
+            logger.info(
+                "[COLLECT] Raggruppamento completato: %d Project Owner con task da notificare",
+                len(project_owner_map)
+            )
+            return project_owner_map
+
+        finally:
+            session.close()
+
+    # ── Invio email per Project Owner ─────────────────────────────────────
+
+    def _send_project_owner_email(
+        self, owner_email: str, owner_data: dict
+    ) -> Tuple[int, int, int]:
+        """
+        Invia 1 UNICA email al Project Owner con:
+        - Tabella HTML raggruppata per task_owner
+        - Allegato Excel con 1 tab per task_owner
+        """
+        from .data_models_notification import NpiTaskNotification
+
+        if not owner_email:
+            return 0, 1, 0
+
+        owner_name = owner_data['owner_name']
+        tasks_by_task_owner = owner_data.get('tasks_by_task_owner', {})
+
+        if not tasks_by_task_owner:
+            return 0, 1, 0
+
+        # Dedup: 1 sola query per project owner/giorno
+        session = self.npi_manager._get_session()
+        try:
+            today = date.today()
+
+            existing = session.scalars(
+                select(NpiTaskNotification).where(
+                    and_(
+                        NpiTaskNotification.RecipientEmail == owner_email,
+                        NpiTaskNotification.NotificationType == 'ConsolidatedProjectOwner',
+                        NpiTaskNotification.NotificationDate == today
+                    )
+                )
+            ).first()
+
+            if existing:
+                logger.info("Email task consolidata già inviata oggi a %s, skip", owner_email)
+                return 0, 1, 0
+
+            # Conta totali
+            all_tasks = []
+            for tasks in tasks_by_task_owner.values():
+                all_tasks.extend(tasks)
+
+            overdue_count = sum(1 for t in all_tasks if t['notification_type'] == 'TaskOverdue')
+            tomorrow_count = sum(1 for t in all_tasks if t['notification_type'] == 'TaskDueTomorrow')
+
+            # Genera Excel con tab per task_owner
+            excel_path = self._build_project_owner_excel(owner_name, tasks_by_task_owner)
+
+            # Genera HTML
+            html_body = self._build_project_owner_email_html(
+                owner_name, tasks_by_task_owner, overdue_count, tomorrow_count
+            )
+
+            # Subject
+            subject = (
+                f"NPI Task Alert — {overdue_count} overdue, {tomorrow_count} due tomorrow "
+                f"({len(all_tasks)} tasks) — Project Owner: {owner_name}"
+            )
+
+            # CC: email da setting
+            cc_set = set()
+            cc_set.update(e.lower() for e in self._get_setting_email_list('Sys_email_potential_npi_delay'))
+            cc_set.discard(owner_email)
+
+            # Invio
+            from utils import send_email
+            logo_path = self._resolve_logo_path() if self.config['notification_settings'].get('include_logo', True) else None
+            attachments = []
+            if logo_path:
+                attachments.append(('inline', logo_path, 'company_logo'))
+            if excel_path:
+                attachments.append(excel_path)
+
+            send_email(
+                recipients=[owner_email],
+                subject=subject,
+                body=html_body,
+                is_html=True,
+                cc_emails=list(cc_set),
+                attachments=attachments if attachments else None
+            )
+
+            # Registra invio (1 solo record per project owner)
+            try:
+                notif = NpiTaskNotification(
+                    TaskProdottoID=all_tasks[0]['task_id'] if all_tasks else None,
+                    ProgettoID=None,
+                    RecipientSoggettoID=None,
+                    NotificationType='ConsolidatedProjectOwner',
+                    NotificationDate=today,
+                    RecipientEmail=owner_email,
+                    RecipientName=owner_name,
+                    RecipientType='ProjectOwner',
+                    DeliveryStatus='Sent'
+                )
+                session.add(notif)
+                session.commit()
+            except Exception:
+                pass
+
+            # Cleanup Excel
+            try:
+                if excel_path and os.path.exists(excel_path):
+                    os.remove(excel_path)
+            except Exception:
+                pass
+
+            logger.info(
+                "Email consolidata inviata a Project Owner %s (%s): %d task owner, %d task totali",
+                owner_name, owner_email, len(tasks_by_task_owner), len(all_tasks)
+            )
+            return 1, 0, 0
+
+        except Exception as e:
+            logger.error(f"Errore invio email consolidata a {owner_email}: {e}", exc_info=True)
+            return 0, 0, 1
+        finally:
+            session.close()
+
+    # ── Excel per Project Owner (1 tab per task_owner) ────────────────────
+
+    def _build_project_owner_excel(self, owner_name: str, tasks_by_task_owner: dict) -> Optional[str]:
+        """
+        Genera Excel con 1 tab per task_owner.
+        Ogni tab: NomeTask, Prodotto, Codice, Scadenza, Stato, Ritardo, Alert.
+        """
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+            wb = Workbook()
+            wb.remove(wb.active)  # rimuovi foglio default
+
+            header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+            header_font = Font(name="Segoe UI", size=10, bold=True, color="FFFFFF")
+            overdue_fill = PatternFill(start_color="FDECEA", end_color="FDECEA", fill_type="solid")
+            tomorrow_fill = PatternFill(start_color="FFF3E0", end_color="FFF3E0", fill_type="solid")
+            thin_border = Border(
+                left=Side(style='thin'), right=Side(style='thin'),
+                top=Side(style='thin'), bottom=Side(style='thin')
+            )
+            headers = ["Task", "Prodotto", "Codice", "Scadenza", "Stato", "Ritardo (gg)", "Alert"]
+
+            for task_owner_name in sorted(tasks_by_task_owner.keys()):
+                tasks = tasks_by_task_owner[task_owner_name]
+                # Sanitizza nome tab Excel (max 31 char)
+                safe_name = task_owner_name[:31].replace('/', '-').replace('\\', '-').replace('*', '').replace('[', '').replace(']', '').replace(':', '').replace('?', '')
+                ws = wb.create_sheet(title=safe_name)
+
+                # Header
+                for col_idx, h in enumerate(headers, 1):
+                    cell = ws.cell(row=1, column=col_idx, value=h)
+                    cell.fill = header_fill
+                    cell.font = header_font
+                    cell.alignment = Alignment(horizontal='center')
+                    cell.border = thin_border
+
+                # Dati
+                for row_idx, t in enumerate(sorted(tasks, key=lambda x: x['due_date']), 2):
+                    alert_text = f"OVERDUE ({t['delay_days']}d)" if t['notification_type'] == 'TaskOverdue' else "DUE TOMORROW"
+                    row_fill = overdue_fill if t['notification_type'] == 'TaskOverdue' else tomorrow_fill
+
+                    values = [
+                        t['task_name'],
+                        t['product_name'],
+                        t['product_code'],
+                        t['due_date'].strftime('%d/%m/%Y') if t['due_date'] else '',
+                        t['task_status'],
+                        t['delay_days'] if t['notification_type'] == 'TaskOverdue' else 0,
+                        alert_text
+                    ]
+                    for col_idx, val in enumerate(values, 1):
+                        cell = ws.cell(row=row_idx, column=col_idx, value=val)
+                        cell.fill = row_fill
+                        cell.border = thin_border
+
+                # Auto-width
+                for col in ws.columns:
+                    max_len = 0
+                    for cell in col:
+                        try:
+                            lv = len(str(cell.value or ''))
+                            if lv > max_len:
+                                max_len = lv
+                        except Exception:
+                            pass
+                    ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 40)
+
+                ws.freeze_panes = 'A2'
+
+            # Salva
+            tmp_path = os.path.join(tempfile.gettempdir(), f"NPI_Tasks_Alert_{date.today().strftime('%Y%m%d')}.xlsx")
+            wb.save(tmp_path)
+            logger.info("[EXCEL] Report Excel generato: %s (%d tab)", tmp_path, len(tasks_by_task_owner))
+            return tmp_path
+
+        except Exception as e:
+            logger.error(f"Errore generazione Excel per Project Owner: {e}", exc_info=True)
+            return None
+
+    # ── Template HTML per Project Owner ───────────────────────────────────
+
+    def _build_project_owner_email_html(
+        self, owner_name: str, tasks_by_task_owner: dict,
+        overdue_count: int, tomorrow_count: int
+    ) -> str:
+        """
+        Genera HTML professionale con sezioni per ogni task_owner.
+        """
+        logo_html = ""
+        if self.config['notification_settings'].get('include_logo', True):
+            logo_html = '<img src="cid:company_logo" style="max-width:150px;height:auto;" alt="Company Logo">'
+
+        total_tasks = sum(len(tasks) for tasks in tasks_by_task_owner.values())
+
+        # Badge di riepilogo
+        summary_html = f"""
+        <div style="display:flex;gap:12px;margin:14px 0;">
+            <div style="flex:1;background:#FDECEA;border-radius:8px;padding:14px;text-align:center;">
+                <div style="font-size:28px;font-weight:bold;color:#B30000;">{overdue_count}</div>
+                <div style="font-size:12px;color:#B30000;">OVERDUE</div>
+            </div>
+            <div style="flex:1;background:#FFF3E0;border-radius:8px;padding:14px;text-align:center;">
+                <div style="font-size:28px;font-weight:bold;color:#E65100;">{tomorrow_count}</div>
+                <div style="font-size:12px;color:#E65100;">DUE TOMORROW</div>
+            </div>
+            <div style="flex:1;background:#E3F2FD;border-radius:8px;padding:14px;text-align:center;">
+                <div style="font-size:28px;font-weight:bold;color:#1565C0;">{total_tasks}</div>
+                <div style="font-size:12px;color:#1565C0;">TOTAL TASKS</div>
+            </div>
+            <div style="flex:1;background:#E8F5E9;border-radius:8px;padding:14px;text-align:center;">
+                <div style="font-size:28px;font-weight:bold;color:#1B5E20;">{len(tasks_by_task_owner)}</div>
+                <div style="font-size:12px;color:#1B5E20;">TASK OWNERS</div>
+            </div>
+        </div>
+        """
+
+        # Sezioni per task owner
+        sections_html = ""
+        for to_name in sorted(tasks_by_task_owner.keys()):
+            tasks = tasks_by_task_owner[to_name]
+            tasks_sorted = sorted(tasks, key=lambda x: x['due_date'])
+
+            rows_html = ""
+            for t in tasks_sorted:
+                if t['notification_type'] == 'TaskOverdue':
+                    icon = "🚨"
+                    badge = f'<span style="background:#B30000;color:#fff;padding:2px 8px;border-radius:10px;font-size:11px;">OVERDUE ({t["delay_days"]}d)</span>'
+                else:
+                    icon = "⚠️"
+                    badge = '<span style="background:#E65100;color:#fff;padding:2px 8px;border-radius:10px;font-size:11px;">DUE TOMORROW</span>'
+
+                rows_html += f"""
+                <tr>
+                    <td style="padding:8px;border:1px solid #e5e7eb;">{icon} {t['task_name']}</td>
+                    <td style="padding:8px;border:1px solid #e5e7eb;">{t['product_name']}</td>
+                    <td style="padding:8px;border:1px solid #e5e7eb;text-align:center;">{t['product_code']}</td>
+                    <td style="padding:8px;border:1px solid #e5e7eb;text-align:center;">{t['due_date'].strftime('%d/%m/%Y')}</td>
+                    <td style="padding:8px;border:1px solid #e5e7eb;text-align:center;">{t['task_status']}</td>
+                    <td style="padding:8px;border:1px solid #e5e7eb;text-align:center;">{badge}</td>
+                </tr>
+                """
+
+            overdue_in_section = sum(1 for t in tasks if t['notification_type'] == 'TaskOverdue')
+            tomorrow_in_section = sum(1 for t in tasks if t['notification_type'] == 'TaskDueTomorrow')
+            section_subtitle = []
+            if overdue_in_section:
+                section_subtitle.append(f"{overdue_in_section} overdue")
+            if tomorrow_in_section:
+                section_subtitle.append(f"{tomorrow_in_section} due tomorrow")
+
+            sections_html += f"""
+            <div style="margin:16px 0;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">
+                <div style="background:#1F4E78;color:#fff;padding:10px 14px;">
+                    <strong>👤 {to_name}</strong>
+                    <span style="float:right;font-size:12px;opacity:0.9;">{len(tasks)} task — {', '.join(section_subtitle)}</span>
+                </div>
+                <table style="border-collapse:collapse;width:100%;">
+                    <thead>
+                        <tr style="background:#f1f5f9;">
+                            <th style="padding:8px;border:1px solid #e5e7eb;text-align:left;">Task</th>
+                            <th style="padding:8px;border:1px solid #e5e7eb;text-align:left;">Prodotto</th>
+                            <th style="padding:8px;border:1px solid #e5e7eb;text-align:center;">Codice</th>
+                            <th style="padding:8px;border:1px solid #e5e7eb;text-align:center;">Due Date</th>
+                            <th style="padding:8px;border:1px solid #e5e7eb;text-align:center;">Status</th>
+                            <th style="padding:8px;border:1px solid #e5e7eb;text-align:center;">Alert</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows_html}
+                    </tbody>
+                </table>
+            </div>
+            """
+
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="UTF-8"></head>
+        <body style="font-family:'Segoe UI',Arial,sans-serif;color:#1f2937;background:#f5f7fb;padding:20px;">
+            <div style="max-width:980px;margin:0 auto;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
+                <div style="background:#FFFFFF;color:#0B3A66;padding:20px 24px;border-bottom:3px solid #0B3A66;">
+                    {logo_html}
+                    <h2 style="margin:12px 0 4px 0;">NPI Task Alert — Consolidated Report</h2>
+                    <p style="margin:0;opacity:0.92;">Tasks requiring attention across your projects.</p>
+                </div>
+                <div style="padding:22px 24px;">
+                    <p>Dear <strong>{owner_name}</strong>,</p>
+                    <p>The NPI monitoring system detected the following tasks that need attention in your projects:</p>
+
+                    {summary_html}
+
+                    {sections_html}
+
+                    <div style="background:#e7f3ff;border-left:4px solid #0078d4;padding:15px;margin:20px 0;border-radius:4px;">
+                        <h4 style="color:#0078d4;margin:0 0 10px 0;">📌 ACTION REQUIRED</h4>
+                        <ul style="margin:0;padding-left:20px;color:#333;">
+                            <li>Please review and update the task status in the NPI system</li>
+                            <li>Coordinate with the task owners listed above</li>
+                            <li>See the attached Excel report for detailed data per task owner</li>
+                        </ul>
+                    </div>
+
+                    <p style="color:#6b7280;font-size:12px;margin-top:24px;">
+                        This is an automated notification from the NPI Project Management System.
+                        Please do not reply to this email.
+                        Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+                    </p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        return html
+
+    # ── Raccolta dati per Task Owner (raw SQL) ───────────────────────────
+
+    def _collect_task_owner_notifications(self) -> Dict:
+        """
+        Raccoglie tutti i task overdue / due-tomorrow raggruppati per Task Owner.
+        Ritorna:
+            {
+                task_owner_email: {
+                    'task_owner_name': str,
+                    'tasks': [task_info, ...]
+                }
+            }
+        """
+        today = date.today()
+        tomorrow = today + timedelta(
+            days=int(self.config['notification_types']
+                     .get('task_due_tomorrow', {}).get('days_before', 1))
+        )
+
+        task_owner_map: Dict[str, dict] = {}
+
+        session = self.npi_manager._get_session()
+        try:
+            sql = text("""
+                SELECT DISTINCT
+                    task_owner.NomeSoggetto  AS TaskOwnerNome,
+                    prod.NomeProdotto,
+                    prod.CodiceProdotto,
+                    owner.NomeSoggetto      AS OwnerNome,
+                    owner.Email             AS OwnerEmail,
+                    t.TaskProdottoID,
+                    t.Stato,
+                    t.DataScadenza,
+                    t.OwnerID,
+                    tc.NomeTask,
+                    task_owner.Email        AS TaskOwnerEmail,
+                    task_owner.Tipo         AS TaskOwnerTipo
+                FROM dbo.ProgettiNPI p
+                JOIN dbo.Prodotti prod           ON prod.ProdottoID = p.ProdottoID
+                LEFT JOIN dbo.vw_Soggetti owner  ON owner.SoggettoId = p.OwnerID
+                JOIN dbo.WaveNPI w               ON w.ProgettoID = p.ProgettoID
+                JOIN dbo.TaskProdotto t           ON t.WaveID = w.WaveID
+                LEFT JOIN dbo.TaskCatalogo tc     ON tc.TaskID = t.TaskID
+                LEFT JOIN dbo.vw_Soggetti task_owner ON task_owner.SoggettoId = t.OwnerID
+                WHERE p.StatoProgetto != 'Chiuso'
+                  AND t.OwnerID IS NOT NULL
+                  AND (p.OnHold IS NULL OR p.OnHold = 0)
+                  AND task_owner.Tipo <> 'Cliente'
+                ORDER BY task_owner.NomeSoggetto, t.DataScadenza
+            """)
+
+            rows = session.execute(sql).fetchall()
+            logger.info("[COLLECT_TO] Query Task Owner SQL eseguita: %d righe trovate", len(rows))
+
+            for row in rows:
+                (task_owner_name, product_name, product_code, owner_name, owner_email,
+                 task_prodotto_id, stato, data_scadenza, owner_id,
+                 task_name, task_owner_email, task_owner_tipo) = row
+
+                # Escludi task completati
+                if (stato or '').strip().lower() == 'completato':
+                    continue
+
+                # Escludi task senza scadenza
+                due_date = self._to_date(data_scadenza)
+                if not due_date:
+                    continue
+
+                # Determina tipo di notifica
+                notification_type = None
+                check_overdue = self.config['notification_types'].get('task_overdue', {}).get('enabled', True)
+                check_tomorrow = self.config['notification_types'].get('task_due_tomorrow', {}).get('enabled', True)
+
+                if check_overdue and due_date < today:
+                    notification_type = 'TaskOverdue'
+                elif check_tomorrow and due_date == tomorrow:
+                    notification_type = 'TaskDueTomorrow'
+
+                if not notification_type:
+                    continue
+
+                # Verifica tipo soggetto (escluso Cliente dalla query, ma check anche config)
+                recipient_category = task_owner_tipo or 'Interno'
+                if not self.config['recipient_types'].get(recipient_category, {}).get('send_email', False):
+                    continue
+
+                # Normalizza email task owner
+                to_email = (task_owner_email or '').strip().lower()
+                if not to_email:
+                    continue
+
+                delay_days = (today - due_date).days if due_date < today else 0
+
+                task_info = {
+                    'task_id': task_prodotto_id,
+                    'task_name': task_name or 'N/A',
+                    'task_status': stato or 'Not Started',
+                    'due_date': due_date,
+                    'delay_days': delay_days,
+                    'notification_type': notification_type,
+                    'product_name': product_name or 'N/A',
+                    'product_code': product_code or 'N/A',
+                    'project_owner_name': owner_name or 'N/A',
+                    'project_owner_email': (owner_email or '').strip().lower(),
+                }
+
+                # Raggruppa per Task Owner
+                if to_email not in task_owner_map:
+                    task_owner_map[to_email] = {
+                        'task_owner_name': task_owner_name or 'Unassigned',
+                        'tasks': []
+                    }
+                task_owner_map[to_email]['tasks'].append(task_info)
+
+            logger.info(
+                "[COLLECT_TO] Raggruppamento completato: %d Task Owner con task da notificare",
+                len(task_owner_map)
+            )
+            return task_owner_map
+
+        finally:
+            session.close()
+
+    # ── Invio email per Task Owner ────────────────────────────────────────
+
+    def _send_task_owner_email(
+        self, to_email: str, to_data: dict
+    ) -> Tuple[int, int, int]:
+        """
+        Invia 1 UNICA email al Task Owner con tutti i suoi task overdue / due-tomorrow.
+        CC: project owner(s) dei task + destinatari da Sys_email_potential_npi_delay.
+        """
+        from .data_models_notification import NpiTaskNotification
+
+        if not to_email:
+            return 0, 1, 0
+
+        to_name = to_data['task_owner_name']
+        tasks = to_data.get('tasks', [])
+
+        if not tasks:
+            return 0, 1, 0
+
+        # Dedup: 1 sola query per task_owner/giorno
+        session = self.npi_manager._get_session()
+        try:
+            today = date.today()
+
+            existing = session.scalars(
+                select(NpiTaskNotification).where(
+                    and_(
+                        NpiTaskNotification.RecipientEmail == to_email,
+                        NpiTaskNotification.NotificationType == 'ConsolidatedTaskOwner',
+                        NpiTaskNotification.NotificationDate == today
+                    )
+                )
+            ).first()
+
+            if existing:
+                logger.info("Email task owner consolidata già inviata oggi a %s, skip", to_email)
+                return 0, 1, 0
+
+            # Conta totali
+            overdue_count = sum(1 for t in tasks if t['notification_type'] == 'TaskOverdue')
+            tomorrow_count = sum(1 for t in tasks if t['notification_type'] == 'TaskDueTomorrow')
+
+            # Genera HTML
+            html_body = self._build_task_owner_email_html(
+                to_name, tasks, overdue_count, tomorrow_count
+            )
+
+            # Subject
+            subject = (
+                f"NPI Task Alert — {overdue_count} overdue, {tomorrow_count} due tomorrow "
+                f"({len(tasks)} tasks) — {to_name}"
+            )
+
+            # CC: project owner(s) + email da setting
+            cc_set = set()
+            for t in tasks:
+                po_email = t.get('project_owner_email', '')
+                if po_email and '@' in po_email:
+                    cc_set.add(po_email)
+            cc_set.update(e.lower() for e in self._get_setting_email_list('Sys_email_potential_npi_delay'))
+            cc_set.discard(to_email)
+
+            # Invio
+            from utils import send_email
+            logo_path = self._resolve_logo_path() if self.config['notification_settings'].get('include_logo', True) else None
+            attachments = [('inline', logo_path, 'company_logo')] if logo_path else None
+
+            send_email(
+                recipients=[to_email],
+                subject=subject,
+                body=html_body,
+                is_html=True,
+                cc_emails=list(cc_set),
+                attachments=attachments
+            )
+
+            # Registra invio (1 solo record per task owner)
+            try:
+                notif = NpiTaskNotification(
+                    TaskProdottoID=tasks[0]['task_id'] if tasks else None,
+                    ProgettoID=None,
+                    RecipientSoggettoID=None,
+                    NotificationType='ConsolidatedTaskOwner',
+                    NotificationDate=today,
+                    RecipientEmail=to_email,
+                    RecipientName=to_name,
+                    RecipientType='TaskOwner',
+                    DeliveryStatus='Sent'
+                )
+                session.add(notif)
+                session.commit()
+            except Exception:
+                pass
+
+            logger.info(
+                "Email consolidata inviata a Task Owner %s (%s): %d task totali",
+                to_name, to_email, len(tasks)
+            )
+            return 1, 0, 0
+
+        except Exception as e:
+            logger.error(f"Errore invio email consolidata a Task Owner {to_email}: {e}", exc_info=True)
+            return 0, 0, 1
+        finally:
+            session.close()
+
+    # ── Template HTML per Task Owner ──────────────────────────────────────
+
+    def _build_task_owner_email_html(
+        self, to_name: str, tasks: list,
+        overdue_count: int, tomorrow_count: int
+    ) -> str:
+        """
+        Genera HTML professionale per Task Owner con tabella task.
+        """
+        logo_html = ""
+        if self.config['notification_settings'].get('include_logo', True):
+            logo_html = '<img src="cid:company_logo" style="max-width:150px;height:auto;" alt="Company Logo">'
+
+        # Badge di riepilogo
+        summary_html = f"""
+        <div style="display:flex;gap:12px;margin:14px 0;">
+            <div style="flex:1;background:#FDECEA;border-radius:8px;padding:14px;text-align:center;">
+                <div style="font-size:28px;font-weight:bold;color:#B30000;">{overdue_count}</div>
+                <div style="font-size:12px;color:#B30000;">OVERDUE</div>
+            </div>
+            <div style="flex:1;background:#FFF3E0;border-radius:8px;padding:14px;text-align:center;">
+                <div style="font-size:28px;font-weight:bold;color:#E65100;">{tomorrow_count}</div>
+                <div style="font-size:12px;color:#E65100;">DUE TOMORROW</div>
+            </div>
+            <div style="flex:1;background:#E3F2FD;border-radius:8px;padding:14px;text-align:center;">
+                <div style="font-size:28px;font-weight:bold;color:#1565C0;">{len(tasks)}</div>
+                <div style="font-size:12px;color:#1565C0;">TOTAL TASKS</div>
+            </div>
+        </div>
+        """
+
+        # Tabella task
+        rows_html = ""
+        for t in sorted(tasks, key=lambda x: x['due_date']):
+            if t['notification_type'] == 'TaskOverdue':
+                icon = "🚨"
+                badge = f'<span style="background:#B30000;color:#fff;padding:2px 8px;border-radius:10px;font-size:11px;">OVERDUE ({t["delay_days"]}d)</span>'
+            else:
+                icon = "⚠️"
+                badge = '<span style="background:#E65100;color:#fff;padding:2px 8px;border-radius:10px;font-size:11px;">DUE TOMORROW</span>'
+
+            rows_html += f"""
+            <tr>
+                <td style="padding:8px;border:1px solid #e5e7eb;">{icon} {t['task_name']}</td>
+                <td style="padding:8px;border:1px solid #e5e7eb;">{t['product_name']}</td>
+                <td style="padding:8px;border:1px solid #e5e7eb;text-align:center;">{t['product_code']}</td>
+                <td style="padding:8px;border:1px solid #e5e7eb;text-align:center;">{t['due_date'].strftime('%d/%m/%Y')}</td>
+                <td style="padding:8px;border:1px solid #e5e7eb;text-align:center;">{t['task_status']}</td>
+                <td style="padding:8px;border:1px solid #e5e7eb;">{t['project_owner_name']}</td>
+                <td style="padding:8px;border:1px solid #e5e7eb;text-align:center;">{badge}</td>
+            </tr>
+            """
+
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="UTF-8"></head>
+        <body style="font-family:'Segoe UI',Arial,sans-serif;color:#1f2937;background:#f5f7fb;padding:20px;">
+            <div style="max-width:980px;margin:0 auto;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
+                <div style="background:#FFFFFF;color:#0B3A66;padding:20px 24px;border-bottom:3px solid #0B3A66;">
+                    {logo_html}
+                    <h2 style="margin:12px 0 4px 0;">NPI Task Alert — Your Tasks</h2>
+                    <p style="margin:0;opacity:0.92;">Tasks assigned to you that require attention.</p>
+                </div>
+                <div style="padding:22px 24px;">
+                    <p>Dear <strong>{to_name}</strong>,</p>
+                    <p>The NPI monitoring system detected the following tasks assigned to you that need attention:</p>
+
+                    {summary_html}
+
+                    <div style="margin:16px 0;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">
+                        <table style="border-collapse:collapse;width:100%;">
+                            <thead>
+                                <tr style="background:#1F4E78;color:#fff;">
+                                    <th style="padding:8px;border:1px solid #e5e7eb;text-align:left;">Task</th>
+                                    <th style="padding:8px;border:1px solid #e5e7eb;text-align:left;">Prodotto</th>
+                                    <th style="padding:8px;border:1px solid #e5e7eb;text-align:center;">Codice</th>
+                                    <th style="padding:8px;border:1px solid #e5e7eb;text-align:center;">Due Date</th>
+                                    <th style="padding:8px;border:1px solid #e5e7eb;text-align:center;">Status</th>
+                                    <th style="padding:8px;border:1px solid #e5e7eb;text-align:left;">Project Owner</th>
+                                    <th style="padding:8px;border:1px solid #e5e7eb;text-align:center;">Alert</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {rows_html}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div style="background:#e7f3ff;border-left:4px solid #0078d4;padding:15px;margin:20px 0;border-radius:4px;">
+                        <h4 style="color:#0078d4;margin:0 0 10px 0;">📌 ACTION REQUIRED</h4>
+                        <ul style="margin:0;padding-left:20px;color:#333;">
+                            <li>Please review and update your task status in the NPI system</li>
+                            <li>Contact the Project Owner if you need assistance or clarification</li>
+                        </ul>
+                    </div>
+
+                    <p style="color:#6b7280;font-size:12px;margin-top:24px;">
+                        This is an automated notification from the NPI Project Management System.
+                        Please do not reply to this email.
+                        Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+                    </p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        return html
+
+
+    def _get_setting_email_list(self, setting_key: str) -> List[str]:
+        """Legge una lista email da dbo.settings.VALUE separata da ; o ,."""
+        session = self.npi_manager._get_session()
+        emails: List[str] = []
+        try:
+            rows = session.execute(
+                text("SELECT [VALUE] FROM [dbo].[settings] WHERE atribute = :attr"),
+                {"attr": setting_key}
+            ).all()
+            for row in rows:
+                raw = row[0]
+                if not raw:
+                    continue
+                for token in str(raw).replace(';', ',').split(','):
+                    em = token.strip()
+                    if em and '@' in em:
+                        emails.append(em)
+            # Dedup preservando ordine
+            deduped = []
+            seen = set()
+            for em in emails:
+                key = em.lower()
+                if key in seen:
+                    continue
+                deduped.append(em)
+                seen.add(key)
+            return deduped
+        except Exception as e:
+            logger.error(f"Errore lettura setting email {setting_key}: {e}", exc_info=True)
+            return []
+        finally:
+            session.close()
+
+    def _build_notification_cc_list(self, project_owner_email: Optional[str], to_email: Optional[str] = None) -> List[str]:
+        """
+        Costruisce la lista CC per notifiche:
+        - owner progetto
+        - email da setting Sys_email_potential_npi_delay
+        Deduplica e rimuove eventuale duplicato con TO.
+        """
+        cc_raw: List[str] = []
+        if project_owner_email and '@' in project_owner_email:
+            cc_raw.append(project_owner_email.strip())
+        cc_raw.extend(self._get_setting_email_list('Sys_email_potential_npi_delay'))
+
+        to_key = (to_email or '').strip().lower()
+        cc_clean: List[str] = []
+        seen = set()
+        for email in cc_raw:
+            key = (email or '').strip().lower()
+            if not key or key == to_key or key in seen:
+                continue
+            seen.add(key)
+            cc_clean.append(email.strip())
+        return cc_clean
+
+    def _ensure_project_delay_email_log_table(self) -> None:
+        """Crea la tabella log invii (se assente) per garantire una sola email al giorno per owner."""
+        session = self.npi_manager._get_session()
+        try:
+            session.execute(text("""
+                IF OBJECT_ID(N'[dbo].[NpiProjectDelayEmailLog]', N'U') IS NULL
+                BEGIN
+                    CREATE TABLE [dbo].[NpiProjectDelayEmailLog](
+                        [Id] INT IDENTITY(1,1) PRIMARY KEY,
+                        [NotificationDate] DATE NOT NULL,
+                        [RecipientEmail] NVARCHAR(255) NOT NULL,
+                        [OverdueCount] INT NULL,
+                        [PotentialCount] INT NULL,
+                        [SentDateTime] DATETIME NOT NULL DEFAULT(GETDATE())
+                    );
+                    CREATE UNIQUE INDEX [UX_NpiProjectDelayEmailLog_DateRecipient]
+                        ON [dbo].[NpiProjectDelayEmailLog]([NotificationDate], [RecipientEmail]);
+                END
+            """))
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Errore creazione tabella NpiProjectDelayEmailLog: {e}", exc_info=True)
+        finally:
+            session.close()
+
+
+    def _mark_project_delay_email_sent(self, owner_email: str, overdue_count: int, potential_count: int) -> None:
+        """Registra l'invio email ritardi progetto per owner/data odierna."""
+        session = self.npi_manager._get_session()
+        try:
+            today = date.today()
+            session.execute(
+                text("""
+                    INSERT INTO [dbo].[NpiProjectDelayEmailLog]
+                        ([NotificationDate], [RecipientEmail], [OverdueCount], [PotentialCount])
+                    VALUES
+                        (:today, :email, :overdue, :potential)
+                """),
+                {
+                    "today": today,
+                    "email": owner_email,
+                    "overdue": int(overdue_count or 0),
+                    "potential": int(potential_count or 0)
+                }
+            )
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Errore registrazione log invio NPI project delay per {owner_email}: {e}", exc_info=True)
+        finally:
+            session.close()
+
+    def _resolve_logo_path(self) -> Optional[str]:
+        """Trova il logo da allegare inline all'email."""
+        candidates = [
+            os.path.join(os.getcwd(), "Logo.png"),
+            os.path.join(os.getcwd(), "logo.png"),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Logo.png")),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "logo.png")),
+        ]
+        for p in candidates:
+            if os.path.exists(p):
+                return p
+        return None
+
+    
+    def _process_project_notifications(self, project_id: int) -> Tuple[int, int, int]:
+        """Processa notifiche per un singolo progetto."""
+        sent = 0
+        skipped = 0
+        failed = 0
+        
+        try:
+            from .data_models import TaskProdotto, WaveNPI, ProgettoNPI
+            
+            # Ottieni tutti i task del progetto
+            session = self.npi_manager._get_session()
+            try:
+                progetto = session.scalars(
+                    select(ProgettoNPI)
+                    .options(
+                        joinedload(ProgettoNPI.owner),
+                        joinedload(ProgettoNPI.prodotto)
+                    )
+                    .where(ProgettoNPI.ProgettoId == project_id)
+                ).first()
+
+                if not progetto:
+                    logger.warning("Progetto NPI %s non trovato durante processamento notifiche", project_id)
+                    return sent, skipped + 1, failed
+
+                tasks = session.scalars(
+                    select(TaskProdotto)
+                    .join(WaveNPI)
+                    .where(
+                        and_(
+                            WaveNPI.ProgettoID == project_id,
+                            TaskProdotto.OwnerID.isnot(None),
+                            TaskProdotto.Stato != 'Completato'
+                        )
+                    )
+                    .options(
+                        joinedload(TaskProdotto.owner),
+                        joinedload(TaskProdotto.task_catalogo),
+                        joinedload(TaskProdotto.wave).joinedload(WaveNPI.progetto).joinedload(ProgettoNPI.owner),
+                        subqueryload(TaskProdotto.dependencies)
+                    )
+                ).all()
+                
+                for task in tasks:
+                    s, sk, f = self._process_task_notifications(task, progetto, session)
+                    sent += s
+                    skipped += sk
+                    failed += f
+                
+                # NUOVO: Analisi rischio progetto e notifica Project Owner
+                s, sk, f = self._assess_project_risk_and_notify(progetto, tasks, session)
+                sent += s
+                skipped += sk
+                failed += f
+            finally:
+                session.close()
+                    
+        except Exception as e:
+            logger.error(f"Errore processamento progetto {project_id}: {e}", exc_info=True)
+            failed += 1
+        
+        return sent, skipped, failed
+    
+    def _assess_project_risk_and_notify(self, progetto, tasks, session) -> Tuple[int, int, int]:
+        """
+        Analizza il rischio del progetto basandosi su task in ritardo.
+        Invia email al Project Owner se il progetto è a rischio.
+        
+        Logica intelligente:
+        - Conta task scaduti
+        - Verifica task scaduti nel critical path (con dipendenti)
+        - Calcola buffer temporale vs giorni necessari
+        - Determina livello di rischio (Low/Medium/High/Critical)
+        """
+        from .data_models_notification import NpiTaskNotification
+        from .data_models import TaskDependency, TaskProdotto
+        
+        try:
+            if not progetto.owner or not progetto.owner.Email:
+                return 0, 0, 0
+            
+            # Verifica tipo soggetto
+            recipient_category = progetto.owner.Tipo or 'Interno'
+            recipient_config = self.config['recipient_types'].get(recipient_category, {"send_email": False})
+            if not recipient_config['send_email']:
+                return 0, 1, 0
+            
+            today = date.today()
+            
+            # 1. Identifica task in ritardo
+            overdue_tasks = []
+            for task in tasks:
+                if task.DataScadenza:
+                    due_date = self._to_date(task.DataScadenza)
+                    if not due_date:
+                        continue
+                    if due_date < today and task.Stato != 'Completato':
+                        overdue_tasks.append(task)
+            
+            # Se nessun task in ritardo, progetto ok
+            if not overdue_tasks:
+                return 0, 0, 0
+            
+            # 2. Analizza impatto task in ritardo
+            critical_path_tasks = []  # Task in ritardo che bloccano altri task
+            blocking_info = {}  # task_id -> lista di task bloccati
+            
+            for task in overdue_tasks:
+                # Trova task che dipendono da questo task in ritardo
+                dependent_tasks = session.scalars(
+                    select(TaskProdotto)
+                    .join(TaskDependency, TaskDependency.TaskProdottoID == TaskProdotto.TaskProdottoID)
+                    .where(TaskDependency.DependsOnTaskProdottoID == task.TaskProdottoID)
+                    .options(joinedload(TaskProdotto.task_catalogo), joinedload(TaskProdotto.owner))
+                ).all()
+                
+                if dependent_tasks:
+                    critical_path_tasks.append(task)
+                    blocking_info[task.TaskProdottoID] = dependent_tasks
+            
+            # 3. Calcola buffer temporale
+            project_end = progetto.ScadenzaProgetto
+            if not project_end:
+                buffer_days = None
+            else:
+                end_date = self._to_date(project_end)
+                if not end_date:
+                    buffer_days = None
+                else:
+                    buffer_days = (end_date - today).days
+            
+            # 4. Determina livello di rischio
+            risk_level, risk_color, risk_icon = self._calculate_risk_level(
+                len(overdue_tasks),
+                len(critical_path_tasks),
+                buffer_days,
+                len(tasks)
+            )
+            
+            # 5. Verifica se già inviata oggi (evita duplicati)
+            notification_type = f'ProjectRisk_{risk_level}'
+            existing = session.scalars(
+                select(NpiTaskNotification).where(
+                    and_(
+                        NpiTaskNotification.ProgettoID == progetto.ProgettoId,
+                        NpiTaskNotification.RecipientSoggettoID == progetto.owner.SoggettoId,
+                        NpiTaskNotification.NotificationType.like('ProjectRisk_%'),
+                        NpiTaskNotification.NotificationDate == today
+                    )
+                )
+            ).first()
+            
+            if existing:
+                logger.info(
+                    "Skip ProjectRisk email: gia' inviata oggi "
+                    "(project_id=%s, owner_id=%s, owner_email=%s, requested_type=%s, existing_type=%s)",
+                    progetto.ProgettoId,
+                    progetto.owner.SoggettoId if progetto.owner else None,
+                    progetto.owner.Email if progetto.owner else None,
+                    notification_type,
+                    existing.NotificationType
+                )
+                return 0, 1, 0
+            
+            # 6. Genera e invia email di rischio progetto
+            logo_path = self._resolve_logo_path() if self.config['notification_settings'].get('include_logo', True) else None
+            email_html = self._generate_project_risk_email(
+                progetto, overdue_tasks, critical_path_tasks, blocking_info,
+                risk_level, risk_color, risk_icon, buffer_days,
+                inline_logo_enabled=bool(logo_path)
+            )
+            
+            from utils import send_email
+            
+            subject = f"🚨 NPI Project Risk Alert: {progetto.prodotto.NomeProdotto if progetto.prodotto else 'Project'} - {risk_level.upper()} RISK"
+            
+            cc_list = self._build_notification_cc_list(
+                project_owner_email=(progetto.owner.Email if progetto.owner else None),
+                to_email=(progetto.owner.Email if progetto.owner else None)
+            )
+            send_email(
+                recipients=[progetto.owner.Email],
+                subject=subject,
+                body=email_html,
+                is_html=True,
+                cc_emails=cc_list,
+                attachments=([('inline', logo_path, 'company_logo')] if logo_path else None)
+            )
+            
+            # 7. Registra notifica (TaskProdottoID e' NOT NULL in tabella)
+            reference_task_id = None
+            if critical_path_tasks:
+                reference_task_id = critical_path_tasks[0].TaskProdottoID
+            elif overdue_tasks:
+                reference_task_id = overdue_tasks[0].TaskProdottoID
+
+            if not reference_task_id:
+                logger.error(
+                    "Impossibile registrare Project Risk Alert: nessun TaskProdottoID di riferimento "
+                    "(progetto=%s, tipo=%s)",
+                    progetto.ProgettoId,
+                    notification_type
+                )
+                return 0, 0, 1
+
+            notification = NpiTaskNotification(
+                TaskProdottoID=reference_task_id,
+                ProgettoID=progetto.ProgettoId,
+                RecipientSoggettoID=progetto.owner.SoggettoId,
+                NotificationType=notification_type,
+                NotificationDate=today,
+                RecipientEmail=progetto.owner.Email,
+                RecipientName=progetto.owner.Nome,
+                RecipientType='ProjectOwner',
+                DeliveryStatus='Sent'
+            )
+            session.add(notification)
+            session.commit()
+            
+            logger.info(f"Project Risk Alert ({risk_level}) inviato a {progetto.owner.Nome} per progetto {progetto.ProgettoId}")
+            return 1, 0, 0
+            
+        except Exception as e:
+            logger.error(f"Errore valutazione rischio progetto: {e}", exc_info=True)
+            return 0, 0, 1
+    
+    def _calculate_risk_level(self, overdue_count, critical_path_count, buffer_days, total_tasks) -> Tuple[str, str, str]:
+        """
+        Calcola il livello di rischio del progetto basandosi su metriche.
+        
+        Returns:
+            (risk_level, risk_color, risk_icon)
+        """
+        # Fattori di rischio
+        overdue_ratio = overdue_count / max(total_tasks, 1)
+        
+        # CRITICAL: Task nel critical path in ritardo + poco buffer
+        if critical_path_count > 0 and (buffer_days is None or buffer_days <= 7):
+            return 'Critical', '#8B0000', '🔴'  # Dark Red
+        
+        # HIGH: Molti task in ritardo o critical path
+        if overdue_ratio > 0.3 or critical_path_count >= 3:
+            return 'High', '#DC143C', '🚨'  # Crimson
+        
+        # MEDIUM: Alcuni task in ritardo
+        if overdue_ratio > 0.15 or critical_path_count >= 1:
+            return 'Medium', '#FFA500', '⚠️'  # Orange
+        
+        # LOW: Pochi task in ritardo, molto buffer
+        return 'Low', '#FFD700', '⚡'  # Gold
+    
+    def _process_task_notifications(self, task, progetto, session) -> Tuple[int, int, int]:
+        """Processa notifiche per un singolo task."""
+        sent = 0
+        skipped = 0
+        failed = 0
+        
+        if not task.DataScadenza:
+            return sent, skipped, failed
+        
+        today = date.today()
+        due_date = self._to_date(task.DataScadenza)
+        if not due_date:
+            return sent, skipped + 1, failed
+        
+        # Determina il tipo di notifica
+        notification_type = None
+        
+        if self.config['notification_types']['task_due_tomorrow']['enabled']:
+            days_before = self.config['notification_types']['task_due_tomorrow']['days_before']
+            if due_date == today + timedelta(days=days_before):
+                notification_type = 'TaskDueTomorrow'
+        
+        if self.config['notification_types']['task_overdue']['enabled']:
+            if due_date < today:
+                notification_type = 'TaskOverdue'
+        
+        if not notification_type:
+            return sent, skipped, failed
+        
+        # Recupera il task owner: prima prova la relazione ORM, poi fallback SQL
+        # (la relazione ORM può fallire se vw_Soggetti è una view cross-database)
+        task_owner_obj = task.owner
+        if task_owner_obj is None and task.OwnerID:
+            # Carica il soggetto direttamente via SQL dalla view
+            try:
+                row = session.execute(
+                    text("""
+                        SELECT SoggettoId, Nome, Email, Tipo
+                        FROM dbo.vw_Soggetti
+                        WHERE SoggettoId = :sid
+                    """),
+                    {"sid": task.OwnerID}
+                ).first()
+                if row:
+                    # Crea un oggetto semplice con gli attributi necessari
+                    class _TaskOwnerProxy:
+                        def __init__(self, sid, nome, email, tipo):
+                            self.SoggettoId = sid
+                            self.Nome = nome
+                            self.Email = email
+                            self.Tipo = tipo or 'Interno'
+                    task_owner_obj = _TaskOwnerProxy(row[0], row[1], row[2], row[3])
+                    logger.debug(
+                        "Task owner caricato via SQL (ORM fallback): task=%s owner=%s email=%s",
+                        task.TaskProdottoID, task_owner_obj.Nome, task_owner_obj.Email
+                    )
+            except Exception as e:
+                logger.warning("Errore caricamento task owner via SQL per task %s: %s", task.TaskProdottoID, e)
+
+        if task_owner_obj:
+            # ✅ CORRETTO: invia al Task Owner in TO, Project Owner in CC
+            s, sk, f = self._send_notification_email(
+                task, progetto, task_owner_obj, 'TaskOwner', notification_type, session
+            )
+            sent += s
+            skipped += sk
+            failed += f
+        else:
+            # Se il task non ha owner (nemmeno via SQL), invia al project owner come fallback
+            if progetto.owner:
+                logger.warning(
+                    "Task %s non ha owner (OwnerID=%s): fallback a Project Owner %s",
+                    task.TaskProdottoID, task.OwnerID, progetto.owner.Nome
+                )
+                s, sk, f = self._send_notification_email(
+                    task, progetto, progetto.owner, 'ProjectOwner', notification_type, session
+                )
+                sent += s
+                skipped += sk
+                failed += f
+        
+        return sent, skipped, failed
+    
+    def _send_notification_email(
+        self, task, progetto, recipient, recipient_type, notification_type, session
+    ) -> Tuple[int, int, int]:
+        """Invia una email di notifica ed registra nel database."""
+        from .data_models_notification import NpiTaskNotification
+        
+        # Verifica se il tipo di soggetto può ricevere email
+        recipient_category = recipient.Tipo or 'Interno'
+        recipient_config = self.config['recipient_types'].get(recipient_category, {"send_email": False})
+        
+        if not recipient_config['send_email']:
+            logger.debug(f"Email saltata per {recipient.Nome} (tipo: {recipient_category})")
+            return 0, 1, 0
+        
+        if not recipient.Email:
+            logger.warning(f"Nessuna email configurata per {recipient.Nome}")
+            return 0, 1, 0
+        
+        # Controllo duplicati
+        today = date.today()
+        existing = session.scalars(
+            select(NpiTaskNotification).where(
+                and_(
+                    NpiTaskNotification.TaskProdottoID == task.TaskProdottoID,
+                    NpiTaskNotification.RecipientSoggettoID == recipient.SoggettoId,
+                    NpiTaskNotification.NotificationType == notification_type,
+                    NpiTaskNotification.NotificationDate == today
+                )
+            )
+        ).first()
+        
+        if existing:
+            logger.debug(f"Notifica già inviata oggi a {recipient.Nome} per task {task.TaskProdottoID}")
+            return 0, 1, 0
+        
+        # Genera email HTML
+        logo_path = self._resolve_logo_path() if self.config['notification_settings'].get('include_logo', True) else None
+        email_html = self._generate_notification_email(
+            task, progetto, recipient, recipient_type, notification_type,
+            inline_logo_enabled=bool(logo_path)
+        )
+        
+        # Invia email
+        try:
+            from utils import send_email
+            
+            subject = f"NPI Task Alert: {task.task_catalogo.NomeTask if task.task_catalogo else 'Task'}"
+            if notification_type == 'TaskDueTomorrow':
+                subject += " - Due Tomorrow"
+            else:
+                subject += " - OVERDUE"
+            
+            cc_list = self._build_notification_cc_list(
+                project_owner_email=(progetto.owner.Email if progetto and progetto.owner else None),
+                to_email=recipient.Email
+            )
+            send_email(
+                recipients=[recipient.Email],
+                subject=subject,
+                body=email_html,
+                is_html=True,
+                cc_emails=cc_list,
+                attachments=([('inline', logo_path, 'company_logo')] if logo_path else None)
+            )
+            
+            # Registra notifica
+            notification = NpiTaskNotification(
+                TaskProdottoID=task.TaskProdottoID,
+                ProgettoID=progetto.ProgettoId,
+                RecipientSoggettoID=recipient.SoggettoId,
+                NotificationType=notification_type,
+                NotificationDate=today,
+                RecipientEmail=recipient.Email,
+                RecipientName=recipient.Nome,
+                RecipientType=recipient_type,
+                DeliveryStatus='Sent'
+            )
+            session.add(notification)
+            session.commit()
+            
+            logger.info(f"Notifica {notification_type} inviata a {recipient.Nome} per task {task.TaskProdottoID}")
+            return 1, 0, 0
+            
+        except Exception as e:
+            logger.error(f"Errore invio email a {recipient.Nome}: {e}", exc_info=True)
+            
+            # Registra errore
+            try:
+                notification = NpiTaskNotification(
+                    TaskProdottoID=task.TaskProdottoID,
+                    ProgettoID=progetto.ProgettoId,
+                    RecipientSoggettoID=recipient.SoggettoId,
+                    NotificationType=notification_type,
+                    NotificationDate=today,
+                    RecipientEmail=recipient.Email,
+                    RecipientName=recipient.Nome,
+                    RecipientType=recipient_type,
+                    DeliveryStatus='Failed',
+                    ErrorMessage=str(e)
+                )
+                session.add(notification)
+                session.commit()
+            except:
+                pass
+            
+            return 0, 0, 1
+    
+    def _generate_notification_email(
+        self, task, progetto, recipient, recipient_type, notification_type, inline_logo_enabled=False
+    ) -> str:
+        """Genera HTML email professionale con logo."""
+        
+        # Determina il titolo e colore in base al tipo
+        if notification_type == 'TaskDueTomorrow':
+            alert_title = "⚠️ TASK DUE TOMORROW"
+            alert_color = "#FFA500"  # Orange
+            message = "This task is due tomorrow"
+        else:  # TaskOverdue
+            alert_title = "🚨 TASK OVERDUE"
+            alert_color = "#DC143C"  # Crimson
+            message = "This task is overdue and requires immediate attention"
+        
+        # Dati task
+        task_name = task.task_catalogo.NomeTask if task.task_catalogo else "N/A"
+        task_owner = task.owner.Nome if task.owner else "Unassigned"
+        task_due_date = task.DataScadenza.strftime('%d/%m/%Y') if task.DataScadenza else "N/A"
+        task_start_date = task.DataInizio.strftime('%d/%m/%Y') if task.DataInizio else "N/A"
+        task_status = task.Stato or "Not Started"
+        
+        # Dati progetto
+        project_name = progetto.prodotto.NomeProdotto if progetto.prodotto else "N/A"
+        project_code = progetto.prodotto.CodiceProdotto if progetto.prodotto else "N/A"
+        project_owner = progetto.owner.Nome if progetto.owner else "N/A"
+        
+        # Dipendenze bloccate
+        blocked_tasks_html = ""
+        dependencies = self.npi_manager.get_task_dependencies(task.TaskProdottoID)
+        if dependencies:
+            blocked_list = []
+            session = self.npi_manager._get_session()
+            try:
+                from .data_models import TaskProdotto, TaskDependency
+                
+                # Trova task che dipendono da questo
+                dependent_tasks = session.scalars(
+                    select(TaskProdotto)
+                    .join(TaskDependency, TaskDependency.TaskProdottoID == TaskProdotto.TaskProdottoID)
+                    .where(TaskDependency.DependsOnTaskProdottoID == task.TaskProdottoID)
+                    .options(joinedload(TaskProdotto.task_catalogo), joinedload(TaskProdotto.owner))
+                ).all()
+                
+                for dep_task in dependent_tasks:
+                    dep_name = dep_task.task_catalogo.NomeTask if dep_task.task_catalogo else "Task"
+                    dep_owner = dep_task.owner.Nome if dep_task.owner else "Unassigned"
+                    blocked_list.append(f"<li><strong>{dep_name}</strong> (Owner: {dep_owner})</li>")
+            finally:
+                session.close()
+            
+            if blocked_list:
+                blocked_tasks_html = f"""
+                <div style="background: #FFF3CD; border-left: 4px solid #FFC107; padding: 15px; margin: 20px 0; border-radius: 4px;">
+                    <h4 style="color: #856404; margin: 0 0 10px 0;">⚠️ BLOCKED TASKS</h4>
+                    <p style="margin: 0 0 10px 0; color: #856404;">The following tasks depend on this task and are currently blocked:</p>
+                    <ul style="margin: 0; padding-left: 20px; color: #856404;">
+                        {''.join(blocked_list)}
+                    </ul>
+                </div>
+                """
+        
+        # Logo (base64 embedded o path)
+        logo_html = ""
+        if inline_logo_enabled:
+            logo_html = '<img src="cid:company_logo" style="max-width: 150px; height: auto;" alt="Company Logo">'
+        
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <style>
+                body {{ font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; }}
+                .container {{ max-width: 700px; margin: 0 auto; padding: 20px; background-color: #f9f9f9; }}
+                .header {{ background: #EAF3FF; color: #0B2A4A; padding: 30px 20px; border-radius: 8px 8px 0 0; text-align: center; border-bottom: 2px solid #0078d4; }}
+                .header h1 {{ margin: 10px 0 0 0; font-size: 24px; color: #0B2A4A; }}
+                .alert-box {{ background: {alert_color}; color: white; padding: 20px; text-align: center; font-size: 20px; font-weight: bold; }}
+                .content {{ background: white; padding: 30px; border-radius: 0 0 8px 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+                .section {{ margin: 25px 0; padding: 20px; background: #f8f9fa; border-left: 4px solid #0078d4; border-radius: 4px; }}
+                .section h2 {{ color: #0078d4; margin: 0 0 15px 0; font-size: 18px; border-bottom: 2px solid #0078d4; padding-bottom: 10px; }}
+                .info-row {{ margin: 8px 0; }}
+                .label {{ font-weight: bold; color: #555; display: inline-block; min-width: 120px; }}
+                .value {{ color: #333; }}
+                .footer {{ background: #f1f1f1; padding: 20px; margin-top: 20px; border-top: 3px solid #0078d4; border-radius: 4px; text-align: center; }}
+                .footer p {{ margin: 5px 0; color: #666; font-size: 12px; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    {logo_html}
+                    <h1>NPI Project Management System</h1>
+                    <p style="margin-top:6px;color:#12426B;">Automated Task Notification</p>
+                </div>
+                
+                <div class="alert-box">
+                    {alert_title}
+                </div>
+                
+                <div class="content">
+                    <p style="font-size: 16px; margin-bottom: 20px;">Dear <strong>{recipient.Nome}</strong>,</p>
+                    <p>{message}:</p>
+                    
+                    <div class="section">
+                        <h2>📋 PROJECT DETAILS</h2>
+                        <div class="info-row"><span class="label">Project Name:</span> <span class="value">{project_name}</span></div>
+                        <div class="info-row"><span class="label">Product Code:</span> <span class="value">{project_code}</span></div>
+                        <div class="info-row"><span class="label">Project Owner:</span> <span class="value">{project_owner}</span></div>
+                    </div>
+                    
+                    <div class="section">
+                        <h2>⚠️ TASK DETAILS</h2>
+                        <div class="info-row"><span class="label">Task Name:</span> <span class="value" style="font-weight: bold; color: {alert_color};">{task_name}</span></div>
+                        <div class="info-row"><span class="label">Task Owner:</span> <span class="value">{task_owner}</span></div>
+                        <div class="info-row"><span class="label">Start Date:</span> <span class="value">{task_start_date}</span></div>
+                        <div class="info-row"><span class="label">Due Date:</span> <span class="value" style="font-weight: bold; color: {alert_color};">{task_due_date}</span></div>
+                        <div class="info-row"><span class="label">Status:</span> <span class="value">{task_status}</span></div>
+                    </div>
+                    
+                    {blocked_tasks_html}
+                    
+                    <div style="background: #e7f3ff; border-left: 4px solid #0078d4; padding: 15px; margin: 20px 0; border-radius: 4px;">
+                        <h4 style="color: #0078d4; margin: 0 0 10px 0;">📌 ACTION REQUIRED</h4>
+                        <ul style="margin: 0; padding-left: 20px; color: #333;">
+                            <li>Please review and update the task status in the NPI system</li>
+                            <li>Coordinate with team members if dependencies exist</li>
+                            <li>Contact the project owner if you need assistance</li>
+                        </ul>
+                    </div>
+                </div>
+                
+                <div class="footer">
+                    <p><strong>This is an automated notification from the NPI Project Management System.</strong></p>
+                    <p>Please do not reply to this email.</p>
+                    <p>Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        return html
+    
+    def _generate_project_risk_email(
+        self, progetto, overdue_tasks, critical_path_tasks, blocking_info,
+        risk_level, risk_color, risk_icon, buffer_days, inline_logo_enabled=False
+    ) -> str:
+        """Genera email HTML di Project Risk Alert per il Project Owner."""
+        
+        # Dati progetto
+        project_name = progetto.prodotto.NomeProdotto if progetto.prodotto else "N/A"
+        project_code = progetto.prodotto.CodiceProdotto if progetto.prodotto else "N/A"
+        project_owner = progetto.owner.Nome if progetto.owner else "N/A"
+        project_end = progetto.ScadenzaProgetto.strftime('%d/%m/%Y') if progetto.ScadenzaProgetto else "Not Set"
+        
+        # Buffer info
+        buffer_html = ""
+        if buffer_days is not None:
+            buffer_color = "#DC143C" if buffer_days <= 7 else "#FFA500" if buffer_days <= 14 else "#28a745"
+            buffer_html = f'<div class="info-row"><span class="label">Days to Deadline:</span> <span class="value" style="font-weight: bold; color: {buffer_color};">{buffer_days} days</span></div>'
+        
+        # Lista task in ritardo
+        overdue_list_html = ""
+        for task in overdue_tasks:
+            task_name = task.task_catalogo.NomeTask if task.task_catalogo else "Task"
+            task_owner = task.owner.Nome if task.owner else "Unassigned"
+            due_date = task.DataScadenza.strftime('%d/%m/%Y') if task.DataScadenza else "N/A"
+            due_date = self._to_date(task.DataScadenza)
+            if not due_date:
+                continue
+            days_overdue = (date.today() - due_date).days
+            
+            # Icon se critical path
+            critical_icon = " 🔗" if task in critical_path_tasks else ""
+            
+            overdue_list_html += f"""
+            <tr>
+                <td style="padding: 8px; border: 1px solid #ddd;">{task_name}{critical_icon}</td>
+                <td style="padding: 8px; border: 1px solid #ddd;">{task_owner}</td>
+                <td style="padding: 8px; border: 1px solid #ddd; color: #DC143C; font-weight: bold;">{due_date}</td>
+                <td style="padding: 8px; border: 1px solid #ddd; color: #DC143C;">{days_overdue} days</td>
+            </tr>
+            """
+        
+        # Blocchi critici
+        critical_path_html = ""
+        if critical_path_tasks:
+            blocked_sections = []
+            for task in critical_path_tasks:
+                task_name = task.task_catalogo.NomeTask if task.task_catalogo else "Task"
+                blocked_tasks = blocking_info.get(task.TaskProdottoID, [])
+                
+                blocked_list = []
+                for dep_task in blocked_tasks:
+                    dep_name = dep_task.task_catalogo.NomeTask if dep_task.task_catalogo else "Task"
+                    dep_owner = dep_task.owner.Nome if dep_task.owner else "Unassigned"
+                    blocked_list.append(f"<li><strong>{dep_name}</strong> (Owner: {dep_owner})</li>")
+                
+                if blocked_list:
+                    blocked_sections.append(f"""
+                    <div style="margin: 10px 0; padding: 10px; background: #fff; border-left: 3px solid #DC143C;">
+                        <strong style="color: #DC143C;">🔗 {task_name}</strong> is blocking:
+                        <ul style="margin: 5px 0 0 20px; padding: 0;">
+                            {''.join(blocked_list)}
+                        </ul>
+                    </div>
+                    """)
+            
+            if blocked_sections:
+                critical_path_html = f"""
+                <div style="background: #FFF3CD; border-left: 4px solid #FFC107; padding: 15px; margin: 20px 0; border-radius: 4px;">
+                    <h4 style="color: #856404; margin: 0 0 10px 0;">🔗 CRITICAL PATH IMPACT</h4>
+                    <p style="margin: 0 0 10px 0; color: #856404;">The following overdue tasks are blocking other tasks, creating a critical path delay:</p>
+                    {''.join(blocked_sections)}
+                </div>
+                """
+        
+        # Risk summary
+        total_overdue = len(overdue_tasks)
+        total_critical = len(critical_path_tasks)
+        
+        # Logo inline (cid)
+        logo_html = ""
+        if inline_logo_enabled:
+            logo_html = '<img src="cid:company_logo" style="max-width: 150px; height: auto;" alt="Company Logo">'
+        
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <style>
+                body {{ font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; }}
+                .container {{ max-width: 800px; margin: 0 auto; padding: 20px; background-color: #f9f9f9; }}
+                .header {{ background: #EAF3FF; color: #0B2A4A; padding: 30px 20px; border-radius: 8px 8px 0 0; text-align: center; border-bottom: 2px solid #0078d4; }}
+                .header h1 {{ margin: 10px 0 0 0; font-size: 24px; color: #0B2A4A; }}
+                .alert-box {{ background: {risk_color}; color: white; padding: 25px; text-align: center; font-size: 24px; font-weight: bold; }}
+                .content {{ background: white; padding: 30px; border-radius: 0 0 8px 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+                .section {{ margin: 25px 0; padding: 20px; background: #f8f9fa; border-left: 4px solid #0078d4; border-radius: 4px; }}
+                .section h2 {{ color: #0078d4; margin: 0 0 15px 0; font-size: 18px; border-bottom: 2px solid #0078d4; padding-bottom: 10px; }}
+                .info-row {{ margin: 8px 0; }}
+                .label {{ font-weight: bold; color: #555; display: inline-block; min-width: 150px; }}
+                .value {{ color: #333; }}
+                table {{ width: 100%; border-collapse: collapse; margin: 15px 0; }}
+                th {{ background: #0078d4; color: white; padding: 10px; text-align: left; }}
+                .footer {{ background: #f1f1f1; padding: 20px; margin-top: 20px; border-top: 3px solid #0078d4; border-radius: 4px; text-align: center; }}
+                .footer p {{ margin: 5px 0; color: #666; font-size: 12px; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    {logo_html}
+                    <h1>NPI Project Management System</h1>
+                    <p style="margin-top:6px;color:#12426B;">Project Risk Alert</p>
+                </div>
+                
+                <div class="alert-box">
+                    {risk_icon} {risk_level.upper()} RISK - PROJECT AT RISK
+                </div>
+                
+                <div class="content">
+                    <p style="font-size: 16px; margin-bottom: 20px;">Dear <strong>{project_owner}</strong>,</p>
+                    <p><strong>This automated alert notifies you that your project is at risk due to overdue tasks.</strong></p>
+                    <p>Immediate action is required to prevent project delays and ensure timely completion.</p>
+                    
+                    <div class="section">
+                        <h2>📋 PROJECT DETAILS</h2>
+                        <div class="info-row"><span class="label">Project Name:</span> <span class="value">{project_name}</span></div>
+                        <div class="info-row"><span class="label">Product Code:</span> <span class="value">{project_code}</span></div>
+                        <div class="info-row"><span class="label">Project Owner:</span> <span class="value">{project_owner}</span></div>
+                        <div class="info-row"><span class="label">Project End Date:</span> <span class="value">{project_end}</span></div>
+                        {buffer_html}
+                    </div>
+                    
+                    <div class="section">
+                        <h2>⚠️ RISK ANALYSIS</h2>
+                        <div class="info-row"><span class="label">Risk Level:</span> <span class="value" style="font-weight: bold; color: {risk_color};">{risk_icon} {risk_level.upper()}</span></div>
+                        <div class="info-row"><span class="label">Total Overdue Tasks:</span> <span class="value" style="font-weight: bold; color: #DC143C;">{total_overdue}</span></div>
+                        <div class="info-row"><span class="label">Critical Path Tasks:</span> <span class="value" style="font-weight: bold; color: #DC143C;">{total_critical}</span></div>
+                        
+                        <div style="background: #f8d7da; border-left: 4px solid #DC143C; padding: 15px; margin: 15px 0; border-radius: 4px;">
+                            <h4 style="color: #721c24; margin: 0 0 10px 0;">⚠️ IMPACT ASSESSMENT</h4>
+                            <p style="margin: 0; color: #721c24;">
+                                Due to the overdue tasks, <strong>it is difficult for this project to be completed on time</strong>.
+                                {f'With only {buffer_days} days remaining, ' if buffer_days is not None else ''}
+                                {'Critical path tasks are blocking other team members, creating cascading delays.' if total_critical > 0 else 'Immediate corrective action is essential to recover the schedule.'}
+                            </p>
+                        </div>
+                    </div>
+                    
+                    <div class="section">
+                        <h2>📝 OVERDUE TASKS DETAILS</h2>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Task Name</th>
+                                    <th>Owner</th>
+                                    <th>Due Date</th>
+                                    <th>Days Overdue</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {overdue_list_html}
+                            </tbody>
+                        </table>
+                        <p style="font-size: 12px; color: #666; margin-top: 10px;">🔗 = Task on critical path (blocking other tasks)</p>
+                    </div>
+                    
+                    {critical_path_html}
+                    
+                    <div style="background: #d1ecf1; border-left: 4px solid #0078d4; padding: 15px; margin: 20px 0; border-radius: 4px;">
+                        <h4 style="color: #0c5460; margin: 0 0 10px 0;">📌 RECOMMENDED ACTIONS</h4>
+                        <ul style="margin: 0; padding-left: 20px; color: #0c5460;">
+                            <li><strong>Immediate Review:</strong> Contact task owners to understand delays and obstacles</li>
+                            <li><strong>Resource Allocation:</strong> Consider reassigning resources to critical path tasks</li>
+                            <li><strong>Timeline Adjustment:</strong> Evaluate if project timeline needs revision</li>
+                            <li><strong>Stakeholder Communication:</strong> Inform stakeholders about project status and risks</li>
+                            <li><strong>Daily Monitoring:</strong> Implement daily standup to track progress on overdue tasks</li>
+                        </ul>
+                    </div>
+                </div>
+                
+                <div class="footer">
+                    <p><strong>This is an automated risk assessment from the NPI Project Management System.</strong></p>
+                    <p>Please do not reply to this email.</p>
+                    <p>Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        return html
+
+    # ── Global NPI View Email (ogni lunedì non festivo) ───────────────────────
+
+    def _is_global_view_send_day(self) -> bool:
+        """
+        La email globale NPI viene inviata ogni lunedì non festivo.
+        Usa la stessa funzione DB per verificare se oggi è lavorativo.
+        """
+        today = date.today()
+        # Lunedì = weekday 0
+        if today.weekday() != 0:
+            logger.info("[GLOBAL_VIEW] Oggi non è lunedì (%s). Email globale NPI saltata.", today.strftime('%A'))
+            return False
+        # Verifica festivo via DB
+        if not self._is_today_working_day():
+            logger.info("[GLOBAL_VIEW] Oggi è lunedì ma è festivo. Email globale NPI saltata.")
+            return False
+        return True
+
+    def _was_global_view_email_sent_this_week(self) -> bool:
+        """Ritorna True se questa settimana è già stata inviata la email globale NPI."""
+        session = self.npi_manager._get_session()
+        try:
+            today = date.today()
+            # Inizio settimana corrente (lunedì)
+            week_start = today - timedelta(days=today.weekday())
+            row = session.execute(
+                text("""
+                    SELECT TOP 1 1
+                    FROM [dbo].[NpiProjectDelayEmailLog]
+                    WHERE [RecipientEmail] = '__global_npi_view__'
+                      AND [NotificationDate] >= :week_start
+                """),
+                {"week_start": week_start}
+            ).first()
+            return row is not None
+        except Exception as e:
+            logger.error("[GLOBAL_VIEW] Errore verifica invio settimanale: %s", e, exc_info=True)
+            return False
+        finally:
+            session.close()
+
+    def _mark_global_view_email_sent(self) -> None:
+        """Registra l'invio della email globale NPI con chiave sentinella."""
+        session = self.npi_manager._get_session()
+        try:
+            session.execute(
+                text("""
+                    INSERT INTO [dbo].[NpiProjectDelayEmailLog]
+                        ([NotificationDate], [RecipientEmail], [OverdueCount], [PotentialCount])
+                    VALUES (:today, '__global_npi_view__', 0, 0)
+                """),
+                {"today": date.today()}
+            )
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.error("[GLOBAL_VIEW] Errore registrazione invio: %s", e, exc_info=True)
+        finally:
+            session.close()
+
+    def _collect_global_npi_stats(self) -> dict:
+        """
+        Raccoglie statistiche globali su tutti i progetti NPI:
+        - Totale, attivi, chiusi, in ritardo (deadline scaduta), potenziale ritardo
+        - Dettaglio per cliente (prodotto o nome cliente dall'owner)
+        """
+        from .data_models import ProgettoNPI, WaveNPI, TaskProdotto
+        session = self.npi_manager._get_session()
+        today = date.today()
+        stats = {
+            "total": 0, "active": 0, "closed": 0,
+            "overdue": 0, "potential_delay": 0,
+            "clients": {}
+        }
+        try:
+            projects = session.scalars(
+                select(ProgettoNPI)
+                .options(
+                    joinedload(ProgettoNPI.prodotto),
+                    joinedload(ProgettoNPI.owner),
+                    subqueryload(ProgettoNPI.waves).subqueryload(WaveNPI.tasks)
+                )
+                .where(ProgettoNPI.OnHold != True)
+                .order_by(ProgettoNPI.ProgettoId)
+            ).all()
+
+            for p in projects:
+                stats["total"] += 1
+                is_closed = (p.StatoProgetto or '').strip().lower() == 'chiuso'
+
+                # Nome cliente: dal prodotto o dall'owner del progetto
+                client_name = "N/A"
+                if p.prodotto and p.prodotto.NomeProdotto:
+                    client_name = p.prodotto.NomeProdotto
+                elif p.owner and p.owner.Nome:
+                    client_name = p.owner.Nome
+
+                # Inizializza bucket cliente
+                c = stats["clients"].setdefault(client_name, {
+                    "total": 0, "active": 0, "closed": 0, "overdue": 0
+                })
+                c["total"] += 1
+
+                if is_closed:
+                    stats["closed"] += 1
+                    c["closed"] += 1
+                    continue
+
+                stats["active"] += 1
+                c["active"] += 1
+
+                # Verifica ritardo
+                deadline = self._to_date(getattr(p, 'ScadenzaProgetto', None))
+                tasks = []
+                for wave in (p.waves or []):
+                    tasks.extend(wave.tasks or [])
+                incomplete = [t for t in tasks if (t.Stato or '').strip().lower() != 'completato']
+
+                if deadline and deadline < today:
+                    stats["overdue"] += 1
+                    c["overdue"] += 1
+                else:
+                    # Potenziale ritardo: task aperti già scaduti
+                    has_overdue_task = any(
+                        self._to_date(t.DataScadenza) and self._to_date(t.DataScadenza) < today
+                        for t in incomplete if t.DataScadenza
+                    )
+                    if has_overdue_task:
+                        stats["potential_delay"] += 1
+
+            return stats
+        except Exception as e:
+            logger.error("[GLOBAL_VIEW] Errore raccolta stats NPI: %s", e, exc_info=True)
+            return stats
+        finally:
+            session.close()
+
+    def _build_global_view_email_html(self, stats: dict, logo_html: str) -> str:
+        """Genera HTML professionale con KPI globali e tabella per cliente."""
+        today_str = date.today().strftime('%d/%m/%Y')
+        num_clients = len(stats.get('clients', {}))
+        avg_per_client = round(stats['total'] / num_clients, 1) if num_clients > 0 else 0
+
+        # KPI cards — 2 righe da 3
+        kpi_style = "display:inline-block;width:30%;text-align:center;padding:16px 8px;border-radius:8px;margin:4px;"
+        kpi_cards = f"""
+        <div style="margin:18px 0;">
+            <div style="{kpi_style}background:#EEF4FB;border:1px solid #B0C8E8;">
+                <div style="font-size:32px;font-weight:bold;color:#1F4E78;">{stats['total']}</div>
+                <div style="color:#555;margin-top:4px;">Total Projects</div>
+            </div>
+            <div style="{kpi_style}background:#EAF7EA;border:1px solid #A3D9A3;">
+                <div style="font-size:32px;font-weight:bold;color:#2E7D32;">{stats['active']}</div>
+                <div style="color:#555;margin-top:4px;">Active</div>
+            </div>
+            <div style="{kpi_style}background:#F5F5F5;border:1px solid #CCC;">
+                <div style="font-size:32px;font-weight:bold;color:#555;">{stats['closed']}</div>
+                <div style="color:#555;margin-top:4px;">Closed</div>
+            </div>
+        </div>
+        <div style="margin:4px 0 18px 0;">
+            <div style="{kpi_style}background:#FFF0F0;border:1px solid #F5A0A0;">
+                <div style="font-size:32px;font-weight:bold;color:#C00000;">{stats['overdue']}</div>
+                <div style="color:#555;margin-top:4px;">Overdue</div>
+            </div>
+            <div style="{kpi_style}background:#FFF8E1;border:1px solid #FFD54F;">
+                <div style="font-size:32px;font-weight:bold;color:#E65100;">{stats['potential_delay']}</div>
+                <div style="color:#555;margin-top:4px;">Potential Delay</div>
+            </div>
+            <div style="{kpi_style}background:#E3F2FD;border:1px solid #90CAF9;">
+                <div style="font-size:32px;font-weight:bold;color:#0D47A1;">{num_clients}</div>
+                <div style="color:#555;margin-top:4px;">Total Customers</div>
+            </div>
+        </div>"""
+
+        # Per-client table rows
+        client_rows = ""
+        row_idx = 0
+        for client, c in sorted(stats["clients"].items()):
+            overdue_cell_style = "color:#C00000;font-weight:bold;" if c['overdue'] > 0 else "color:#333;"
+            bg = "#f9f9f9" if row_idx % 2 == 1 else "#fff"
+            client_rows += f"""
+            <tr style="background:{bg};">
+                <td style="padding:8px 12px;border:1px solid #ddd;">{client}</td>
+                <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;">{c['total']}</td>
+                <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;color:#2E7D32;">{c['active']}</td>
+                <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;color:#555;">{c['closed']}</td>
+                <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;{overdue_cell_style}">{c['overdue']}</td>
+            </tr>"""
+            row_idx += 1
+
+        # Totals footer row
+        tot_overdue_style = "color:#C00000;font-weight:bold;" if stats['overdue'] > 0 else "color:#333;font-weight:bold;"
+        client_rows += f"""
+        <tr style="background:#E8EAF6;font-weight:bold;">
+            <td style="padding:8px 12px;border:1px solid #ddd;">TOTAL ({num_clients} customers, avg {avg_per_client} proj/customer)</td>
+            <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;">{stats['total']}</td>
+            <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;color:#2E7D32;">{stats['active']}</td>
+            <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;color:#555;">{stats['closed']}</td>
+            <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;{tot_overdue_style}">{stats['overdue']}</td>
+        </tr>"""
+
+        client_table = f"""
+        <table style="border-collapse:collapse;width:100%;margin:12px 0;">
+            <thead>
+                <tr style="background:#1F4E78;color:#fff;">
+                    <th style="padding:10px 12px;border:1px solid #ddd;text-align:left;">Customer / Product</th>
+                    <th style="padding:10px 12px;border:1px solid #ddd;">Total</th>
+                    <th style="padding:10px 12px;border:1px solid #ddd;">Active</th>
+                    <th style="padding:10px 12px;border:1px solid #ddd;">Closed</th>
+                    <th style="padding:10px 12px;border:1px solid #ddd;">Overdue</th>
+                </tr>
+            </thead>
+            <tbody>{client_rows}</tbody>
+        </table>"""
+
+        html = f"""
+        <html>
+        <body style="font-family:Segoe UI,Arial,sans-serif;color:#1f2937;background:#f5f7fb;padding:20px;">
+            <div style="max-width:900px;margin:0 auto;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
+                <div style="background:#FFFFFF;color:#0B3A66;padding:22px 26px;border-bottom:3px solid #0B3A66;">
+                    {logo_html}
+                    <h2 style="margin:12px 0 4px 0;">NPI Portfolio — Weekly Global Status Report</h2>
+                    <p style="margin:0;opacity:0.9;">Week of {today_str} | Automated monitoring report</p>
+                </div>
+                <div style="padding:24px 26px;">
+                    <h3 style="color:#1F4E78;margin-top:0;">Global Overview</h3>
+                    {kpi_cards}
+                    <h3 style="color:#1F4E78;margin-top:24px;">Breakdown by Customer / Product</h3>
+                    {client_table}
+                    <p style="color:#6b7280;font-size:12px;margin-top:24px;">
+                        This is an automated weekly notification from the NPI Project Management System.
+                        The attached Excel report contains the full detail of overdue and potential-delay projects.
+                        Please do not reply to this email.
+                    </p>
+                </div>
+            </div>
+        </body>
+        </html>"""
+        return html
+
+    def _send_global_npi_view_email(self) -> Tuple[int, int, int]:
+        """
+        Invia email settimanale con panoramica globale NPI.
+        Condizioni: oggi è lunedì non festivo + non ancora inviata questa settimana.
+        Destinatari: settings.atribute = 'Sys_email_npi_global_view'.
+        Allegato: Excel overdue/potential-delay già usato per le altre email.
+        """
+        if not self._is_global_view_send_day():
+            return 0, 1, 0
+
+        if self._was_global_view_email_sent_this_week():
+            logger.info("[GLOBAL_VIEW] Email globale NPI già inviata questa settimana. Skip.")
+            return 0, 1, 0
+
+        try:
+            recipients = self._get_setting_email_list('Sys_email_npi_global_view')
+            if not recipients:
+                logger.warning("[GLOBAL_VIEW] Nessun destinatario configurato in 'Sys_email_npi_global_view'. Email globale NPI saltata.")
+                return 0, 1, 0
+
+            stats = self._collect_global_npi_stats()
+
+            # Excel allegato (overdue + potential delay)
+            overdue_list, potential_list = self._collect_project_delay_data()
+            report_path = self._build_project_delay_excel_report(overdue_list, potential_list)
+
+            # Logo
+            logo_path = self._resolve_logo_path()
+            logo_html = ""
+            attachments = [report_path]
+            if logo_path:
+                attachments = [('inline', logo_path, 'company_logo')] + attachments
+                logo_html = '<img src="cid:company_logo" alt="Company Logo" style="max-width:180px;height:auto;"/>'
+
+            html_body = self._build_global_view_email_html(stats, logo_html)
+            subject = (
+                f"NPI Weekly Report — {stats['total']} projects | "
+                f"{stats['active']} active | {stats['overdue']} overdue"
+            )
+
+            from email_connector import EmailSender
+            sender = EmailSender()
+            sender.save_credentials("Accounting@Eutron.it", "9jHgFhSs7Vf+")
+            sender.send_email(
+                to_email=recipients[0],
+                subject=subject,
+                body=html_body,
+                is_html=True,
+                attachments=attachments,
+                cc_emails=recipients[1:] if len(recipients) > 1 else []
+            )
+
+            self._mark_global_view_email_sent()
+            logger.info(
+                "[GLOBAL_VIEW] Email globale NPI inviata a %d destinatari. "
+                "Totale=%d, Attivi=%d, Chiusi=%d, In ritardo=%d",
+                len(recipients), stats['total'], stats['active'], stats['closed'], stats['overdue']
+            )
+
+            # Cleanup Excel temporaneo
+            try:
+                if report_path and os.path.exists(report_path):
+                    os.remove(report_path)
+            except Exception:
+                pass
+
+            return 1, 0, 0
+
+        except Exception as e:
+            logger.error("[GLOBAL_VIEW] Errore invio email globale NPI: %s", e, exc_info=True)
+            return 0, 0, 1
+
+
+# Istanza globale del servizio
+_notification_service = None
+
+
+def start_notification_service(npi_manager, config_path='npi_notifications_config.json'):
+    """Avvia il servizio di notifiche automatiche."""
+    global _notification_service
+    
+    if _notification_service is None:
+        _notification_service = NpiAutoNotificationService(npi_manager, config_path)
+        _notification_service.start()
+        logger.info("Servizio notifiche automatiche NPI inizializzato")
+    else:
+        logger.warning("Servizio notifiche già attivo")
+    
+    return _notification_service
+
+
+def ensure_notification_config(config_path='npi_notifications_config.json') -> dict:
+    """
+    Garantisce l'esistenza del file di configurazione notifiche.
+    Se assente, crea il file con valori di default e ritorna la config.
+    """
+    try:
+        service = NpiAutoNotificationService(npi_manager=None, config_path=config_path)
+        config = service._load_config()
+        if not os.path.exists(config_path):
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+            logger.info(f"Creato file configurazione notifiche NPI: {config_path}")
+        return config
+    except Exception as e:
+        logger.error(f"Errore ensure config notifiche NPI: {e}", exc_info=True)
+        return {}
+
+
+def stop_notification_service():
+    """Ferma il servizio di notifiche automatiche."""
+    global _notification_service
+    
+    if _notification_service:
+        _notification_service.stop()
+        _notification_service = None
+        logger.info("Servizio notifiche automatiche NPI terminato")
+
