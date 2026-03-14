@@ -196,6 +196,19 @@ class SplashScreen:
         except Exception:
             pass
 
+    def hide(self):
+        """
+        Nasconde la splash screen IMMEDIATAMENTE (sincrono).
+        Usare prima di mostrare messagebox/dialoghi che altrimenti
+        apparirebbero dietro la splash (topmost).
+        """
+        try:
+            self._win.attributes("-topmost", False)
+            self._win.withdraw()
+            self._win.update_idletasks()
+        except Exception:
+            pass
+
     def close(self):
         """
         Chiude la splash screen.

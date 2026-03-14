@@ -324,8 +324,9 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.7.3'  # Versione aggiornata
+APP_VERSION = '2.3.7.8'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
+APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
 # # --- CONFIGURAZIONE DATABASE ---
 # Carica le credenziali dal sistema criptato
@@ -4838,6 +4839,7 @@ class Database:
         """
         Esegue una query SELECT e restituisce tutti i risultati
         """
+        self._ensure_connection()
         with self._lock:
             try:
                 if params:
@@ -4922,6 +4924,7 @@ class Database:
         """
         Esegue una query SELECT e restituisce il primo risultato
         """
+        self._ensure_connection()
         with self._lock:
             try:
                 if params:
@@ -4945,6 +4948,7 @@ class Database:
         """
         Esegue una query (INSERT, UPDATE, DELETE) senza restituire risultati
         """
+        self._ensure_connection()
         with self._lock:
             try:
                 if params:
@@ -4970,6 +4974,7 @@ class Database:
         """
         Esegue una query INSERT e restituisce l'ID della riga inserita (SCOPE_IDENTITY())
         """
+        self._ensure_connection()
         with self._lock:
             try:
                 if params:
@@ -12978,12 +12983,25 @@ class App(tk.Tk):
         updater_path = os.path.join(destination, "updater.exe")
 
         if not os.path.exists(updater_path):
-            messagebox.showerror(
-                self.lang.get('error', 'Errore Critico'),
-                "File updater.exe non trovato! Impossibile aggiornare.",
-                parent=self
-            )
-            return False
+            # Tenta di copiare updater.exe dal percorso sorgente (server)
+            source_updater = os.path.join(source, "updater.exe")
+            logger.info(f"_trigger_update: updater.exe non trovato in '{destination}', provo a copiarlo da '{source_updater}'")
+            try:
+                if os.path.exists(source_updater):
+                    shutil.copy2(source_updater, updater_path)
+                    logger.info(f"_trigger_update: updater.exe copiato con successo da sorgente")
+                else:
+                    raise FileNotFoundError(f"updater.exe non trovato neanche in {source}")
+            except Exception as copy_err:
+                logger.error(f"_trigger_update: impossibile ottenere updater.exe: {copy_err}")
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"File updater.exe non trovato!\n\n"
+                    f"Cercato in:\n- {updater_path}\n- {source_updater}\n\n"
+                    f"Impossibile aggiornare.",
+                    parent=self
+                )
+                return False
 
         # ── Verifica integrità file sorgente ──────────────────────────────────
         file_ready, reason = self._is_source_file_ready(source, exe_name)
@@ -13127,6 +13145,15 @@ class App(tk.Tk):
             skip_count, last_version = load_update_skip_count()
             if last_version != version_info.Version:
                 skip_count = 0  # nuova versione → reset contatore
+
+            # ── Verifica integrità file sorgente PRIMA di qualsiasi dialogo ──
+            source = version_info.MainPath
+            exe_name = os.path.basename(sys.executable)
+            file_ready, reason = self._is_source_file_ready(source, exe_name)
+            if not file_ready:
+                logger.warning(f"_periodic_version_check: file sorgente non pronto, ripianificato - {reason}")
+                self.periodic_check_job_id = self.after(15 * 60 * 1000, self._periodic_version_check)
+                return
 
             force_update = is_mandatory or skip_count >= 3
 
@@ -14415,6 +14442,17 @@ class App(tk.Tk):
             action_callback=lambda user_name: maintenance_gui.open_fill_templates(self, self.db, self.lang, user_name)
         )
 
+    def _hide_splash_for_dialog(self):
+        """Nasconde (e poi chiude) la splash screen prima di mostrare dialoghi.
+        Garantisce che qualsiasi messagebox appaia SOPRA la splash."""
+        if hasattr(self, '_splash') and self._splash:
+            try:
+                self._splash.hide()   # sincrono: rimuove topmost + withdraw
+                self._splash.close()  # schedula destroy
+            except Exception:
+                pass
+            self._splash = None
+
     def check_version(self):
         """
         Controlla se l'app Ã¨ eseguita dalla sorgente, poi verifica la versione
@@ -14460,6 +14498,7 @@ class App(tk.Tk):
             current_path = os.path.normpath(os.path.dirname(sys.executable))
 
             if source_path.lower() == current_path.lower():
+                self._hide_splash_for_dialog()
                 title = self.lang.get("error_running_from_source_title", "Esecuzione non Permessa")
                 message = self.lang.get(
                     "error_running_from_source_message",
@@ -14479,26 +14518,31 @@ class App(tk.Tk):
                 # Carica il conteggio dei rinvii e l'ultima versione vista
                 skip_count, last_version = load_update_skip_count()
                 
-                # Se la versione disponibile Ã¨ cambiata, resetta il conteggio
+                # Se la versione disponibile è cambiata, resetta il conteggio
                 if last_version != version_info.Version:
                     skip_count = 0
                     logger.info(f"Nuova versione disponibile ({version_info.Version}), reset conteggio rinvii")
                 
-                # Determina se l'update Ã¨ obbligatorio
-                # L'update Ã¨ obbligatorio se:
-                # 1. Il campo Must Ã¨ True, OPPURE
-                # 2. L'utente ha giÃ  saltato l'update 3 volte
+                # ── Verifica integrità file sorgente PRIMA di qualsiasi dialogo ──
+                # Se il file non è pronto (copia incompleta, bloccato, etc.)
+                # non mostrare nessun dialogo di update.
+                source = version_info.MainPath
+                exe_name = os.path.basename(sys.executable)
+                file_ready, reason = self._is_source_file_ready(source, exe_name)
+                if not file_ready:
+                    logger.warning(f"check_version: file sorgente non pronto, update saltato - {reason}")
+                    return True  # Procedi normalmente, il periodic check riproverà
+
+                # Determina se l'update è obbligatorio
+                # L'update è obbligatorio se:
+                # 1. Il campo Must è True, OPPURE
+                # 2. L'utente ha già saltato l'update 3 volte
                 force_update = is_mandatory or skip_count >= 3
 
                 # ── Chiudi la splash PRIMA di mostrare dialoghi di update ──
                 # Altrimenti la messagebox/trigger_update appare dietro la splash
                 # e l'utente non la vede (sembra bloccato).
-                if hasattr(self, '_splash') and self._splash:
-                    try:
-                        self._splash.destroy()
-                    except Exception:
-                        pass
-                    self._splash = None
+                self._hide_splash_for_dialog()
 
                 if force_update:
                     # Update obbligatorio: usa il dialogo unificato _trigger_update
