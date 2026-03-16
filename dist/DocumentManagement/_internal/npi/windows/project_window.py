@@ -428,13 +428,15 @@ class ProjectWindow(tk.Toplevel):
 
         # Note Doc
         ttk.Label(df, text=self.lang.get('notes', 'Note:')).grid(row=8, column=0, sticky=tk.NW)
-        self.doc_widgets['note_text'] = tk.Text(df, height=3, width=30)
-        self.doc_widgets['note_text'].grid(row=8, column=1, columnspan=2, sticky=tk.EW)
+        self.doc_widgets['note_text'] = tk.Text(df, height=3, width=25)
+        self.doc_widgets['note_text'].grid(row=8, column=1, sticky=tk.EW)
 
-        ttk.Button(df, text=self.lang.get('save_doc', 'Carica Documento'), command=self._save_document).grid(row=9, column=1, pady=5)
-        
-        self.view_docs_button = ttk.Button(doc_frame, text=self.lang.get('view_docs', 'Vedi Documenti Caricati'), command=self._launch_view_documents_window, state=tk.DISABLED)
-        self.view_docs_button.pack(pady=5)
+        # Bottoni a destra del text box Note
+        doc_btn_frame = ttk.Frame(df)
+        doc_btn_frame.grid(row=8, column=2, sticky=tk.NE, padx=(5, 0))
+        ttk.Button(doc_btn_frame, text=self.lang.get('save_doc', 'Carica Documento'), command=self._save_document).pack(fill=tk.X, pady=(0, 3))
+        self.view_docs_button = ttk.Button(doc_btn_frame, text=self.lang.get('view_docs', 'Vedi Documenti Caricati'), command=self._launch_view_documents_window, state=tk.DISABLED)
+        self.view_docs_button.pack(fill=tk.X)
 
         # Status Bar
         self.status_bar = ttk.Label(self, text="Inizializzazione...", relief=tk.SUNKEN, anchor=tk.W)

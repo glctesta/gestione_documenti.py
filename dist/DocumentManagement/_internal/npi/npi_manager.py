@@ -4042,17 +4042,21 @@ class GestoreNPI:
         finally:
             session.close()
     
-    def get_all_project_documents(self, project_id):
+    def get_all_project_documents(self, project_id, include_deleted=False):
         """
         Recupera tutti i documenti di un progetto NPI (documenti task).
         Restituisce una lista di dizionari con informazioni complete.
+        
+        Args:
+            project_id: ID del progetto NPI
+            include_deleted: Se True, include anche i documenti soft-deleted (DateOut IS NOT NULL)
         """
         session = self._get_session()
         try:
             from .data_models import NpiDocument, TaskProdotto, WaveNPI, TaskCatalogo, NpiDocumentType
             
             # Query per ottenere tutti i documenti dei task del progetto
-            task_documents = session.scalars(
+            stmt = (
                 select(NpiDocument)
                 .join(TaskProdotto, NpiDocument.TaskProdottoId == TaskProdotto.TaskProdottoID)
                 .join(WaveNPI, TaskProdotto.WaveID == WaveNPI.WaveID)
@@ -4062,7 +4066,13 @@ class GestoreNPI:
                     joinedload(NpiDocument.document_type)
                 )
                 .order_by(NpiDocument.DateIn.desc())
-            ).all()
+            )
+            
+            # Filtra documenti eliminati se non richiesti
+            if not include_deleted:
+                stmt = stmt.where(NpiDocument.DateOut.is_(None))
+            
+            task_documents = session.scalars(stmt).all()
             
             # Formatta i risultati
             documents = []
@@ -4080,7 +4090,12 @@ class GestoreNPI:
                     'user': doc.User or "N/A",
                     'version': doc.VersionNumber or 0,
                     'value': doc.ValueInEur,
-                    'note': doc.Note
+                    'note': doc.Note,
+                    'date_out': doc.DateOut,
+                    'date_out_formatted': doc.DateOut.strftime('%d/%m/%Y %H:%M') if doc.DateOut else None,
+                    'is_deleted': doc.DateOut is not None,
+                    'doc_type_id': doc.NpiDocumentTypeId,
+                    'task_prodotto_id': doc.TaskProdottoId
                 })
             
             return documents
@@ -4103,6 +4118,148 @@ class GestoreNPI:
         except Exception as e:
             logger.error(f"Errore recupero documento {document_id}: {e}", exc_info=True)
             raise
+        finally:
+            session.close()
+
+    def soft_delete_npi_document(self, doc_id):
+        """Soft-delete di un documento NPI (imposta DateOut = now())."""
+        session = self._get_session()
+        try:
+            from .data_models import NpiDocument
+            
+            doc = session.get(NpiDocument, doc_id)
+            if not doc:
+                raise ValueError(f"Documento con ID {doc_id} non trovato.")
+            
+            doc.DateOut = datetime.now()
+            session.commit()
+            logger.info(f"Documento {doc_id} soft-deleted (DateOut impostato)")
+            return True
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Errore soft-delete documento {doc_id}: {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+
+    def restore_npi_document(self, doc_id):
+        """Ripristina un documento NPI soft-deleted (imposta DateOut = NULL)."""
+        session = self._get_session()
+        try:
+            from .data_models import NpiDocument
+            
+            doc = session.get(NpiDocument, doc_id)
+            if not doc:
+                raise ValueError(f"Documento con ID {doc_id} non trovato.")
+            
+            doc.DateOut = None
+            session.commit()
+            logger.info(f"Documento {doc_id} ripristinato (DateOut = NULL)")
+            return True
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Errore ripristino documento {doc_id}: {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+
+    def update_npi_document(self, doc_id, data):
+        """
+        Aggiorna i metadati di un documento NPI.
+        Non modifica mai DateIn (data inserimento originale).
+        Non modifica DateOut se già valorizzato.
+        
+        Args:
+            doc_id: ID del documento
+            data: dizionario con i campi da aggiornare
+                  (DocumentTitle, NpiDocumentTypeId, ValueInEur, Note)
+        """
+        session = self._get_session()
+        try:
+            from .data_models import NpiDocument
+            
+            doc = session.get(NpiDocument, doc_id)
+            if not doc:
+                raise ValueError(f"Documento con ID {doc_id} non trovato.")
+            
+            # Aggiorna solo i campi consentiti
+            if 'DocumentTitle' in data:
+                doc.DocumentTitle = data['DocumentTitle']
+            if 'NpiDocumentTypeId' in data:
+                doc.NpiDocumentTypeId = data['NpiDocumentTypeId']
+            if 'ValueInEur' in data:
+                doc.ValueInEur = data['ValueInEur']
+            if 'Note' in data:
+                doc.Note = data['Note']
+            
+            session.commit()
+            logger.info(f"Documento {doc_id} aggiornato con successo")
+            return True
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Errore aggiornamento documento {doc_id}: {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+
+    def get_project_document_summary(self, project_id):
+        """
+        Calcola il riepilogo dei documenti attivi di un progetto.
+        
+        Returns:
+            dict con 'total_docs', 'docs_with_value', 'total_value'
+        """
+        session = self._get_session()
+        try:
+            from .data_models import NpiDocument, TaskProdotto, WaveNPI
+            from sqlalchemy import func
+            
+            # Conta documenti attivi
+            base_filter = (
+                select(NpiDocument)
+                .join(TaskProdotto, NpiDocument.TaskProdottoId == TaskProdotto.TaskProdottoID)
+                .join(WaveNPI, TaskProdotto.WaveID == WaveNPI.WaveID)
+                .where(WaveNPI.ProgettoID == project_id)
+                .where(NpiDocument.DateOut.is_(None))
+            )
+            
+            total_docs = session.scalar(
+                select(func.count()).select_from(base_filter.subquery())
+            ) or 0
+            
+            # Conta documenti con valore > 0
+            value_filter = (
+                select(NpiDocument)
+                .join(TaskProdotto, NpiDocument.TaskProdottoId == TaskProdotto.TaskProdottoID)
+                .join(WaveNPI, TaskProdotto.WaveID == WaveNPI.WaveID)
+                .where(WaveNPI.ProgettoID == project_id)
+                .where(NpiDocument.DateOut.is_(None))
+                .where(NpiDocument.ValueInEur.isnot(None))
+                .where(NpiDocument.ValueInEur > 0)
+            )
+            
+            docs_with_value = session.scalar(
+                select(func.count()).select_from(value_filter.subquery())
+            ) or 0
+            
+            # Somma valori
+            total_value = session.scalar(
+                select(func.sum(NpiDocument.ValueInEur))
+                .join(TaskProdotto, NpiDocument.TaskProdottoId == TaskProdotto.TaskProdottoID)
+                .join(WaveNPI, TaskProdotto.WaveID == WaveNPI.WaveID)
+                .where(WaveNPI.ProgettoID == project_id)
+                .where(NpiDocument.DateOut.is_(None))
+                .where(NpiDocument.ValueInEur.isnot(None))
+            ) or 0.0
+            
+            return {
+                'total_docs': total_docs,
+                'docs_with_value': docs_with_value,
+                'total_value': total_value
+            }
+        except Exception as e:
+            logger.error(f"Errore calcolo riepilogo documenti progetto {project_id}: {e}", exc_info=True)
+            return {'total_docs': 0, 'docs_with_value': 0, 'total_value': 0.0}
         finally:
             session.close()
     # ========================================

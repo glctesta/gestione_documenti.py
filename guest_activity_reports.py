@@ -470,13 +470,25 @@ class GuestActivityReportGenerator:
     def send_activity_email(self, report_id):
         """
         Invia il rapporto di attività via email.
-        TO: chi_richiede_email, chi_invia_email
+        TO: chi_richiede_email, chi_invia_email (supporta più indirizzi separati da ';')
         CC: email dell'ospite
+        Invia una sola email a tutti i destinatari.
         """
         from email_connector import EmailSender
 
         try:
+            # Guard: non reinviare se già inviata
             cursor = self.db.conn.cursor()
+            cursor.execute("""
+                SELECT EmailSentDate
+                FROM Employee.dbo.VisitorActivityReports
+                WHERE VisitorActivityReportId = ? AND EmailSentDate IS NOT NULL
+            """, (report_id,))
+            if cursor.fetchone():
+                logger.info(f"Email per report {report_id} già inviata, skip")
+                cursor.close()
+                return True
+
             cursor.execute("""
                 SELECT var.*, v.GuestName, v.CompanyName, v.Pourpose,
                        v.StartVisit, v.EndVisit, v.VisitorDataId
@@ -490,10 +502,20 @@ class GuestActivityReportGenerator:
                 cursor.close()
                 return False
 
-            # Email destinatari
+            # Email destinatari — split su ';' e deduplicazione
             to_richiede = self._get_setting('chi_richiede_email')
             to_invia = self._get_setting('chi_invia_email')
-            to_list = [e.strip() for e in [to_richiede, to_invia] if e.strip()]
+
+            to_list = []
+            seen = set()
+            for raw in [to_richiede, to_invia]:
+                if not raw:
+                    continue
+                for addr in raw.split(';'):
+                    addr = addr.strip()
+                    if addr and addr.lower() not in seen:
+                        to_list.append(addr)
+                        seen.add(addr.lower())
 
             if not to_list:
                 logger.error("Nessun destinatario email configurato")

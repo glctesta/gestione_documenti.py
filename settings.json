@@ -1,0 +1,3 @@
+{
+    "userRules": "Ogni volta che aggiungi nuove etichette, label etc Crea uno script sql per salvare le nuove traduzioni in it,ro,en,sv,de da aggiungere nella tabella SELECT TOP (1000) [LanguageCode],[TranslationKey],[TranslationValue] FROM [Traceability_RS].[dbo].[AppTranslations] usando IF NOT EXIST Usa per la lingua rumena N davanto alla traduzione per registrare i caratteri speciali del rumeno "
+}

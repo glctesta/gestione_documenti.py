@@ -89,13 +89,14 @@ class GuestManagementWindow(tk.Toplevel):
                    command=self._generate_booking).pack(side='right', padx=5)
 
         # TreeView
-        columns = ('id', 'service', 'flight', 'arrival_date', 'departure_date', 'service_email',
+        columns = ('id', 'service', 'guest_name', 'flight', 'arrival_date', 'departure_date', 'service_email',
                    'sent_date', 'confirmed')
         self.booking_tree = ttk.Treeview(parent, columns=columns, show='headings',
                                           selectmode='browse', height=18)
 
         self.booking_tree.heading('id', text='ID')
         self.booking_tree.heading('service', text=self.lang.get('col_service', 'Servizio'))
+        self.booking_tree.heading('guest_name', text=self.lang.get('col_guest_name', 'Ospite'))
         self.booking_tree.heading('flight', text=self.lang.get('col_flight', 'Volo'))
         self.booking_tree.heading('arrival_date', text=self.lang.get('col_arrival_date', 'Data Arrivo'))
         self.booking_tree.heading('departure_date', text=self.lang.get('col_departure_date', 'Data Partenza'))
@@ -103,13 +104,14 @@ class GuestManagementWindow(tk.Toplevel):
         self.booking_tree.heading('sent_date', text=self.lang.get('col_sent_date', 'Inviato'))
         self.booking_tree.heading('confirmed', text=self.lang.get('col_confirmed', 'Confermato'))
 
-        self.booking_tree.column('id', width=50, anchor='center')
+        self.booking_tree.column('id', width=40, anchor='center')
         self.booking_tree.column('service', width=80, anchor='center')
+        self.booking_tree.column('guest_name', width=160)
         self.booking_tree.column('flight', width=120, anchor='center')
-        self.booking_tree.column('arrival_date', width=130, anchor='center')
-        self.booking_tree.column('departure_date', width=130, anchor='center')
-        self.booking_tree.column('service_email', width=220)
-        self.booking_tree.column('sent_date', width=130, anchor='center')
+        self.booking_tree.column('arrival_date', width=120, anchor='center')
+        self.booking_tree.column('departure_date', width=100, anchor='center')
+        self.booking_tree.column('service_email', width=200)
+        self.booking_tree.column('sent_date', width=120, anchor='center')
         self.booking_tree.column('confirmed', width=70, anchor='center')
 
         scrollbar = ttk.Scrollbar(parent, orient='vertical', command=self.booking_tree.yview)
@@ -151,7 +153,15 @@ class GuestManagementWindow(tk.Toplevel):
                               AND vs2.SupporterTypeID = 1 AND vs2.DateOut IS NULL
                         ) THEN 'Hotel'
                         ELSE 'Guest'
-                    END AS ServiceType
+                    END AS ServiceType,
+                    STUFF(
+                        (SELECT DISTINCT ', ' + v2.GuestName
+                         FROM Employee.dbo.Visitors v2
+                         WHERE CAST(v2.StartVisit AS DATE) = CAST(vad.DateTimeArrival AS DATE)
+                           AND v2.EndVisit >= vad.DateOut
+                         FOR XML PATH(''), TYPE
+                        ).value('.', 'NVARCHAR(MAX)')
+                    , 1, 2, '') AS GuestNames
                 FROM Employee.dbo.VisitorBookingServiceEmails bse
                 INNER JOIN Employee.dbo.VisitorArrivalDetails vad
                     ON bse.VisitorArrivalDetailId = vad.VisitorArrivalDetailId
@@ -176,12 +186,13 @@ class GuestManagementWindow(tk.Toplevel):
                 dep_date = row.DateOut.strftime('%d/%m/%Y') if row.DateOut else ''
                 sent_date = row.SentOnDate.strftime('%d/%m/%Y %H:%M') if row.SentOnDate else ''
                 confirmed = '✅' if row.Confirmed else '❌'
+                guest_names = row.GuestNames or ''
 
                 # Icona servizio
                 service_icon = {'Hotel': '🏨 Hotel', 'Shuttle': '🚐 Shuttle'}.get(service_type, '👤 Guest')
 
                 iid = self.booking_tree.insert('', 'end', values=(
-                    booking_id, service_icon, flight_info, arr_date, dep_date,
+                    booking_id, service_icon, guest_names, flight_info, arr_date, dep_date,
                     row.EmailRequestBooking or '', sent_date, confirmed
                 ))
 
@@ -195,6 +206,7 @@ class GuestManagementWindow(tk.Toplevel):
                     'arrival_date': row.DateTimeArrival,
                     'departure_date': row.DateOut,
                     'service_type': service_type,
+                    'guest_names': guest_names,
                 }
 
             cursor.close()
@@ -515,11 +527,10 @@ class GuestManagementWindow(tk.Toplevel):
             query = """
                 SELECT TOP 1 s.Email
                 FROM Traceability_RS.dbo.vw_Soggetti s
-                WHERE s.Cognome + ' ' + s.Nome = ?
-                   OR s.Nome + ' ' + s.Cognome = ?
+                WHERE s.NomeSoggetto = ?
             """
             cursor = self.db.conn.cursor()
-            cursor.execute(query, (self.user_name, self.user_name))
+            cursor.execute(query, (self.user_name,))
             row = cursor.fetchone()
             cursor.close()
             return row.Email if row and row.Email else None

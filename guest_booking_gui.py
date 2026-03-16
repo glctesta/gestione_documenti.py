@@ -1155,10 +1155,11 @@ class GuestBookingWindow(tk.Toplevel):
         # Determina destinazione: dopo le 16:00 → Hotel, altrimenti → Fabbrica
         # Se force_factory è attivo, destinazione sempre Fabbrica
         factory_name = self._company_info['name'] if self._company_info else 'Fabbrica'
+        hotel_name = self.hotel_var.get().strip() or 'Hotel'
         if self.force_factory_var.get():
             destination = factory_name
         else:
-            destination = 'Hotel'
+            destination = hotel_name
             try:
                 if arrival_time:
                     hour = int(arrival_time.split(':')[0])
@@ -1234,19 +1235,21 @@ class GuestBookingWindow(tk.Toplevel):
 
         cc = user_email if user_email else None
 
-        # Supporta email multiple separate da ';'
+        # Supporta email multiple separate da ';' → una sola email
         email_addresses = [e.strip() for e in reservation_email.split(';') if e.strip()]
-        logger.info(f"Shuttle email CC (utente loggato): {cc}")
-        for addr in email_addresses:
-            sender.send_email(
-                to_email=addr,
-                subject=f"Transport Request — {len(self.guests_data)} oaspeți — {arrival_date.strftime('%d/%m/%Y')}",
-                body=body_html,
-                is_html=True,
-                attachments=attachments if attachments else None,
-                cc_emails=cc
-            )
-            logger.info(f"Email shuttle inviata a {addr}, CC={cc}")
+        to_addr = email_addresses[0]
+        extra_cc = email_addresses[1:]
+        all_cc = extra_cc + ([cc] if cc else [])
+        logger.info(f"Shuttle email TO: {to_addr}, CC: {all_cc}")
+        sender.send_email(
+            to_email=to_addr,
+            subject=f"Transport Request — {len(self.guests_data)} oaspeți — {arrival_date.strftime('%d/%m/%Y')}",
+            body=body_html,
+            is_html=True,
+            attachments=attachments if attachments else None,
+            cc_emails=all_cc if all_cc else None
+        )
+        logger.info(f"Email shuttle inviata a {to_addr}, CC={all_cc}")
 
     def _send_hotel_email(self, hotel_key):
         """Invia email all'hotel."""
@@ -1336,19 +1339,21 @@ class GuestBookingWindow(tk.Toplevel):
 
         cc = user_email if user_email else None
 
-        # Supporta email multiple separate da ';'
+        # Supporta email multiple separate da ';' → una sola email
         email_addresses = [e.strip() for e in reservation_email.split(';') if e.strip()]
-        logger.info(f"Hotel email CC (utente loggato): {cc}")
-        for addr in email_addresses:
-            sender.send_email(
-                to_email=addr,
-                subject=f"Rezervare Hotel — {len(self.guests_data)} oaspeți — {checkin.strftime('%d/%m/%Y')} - {checkout.strftime('%d/%m/%Y')}",
-                body=body_html,
-                is_html=True,
-                attachments=attachments if attachments else None,
-                cc_emails=cc
-            )
-            logger.info(f"Email hotel inviata a {addr}, CC={cc}")
+        to_addr = email_addresses[0]
+        extra_cc = email_addresses[1:]
+        all_cc = extra_cc + ([cc] if cc else [])
+        logger.info(f"Hotel email TO: {to_addr}, CC: {all_cc}")
+        sender.send_email(
+            to_email=to_addr,
+            subject=f"Rezervare Hotel — {len(self.guests_data)} oaspeți — {checkin.strftime('%d/%m/%Y')} - {checkout.strftime('%d/%m/%Y')}",
+            body=body_html,
+            is_html=True,
+            attachments=attachments if attachments else None,
+            cc_emails=all_cc if all_cc else None
+        )
+        logger.info(f"Email hotel inviata a {to_addr}, CC={all_cc}")
 
     # ================================================================
     # GUEST CONFIRMATION EMAIL

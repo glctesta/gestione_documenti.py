@@ -125,14 +125,12 @@ def _send_ticket_email(db, ticket_id: int, recipient: str, title: str,
                         description: str, error_type: str,
                         error_message: str, log_snippet: str,
                         screenshot_path: str, user_name: str):
-    """Invia la notifica email del ticket in un thread separato."""
-    def _send():
-        try:
-            from email_connector import EmailSender
-            sender = EmailSender()
-            subject = f"[Ticket #{ticket_id}] {title}"
+    """Invia la notifica email del ticket (sincrona). Rilancia l'eccezione in caso di errore."""
+    from email_connector import EmailSender
+    sender = EmailSender()
+    subject = f"[Ticket #{ticket_id}] {title}"
 
-            body_html = f"""
+    body_html = f"""
 <html><body style="font-family:Arial,sans-serif;font-size:13px;color:#333;">
 <h2 style="color:#1565C0;">&#128279; Nuovo Ticket #{ticket_id}</h2>
 <table cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:700px;">
@@ -150,40 +148,35 @@ def _send_ticket_email(db, ticket_id: int, recipient: str, title: str,
 <div style="background:#F5F5F5;padding:10px;border-left:4px solid #1565C0;
             white-space:pre-wrap;font-size:12px;">{description}</div>
 """
-            if error_message:
-                body_html += f"""
+    if error_message:
+        body_html += f"""
 <h3 style="color:#C62828;">Dettaglio Errore / Stacktrace</h3>
 <pre style="background:#FFF3E0;padding:10px;border-left:4px solid #C62828;
             font-size:11px;overflow-x:auto;">{error_message}</pre>
 """
-            if log_snippet:
-                body_html += f"""
+    if log_snippet:
+        body_html += f"""
 <h3 style="color:#2E7D32;">Log recente (ultime righe)</h3>
 <pre style="background:#E8F5E9;padding:10px;border-left:4px solid #2E7D32;
             font-size:10px;overflow-x:auto;">{log_snippet}</pre>
 """
-            body_html += "</body></html>"
+    body_html += "</body></html>"
 
-            attachments = []
-            if screenshot_path and os.path.exists(screenshot_path):
-                attachments.append(screenshot_path)
-            if os.path.exists(_LOG_FILE):
-                attachments.append(_LOG_FILE)
+    attachments = []
+    if screenshot_path and os.path.exists(screenshot_path):
+        attachments.append(screenshot_path)
+    if os.path.exists(_LOG_FILE):
+        attachments.append(_LOG_FILE)
 
-            sender.send_email(
-                to_email=recipient,
-                subject=subject,
-                body=body_html,
-                is_html=True,
-                attachments=attachments if attachments else None
-            )
-            _mark_ticket_email_sent(db, ticket_id)
-            logger.info(f"[TICKET] Email inviata – ticket #{ticket_id} → {recipient}")
-
-        except Exception as e:
-            logger.error(f"[TICKET] Errore invio email: {e}", exc_info=True)
-
-    threading.Thread(target=_send, daemon=True).start()
+    sender.send_email(
+        to_email=recipient,
+        subject=subject,
+        body=body_html,
+        is_html=True,
+        attachments=attachments if attachments else None
+    )
+    _mark_ticket_email_sent(db, ticket_id)
+    logger.info(f"[TICKET] Email inviata – ticket #{ticket_id} → {recipient}")
 
 
 # --------------------------------------------------------------------------- #
@@ -466,33 +459,49 @@ class TicketWindow(tk.Toplevel):
                                      text=self.lang.get('ticket_send_btn', '📨 Invia Ticket'))
                 return
 
-            # Recupera dentistario email e invia in background
+            # Recupera destinatario email e invia
             recipient = _get_ticket_email(self.db)
+            email_sent = False
             if recipient:
-                _send_ticket_email(
-                    db=self.db,
-                    ticket_id=ticket_id,
-                    recipient=recipient,
-                    title=title,
-                    description=description,
-                    error_type=self._error_type,
-                    error_message=error_msg,
-                    log_snippet=log_snippet,
-                    screenshot_path=self._screenshot_path or "",
-                    user_name=self.user_name
-                )
-                logger.info(f"[TICKET] Ticket #{ticket_id} creato, email in invio → {recipient}")
+                try:
+                    _send_ticket_email(
+                        db=self.db,
+                        ticket_id=ticket_id,
+                        recipient=recipient,
+                        title=title,
+                        description=description,
+                        error_type=self._error_type,
+                        error_message=error_msg,
+                        log_snippet=log_snippet,
+                        screenshot_path=self._screenshot_path or "",
+                        user_name=self.user_name
+                    )
+                    email_sent = True
+                    logger.info(f"[TICKET] Ticket #{ticket_id} creato, email inviata → {recipient}")
+                except Exception as mail_err:
+                    logger.error(f"[TICKET] Ticket #{ticket_id} creato ma email fallita: {mail_err}", exc_info=True)
+                    messagebox.showwarning(
+                        self.lang.get('warn_title', 'Attenzione'),
+                        f"Ticket #{ticket_id} salvato, ma l'invio email è fallito:\n{mail_err}",
+                        parent=self
+                    )
             else:
-                logger.warning(f"[TICKET] Ticket #{ticket_id} creato, nessuna email destinataria trovata.")
+                logger.warning(f"[TICKET] Ticket #{ticket_id} creato, nessuna email destinataria trovata (SysEmail_service_tickets).")
+                messagebox.showwarning(
+                    self.lang.get('warn_title', 'Attenzione'),
+                    f"Ticket #{ticket_id} salvato, ma nessun indirizzo email configurato in settings (SysEmail_service_tickets).",
+                    parent=self
+                )
 
-            messagebox.showinfo(
-                self.lang.get('info_title', 'Informazione'),
-                self.lang.get(
-                    'ticket_sent_ok',
-                    f"Ticket #{ticket_id} registrato con successo."
-                ).replace('{id}', str(ticket_id)),
-                parent=self
-            )
+            if email_sent:
+                messagebox.showinfo(
+                    self.lang.get('info_title', 'Informazione'),
+                    self.lang.get(
+                        'ticket_sent_ok',
+                        f"Ticket #{ticket_id} registrato con successo."
+                    ).replace('{id}', str(ticket_id)),
+                    parent=self
+                )
             self.destroy()
 
         except Exception as e:

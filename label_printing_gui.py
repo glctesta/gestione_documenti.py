@@ -12,6 +12,7 @@ from tkinter import ttk, messagebox
 import logging
 import qrcode
 from io import BytesIO
+from datetime import datetime
 
 logger = logging.getLogger("TraceabilityRS")
 
@@ -44,7 +45,7 @@ class LabelPrintWindow(tk.Toplevel):
         self.user_name = user_name
         
         self.title(self.lang.get('label_print_window_title', 'Stampa Etichette'))
-        self.geometry('1000x650')
+        self.geometry('1300x650')
         self.transient(parent)
         self.grab_set()
         
@@ -53,6 +54,7 @@ class LabelPrintWindow(tk.Toplevel):
         self.orders_dict = {}
         self.label_data = []
         self.phases_list = []
+        self._print_counter = 0
         
         self._create_widgets()
     
@@ -64,9 +66,19 @@ class LabelPrintWindow(tk.Toplevel):
         ttk.Label(header, text=f"{self.lang.get('logged_user', 'Utente')}: {self.user_name}",
                   font=('Arial', 10, 'bold')).pack(side='left')
         
-        # Frame principale
-        main_frame = ttk.Frame(self, padding="20")
-        main_frame.pack(fill='both', expand=True)
+        # PanedWindow per dividere form (sinistra) e log (destra)
+        paned = ttk.PanedWindow(self, orient='horizontal')
+        paned.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        # Frame principale (sinistra)
+        main_frame = ttk.Frame(paned, padding="20")
+        paned.add(main_frame, weight=3)
+        
+        # Frame log stampe (destra)
+        log_frame = ttk.LabelFrame(paned, text=self.lang.get('print_log_title', '📋 Log Stampe'),
+                                    padding="5")
+        paned.add(log_frame, weight=1)
+        self._create_print_log_panel(log_frame)
         
         # Ricerca ordine con text box
         ttk.Label(main_frame, text=self.lang.get('order_label', 'Ordine') + ' *').grid(
@@ -162,6 +174,36 @@ class LabelPrintWindow(tk.Toplevel):
         ttk.Button(button_frame, text=self.lang.get('cancel_button', 'Annulla'),
                   command=self._on_cancel).pack(side='right', padx=5)
     
+    def _create_print_log_panel(self, parent):
+        """Crea il pannello laterale con il log delle stampe."""
+        # Treeview log
+        columns = ('time', 'component', 'qty')
+        self.print_log_tree = ttk.Treeview(parent, columns=columns, show='headings', height=20)
+        self.print_log_tree.heading('time', text=self.lang.get('col_time', 'Ora'))
+        self.print_log_tree.heading('component', text=self.lang.get('col_component', 'Componente'))
+        self.print_log_tree.heading('qty', text=self.lang.get('col_qty', 'Qty'))
+        
+        self.print_log_tree.column('time', width=70, anchor='center')
+        self.print_log_tree.column('component', width=140)
+        self.print_log_tree.column('qty', width=40, anchor='center')
+        
+        scrollbar = ttk.Scrollbar(parent, orient='vertical', command=self.print_log_tree.yview)
+        self.print_log_tree.configure(yscrollcommand=scrollbar.set)
+        self.print_log_tree.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+    
+    def _add_print_log_entry(self, component_code, qty=1):
+        """Aggiunge una riga al log delle stampe."""
+        self._print_counter += qty
+        now = datetime.now().strftime('%H:%M:%S')
+        self.print_log_tree.insert('', 0, values=(now, component_code, self._print_counter))
+        logger.info(f"Print log: {now} | {component_code} | tot={self._print_counter}")
+    
+    def _clear_print_log(self):
+        """Cancella il log delle stampe e resetta il contatore."""
+        self.print_log_tree.delete(*self.print_log_tree.get_children())
+        self._print_counter = 0
+    
     def _search_orders(self):
         """Cerca gli ordini nel database usando LIKE senza limiti di data."""
         search_text = self.order_search_var.get().strip()
@@ -227,6 +269,7 @@ class LabelPrintWindow(tk.Toplevel):
             self.selected_order_id = self.orders_dict[order_number]
             self.selected_order_number = order_number
             logger.info(f"Ordine selezionato: {order_number} (ID: {self.selected_order_id})")
+            self._clear_print_log()
             self._load_order_data()
     
     def _on_phase_selected(self, event=None):
@@ -432,7 +475,7 @@ class LabelPrintWindow(tk.Toplevel):
             )
             return
         
-        logger.info(f"🖱️ GUI: Validazione completata - Ordine: {self.order_combo.get()}, Fase: {self.phase_combo.get()}, Componente: {component_code}")
+        logger.info(f"🖱️ GUI: Validazione completata - Ordine: {self.selected_order_number}, Fase: {self.phase_combo.get()}, Componente: {component_code}")
         
         # Filtra i dati in base alla fase selezionata
         selected_phase = self.phase_combo.get()
@@ -501,6 +544,7 @@ class LabelPrintWindow(tk.Toplevel):
         
         if success:
             logger.info(f"🖱️ GUI: ✅ Stampa completata con successo!")
+            self._add_print_log_entry(component_code)
             messagebox.showinfo(
                 self.lang.get('success_title', 'Successo'),
                 self.lang.get('label_printed', 'Etichetta stampata con successo!'),
@@ -524,6 +568,7 @@ class LabelPrintWindow(tk.Toplevel):
     def _on_cancel(self):
         """Chiude la finestra."""
         logger.info("LabelPrintWindow: Chiusura finestra")
+        self._clear_print_log()
         self.destroy()
 
 

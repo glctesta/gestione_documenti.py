@@ -19,8 +19,12 @@ class EmailSender:
         self.smtp_port = smtp_port
         self.key = None
         self.encrypted_password = None
-        self._key_file = "email_key.key"
-        self._credentials_file = "email_credentials.enc"
+        # Usa get_base_path() per risolvere i file nella directory corretta
+        # (sviluppo = directory script, .exe = _internal accanto all'exe)
+        from config_manager import get_base_path
+        _base = get_base_path()
+        self._key_file = os.path.join(_base, "email_key.key")
+        self._credentials_file = os.path.join(_base, "email_credentials.enc")
 
     def setup_encryption(self):
         if os.path.exists(self._key_file):
@@ -146,12 +150,14 @@ class EmailSender:
             # Non serve TLS o autenticazione per il relay server interno
 
             # Prepara lista destinatari (To + CC)
-            recipients = [to_email]
+            # to_email può contenere più indirizzi separati da ';' o ','
+            recipients = [addr.strip() for addr in to_email.replace(',', ';').split(';') if addr.strip()]
             if cc_emails:
                 if isinstance(cc_emails, list):
                     recipients.extend(cc_emails)
                 else:
-                    recipients.append(cc_emails)
+                    # cc_emails potrebbe essere una stringa con ';'
+                    recipients.extend([addr.strip() for addr in cc_emails.replace(',', ';').split(';') if addr.strip()])
 
             # Invia email
             print("Invio email...")
