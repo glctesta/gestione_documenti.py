@@ -1,4 +1,4 @@
-﻿#import configparser
+#import configparser
 # --- StdIO safeguard + Faulthandler sicuro per exe windowed ---
 import shutil
 import sys, os, atexit
@@ -12980,11 +12980,11 @@ class App(tk.Tk):
         source = version_info.MainPath
         destination = os.path.dirname(sys.executable)
         exe_name = os.path.basename(sys.executable)
-        updater_path = os.path.join(destination, "updater.exe")
+        updater_path = os.path.join(destination, "_internal", "updater.exe")
 
         if not os.path.exists(updater_path):
             # Tenta di copiare updater.exe dal percorso sorgente (server)
-            source_updater = os.path.join(source, "updater.exe")
+            source_updater = os.path.join(source, "_internal", "updater.exe")
             logger.info(f"_trigger_update: updater.exe non trovato in '{destination}', provo a copiarlo da '{source_updater}'")
             try:
                 if os.path.exists(source_updater):
@@ -15857,7 +15857,7 @@ class App(tk.Tk):
         # 4b. NPI Management
         ops_menu.add_command(
             label=self.lang.get('menu_npi_management', 'NPI Management'),
-            command=lambda: self._open_manual('operazioni_npi'))
+            command=self._open_npi_manual)
 
         # 4c. Ordini
         ops_menu.add_command(
@@ -16019,6 +16019,30 @@ class App(tk.Tk):
                                   "Verra' aggiunto in un prossimo aggiornamento."),
                     parent=self)
 
+
+    def _open_npi_manual(self):
+        """Apre il manuale NPI (HTML bilingue self-contained) nel browser predefinito."""
+        import webbrowser
+        app_dir = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__))
+        manual_path = os.path.join(app_dir, 'docs', 'NPI_User_Manual.html')
+
+        if os.path.exists(manual_path):
+            try:
+                webbrowser.open(f'file:///{manual_path.replace(os.sep, "/")}')
+                logger.info(f"Aperto manuale NPI: {manual_path}")
+            except Exception as e:
+                logger.error(f"Errore apertura manuale NPI: {e}")
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire il manuale NPI: {e}",
+                    parent=self)
+        else:
+            messagebox.showinfo(
+                self.lang.get('menu_manuals', 'Manuali'),
+                self.lang.get('npi_manual_not_found',
+                             "Il manuale NPI non e' stato trovato.\n\n"
+                             f"Percorso atteso: {manual_path}"),
+                parent=self)
 
     def _open_logs_viewer(self):
         """Apre una finestra per scegliere e aprire un log con Notepad.
