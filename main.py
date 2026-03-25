@@ -1,4 +1,4 @@
-#import configparser
+﻿#import configparser
 # --- StdIO safeguard + Faulthandler sicuro per exe windowed ---
 import shutil
 import sys, os, atexit
@@ -197,50 +197,33 @@ from datetime import datetime, timedelta
 from tkinter import ttk, messagebox, filedialog, simpledialog
 import random
 import pyodbc
-from PIL import ImageOps, ImageDraw, ImageFont
 from packaging import version
-from tkcalendar import DateEntry
-import pandas as pd
-import general_docs_gui
-import maintenance_gui
-import fixtures_report_window
-import materials_gui
-import operations_gui
-import permissions_gui
-import translations_manager
-import printer_config_manager
-
-import submissions_gui
-import tools_gui
-from traceability import TraceabilityManager
-from calibration_gui import CalibrationsWindow
-import fct_transfer
 import collections.abc
-import scarti_gui
-import scrap_reports_gui
-import coating_gui
-import product_checks_gui
-import guests_gui
-import guest_management_gui
-import guest_settings_gui
-import guest_rules_gui
-import guests_report_generator
 import tempfile
-import assign_submissions_gui
-import utils
-import submissions_management_gui
 import json, socket
 import threading
 import time
-import scrap_validation_gui
-from add_complaint import AddComplaintWindow
+import utils
+import translations_manager
 from business_days import should_send_notification
 from npi.npi_manager import GestoreNPI
-from npi.windows.dashboard_window import NpiDashboardWindow
-from npi.windows.gantt_window import NpiGanttWindow
-from npi.windows.config_window import NpiConfigWindow
-from npi.windows.project_window import ProjectWindow
 from typing import Optional, List, Dict, Tuple
+
+# ── LAZY-LOADED IMPORTS ────────────────────────────────────────────────
+# I seguenti moduli vengono importati localmente nelle funzioni che li
+# usano, per velocizzare lo startup dell'applicazione:
+#   PIL (ImageOps, ImageDraw, ImageFont), pandas, tkcalendar,
+#   general_docs_gui, maintenance_gui, fixtures_report_window,
+#   materials_gui, operations_gui, permissions_gui, submissions_gui,
+#   tools_gui, scarti_gui, scrap_reports_gui, scrap_validation_gui,
+#   coating_gui, product_checks_gui, guests_gui, guest_management_gui,
+#   guest_settings_gui, guest_rules_gui, guests_report_generator,
+#   assign_submissions_gui, submissions_management_gui, fct_transfer,
+#   calibration_gui, add_complaint, printer_config_manager,
+#   npi.windows.dashboard_window, npi.windows.gantt_window,
+#   npi.windows.config_window, npi.windows.project_window,
+#   traceability (TraceabilityManager)
+# ───────────────────────────────────────────────────────────────────────
 
 def _detect_log_file_path(logger_name: str) -> str:
     """
@@ -324,7 +307,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.7.9'  # Versione aggiornata
+APP_VERSION = '2.3.9.6'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -890,6 +873,22 @@ class Database:
         except Exception as e:
             self.last_error_details = str(e)
             logger.error("Error marking document out of validation: %s", e)
+            return False
+
+    def delete_document(self, document_id):
+        """Cancella definitivamente un documento dalla tabella ProductDocuments"""
+        try:
+            query = """
+                    DELETE FROM [Traceability_RS].[dbo].[ProductDocuments]
+                    WHERE DocumentProductionID = ?
+                    """
+            self.cursor.execute(query, (document_id,))
+            self.conn.commit()
+            logger.info("Document %s deleted successfully", document_id)
+            return True
+        except Exception as e:
+            self.last_error_details = str(e)
+            logger.error("Error deleting document: %s", e)
             return False
 
     def get_calibration_expired(self):
@@ -1487,23 +1486,19 @@ class Database:
     def fetch_products_must_check(self):
         """Recupera prodotti che necessitano verifica"""
         query = """
-                SELECT M.PeriodicalProductCheckMustListId, \
-                       o.ordernumber, \
-                       p.productcode, \
+                SELECT M.PeriodicalProductCheckMustListId,
+                       o.ordernumber,
+                       p.productcode,
                        pa.PhaseName,
                        FORMAT([Date], 'd', 'it-it') AS [Date], [Ora]
                 FROM [Traceability_RS].[dbo].[PeriodicalProductCheckMustLists] M
-                    INNER JOIN [Traceability_RS].[dbo].Orders O \
-                ON M.[IdOrder] = o.idorder
+                    INNER JOIN [Traceability_RS].[dbo].Orders O ON M.[IdOrder] = o.idorder
                     INNER JOIN [Traceability_RS].[dbo].products P ON p.idproduct = M.idproduct
                     INNER JOIN traceability_rs.dbo.Phases pa ON pa.IDPhase = m.idphase
-                    LEFT JOIN [Traceability_RS].[dbo].PeriodicalProductChecks PP ON PP.IdProduct = M.idproduct
-                    LEFT JOIN [Traceability_RS].[dbo].[PeriodicProductCheckListSpecifics] PS
-                    ON PS.PeriodicalProductCheckId = pp.PeriodicalProductCheckId
                     LEFT JOIN [Traceability_RS].[dbo].PeriodicalProductCheckLogs L
-                    ON l.PeriodicalProductCheckMustListId = m.PeriodicalProductCheckMustListId
+                        ON l.PeriodicalProductCheckMustListId = m.PeriodicalProductCheckMustListId
                 WHERE L.PeriodicalProductCheckMustListId IS NULL
-                ORDER BY [date], [ora]; \
+                ORDER BY [date], [ora];
                 """
         try:
             self.cursor.execute(query)
@@ -9001,6 +8996,200 @@ class ViewDocumentForm(tk.Toplevel):
         if not success:
             raise Exception("Errore durante l'aggiornamento del documento nel database")
 
+class DeleteDocumentForm(tk.Toplevel):
+    """Finestra per cancellare un documento di Produzione."""
+
+    def __init__(self, master, db_handler, lang_manager):
+        super().__init__(master)
+        self.db = db_handler
+        self.lang = lang_manager
+        self.master_window = master
+
+        self.transient(master)
+        self.grab_set()
+
+        self.products_data = {}
+        self.all_product_names = []
+        self.parent_phases_data = {}
+        self.documents_in_phase = []
+
+        self.product_var = tk.StringVar()
+        self.parent_phase_var = tk.StringVar()
+
+        self._create_widgets()
+        self.update_texts()
+        self._load_products()
+
+    def _create_widgets(self):
+        self.geometry("700x480")
+        frame = ttk.Frame(self, padding="20")
+        frame.pack(fill=tk.BOTH, expand=True)
+        frame.columnconfigure(0, weight=1)
+
+        self.product_label = ttk.Label(frame, font=("Helvetica", 10, "bold"))
+        self.product_label.pack(fill=tk.X, pady=(0, 5))
+        self.product_combo = ttk.Combobox(frame, textvariable=self.product_var, width=50)
+        self.product_combo.pack(fill=tk.X, pady=(0, 15))
+        self.product_combo.bind("<<ComboboxSelected>>", self._on_product_select)
+        self.product_combo.bind("<KeyRelease>", self._on_product_keyrelease)
+
+        self.phase_label = ttk.Label(frame, font=("Helvetica", 10, "bold"))
+        self.phase_label.pack(fill=tk.X, pady=(0, 5))
+        self.parent_phase_combo = ttk.Combobox(
+            frame,
+            textvariable=self.parent_phase_var,
+            state="disabled",
+            width=50
+        )
+        self.parent_phase_combo.pack(fill=tk.X, pady=(0, 15))
+        self.parent_phase_combo.bind("<<ComboboxSelected>>", self._on_phase_select)
+
+        self.docs_listbox = tk.Listbox(frame, height=8)
+        self.docs_listbox.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
+
+        # Frame per i pulsanti
+        button_frame = ttk.Frame(frame)
+        button_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.delete_button = ttk.Button(
+            button_frame,
+            text="Cancella",
+            command=self._delete_selected_document
+        )
+        self.delete_button.pack(side="left", padx=(0, 5))
+
+        self.close_button = ttk.Button(
+            button_frame,
+            text="Chiudi",
+            command=self.destroy
+        )
+        self.close_button.pack(side="right")
+
+    def update_texts(self):
+        """Aggiorna i testi della UI."""
+        self.title(self.lang.get('delete_doc_title', 'Cancella Documento'))
+        self.product_label.config(text=self.lang.get('label_select_product'))
+        self.phase_label.config(text=self.lang.get('label_select_phase'))
+        self.delete_button.config(text=self.lang.get('button_delete', 'Cancella'))
+        self.close_button.config(text=self.lang.get('button_close'))
+
+    def _load_products(self):
+        products = self.db.fetch_products_with_documents()
+        if products:
+            self.products_data = {p.ProductCode: p.IDProduct for p in products}
+            self.all_product_names = list(self.products_data.keys())
+            self.product_combo['values'] = self.all_product_names
+        else:
+            messagebox.showwarning(
+                self.lang.get('app_title'),
+                self.lang.get('warn_no_products_found'),
+                parent=self
+            )
+
+    def _on_product_keyrelease(self, event):
+        typed_text = self.product_var.get()
+        if not typed_text:
+            self.product_combo['values'] = self.all_product_names
+        else:
+            filtered_list = [name for name in self.all_product_names if typed_text.lower() in name.lower()]
+            self.product_combo['values'] = filtered_list
+
+    def _on_product_select(self, event=None):
+        self.parent_phase_var.set("")
+        self.parent_phase_combo.config(state="disabled", values=[])
+        self.docs_listbox.delete(0, tk.END)
+        self.documents_in_phase = []
+
+        product_id = self.products_data.get(self.product_var.get())
+        if product_id:
+            parent_phases = self.db.fetch_phases_with_documents_for_product(product_id)
+            if parent_phases:
+                self.parent_phases_data = {p.ParentPhaseName: p.IDParentPhase for p in parent_phases}
+                self.parent_phase_combo.config(state="readonly", values=list(self.parent_phases_data.keys()))
+            else:
+                messagebox.showwarning(
+                    self.lang.get('app_title'),
+                    self.lang.get('warn_no_document_found_for_product',
+                                  "Nessun documento trovato per il prodotto selezionato."),
+                    parent=self
+                )
+
+    def _on_phase_select(self, event=None):
+        """Popola la lista dei documenti."""
+        self.docs_listbox.delete(0, tk.END)
+        self.documents_in_phase = []
+
+        product_id = self.products_data.get(self.product_var.get())
+        parent_phase_id = self.parent_phases_data.get(self.parent_phase_var.get())
+
+        if not (product_id and parent_phase_id):
+            return
+
+        self.documents_in_phase = self.db.fetch_existing_documents(product_id, parent_phase_id)
+
+        if not self.documents_in_phase:
+            messagebox.showwarning(
+                self.lang.get('app_title'),
+                self.lang.get('warn_no_document_found'),
+                parent=self
+            )
+        else:
+            for i, doc in enumerate(self.documents_in_phase):
+                is_valid = doc.Validated == 1 and doc.DateOutOfValidation is None
+                approver_info = f" - Approvato da: {doc.ApprovatoDa}" if doc.ApprovatoDa else ""
+                status_text = "\u2713 VALIDO" if is_valid else "\u2717 Non valido"
+                display_text = f"{doc.DocumentName} (Rev: {doc.DocumentRevisionNumber}){approver_info} [{status_text}]"
+                self.docs_listbox.insert(tk.END, display_text)
+                if is_valid:
+                    self.docs_listbox.itemconfig(i, {'bg': '#c8e6c9'})
+                else:
+                    self.docs_listbox.itemconfig(i, {'bg': '#e0e0e0', 'fg': '#757575'})
+
+    def _delete_selected_document(self):
+        """Cancella il documento selezionato dopo conferma."""
+        selected_indices = self.docs_listbox.curselection()
+        if not selected_indices:
+            messagebox.showwarning(
+                self.lang.get('app_title'),
+                self.lang.get('warn_no_document_selected', "Selezionare un documento da cancellare"),
+                parent=self
+            )
+            return
+
+        selected_index = selected_indices[0]
+        selected_doc = self.documents_in_phase[selected_index]
+
+        # Conferma cancellazione
+        response = messagebox.askyesno(
+            self.lang.get('app_title'),
+            self.lang.get(
+                'confirm_delete_document',
+                f"Sei sicuro di voler cancellare il documento '{selected_doc.DocumentName}' "
+                f"(Rev: {selected_doc.DocumentRevisionNumber})?\n\n"
+                f"Questa operazione è irreversibile."
+            ),
+            parent=self
+        )
+
+        if not response:
+            return
+
+        success = self.db.delete_document(selected_doc.DocumentProductionID)
+        if success:
+            messagebox.showinfo(
+                self.lang.get('app_title'),
+                self.lang.get('info_document_deleted', "Documento cancellato con successo."),
+                parent=self
+            )
+            self._on_phase_select()  # Aggiorna la lista
+        else:
+            messagebox.showerror(
+                self.lang.get('app_title'),
+                self.lang.get('error_delete_failed', "Errore durante la cancellazione del documento."),
+                parent=self
+            )
+
+
 class KanbanLocationCreateForm(tk.Toplevel):
     """
     Crea una locazione KanBan:
@@ -10963,6 +11152,8 @@ class PrinterSetupDialog(tk.Toplevel):
 
 class LineStoppageReportForm(tk.Toplevel):
     def __init__(self, parent, db_handler, lang_manager):
+        from tkcalendar import DateEntry  # lazy
+        self._DateEntry = DateEntry
         super().__init__(parent)
         self.db = db_handler
         self.lang = lang_manager
@@ -10981,12 +11172,12 @@ class LineStoppageReportForm(tk.Toplevel):
 
         # From Date
         ttk.Label(date_frame, text=self.lang.get('from_date_label', "Da:")).grid(row=0, column=0, padx=5, pady=5)
-        self.from_date = DateEntry(date_frame, width=12, background='darkblue', foreground='white', borderwidth=2)
+        self.from_date = self._DateEntry(date_frame, width=12, background='darkblue', foreground='white', borderwidth=2)
         self.from_date.grid(row=0, column=1, padx=5, pady=5)
 
         # To Date
         ttk.Label(date_frame, text=self.lang.get('to_date_label', "A:")).grid(row=1, column=0, padx=5, pady=5)
-        self.to_date = DateEntry(date_frame, width=12, background='darkblue', foreground='white', borderwidth=2)
+        self.to_date = self._DateEntry(date_frame, width=12, background='darkblue', foreground='white', borderwidth=2)
         self.to_date.grid(row=1, column=1, padx=5, pady=5)
 
         # Buttons
@@ -11000,6 +11191,7 @@ class LineStoppageReportForm(tk.Toplevel):
 
     def _generate_report(self):
         """Genera il report Excel dei fermi linea."""
+        import pandas as pd  # lazy
         try:
             # Esegue la query
             query = """
@@ -11221,6 +11413,14 @@ class App(tk.Tk):
         self.flash_colors = ["#FFD700", "#FF4500", "#1E90FF", "#32CD32", "#FF69B4", "#9400D3"]
         # --- FINE ---
 
+        # --- VARIABILI PER LE NEWS ROLLING ---
+        self.news_scroll_job_id = None
+        self.news_refresh_job_id = None
+        self.news_canvas = None
+        self.news_text_ids = []
+        self.news_items_list = []
+        # --- FINE NEWS ---
+
         # === 1. INIZIALIZZAZIONE DELLE DIPENDENZE FONDAMENTALI ===
 
         # Inizializza il database
@@ -11272,6 +11472,7 @@ class App(tk.Tk):
                 ensure_notification_config('npi_notifications_config.json')
                 self._npi_notification_service = None
                 def _deferred_npi_start():
+                    import fct_transfer
                     try:
                         self._npi_notification_service = start_notification_service(
                             self.npi_manager, 'npi_notifications_config.json'
@@ -11294,11 +11495,13 @@ class App(tk.Tk):
         logger.info("INIT: NPI block completato, proseguo con TraceabilityManager...")
         if self._splash:
             self._splash.update_progress(65, "Inizializzazione moduli...")
+        from traceability import TraceabilityManager
         self.traceability_manager = TraceabilityManager(self, self.db, self.lang)
         logger.info("INIT: TraceabilityManager OK")
 
         # Aggiungi qui altri moduli principali se necessario...
         logger.info("INIT: Inizializzazione fct_transfer...")
+        import fct_transfer
         self.fct_config = fct_transfer.FCTTransferConfig()
         self.fct_manager = fct_transfer.FCTTransferManager(DB_CONN_STR, self.fct_config)
         self.fct_run_menu_index = None
@@ -11382,7 +11585,13 @@ class App(tk.Tk):
 
 
         # Batch generazione rapporti attività ospiti (da 1 gen a ieri)
-        self.after(15000, self._start_activity_reports_batch)        
+        self.after(15000, self._start_activity_reports_batch)
+
+        # Avvio monitor materiali indiretti
+        self._wh_monitor = None
+        self._requester_monitor = None
+        self.after(5000, self._start_indirect_materials_monitors)
+
         logger.info("INIT: App initialization complete.")
 
         # Imposta la gestione della chiusura della finestra una sola volta
@@ -11392,6 +11601,7 @@ class App(tk.Tk):
         """Apre la finestra di validazione scarti dopo login."""
 
         def action():
+            import scrap_validation_gui
             user_name = getattr(self, 'last_authenticated_user_name', 'Unknown')
             scrap_validation_gui.open_scrap_validation(self, self.db, self.lang, user_name)
 
@@ -12720,6 +12930,8 @@ class App(tk.Tk):
         self._not_implemented('KanBan', 'Gestione')
 
     def open_assign_submissions_with_login(self):
+        import assign_submissions_gui
+        import submissions_gui
         self._execute_authorized_action(
             menu_translation_key='submenu_assign',
             action_callback=lambda: assign_submissions_gui.open_assign_submissions(self, self.db, self.lang)
@@ -12727,6 +12939,7 @@ class App(tk.Tk):
 
     def open_scrap_declaration_with_login(self):
         """Apre la finestra per la dichiarazione scarti con autenticazione e autorizzazione."""
+        import scarti_gui
 
         self._execute_authorized_action(
             menu_translation_key='submenu_scrap_declaration',
@@ -12859,6 +13072,7 @@ class App(tk.Tk):
 
 
     def open_calibrations_manager_with_login(self):
+        from calibration_gui import CalibrationsWindow
         logger = logging.getLogger("TraceabilityRS")
         required = 'calibration_management'
         logger.info("Request to open CalibrationsWindow; required_permission=%r", required)
@@ -12980,25 +13194,42 @@ class App(tk.Tk):
         source = version_info.MainPath
         destination = os.path.dirname(sys.executable)
         exe_name = os.path.basename(sys.executable)
-        updater_path = os.path.join(destination, "_internal", "updater.exe")
+
+        # --- Percorso updater: prima cerca la versione onedir (consigliata), poi la onefile ---
+        updater_path = os.path.join(destination, "_internal", "updater", "updater.exe")
+        if not os.path.exists(updater_path):
+            # fallback al vecchio percorso onefile
+            updater_path = os.path.join(destination, "_internal", "updater.exe")
 
         if not os.path.exists(updater_path):
-            # Tenta di copiare updater.exe dal percorso sorgente (server)
-            source_updater = os.path.join(source, "_internal", "updater.exe")
-            logger.info(f"_trigger_update: updater.exe non trovato in '{destination}', provo a copiarlo da '{source_updater}'")
+            # Tenta di copiare updater dal percorso sorgente (server)
+            source_updater_onedir = os.path.join(source, "_internal", "updater", "updater.exe")
+            source_updater_legacy = os.path.join(source, "_internal", "updater.exe")
+            dest_updater_onedir  = os.path.join(destination, "_internal", "updater", "updater.exe")
+            dest_updater_legacy  = os.path.join(destination, "_internal", "updater.exe")
+
+            logger.info(f"_trigger_update: updater non trovato in locale, provo copia dal sorgente")
             try:
-                if os.path.exists(source_updater):
-                    shutil.copy2(source_updater, updater_path)
-                    logger.info(f"_trigger_update: updater.exe copiato con successo da sorgente")
+                if os.path.exists(source_updater_onedir):
+                    os.makedirs(os.path.dirname(dest_updater_onedir), exist_ok=True)
+                    shutil.copytree(
+                        os.path.join(source, "_internal", "updater"),
+                        os.path.join(destination, "_internal", "updater"),
+                        dirs_exist_ok=True
+                    )
+                    updater_path = dest_updater_onedir
+                    logger.info(f"_trigger_update: updater onedir copiato da sorgente")
+                elif os.path.exists(source_updater_legacy):
+                    shutil.copy2(source_updater_legacy, dest_updater_legacy)
+                    updater_path = dest_updater_legacy
+                    logger.info(f"_trigger_update: updater.exe (legacy) copiato da sorgente")
                 else:
-                    raise FileNotFoundError(f"updater.exe non trovato neanche in {source}")
+                    raise FileNotFoundError(f"updater non trovato neanche in {source}")
             except Exception as copy_err:
-                logger.error(f"_trigger_update: impossibile ottenere updater.exe: {copy_err}")
+                logger.error(f"_trigger_update: impossibile ottenere updater: {copy_err}")
                 messagebox.showerror(
                     self.lang.get('error', 'Errore'),
-                    f"File updater.exe non trovato!\n\n"
-                    f"Cercato in:\n- {updater_path}\n- {source_updater}\n\n"
-                    f"Impossibile aggiornare.",
+                    f"File updater non trovato!\n\nImpossibile aggiornare.",
                     parent=self
                 )
                 return False
@@ -13015,10 +13246,40 @@ class App(tk.Tk):
             return False
 
         # ── Dialogo pre-update ───────────────────────────────────────────────
+        # Forza il rendering del main window prima di creare il dialogo
+        # (critico se check_version() è chiamato durante __init__ prima di _create_widgets)
+        logger.info("_trigger_update: preparazione dialogo pre-update...")
+        try:
+            self.update_idletasks()
+            self.update()
+        except Exception as e:
+            logger.warning(f"_trigger_update: errore update main window (potrebbe non essere ancora realizzata): {e}")
+
+        # Porta la finestra principale in primo piano prima di creare il dialogo
+        try:
+            self.lift()
+            self.focus_force()
+        except Exception as e:
+            logger.warning(f"_trigger_update: errore lift/focus: {e}")
+
+        logger.info("_trigger_update: creazione dialogo...")
         dialog = tk.Toplevel(self)
         dialog.title(self.lang.get('update_ready_title', 'Aggiornamento Pronto'))
-        dialog.transient(self)
-        dialog.grab_set()
+
+        # transient + grab_set SOLO se la finestra padre è già visibile/mappata
+        # Altrimenti il dialogo resta invisibile (bug tkinter con parent non realizzato)
+        parent_is_ready = False
+        try:
+            parent_is_ready = self.winfo_ismapped()
+        except Exception:
+            pass
+
+        if parent_is_ready:
+            dialog.transient(self)
+            dialog.grab_set()
+        else:
+            logger.info("_trigger_update: parent non ancora mappato, dialogo standalone")
+
         dialog.resizable(False, False)
 
         # Impedisce la chiusura con X se obbligatorio
@@ -13084,11 +13345,25 @@ class App(tk.Tk):
                 command=on_cancel
             ).pack(side=tk.LEFT, padx=6)
 
-        # Centra il dialogo sulla finestra principale
-        self.update_idletasks()
-        x = self.winfo_x() + (self.winfo_width() - 420) // 2
-        y = self.winfo_y() + (self.winfo_height() - 200) // 2
-        dialog.geometry(f"420x230+{x}+{y}")
+        # Centra il dialogo sullo schermo (non sul main window che potrebbe non avere dimensioni)
+        dialog.update_idletasks()
+        dw = dialog.winfo_reqwidth()
+        dh = dialog.winfo_reqheight()
+        sw = dialog.winfo_screenwidth()
+        sh = dialog.winfo_screenheight()
+        x = (sw - dw) // 2
+        y = (sh - dh) // 2
+        dialog.geometry(f"{max(dw, 420)}x{max(dh, 230)}+{x}+{y}")
+
+        # Forza il dialogo in primo piano sopra tutte le form aperte
+        dialog.lift()
+        dialog.attributes('-topmost', True)
+        dialog.after(200, lambda: dialog.attributes('-topmost', False))
+        dialog.focus_force()
+
+        # Forza rendering del dialogo prima di wait_window
+        dialog.update()
+        logger.info("_trigger_update: dialogo creato, in attesa della scelta utente...")
 
         dialog.wait_window()
         # ────────────────────────────────────────────────────────────────────
@@ -13100,18 +13375,46 @@ class App(tk.Tk):
             return False
 
         # Avvia updater
-        subprocess.Popen([updater_path, source, destination, exe_name])
+        logger.info(f"_trigger_update: lancio updater: {updater_path}")
+        logger.info(f"  source={source}")
+        logger.info(f"  destination={destination}")
+        logger.info(f"  exe_name={exe_name}")
 
-        if action == 'save':
-            # Chiusura normale: Tk mostrerà il prompt "Sei sicuro?" solo se non mandatory.
-            # Se mandatory forziamo comunque la chiusura dopo che l'utente ha avuto
-            # l'opportunità di salvare manualmente nelle finestre aperte.
-            self._on_closing(force_quit=mandatory)
-        else:
-            # 'now' → chiusura immediata
-            self._on_closing(force_quit=True)
+        try:
+            # Updater onedir: nessuna estrazione in %TEMP% — si avvia direttamente.
+            # Popen semplice: eredita il desktop context del padre (necessario per tkinter).
+            proc = subprocess.Popen(
+                [updater_path, source, destination, exe_name]
+            )
+            logger.info(f"_trigger_update: updater avviato con PID={proc.pid}")
+        except Exception as e:
+            logger.error(f"_trigger_update: ERRORE lancio updater: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile avviare l'updater:\n{e}",
+                parent=self
+            )
+            return False
 
-        return True
+        # Piccola attesa per dare tempo all'updater di avviarsi prima del force-exit
+        time.sleep(0.5)
+
+        # Chiude l'app per liberare i file bloccati dall'EXE padre
+        logger.info("_trigger_update: chiusura app per aggiornamento...")
+        try:
+            self.db.disconnect()
+        except Exception:
+            pass
+        try:
+            self.destroy()
+        except Exception:
+            pass
+
+        # Force-exit per garantire che il processo termini e l'updater possa copiare
+        logger.info("_trigger_update: force exit (os._exit)")
+        os._exit(0)
+
+        return True  # non raggiunto, ma per coerenza
 
     def _periodic_version_check(self):
         """
@@ -13130,13 +13433,13 @@ class App(tk.Tk):
 
             if not version_info or not version_info.Version or not version_info.MainPath:
                 # Nessuna info → ripianifica tra 120 minuti
-                self.periodic_check_job_id = self.after(120 * 60 * 1000, self._periodic_version_check)
+                self.periodic_check_job_id = self.after(30 * 60 * 1000, self._periodic_version_check)
                 return
 
             if not is_update_needed(APP_VERSION, version_info.Version):
                 # Versione già aggiornata → reset conteggio e ripianifica
                 reset_update_skip_count()
-                self.periodic_check_job_id = self.after(120 * 60 * 1000, self._periodic_version_check)
+                self.periodic_check_job_id = self.after(30 * 60 * 1000, self._periodic_version_check)
                 return
 
             # C'è un aggiornamento disponibile
@@ -13168,6 +13471,10 @@ class App(tk.Tk):
                 return
 
             # Update opzionale: chiedi all'utente
+            # Porta la finestra principale in primo piano prima del messagebox
+            self.lift()
+            self.focus_force()
+
             remaining_skips = 3 - skip_count
             message = self.lang.get(
                 "optional_upgrade_message",
@@ -13194,22 +13501,25 @@ class App(tk.Tk):
         except Exception as e:
             logger.error(f"Errore in _periodic_version_check: {e}", exc_info=True)
             # In caso di errore ripianifica tra 120 minuti senza interrompere
-            self.periodic_check_job_id = self.after(120 * 60 * 1000, self._periodic_version_check)
+            self.periodic_check_job_id = self.after(30 * 60 * 1000, self._periodic_version_check)
 
     def open_company_manager_with_login(self):
         """Apre la finestra di gestione delle compagnie dopo il login."""
+        import tools_gui
         self._execute_simple_login(
             action_callback=lambda user_name: tools_gui.open_company_manager(self, self.db, self.lang, user_name)
         )
 
     def open_brand_manager_with_login(self):
         """Apre la finestra di gestione dei brand dopo il login."""
+        import maintenance_gui
         self._execute_simple_login(
             action_callback=lambda user_name: maintenance_gui.open_brand_manager(self, self.db, self.lang, user_name)
         )
 
     def open_task_cycles_manager_with_login(self):
         """Apre la finestra di gestione voci task dopo autenticazione."""
+        import maintenance_gui
         self._execute_authorized_action(
             'gestione_voci_task',
             lambda: maintenance_gui.open_task_cycles_manager(self, self.db, self.lang, self._temp_authorized_user_id)
@@ -13235,11 +13545,13 @@ class App(tk.Tk):
 
     def open_missing_action_report(self):
         """Esegue il report Missing Action e lo esporta in Excel."""
+        import maintenance_gui
         # Chiama direttamente la funzione per generare il report, senza login
         maintenance_gui.generate_missing_action_report(self, self.db, self.lang)
 
     def open_xls_settings_with_login(self):
         """Apre la finestra per configurare la mappatura dei file Excel."""
+        import operations_gui
         self._execute_authorized_action(  # Usiamo il login con permessi
             menu_translation_key='submenu_shipping_settings',  # Riusiamo questo permesso
             action_callback=lambda: operations_gui.open_xls_settings_window(self, self.db, self.lang, None)
@@ -13247,6 +13559,7 @@ class App(tk.Tk):
 
     def open_shipping_settings_with_login(self):
         """Apre la finestra per gestire le impostazioni di spedizione."""
+        import operations_gui
         self._execute_authorized_action(  # Usiamo il login con permessi
             menu_translation_key='submenu_shipping_settings',
             action_callback=lambda: operations_gui.open_shipping_settings_window(self, self.db, self.lang, None)
@@ -13254,6 +13567,7 @@ class App(tk.Tk):
 
     def open_shipping_window_with_login(self):
         """Apre la finestra per il caricamento del report spedizioni."""
+        import operations_gui
         self._execute_simple_login(
             action_callback=lambda user_name: operations_gui.open_shipping_report_window(self, self.db, self.lang,
                                                                                          user_name)
@@ -13261,6 +13575,7 @@ class App(tk.Tk):
 
     def open_shipping_report_window_with_login(self):
         """Apre la finestra per il caricamento del report spedizioni dopo un login semplice."""
+        import operations_gui
         self._execute_simple_login(
             action_callback=lambda user_name: operations_gui.open_shipping_report_window(self, self.db, self.lang,
                                                                                          user_name)
@@ -13386,8 +13701,206 @@ class App(tk.Tk):
         # Rimuove l'immagine speciale e riavvia lo slideshow standard
         self._setup_slideshow()
 
+    # ==================== NEWS ROLLING BANNER ====================
+
+    def _fetch_active_news(self):
+        """
+        Recupera le news attive da Employee.dbo.News dove la data odierna
+        ricade tra StartNews e EndNews.
+
+        Returns:
+            list di str: testi delle news attive
+        """
+        query = """
+        SELECT News
+        FROM Employee.dbo.News
+        WHERE CAST(GETDATE() AS DATE) BETWEEN CAST(StartNews AS DATE) AND CAST(EndNews AS DATE)
+        ORDER BY StartNews DESC
+        """
+        try:
+            cursor = self.db.conn.cursor()
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            cursor.close()
+            news_list = [row[0].strip() for row in rows if row[0] and row[0].strip()]
+            logger.info(f"News attive trovate: {len(news_list)}")
+            return news_list
+        except Exception as e:
+            logger.error(f"Errore recupero news: {e}", exc_info=True)
+            return []
+
+    def _fetch_skill_program_url(self):
+        """Recupera IP e Porta del programma 'Skill Program' da ExternalIps."""
+        try:
+            query = """
+                SELECT [ExternalIP], [Port]
+                FROM [Employee].[dbo].[ExternalIps]
+                WHERE [DateOut] IS NULL AND [ProgramName] = 'Skill Program'
+            """
+            cursor = self.db.conn.cursor()
+            cursor.execute(query)
+            row = cursor.fetchone()
+            cursor.close()
+            if row and row.ExternalIP:
+                ip = row.ExternalIP.strip()
+                port = str(row.Port).strip() if row.Port else ''
+                url = f"{ip}:{port}" if port else ip
+                logger.info(f"Skill Program URL trovato: {url}")
+                return url
+            logger.warning("Skill Program non trovato in ExternalIps")
+            return None
+        except Exception as e:
+            logger.error(f"Errore recupero Skill Program URL: {e}", exc_info=True)
+            return None
+
+    def _start_news_rolling(self):
+        """Carica le news attive e avvia lo scrolling verticale nel banner."""
+        if self._closing:
+            return
+
+        # Stop precedente
+        if self.news_scroll_job_id:
+            self.after_cancel(self.news_scroll_job_id)
+            self.news_scroll_job_id = None
+
+        news_items = self._fetch_active_news()
+
+        if not news_items:
+            # Nessuna news: nascondi il banner
+            if self.news_canvas:
+                self.news_canvas.delete("all")
+                self.news_bar.config(height=0)
+            self.news_refresh_job_id = self.after(300000, self._refresh_news)  # 5 min
+            return
+
+        self.news_items_list = news_items
+
+        # Recupera URL Skill Program per il messaggio header
+        skill_url = self._fetch_skill_program_url()
+        if skill_url:
+            header_text = (
+                f"\u26A0  ATEN\u021AIE: Urmeaz\u0103 lista documentelor de studiu "
+                f"\u00eenc\u0103rcate \u00een sistemul intern SKILL, accesibil din orice "
+                f"browser intranet la adresa IP \u2192 {skill_url}. "
+                f"Dac\u0103 nu ave\u021bi parola \u0219i ID-ul de utilizator, "
+                f"solicita\u021bi-le responsabilului de departament."
+            )
+        else:
+            header_text = (
+                "\u26A0  ATEN\u021AIE: Urmeaz\u0103 lista documentelor de studiu "
+                "\u00eenc\u0103rcate \u00een sistemul intern SKILL. "
+                "Dac\u0103 nu ave\u021bi parola \u0219i ID-ul de utilizator, "
+                "solicita\u021bi-le responsabilului de departament."
+            )
+
+        # Calcola altezza banner: 20% dello schermo
+        screen_h = self.winfo_screenheight()
+        banner_h = max(150, int(screen_h * 0.20))
+        self.news_bar.config(height=banner_h)
+
+        # Crea gli oggetti testo nel canvas
+        self.news_canvas.delete("all")
+        self.news_text_ids = []
+
+        canvas_w = self.news_canvas.winfo_width()
+        if canvas_w <= 1:
+            canvas_w = self.winfo_width() or 1024
+
+        gap = 20  # spazio tra una news e l'altra
+        current_y = banner_h  # Partono dal fondo del banner
+
+        # --- Header message (bianco, distinguibile dalle news) ---
+        header_tid = self.news_canvas.create_text(
+            canvas_w // 2, current_y,
+            text=header_text,
+            font=("Segoe UI", 20, "bold italic"),
+            fill="#FFFFFF",
+            anchor="n",
+            width=canvas_w - 40,
+            tags="header"
+        )
+        self.news_text_ids.append(header_tid)
+        self.news_canvas.update_idletasks()
+        bbox = self.news_canvas.bbox(header_tid)
+        if bbox:
+            text_h = bbox[3] - bbox[1]
+        else:
+            text_h = 60
+        current_y += text_h + gap + 10  # gap extra dopo header
+
+        # --- News items ---
+        for news_text in news_items:
+            tid = self.news_canvas.create_text(
+                canvas_w // 2, current_y,
+                text=f"\u25B6  {news_text}",
+                font=("Segoe UI", 22, "bold"),
+                fill="#FFD700",
+                anchor="n",
+                width=canvas_w - 40
+            )
+            self.news_text_ids.append(tid)
+            self.news_canvas.update_idletasks()
+            bbox = self.news_canvas.bbox(tid)
+            if bbox:
+                text_h = bbox[3] - bbox[1]
+            else:
+                text_h = 40
+            current_y += text_h + gap
+
+        # Avvia animazione verticale
+        self._scroll_news()
+
+        # Refresh ogni 5 minuti
+        self.news_refresh_job_id = self.after(300000, self._refresh_news)
+
+    def _scroll_news(self):
+        """Anima lo scrolling verticale: i testi salgono dal basso verso l'alto."""
+        if self._closing or not self.news_canvas or not self.news_text_ids:
+            return
+
+        canvas_h = self.news_canvas.winfo_height()
+        if canvas_h <= 1:
+            canvas_h = 150
+
+        # Sposta tutti i testi verso l'alto di 1px
+        for tid in self.news_text_ids:
+            self.news_canvas.move(tid, 0, -1)
+
+        # Controlla se l'ultimo testo è uscito sopra
+        last_tid = self.news_text_ids[-1]
+        last_bbox = self.news_canvas.bbox(last_tid)
+        if last_bbox and last_bbox[3] < 0:
+            # Tutti fuori: riposiziona partendo dal basso
+            canvas_w = self.news_canvas.winfo_width()
+            if canvas_w <= 1:
+                canvas_w = 800
+            gap = 20
+            current_y = canvas_h
+            for i, tid in enumerate(self.news_text_ids):
+                self.news_canvas.coords(tid, canvas_w // 2, current_y)
+                self.news_canvas.itemconfig(tid, width=canvas_w - 40)
+                bbox = self.news_canvas.bbox(tid)
+                if bbox:
+                    text_h = bbox[3] - bbox[1]
+                else:
+                    text_h = 40
+                # Gap extra dopo l'header (primo elemento)
+                extra = 10 if i == 0 else 0
+                current_y += text_h + gap + extra
+
+        # Prossimo frame dopo 50ms
+        self.news_scroll_job_id = self.after(50, self._scroll_news)
+
+    def _refresh_news(self):
+        """Ricarica le news dal DB e riavvia lo scrolling se necessario."""
+        if self._closing:
+            return
+        logger.debug("News refresh: ricaricamento news attive...")
+        self._start_news_rolling()
+
     def _display_special_image(self, image_path, text):
         """Carica un'immagine, ci scrive sopra del testo e la visualizza."""
+        from PIL import ImageDraw, ImageFont
         try:
             if self.slideshow_job_id:
                 self.after_cancel(self.slideshow_job_id)
@@ -13415,6 +13928,7 @@ class App(tk.Tk):
 
     def open_add_interruption_window_with_login(self):
         """Apre la finestra per dichiarare un'interruzione di produzione."""
+        import operations_gui
         self._execute_simple_login(
             action_callback=lambda user_name: operations_gui.open_add_interruption_window(self, self.db, self.lang,
                                                                                           user_name)
@@ -13422,6 +13936,7 @@ class App(tk.Tk):
 
     def open_maintenance_times_with_login(self):
         """Apre la finestra per gestire i tempi di manutenzione."""
+        import tools_gui
         self._execute_simple_login(
             action_callback=lambda user_name: tools_gui.open_maintenance_times_manager(self, self.db, self.lang,
                                                                                        user_name)
@@ -13466,6 +13981,7 @@ class App(tk.Tk):
 
     def open_add_interruption_window(self):
         """Apre la finestra per dichiarare un'interruzione di produzione."""
+        import operations_gui
         self._execute_simple_login(
             action_callback=lambda user_name: operations_gui.open_add_interruption_window(self, self.db, self.lang,
                                                                                           user_name)
@@ -13486,6 +14002,9 @@ class App(tk.Tk):
         is_birthday = self._check_for_birthdays()
         if not is_birthday:
             self._setup_slideshow()
+
+        # Avvia il banner news rolling
+        self.after(2000, self._start_news_rolling)
         
         # â±ï¸ SCAGLIONAMENTO OPERAZIONI IN BACKGROUND
         # Ogni operazione viene ritardata progressivamente per evitare conflitti DB
@@ -13539,6 +14058,7 @@ class App(tk.Tk):
 
     def _run_verification_check_thread(self):
         """Esegue la logica di verifica in un thread separato."""
+        import product_checks_gui
         try:
             logger.info("Background Check Thread: Inizio verifica...")
             product_checks_gui.check_and_notify_verification_discrepancies(self.db)
@@ -13637,6 +14157,7 @@ class App(tk.Tk):
     def _execute_verification_check(self):
         """Esegue il check in un thread separato e aggiorna lo stato."""
         def run_check():
+            import product_checks_gui
             try:
                 logger.info("Scheduled Verification Check: Starting...")
                 product_checks_gui.check_and_notify_verification_discrepancies(self.db)
@@ -13943,6 +14464,7 @@ class App(tk.Tk):
 
     def _draw_current_image(self, event=None):  # Aggiunto 'event=None' per la compatibilitÃ  con bind
         """Funzione dedicata a disegnare l'immagine corrente alla dimensione corretta."""
+        from PIL import ImageOps
         if not self.image_files:
             return
 
@@ -13973,6 +14495,7 @@ class App(tk.Tk):
 
     def open_add_maintenance_tasks_with_login(self):
         """Richiede il login e poi apre la finestra per aggiungere/gestire i task."""
+        import maintenance_gui
         # This action modifies data, so it requires a simple login.
         self._execute_simple_login(
             action_callback=lambda user_name: maintenance_gui.open_add_maintenance_tasks(self, self.db, self.lang,
@@ -13981,18 +14504,21 @@ class App(tk.Tk):
 
     def open_assign_responsibles_with_login(self):
         """Richiede il login con autorizzazione e apre la finestra per assegnare responsabili ai programmi di manutenzione."""
+        import maintenance_gui
         self._execute_authorized_action(
             menu_translation_key='submenu_assign_responsibles',
             action_callback=lambda: maintenance_gui.open_assign_responsibles(self, self.db, self.lang)
         )
 
     def open_manage_permissions_with_login(self):
+        import permissions_gui
         self._execute_authorized_action(
             menu_translation_key='submenu_permissions',  # Chiave per accedere alla gestione
             action_callback=lambda: permissions_gui.open_manage_permissions_window(self, self.db, self.lang)
         )
 
     def open_view_permissions_with_login(self):
+        import permissions_gui
         self._execute_authorized_action(
             menu_translation_key='submenu_permissions',  # Stessa chiave, per ora
             action_callback=lambda: permissions_gui.open_view_permissions_window(self, self.db, self.lang)
@@ -14000,6 +14526,7 @@ class App(tk.Tk):
 
     def open_doc_types_manager_with_login(self):
         """Richiede il login e poi apre la finestra di gestione dei tipi di documento."""
+        import tools_gui
         # Nota: usiamo una nuova chiave 'submenu_doc_types' per un eventuale permesso dedicato
         self._execute_authorized_action(
             menu_translation_key='submenu_doc_types',
@@ -14016,6 +14543,7 @@ class App(tk.Tk):
 
     def _open_general_docs_viewer(self, category_id, category_name):
         """Apre la finestra di visualizzazione dei documenti in modalitÃ  SOLA LETTURA (senza login)."""
+        import general_docs_gui
         # L'utente non Ã¨ loggato, quindi passiamo None come user_name
         general_docs_gui.open_general_docs_viewer(
             self, self.db, self.lang, category_id, category_name, user_name=None, view_only=True
@@ -14023,6 +14551,7 @@ class App(tk.Tk):
 
     def _open_general_docs_viewer_with_login(self, category_id, category_name):
         """Richiede il login e poi apre la finestra di GESTIONE (lettura/scrittura)."""
+        import general_docs_gui
         self._execute_simple_login(
             action_callback=lambda user_name: general_docs_gui.open_general_docs_viewer(
                 self, self.db, self.lang, category_id, category_name, user_name, view_only=False
@@ -14045,6 +14574,16 @@ class App(tk.Tk):
         view_form.transient(self)
         view_form.grab_set()
         self.wait_window(view_form)
+
+    def open_delete_form(self):
+        """Apre la finestra per cancellare documenti di produzione (con autorizzazione)."""
+        def action():
+            form = DeleteDocumentForm(self, self.db, self.lang)
+            form.transient(self)
+            form.grab_set()
+            self.wait_window(form)
+
+        self._execute_authorized_action('cancella_documentazione', action)
 
     def _load_simple_login_cache(self):
         """Legge la cache locale del simple login e restituisce il payload JSON o None."""
@@ -14358,6 +14897,7 @@ class App(tk.Tk):
             return True
 
     def open_maint_cycles_manager_with_login(self):
+        import tools_gui
         self._execute_authorized_action(
             menu_translation_key='submenu_maint_cycles',
             action_callback=lambda: tools_gui.open_maint_cycles_manager(self, self.db, self.lang)
@@ -14392,10 +14932,12 @@ class App(tk.Tk):
 
     def open_new_submission_form(self):
         """Apre la finestra di inserimento nuova segnalazione (senza login)."""
+        import submissions_gui
         submissions_gui.open_new_submission_form(self, self.db, self.lang)
 
     def open_brands_manager_with_login(self):
         """Richiede il login e poi apre la finestra di gestione dei brand."""
+        import tools_gui
         login_form = LoginWindow(self, self.db, self.lang)
         self.wait_window(login_form)
         authenticated_user = login_form.authenticated_user_name
@@ -14403,6 +14945,7 @@ class App(tk.Tk):
             tools_gui.open_brands_manager(self, self.db, self.lang)
 
     def open_suppliers_manager_with_login(self):
+        import tools_gui
         self._execute_authorized_action(
             menu_translation_key='submenu_suppliers',
             action_callback=lambda: tools_gui.open_suppliers_manager(self, self.db, self.lang)
@@ -14410,6 +14953,7 @@ class App(tk.Tk):
 
     def open_suppliers_manager(self):
         """Apre la finestra di gestione dei fornitori."""
+        import tools_gui
         login_form = LoginWindow(self, self.db, self.lang)
         self.wait_window(login_form)
         authenticated_user = login_form.authenticated_user_name
@@ -14437,6 +14981,7 @@ class App(tk.Tk):
 
     def open_fill_templates_with_login(self):
         """Apre la finestra per compilare le schede dopo un login semplice."""
+        import maintenance_gui
         logger.info("open_fill_templates_with_login called")
         self._execute_simple_login(
             action_callback=lambda user_name: maintenance_gui.open_fill_templates(self, self.db, self.lang, user_name)
@@ -14629,11 +15174,21 @@ class App(tk.Tk):
 
         # --- NUOVA ETICHETTA PER GLI AUGURI (al centro) ---
         self.birthday_label = ttk.Label(status_bar, text="", font=("Helvetica", 10, "bold"), anchor="center")
-        # Questo pack fa sÃ¬ che l'etichetta si espanda per riempire lo spazio centrale
+        # Questo pack fa sì che l'etichetta si espanda per riempire lo spazio centrale
         self.birthday_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
+        # --- BANNER NEWS ROLLING (VERTICALE) ---
+        self.news_bar = tk.Frame(self, bg="black", height=0)
+        self.news_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        self.news_bar.pack_propagate(False)
+        self.news_canvas = tk.Canvas(
+            self.news_bar, bg="black", highlightthickness=0,
+            bd=0
+        )
+        self.news_canvas.pack(fill=tk.BOTH, expand=True)
+
         # --- DOPO: Crea l'Area Centrale per lo Slideshow ---
-        # Ora questo label si espanderÃ  per riempire tutto lo spazio RIMANENTE
+        # Ora questo label si espanderà per riempire tutto lo spazio RIMANENTE
         self.slideshow_label = ttk.Label(self, background="black")
         self.slideshow_label.pack(fill=tk.BOTH, expand=True)
 
@@ -14644,6 +15199,7 @@ class App(tk.Tk):
 
     def _launch_specific_gantt_window(self, project_id):
         """Lancia la finestra Gantt per un ID progetto specifico."""
+        from npi.windows.gantt_window import NpiGanttWindow
         if not project_id:
             return
         logger.info(f"Lancio della finestra Gantt per il progetto ID: {project_id}")
@@ -14809,6 +15365,7 @@ class App(tk.Tk):
         self.document_menu.delete(0, 'end')
         self.document_menu.add_command(label=self.lang.get('menu_insert_doc'), command=self.open_insert_form)
         self.document_menu.add_command(label=self.lang.get('menu_view_doc'), command=self.open_view_form)
+        self.document_menu.add_command(label=self.lang.get('menu_delete_doc', 'Cancella Documento'), command=self.open_delete_form)
         self.document_menu.add_separator()
         self.document_menu.add_command(label=self.lang.get('menu_quit'), command=self._on_closing)
 
@@ -14987,6 +15544,11 @@ class App(tk.Tk):
             label=self.lang.get('overtime_responses', 'Risposte'),
             command=self.open_overtime_qa_with_auth
         )
+        overtime_submenu.add_separator()
+        overtime_submenu.add_command(
+            label=self.lang.get('overtime_monitoring', 'Monitoraggio 48h'),
+            command=self.open_overtime_monitoring_with_auth
+        )
 
         # External Programs (Programmi Esterni)
         self.personnel_menu.add_separator()
@@ -15043,6 +15605,17 @@ class App(tk.Tk):
             label=self.lang.get('npi_setup_tasks', 'Configura Catalogo Task...'),
             command=self._configura_catalogo_task_npi
         )
+        self.npi_menu.add_separator()
+        # Label dinamica basata su stato corrente
+        try:
+            from npi_budget_approval_monitor import is_budget_approver
+            approver_label = self.lang.get('npi_budget_approver_disable', '❌ Disabilita PC Approvazione Budget') if is_budget_approver() else self.lang.get('npi_budget_approver_enable', '✅ Abilita PC Approvazione Budget')
+        except Exception:
+            approver_label = self.lang.get('npi_budget_approver_enable', '✅ Abilita PC Approvazione Budget')
+        self.npi_menu.add_command(
+            label=approver_label,
+            command=self._open_toggle_budget_approver
+        )
 
         # Disabilita tutto se il gestore NPI non è partito
         if self.npi_manager is None:
@@ -15068,6 +15641,22 @@ class App(tk.Tk):
             command=self.open_label_print_with_login
         )
         
+        # Sottomenu Materiali Indiretti
+        materials_menu.add_separator()
+        indirect_materials_menu = tk.Menu(materials_menu, tearoff=0)
+        materials_menu.add_cascade(
+            label=self.lang.get('submenu_indirect_materials', 'Materiali Indiretti'),
+            menu=indirect_materials_menu
+        )
+        indirect_materials_menu.add_command(
+            label=self.lang.get('submenu_request_materials', 'Richiedi materiali'),
+            command=self._open_request_indirect_materials
+        )
+        indirect_materials_menu.add_command(
+            label=self.lang.get('submenu_confirm_materials', 'Conferma Materiali'),
+            command=self._open_confirm_indirect_materials
+        )
+        
         # Sottomenu Configurazioni
         materials_config_menu = tk.Menu(materials_menu, tearoff=0)
         materials_menu.add_cascade(
@@ -15085,6 +15674,32 @@ class App(tk.Tk):
         materials_config_menu.add_command(
             label=self.lang.get('submenu_label_config', 'Etichetta'),
             command=self._open_label_config_placeholder
+        )
+        
+        materials_config_menu.add_separator()
+        
+        # Conferma WH WorkStation sotto Configurazioni
+        materials_config_menu.add_command(
+            label=self.lang.get('submenu_confirm_wh_workstation', 'Conferma WH WorkStation'),
+            command=self._open_confirm_wh_workstation
+        )
+        
+        # Allinea Codici sotto Configurazioni
+        materials_config_menu.add_command(
+            label=self.lang.get('submenu_align_codes', 'Allinea Codici'),
+            command=self._open_align_codes
+        )
+
+        # Configurazione codici sotto Configurazioni
+        materials_config_menu.add_command(
+            label=self.lang.get('submenu_material_configurations', 'Configurazione Codici'),
+            command=self._open_material_configurations
+        )
+
+        # Tipi Materiale sotto Configurazioni
+        materials_config_menu.add_command(
+            label=self.lang.get('submenu_tipo_materiali', 'Tipi Materiale'),
+            command=self._open_tipo_materiali
         )
 
 
@@ -15417,6 +16032,7 @@ class App(tk.Tk):
 
     def _open_printer_config(self):
         """Apre la finestra di configurazione stampanti"""
+        import printer_config_manager
         try:
             user = getattr(self, 'last_authenticated_user_name', 'Unknown')
             printer_config_manager.open_printer_config(
@@ -15553,6 +16169,7 @@ class App(tk.Tk):
 
     def _update_maintenance_menu(self):
         """Aggiorna il menu Manutenzione"""
+        import maintenance_gui
         self.maintenance_menu.delete(0, 'end')
 
         # Gestione Macchine
@@ -15631,6 +16248,7 @@ class App(tk.Tk):
 
     def _open_fixtures_report(self):
         """Apre la finestra dei rapporti fixtures (senza login)"""
+        import fixtures_report_window
         try:
             fixtures_report_window.open_fixtures_report(self, self.db, self.lang)
         except Exception as e:
@@ -15854,10 +16472,16 @@ class App(tk.Tk):
             label=self.lang.get('menu_complaints_management', 'Gestione Reclami'),
             command=lambda: self._open_manual('operazioni_gestione_reclami'))
 
-        # 4b. NPI Management
-        ops_menu.add_command(
-            label=self.lang.get('menu_npi_management', 'NPI Management'),
+        # 4b. NPI Management (sottomenu)
+        npi_manual_menu = tk.Menu(ops_menu, tearoff=0)
+        ops_menu.add_cascade(
+            label=self.lang.get('menu_npi_management', 'NPI Management'), menu=npi_manual_menu)
+        npi_manual_menu.add_command(
+            label=self.lang.get('npi_manual_general', 'NPI Management'),
             command=self._open_npi_manual)
+        npi_manual_menu.add_command(
+            label=self.lang.get('npi_manual_checklist', 'NPI Checklist (MD.RAQ.089)'),
+            command=self._open_npi_checklist_manual)
 
         # 4c. Ordini
         ops_menu.add_command(
@@ -16041,6 +16665,30 @@ class App(tk.Tk):
                 self.lang.get('menu_manuals', 'Manuali'),
                 self.lang.get('npi_manual_not_found',
                              "Il manuale NPI non e' stato trovato.\n\n"
+                             f"Percorso atteso: {manual_path}"),
+                parent=self)
+
+    def _open_npi_checklist_manual(self):
+        """Apre il manuale NPI Checklist (MD.RAQ.089) in formato Markdown nel browser."""
+        import webbrowser
+        app_dir = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__))
+        manual_path = os.path.join(app_dir, 'docs', 'Manual_NPI_Checklist_RO.md')
+
+        if os.path.exists(manual_path):
+            try:
+                webbrowser.open(f'file:///{manual_path.replace(os.sep, "/")}')
+                logger.info(f"Aperto manuale NPI Checklist: {manual_path}")
+            except Exception as e:
+                logger.error(f"Errore apertura manuale NPI Checklist: {e}")
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire il manuale NPI Checklist: {e}",
+                    parent=self)
+        else:
+            messagebox.showinfo(
+                self.lang.get('menu_manuals', 'Manuali'),
+                self.lang.get('npi_checklist_manual_not_found',
+                             "Il manuale NPI Checklist non e' stato trovato.\n\n"
                              f"Percorso atteso: {manual_path}"),
                 parent=self)
 
@@ -16308,6 +16956,7 @@ class App(tk.Tk):
                 client_combo.bind('<<ComboboxSelected>>', on_client_change)
 
                 def open_selected():
+                    from npi.windows.project_window import ProjectWindow
                     selected_text = combo_var.get()
                     if selected_text and selected_text in progetti_map:
                         project_id = progetti_map[selected_text]
@@ -16351,6 +17000,7 @@ class App(tk.Tk):
         logger.info("Tentativo di aprire la Dashboard NPI.")
 
         def action(user_name):
+            from npi.windows.dashboard_window import NpiDashboardWindow
             try:
                 # 'user_name' arriva dal login e non lo usiamo qui, ma Ã¨ richiesto dal callback
                 logger.debug(f"Utente '{user_name}' autorizzato. Apertura Dashboard NPI.")
@@ -16382,11 +17032,73 @@ class App(tk.Tk):
             action_callback=self._launch_config_window
         )
 
+    def _open_toggle_budget_approver(self):
+        """Wrapper protetto da login per toggle approvatore budget."""
+        self._execute_authorized_action(
+            menu_translation_key='approvazione_budget_npi',
+            action_callback=self._toggle_budget_approver
+        )
+
+    def _toggle_budget_approver(self, username=None):
+        """Abilita/disabilita questo PC come approvatore budget NPI."""
+        try:
+            from npi_budget_approval_monitor import is_budget_approver, set_budget_approver, BudgetApprovalMonitor
+
+            if is_budget_approver():
+                # Disabilita
+                set_budget_approver(False)
+                if hasattr(self, '_budget_approval_monitor') and self._budget_approval_monitor:
+                    self._budget_approval_monitor.stop()
+                    self._budget_approval_monitor = None
+                messagebox.showinfo(
+                    self.lang.get('info', 'Info'),
+                    self.lang.get('npi_budget_approver_disabled_msg',
+                                  'Questo PC non è più configurato come approvatore budget NPI.\nLa modifica sarà effettiva al prossimo avvio.'),
+                    parent=self
+                )
+                # Aggiorna label menu
+                self._update_budget_approver_menu_label()
+            else:
+                # Abilita
+                set_budget_approver(True)
+                # Avvia monitor subito
+                if not hasattr(self, '_budget_approval_monitor') or not self._budget_approval_monitor:
+                    self._budget_approval_monitor = BudgetApprovalMonitor(self, self.db, self.lang)
+                messagebox.showinfo(
+                    self.lang.get('info', 'Info'),
+                    self.lang.get('npi_budget_approver_enabled_msg',
+                                  'Questo PC è ora configurato come approvatore budget NPI.\nIl monitor è attivo.'),
+                    parent=self
+                )
+                self._update_budget_approver_menu_label()
+
+        except Exception as e:
+            logger.error(f"Errore toggle budget approver: {e}", exc_info=True)
+            messagebox.showerror("Errore", str(e), parent=self)
+
+    def _update_budget_approver_menu_label(self):
+        """Aggiorna la label del menu approvatore budget."""
+        try:
+            from npi_budget_approval_monitor import is_budget_approver
+            new_label = self.lang.get('npi_budget_approver_disable', '❌ Disabilita PC Approvazione Budget') if is_budget_approver() else self.lang.get('npi_budget_approver_enable', '✅ Abilita PC Approvazione Budget')
+            # Trova l'indice della voce menu
+            for i in range(self.npi_menu.index("end") + 1):
+                try:
+                    label = self.npi_menu.entrycget(i, 'label')
+                    if 'Approvazione Budget' in label or 'Budget' in label and ('Abilita' in label or 'Disabilita' in label):
+                        self.npi_menu.entryconfig(i, label=new_label)
+                        break
+                except tk.TclError:
+                    continue
+        except Exception as e:
+            logger.error(f"Errore aggiornamento label menu: {e}", exc_info=True)
+
     def _launch_dashboard_window(self, username):
         """
         Crea e lancia la finestra della dashboard.
         'username' Ã¨ passato da _execute_simple_login.
         """
+        from npi.windows.dashboard_window import NpiDashboardWindow
         logger.info(f"Utente '{username}' autorizzato. Apertura Dashboard NPI.")
 
         try:
@@ -16582,6 +17294,7 @@ class App(tk.Tk):
                     )
 
             def on_double_click(event):
+                from npi.windows.gantt_window import NpiGanttWindow
                 nonlocal scelta_utente
                 selezionato = listbox.curselection()
                 if selezionato:
@@ -16629,6 +17342,7 @@ class App(tk.Tk):
         Crea e lancia la finestra di configurazione Task.
         `self._temp_authorized_user_id` Ã¨ disponibile qui.
         """
+        from npi.windows.config_window import NpiConfigWindow
         authorized_user = self.last_authenticated_user_name
         logger.info(f"Utente '{authorized_user}' autorizzato per la Configurazione NPI.")
         try:
@@ -16679,6 +17393,7 @@ class App(tk.Tk):
         Esegue l'aggiunta reclamo dopo autorizzazione
         Chiamato solo se l'utente Ã¨ autorizzato
         """
+        from add_complaint import AddComplaintWindow
         try:
             title = self.lang.get('title_add_complaint', 'Aggiungi Reclamo')
             logger.info(f"[COMPLAINTS] Utente {self.last_authenticated_user_name} ha accesso a: {title}")
@@ -16822,6 +17537,7 @@ class App(tk.Tk):
         self._execute_simple_login(action_callback=action)
 
     def open_scrap_reports(self):
+        import scrap_reports_gui
         try:
             # Usa self direttamente come parent
             scrap_reports_gui.ScrapReportsWindow(self, self.db, self.lang)
@@ -16994,6 +17710,7 @@ class App(tk.Tk):
         thread.start()
 
     def open_scrap_types_with_login(self):
+        import scarti_gui
         # Usa il gate "per menÃ¹" con chiave di traduzione dedicata
         self._execute_authorized_action(
             menu_translation_key='submenu_scrap_types',
@@ -17041,6 +17758,7 @@ class App(tk.Tk):
         self._execute_authorized_action('submenu_paste_producers', action)
 
     def open_guest_registration_with_login(self):
+        import guests_gui
         self._execute_authorized_action(
             menu_translation_key='manage_guests',
             action_callback=lambda: guests_gui.GuestRegistrationWindow(
@@ -17049,6 +17767,7 @@ class App(tk.Tk):
         )
 
     def open_guest_report_with_login(self):
+        import guests_gui
         self._execute_simple_login(
             action_callback=lambda user_name: guests_gui.GuestReportWindow(self, self.db, self.lang)
         )
@@ -17063,6 +17782,7 @@ class App(tk.Tk):
 
     def open_guest_management_with_login(self):
         """Apre la finestra Gestione Ospiti con autenticazione."""
+        import guest_management_gui
         self._execute_authorized_action(
             menu_translation_key='manage_guests',
             action_callback=lambda: guest_management_gui.GuestManagementWindow(
@@ -17072,6 +17792,7 @@ class App(tk.Tk):
 
     def open_hotel_settings_with_login(self):
         """Apre la finestra gestione Hotels con autenticazione."""
+        import guest_settings_gui
         self._execute_authorized_action(
             menu_translation_key='manage_guests',
             action_callback=lambda: guest_settings_gui.SupporterSettingsWindow(
@@ -17083,6 +17804,7 @@ class App(tk.Tk):
 
     def open_shuttle_settings_with_login(self):
         """Apre la finestra gestione Shuttle con autenticazione."""
+        import guest_settings_gui
         self._execute_authorized_action(
             menu_translation_key='manage_guests',
             action_callback=lambda: guest_settings_gui.SupporterSettingsWindow(
@@ -17094,6 +17816,7 @@ class App(tk.Tk):
 
     def open_airline_settings_with_login(self):
         """Apre la finestra gestione Compagnie Aeree con autenticazione."""
+        import guest_settings_gui
         self._execute_authorized_action(
             menu_translation_key='manage_guests',
             action_callback=lambda: guest_settings_gui.AirlineSettingsWindow(
@@ -17103,6 +17826,7 @@ class App(tk.Tk):
 
     def open_guest_rules_with_login(self):
         """Apre la finestra Regole Ospiti con autenticazione."""
+        import guest_rules_gui
         self._execute_authorized_action(
             menu_translation_key='gestisci_contratti_consulenza',
             action_callback=lambda: guest_rules_gui.GuestRulesWindow(
@@ -17115,6 +17839,7 @@ class App(tk.Tk):
         logger.info("=== INIZIO generate_guests_pdf_report_with_login ===")
         
         def action():
+            import guests_report_generator
             logger.info("Action callback chiamato, inizio generazione report...")
             try:
                 success, message, pdf_path = guests_report_generator.generate_guests_pdf_report(self.db)
@@ -17295,6 +18020,7 @@ class App(tk.Tk):
 
     def _open_fct_settings(self):
         """Apre la finestra di configurazione FCT Transfer (con controllo login)"""
+        import fct_transfer
         ok = self._execute_authorized_action(
             menu_translation_key='menu_fct_settings',
             action_callback=lambda: fct_transfer.FCTTransferSettingsWindow(
@@ -17309,6 +18035,7 @@ class App(tk.Tk):
 
     def _toggle_fct_execution(self):
         """Avvia o ferma l'esecuzione FCT Transfer"""
+        import fct_transfer
         if not self.fct_config.bat_file_path:
             messagebox.showwarning(
                 self.lang.get('warning', "Attenzione"),
@@ -17323,10 +18050,10 @@ class App(tk.Tk):
         if not self.fct_manager.is_running:
             # Avvia esecuzione
             if is_running:
-                # GiÃ  in esecuzione su altra istanza
+                # Già in esecuzione su altra istanza
                 messagebox.showinfo(
                     self.lang.get('info', "Informazione"),
-                    self.lang.get('fct_already_running', "Batch giÃ  in esecuzione su un'altra istanza"),
+                    self.lang.get('fct_already_running', "Batch già in esecuzione su un'altra istanza"),
                     parent=self
                 )
                 # Cambia comunque il menu in Stop (per coerenza UI)
@@ -17396,17 +18123,75 @@ class App(tk.Tk):
             )
 
     def _show_about(self):
-        """Mostra la finestra di dialogo 'About' con le informazioni del software."""
+        """Mostra la finestra di dialogo 'About' con le informazioni del software e del certificato."""
         about_title = f"{self.lang.get('about_title')} - v{APP_VERSION}"
         about_template = self.lang.get_raw('about_message')
-        # Assicurati che il template nel DB usi {version} e {developer}
         about_message = about_template.replace('{version}', APP_VERSION).replace('{developer}', APP_DEVELOPER)
+
+        # Aggiunge info certificato digitale
+        cert_info = self._get_certificate_info()
+        if cert_info:
+            about_message += "\n\n" + "─" * 40
+            about_message += f"\n🔒 {self.lang.get('about_signed', 'Firmato digitalmente')}"
+            about_message += f"\n   {self.lang.get('about_cert_subject', 'Rilasciato a')}: {cert_info['subject']}"
+            about_message += f"\n   {self.lang.get('about_cert_issuer', 'Rilasciato da')}: {cert_info['issuer']}"
+            about_message += f"\n   {self.lang.get('about_cert_valid', 'Valido')}: {cert_info['valid_from']} → {cert_info['valid_to']}"
+        else:
+            about_message += f"\n\n⚠ {self.lang.get('about_not_signed', 'Eseguibile non firmato (ambiente di sviluppo)')}"
 
         messagebox.showinfo(
             about_title,
             about_message,
             parent=self
         )
+
+    def _get_certificate_info(self):
+        """Legge le informazioni del certificato digitale dall'eseguibile corrente via PowerShell."""
+        try:
+            exe_path = sys.executable
+
+            # Verifica che sia un .exe compilato (non python.exe in dev)
+            if not exe_path.lower().endswith('.exe') or 'python' in os.path.basename(exe_path).lower():
+                return None
+
+            # Usa PowerShell Get-AuthenticodeSignature
+            import subprocess
+            result = subprocess.run(
+                ['powershell', '-NoProfile', '-Command',
+                 f'$sig = Get-AuthenticodeSignature "{exe_path}"; '
+                 f'if ($sig.Status -eq "Valid") {{ '
+                 f'$c = $sig.SignerCertificate; '
+                 f'Write-Output "$($c.Subject)|$($c.Issuer)|$($c.NotBefore.ToString(\"dd/MM/yyyy\"))|$($c.NotAfter.ToString(\"dd/MM/yyyy\"))" '
+                 f'}} else {{ Write-Output "UNSIGNED" }}'],
+                capture_output=True, text=True, timeout=10
+            )
+
+            output = result.stdout.strip()
+            if not output or output == "UNSIGNED":
+                return None
+
+            parts = output.split('|')
+            if len(parts) < 4:
+                return None
+
+            # Estrai CN= dal Subject e Issuer
+            def extract_cn(dn):
+                for part in dn.split(','):
+                    part = part.strip()
+                    if part.upper().startswith('CN='):
+                        return part[3:].strip()
+                return dn
+
+            return {
+                'subject': extract_cn(parts[0]),
+                'issuer': extract_cn(parts[1]),
+                'valid_from': parts[2],
+                'valid_to': parts[3]
+            }
+
+        except Exception as e:
+            logger.debug(f"Impossibile leggere il certificato: {e}")
+            return None
 
     def _open_tickets(self, error_info=None):
         """Apre la finestra di ticketing (Help → Tickets o da eccezione automatica)."""
@@ -17461,6 +18246,7 @@ class App(tk.Tk):
         )
 
     def open_manage_materials_with_login(self):
+        import materials_gui
         self._execute_simple_login(
             action_callback=lambda user_name: materials_gui.open_manage_materials(self, self.db, self.lang, user_name)
         )
@@ -17486,11 +18272,13 @@ class App(tk.Tk):
 
     def open_view_materials(self):
         """Apre la finestra di visualizzazione materiali (senza login)."""
+        import materials_gui
         # Passiamo 'None' come user_name perchÃ© non c'Ã¨ autenticazione
         materials_gui.open_view_materials(self, self.db, self.lang, user_name=None)
 
     def open_edit_machine_with_login(self):
         def action(user_name):
+            import maintenance_gui
             self.authenticated_user_for_maintenance = user_name
             maintenance_gui.open_edit_machine(self, self.db, self.lang)
 
@@ -17498,6 +18286,7 @@ class App(tk.Tk):
 
     def open_add_machine_with_login(self):
         """Apre la finestra per aggiungere una macchina dopo un login semplice."""
+        import maintenance_gui
         self._execute_simple_login(
             action_callback=lambda user_name: maintenance_gui.open_add_machine(self, self.db, self.lang)
         )
@@ -17543,6 +18332,18 @@ class App(tk.Tk):
         self._execute_authorized_action(
             menu_translation_key='overtime_approval',
             action_callback=lambda: open_overtime_qa_window(
+                self, self.db, self.lang,
+                self.last_authenticated_user_name,
+                getattr(self, 'last_authorized_user_id', 0)
+            )
+        )
+
+    def open_overtime_monitoring_with_auth(self):
+        """Apre la finestra monitoraggio 48h/4 mesi con autorizzazione."""
+        from overtime.overtime_monitoring_gui import open_overtime_monitoring_window
+        self._execute_authorized_action(
+            menu_translation_key='verifica_extratime',
+            action_callback=lambda: open_overtime_monitoring_window(
                 self, self.db, self.lang,
                 self.last_authenticated_user_name,
                 getattr(self, 'last_authorized_user_id', 0)
@@ -17645,6 +18446,7 @@ class App(tk.Tk):
     def open_equipment_types_manager_with_login(self):
         """Apre la finestra di gestione tipi macchine con autorizzazione"""
         def authorized_action():
+            import maintenance_gui
             try:
                 user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
                 maintenance_gui.EquipmentTypesManagerWindow(self, self.db, self.lang, user_name)
@@ -17665,16 +18467,162 @@ class App(tk.Tk):
     # FINE METODI MENU ORDINI
     # =========================================================================
 
+    # ------------------------------------------------------------------ #
+    #  Materiali Indiretti - Placeholder methods                          #
+    # ------------------------------------------------------------------ #
+    def _open_request_indirect_materials(self):
+        """Apre la finestra Richiedi Materiali Indiretti con autorizzazione."""
+        def authorized_action():
+            try:
+                import indirect_materials_request
+                user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
+                indirect_materials_request.open_request_indirect_materials(
+                    self, self.db, self.lang, user_name
+                )
+            except Exception as e:
+                logger.error(f"Errore apertura Richiesta Materiali: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire Richiesta Materiali:\n{e}",
+                    parent=self
+                )
+        self._execute_authorized_action(
+            'richiesta_materiali_indiretti',
+            authorized_action
+        )
+
+    def _open_confirm_indirect_materials(self):
+        """Apre lo storico richieste materiali / conferma."""
+        try:
+            from indirect_materials_request import RequestHistoryWindow
+            user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
+            RequestHistoryWindow(self, self.db, self.lang, user_name)
+        except Exception as e:
+            logger.error(f"Errore apertura Conferma Materiali: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire Conferma Materiali:\n{e}",
+                parent=self
+            )
+
+    def _open_tipo_materiali(self):
+        """Apre la finestra gestione Tipi Materiale."""
+        try:
+            import indirect_materials_types
+            indirect_materials_types.open_tipo_materiali(self, self.db, self.lang)
+        except Exception as e:
+            logger.error(f"Errore apertura Tipi Materiale: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire Tipi Materiale:\n{e}",
+                parent=self
+            )
+
+    def _open_confirm_wh_workstation(self):
+        """Apre la finestra Conferma WH WorkStation."""
+        try:
+            import wh_workstation_config
+            user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
+            wh_workstation_config.open_wh_workstation_config(self, self.lang, user_name)
+        except Exception as e:
+            logger.error(f"Errore apertura WH WorkStation config: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire la configurazione WH WorkStation:\n{e}",
+                parent=self
+            )
+
+    def _open_align_codes(self):
+        """Apre la finestra Allinea Codici con controllo autorizzazione."""
+        def authorized_action():
+            try:
+                import indirect_materials_import
+                user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
+                indirect_materials_import.open_indirect_materials_import(
+                    self, self.db, self.lang, user_name
+                )
+            except Exception as e:
+                logger.error(f"Errore apertura Allinea Codici: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire Allinea Codici:\n{e}",
+                    parent=self
+                )
+        self._execute_authorized_action(
+            'carica_lista_codici_indiretti',
+            authorized_action
+        )
+
+    def _open_material_configurations(self):
+        """Apre la finestra Configurazione Codici Materiale con controllo autorizzazione."""
+        def authorized_action():
+            try:
+                import material_configurations
+                user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
+                material_configurations.open_material_configurations(
+                    self, self.db, self.lang, user_name
+                )
+            except Exception as e:
+                logger.error(f"Errore apertura Configurazione Codici: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire Configurazione Codici:\n{e}",
+                    parent=self
+                )
+        self._execute_authorized_action(
+            'carica_lista_codici_indiretti',
+            authorized_action
+        )
+
+    # ------------------------------------------------------------------ #
+    #  Monitor Materiali Indiretti                                          #
+    # ------------------------------------------------------------------ #
+    def _start_indirect_materials_monitors(self):
+        """Avvia i monitor per materiali indiretti (WH e richiedente)."""
+        try:
+            from indirect_materials_wh_monitor import WHMonitor, RequesterMonitor, is_wh_workstation
+
+            # Monitor WH: solo se questo PC è un WH WorkStation
+            if is_wh_workstation():
+                self._wh_monitor = WHMonitor(self, self.db, self.lang)
+                logger.info("WHMonitor avviato (questo PC è WH WorkStation)")
+
+            # Monitor richiedente: sempre attivo
+            self._requester_monitor = RequesterMonitor(self, self.db, self.lang)
+            logger.info("RequesterMonitor avviato")
+
+        except Exception as e:
+            logger.error(f"Errore avvio monitor materiali indiretti: {e}", exc_info=True)
+
+        # Monitor approvazione budget NPI
+        try:
+            from npi_budget_approval_monitor import BudgetApprovalMonitor, is_budget_approver
+            if is_budget_approver():
+                self._budget_approval_monitor = BudgetApprovalMonitor(self, self.db, self.lang)
+                logger.info("BudgetApprovalMonitor avviato (questo PC è approvatore budget)")
+        except Exception as e:
+            logger.error(f"Errore avvio monitor approvazione budget: {e}", exc_info=True)
+
     def _on_closing(self, force_quit=False):
         """Gestisce la chiusura dell'applicazione."""
         # Segnala che l'app sta chiudendo (blocca callback periodici)
         self._closing = True
+
+        # Ferma monitor materiali indiretti
+        if hasattr(self, '_wh_monitor') and self._wh_monitor:
+            self._wh_monitor.stop()
+        if hasattr(self, '_requester_monitor') and self._requester_monitor:
+            self._requester_monitor.stop()
+        if hasattr(self, '_budget_approval_monitor') and self._budget_approval_monitor:
+            self._budget_approval_monitor.stop()
 
         # Ferma tutti i timer attivi
         if self.slideshow_job_id: self.after_cancel(self.slideshow_job_id)
         if self.birthday_flash_job_id: self.after_cancel(self.birthday_flash_job_id)
         if self.birthday_stop_job_id: self.after_cancel(self.birthday_stop_job_id)
         if self.periodic_check_job_id: self.after_cancel(self.periodic_check_job_id)
+        if self.news_scroll_job_id: self.after_cancel(self.news_scroll_job_id)
+        if self.news_refresh_job_id: self.after_cancel(self.news_refresh_job_id)
 
         self._stop_product_check_background_task()
 
@@ -17796,3 +18744,4 @@ if __name__ == "__main__":
     finally:
         # Cleanup finale
         print("Applicazione terminata.")
+        os._exit(0)  # Safety net: termina il processo anche se ci sono thread non-daemon attivi

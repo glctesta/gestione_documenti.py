@@ -418,7 +418,8 @@ class GuestRegistrationWindow(tk.Toplevel):
             query = """
                 SELECT 
                     VisitorId, CompanyName, GuestName, 
-                    StartVisit, EndVisit, SponsorGuy
+                    StartVisit, EndVisit, SponsorGuy,
+                    Pourpose, WelcomeMessage
                 FROM Employee.dbo.Visitors
                 WHERE  ? between CAST(StartVisit AS DATE)  and cast(EndVisit as date)
                 ORDER BY VisitorId DESC
@@ -435,7 +436,9 @@ class GuestRegistrationWindow(tk.Toplevel):
                     row.GuestName or '',
                     start_str,
                     end_str,
-                    row.SponsorGuy or ''
+                    row.SponsorGuy or '',
+                    row.Pourpose or '',
+                    row.WelcomeMessage or ''
                 ))
             
             cursor.close()
@@ -451,7 +454,8 @@ class GuestRegistrationWindow(tk.Toplevel):
             query = """
                 SELECT TOP 50 
                     VisitorId, CompanyName, GuestName, 
-                    StartVisit, EndVisit, SponsorGuy
+                    StartVisit, EndVisit, SponsorGuy,
+                    Pourpose, WelcomeMessage
                 FROM Employee.dbo.Visitors
                 WHERE StartVisit >= DATEADD(day, -30, GETDATE())
                 ORDER BY VisitorId DESC
@@ -468,7 +472,9 @@ class GuestRegistrationWindow(tk.Toplevel):
                     row.GuestName or '',
                     start_str,
                     end_str,
-                    row.SponsorGuy or ''
+                    row.SponsorGuy or '',
+                    row.Pourpose or '',
+                    row.WelcomeMessage or ''
                 ))
             
             cursor.close()
@@ -515,6 +521,12 @@ class GuestRegistrationWindow(tk.Toplevel):
 
         self.sponsor_var.set(values[5])
 
+        # Popola Purpose e Welcome Message
+        if len(values) > 6:
+            self.purpose_var.set(values[6] if values[6] else '')
+        if len(values) > 7:
+            self.welcome_var.set(values[7] if values[7] else '')
+
     def _on_new(self):
         """Pulisce il form per un nuovo inserimento"""
         self._current_visitor_id = None
@@ -528,25 +540,28 @@ class GuestRegistrationWindow(tk.Toplevel):
         self.guest_combo['values'] = []
 
     def _on_close(self):
-        """Gestisce la chiusura: Booking ospiti (raggruppati per data arrivo) → Sala riunioni"""
+        """Gestisce la chiusura: Booking ospiti (raggruppati per arrivo+partenza) → Sala riunioni"""
         logger.info(f"_on_close chiamato. Session visitors: {len(self._session_visitors)}")
         # Se ci sono ospiti registrati in questa sessione, apri il booking
         if self._session_visitors:
             try:
                 from collections import defaultdict
 
-                # Raggruppa ospiti per data di arrivo (start_visit)
+                # Raggruppa ospiti per (data arrivo, data partenza)
+                # Ospiti con stesse date → stesso booking window
+                # Ospiti con date diverse → booking window separati
                 groups = defaultdict(list)
                 for guest in self._session_visitors:
                     arrival_key = str(guest.get('start_visit', ''))
-                    groups[arrival_key].append(guest)
+                    departure_key = str(guest.get('end_visit', ''))
+                    groups[(arrival_key, departure_key)].append(guest)
 
                 self._booking_groups = list(groups.values())
                 self._booking_group_index = 0
 
                 n_groups = len(self._booking_groups)
                 if n_groups > 1:
-                    logger.info(f"Rilevati {n_groups} gruppi di arrivo diversi, apertura booking sequenziali")
+                    logger.info(f"Rilevati {n_groups} gruppi di viaggio diversi, apertura booking sequenziali")
 
                 self._open_next_booking_group()
                 self.destroy()
@@ -575,9 +590,10 @@ class GuestRegistrationWindow(tk.Toplevel):
 
         if total_groups > 1:
             arrival_date = group[0].get('start_visit', '?')
+            departure_date = group[0].get('end_visit', '?')
             names = ', '.join([g['guest_name'] for g in group])
             logger.info(f"Apertura booking gruppo {group_num}/{total_groups}: "
-                        f"arrivo {arrival_date}, ospiti: {names}")
+                        f"arrivo {arrival_date}, partenza {departure_date}, ospiti: {names}")
 
         self._booking_group_index += 1
 

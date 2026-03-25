@@ -252,7 +252,7 @@ class GuestBookingWindow(tk.Toplevel):
         parent.columnconfigure(1, weight=1)
 
     def _build_hotel_section(self, parent):
-        """Sezione prenotazione hotel."""
+        """Sezione prenotazione hotel con date check-in/check-out per ospite."""
         row = 0
 
         # Checkbox per skippare il servizio hotel
@@ -271,34 +271,135 @@ class GuestBookingWindow(tk.Toplevel):
         self.hotel_combo.grid(row=row, column=1, padx=5, pady=5, sticky='ew')
         row += 1
 
-        # Date check-in / check-out
-        default_start = self.guests_data[0]['start_visit'] if self.guests_data else datetime.now().date()
-        default_end = self.guests_data[0]['end_visit'] if self.guests_data else datetime.now().date()
-
-        ttk.Label(parent, text='Check-in').grid(
-            row=row, column=0, sticky='w', padx=5, pady=5)
-        self.checkin_date = DateEntry(parent, width=20, background='darkblue',
-                                      foreground='white', borderwidth=2,
-                                      date_pattern='yyyy-mm-dd')
-        self.checkin_date.set_date(default_start)
-        self.checkin_date.grid(row=row, column=1, padx=5, pady=5, sticky='w')
+        # --- Tabella per-ospite check-in/check-out ---
+        ttk.Label(parent, text=self.lang.get('guest_dates', 'Date per ospite'),
+                  font=('Arial', 9, 'bold')).grid(
+            row=row, column=0, columnspan=2, sticky='w', padx=5, pady=(10, 2))
         row += 1
 
-        ttk.Label(parent, text='Check-out').grid(
-            row=row, column=0, sticky='w', padx=5, pady=5)
-        self.checkout_date = DateEntry(parent, width=20, background='darkblue',
-                                       foreground='white', borderwidth=2,
-                                       date_pattern='yyyy-mm-dd')
-        self.checkout_date.set_date(default_end)
-        self.checkout_date.grid(row=row, column=1, padx=5, pady=5, sticky='w')
+        tree_frame = ttk.Frame(parent)
+        tree_frame.grid(row=row, column=0, columnspan=2, sticky='nsew', padx=5, pady=5)
+
+        cols = ('guest', 'company', 'checkin', 'checkout', 'nights')
+        self.hotel_guests_tree = ttk.Treeview(tree_frame, columns=cols,
+                                               show='headings', height=min(len(self.guests_data), 6))
+        self.hotel_guests_tree.heading('guest', text='Ospite / Guest')
+        self.hotel_guests_tree.heading('company', text='Compagnia')
+        self.hotel_guests_tree.heading('checkin', text='Check-in')
+        self.hotel_guests_tree.heading('checkout', text='Check-out')
+        self.hotel_guests_tree.heading('nights', text='Notti')
+
+        self.hotel_guests_tree.column('guest', width=180)
+        self.hotel_guests_tree.column('company', width=130)
+        self.hotel_guests_tree.column('checkin', width=90, anchor='center')
+        self.hotel_guests_tree.column('checkout', width=90, anchor='center')
+        self.hotel_guests_tree.column('nights', width=50, anchor='center')
+
+        scrollbar = ttk.Scrollbar(tree_frame, orient='vertical',
+                                   command=self.hotel_guests_tree.yview)
+        self.hotel_guests_tree.configure(yscrollcommand=scrollbar.set)
+        self.hotel_guests_tree.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+
+        # Popola la tabella con i dati dal form di registrazione
+        self._guest_hotel_dates = {}  # {iid: {'checkin': date, 'checkout': date, 'guest_idx': int}}
+        for idx, g in enumerate(self.guests_data):
+            checkin = g.get('start_visit', datetime.now().date())
+            checkout = g.get('end_visit', datetime.now().date())
+            if isinstance(checkin, str):
+                try: checkin = datetime.strptime(checkin, '%Y-%m-%d').date()
+                except: checkin = datetime.now().date()
+            if isinstance(checkout, str):
+                try: checkout = datetime.strptime(checkout, '%Y-%m-%d').date()
+                except: checkout = datetime.now().date()
+            nights = (checkout - checkin).days
+            company = g.get('company', '')
+            iid = self.hotel_guests_tree.insert('', 'end', values=(
+                g['guest_name'],
+                company,
+                checkin.strftime('%d/%m/%Y'),
+                checkout.strftime('%d/%m/%Y'),
+                nights
+            ))
+            self._guest_hotel_dates[iid] = {'checkin': checkin, 'checkout': checkout, 'guest_idx': idx}
+
+        # Double-click per modificare la data di check-out
+        self.hotel_guests_tree.bind('<Double-1>', self._edit_guest_checkout)
         row += 1
 
+        # Info: hint per modifica
+        ttk.Label(parent,
+            text=self.lang.get('dblclick_checkout',
+                '💡 Doppio click su una riga per modificare la data di check-out'),
+            foreground='#1565C0', font=('Arial', 8, 'italic')).grid(
+            row=row, column=0, columnspan=2, sticky='w', padx=5, pady=(0, 5))
+        row += 1
+
+        # Note hotel
         ttk.Label(parent, text=self.lang.get('hotel_notes', 'Note Hotel')).grid(
             row=row, column=0, sticky='nw', padx=5, pady=5)
-        self.hotel_notes = tk.Text(parent, height=4, width=40)
+        self.hotel_notes = tk.Text(parent, height=3, width=40)
         self.hotel_notes.grid(row=row, column=1, padx=5, pady=5, sticky='ew')
 
         parent.columnconfigure(1, weight=1)
+        parent.rowconfigure(row - 2, weight=1)  # Espandi la riga del treeview
+
+    def _edit_guest_checkout(self, event):
+        """Apre un popup DateEntry per modificare la data di check-out dell'ospite selezionato."""
+        item = self.hotel_guests_tree.identify_row(event.y)
+        col = self.hotel_guests_tree.identify_column(event.x)
+        if not item:
+            return
+
+        # Permetti modifica solo su check-out (colonna #4, dopo guest/company/checkin)
+        if col != '#4':
+            return
+
+        dates = self._guest_hotel_dates.get(item)
+        if not dates:
+            return
+
+        # Crea popup
+        popup = tk.Toplevel(self)
+        popup.title(self.lang.get('edit_checkout', 'Modifica Check-out'))
+        popup.geometry('280x120')
+        popup.transient(self)
+        popup.grab_set()
+        popup.resizable(False, False)
+
+        vals = self.hotel_guests_tree.item(item, 'values')
+        guest_name = vals[0]
+        company = vals[1]
+        ttk.Label(popup, text=f"{guest_name} — {company}",
+                  font=('Arial', 10, 'bold')).pack(padx=10, pady=(10, 5))
+
+        date_frame = ttk.Frame(popup)
+        date_frame.pack(padx=10, pady=5)
+        ttk.Label(date_frame, text='Check-out:').pack(side='left', padx=(0, 5))
+
+        new_date = DateEntry(date_frame, width=15, background='darkblue',
+                             foreground='white', borderwidth=2,
+                             date_pattern='yyyy-mm-dd')
+        new_date.set_date(dates['checkout'])
+        new_date.pack(side='left')
+
+        def apply():
+            new_checkout = new_date.get_date()
+            if new_checkout < dates['checkin']:
+                messagebox.showwarning(
+                    self.lang.get('warning', 'Attenzione'),
+                    self.lang.get('checkout_before_checkin',
+                                  'Check-out non può essere prima del check-in.'),
+                    parent=popup)
+                return
+            dates['checkout'] = new_checkout
+            nights = (new_checkout - dates['checkin']).days
+            self.hotel_guests_tree.item(item, values=(
+                guest_name, company, dates['checkin'].strftime('%d/%m/%Y'),
+                new_checkout.strftime('%d/%m/%Y'), nights))
+            popup.destroy()
+
+        ttk.Button(popup, text='OK', command=apply).pack(pady=5)
 
     # ================================================================
     # DATA LOADING
@@ -934,8 +1035,6 @@ class GuestBookingWindow(tk.Toplevel):
         # --- Validazione hotel (Tab 2) ---
         if not skip_hotel:
             hotel = self.hotel_var.get().strip()
-            checkin = self.checkin_date.get_date()
-            checkout = self.checkout_date.get_date()
 
             if not hotel or hotel not in self._hotel_data:
                 messagebox.showwarning(
@@ -945,13 +1044,15 @@ class GuestBookingWindow(tk.Toplevel):
                 self.notebook.select(2)
                 return
 
-            if checkout < checkin:
-                messagebox.showwarning(
-                    self.lang.get('warning', 'Attenzione'),
-                    self.lang.get('invalid_checkout_date',
-                                  'La data di check-out non può essere anteriore alla data di check-in.'))
-                self.notebook.select(2)
-                return
+            # Valida date per-ospite
+            for iid, dates in self._guest_hotel_dates.items():
+                if dates['checkout'] < dates['checkin']:
+                    guest_name = self.hotel_guests_tree.item(iid, 'values')[0]
+                    messagebox.showwarning(
+                        self.lang.get('warning', 'Attenzione'),
+                        f"Check-out prima del check-in per {guest_name}.")
+                    self.notebook.select(2)
+                    return
 
         # Validazione: compagnia aerea
         airline_name = self.airline_var.get().strip()
@@ -970,7 +1071,7 @@ class GuestBookingWindow(tk.Toplevel):
 
         # --- Verifica email ospiti: avvisa se mancano ---
         guests_no_email = [g['guest_name'] for g in self.guests_data
-                           if not g.get('email', '').strip()]
+                           if not (g.get('email') or '').strip()]
         if guests_no_email:
             names_list = '\n'.join([f"  • {n}" for n in guests_no_email])
             proceed = messagebox.askyesno(
@@ -1168,11 +1269,19 @@ class GuestBookingWindow(tk.Toplevel):
             except (ValueError, IndexError):
                 pass
 
-        guests_list = '\n'.join([f"  • {g['guest_name']} ({g['company']})" for g in self.guests_data])
-        guests_html = ''.join([
-            f"<li><strong>{g['guest_name']}</strong> — {g['company']}</li>"
-            for g in self.guests_data
-        ])
+        # Costruisci lista ospiti con date di partenza individuali
+        guests_html = ''
+        departure_dates = set()
+        for g in self.guests_data:
+            end_visit = g.get('end_visit', departure_date)
+            if isinstance(end_visit, str):
+                try: end_visit = datetime.strptime(end_visit, '%Y-%m-%d').date()
+                except: end_visit = departure_date
+            departure_dates.add(end_visit)
+            dep_str = f' — Partenza/Departure: {end_visit.strftime("%d/%m/%Y")}' if len(self.guests_data) > 1 else ''
+            guests_html += f'<li><strong>{g["guest_name"]}</strong> — {g["company"]}{dep_str}</li>'
+        # Se le date di partenza sono diverse, aggiungi nota
+        has_different_departures = len(departure_dates) > 1
 
         # Note shuttle
         shuttle_notes_text = self.shuttle_notes.get('1.0', 'end-1c').strip()
@@ -1203,7 +1312,8 @@ class GuestBookingWindow(tk.Toplevel):
             <p><strong>Ora sosire:</strong> {arrival_time if arrival_time else 'De confirmat'}</p>
             <p><strong>Destinația:</strong> <span style="color: #B22222; font-weight: bold;">{destination}</span></p>
 
-            <p><strong>Data plecare:</strong> {departure_date.strftime('%d/%m/%Y')}</p>
+            <p><strong>Data plecare:</strong> {departure_date.strftime('%d/%m/%Y')}
+            {' <em>(⚠ date di partenza diverse per alcuni ospiti — vedere lista sopra)</em>' if has_different_departures else ''}</p>
             <p><strong>Ora plecare:</strong> {departure_time if departure_time else 'De confirmat'}</p>
 
             {notes_html}
@@ -1252,7 +1362,7 @@ class GuestBookingWindow(tk.Toplevel):
         logger.info(f"Email shuttle inviata a {to_addr}, CC={all_cc}")
 
     def _send_hotel_email(self, hotel_key):
-        """Invia email all'hotel."""
+        """Invia email all'hotel con date check-in/check-out per ospite."""
         from email_connector import EmailSender
 
         supporter_id, reservation_email, town = self._hotel_data[hotel_key]
@@ -1260,14 +1370,36 @@ class GuestBookingWindow(tk.Toplevel):
             raise ValueError("Nessuna email di prenotazione per l'hotel selezionato")
 
         user_email = self._get_user_email()
-        checkin = self.checkin_date.get_date()
-        checkout = self.checkout_date.get_date()
         hotel_notes_text = self.hotel_notes.get('1.0', 'end-1c').strip()
 
-        guests_html = ''.join([
-            f"<li><strong>{g['guest_name']}</strong> — {g['company']}</li>"
-            for g in self.guests_data
-        ])
+        # Costruisci tabella HTML per-ospite con date individuali
+        guest_rows_html = ''
+        all_checkins = []
+        all_checkouts = []
+        for i, iid in enumerate(self._guest_hotel_dates):
+            dates = self._guest_hotel_dates[iid]
+            guest_idx = dates['guest_idx']
+            g = self.guests_data[guest_idx]
+            guest_name = g['guest_name']
+            company = g.get('company', '')
+            checkin = dates['checkin']
+            checkout = dates['checkout']
+            nights = (checkout - checkin).days
+            all_checkins.append(checkin)
+            all_checkouts.append(checkout)
+            bg = ' style="background-color: #E8F5E9;"' if i % 2 == 0 else ''
+            guest_rows_html += (
+                f'<tr{bg}>'
+                f'<td style="padding: 6px 10px;">{guest_name}</td>'
+                f'<td style="padding: 6px 10px;">{company}</td>'
+                f'<td style="padding: 6px 10px; text-align: center;">{checkin.strftime("%d/%m/%Y")}</td>'
+                f'<td style="padding: 6px 10px; text-align: center;">{checkout.strftime("%d/%m/%Y")}</td>'
+                f'<td style="padding: 6px 10px; text-align: center;">{nights}</td>'
+                f'</tr>\n'
+            )
+
+        earliest_checkin = min(all_checkins) if all_checkins else datetime.now().date()
+        latest_checkout = max(all_checkouts) if all_checkouts else datetime.now().date()
 
         # Dati aziendali
         company_html = ''
@@ -1291,7 +1423,6 @@ class GuestBookingWindow(tk.Toplevel):
 
         logo_path = os.path.join(os.path.dirname(__file__), 'Logo.png')
 
-        num_nights = (checkout - checkin).days
         body_html = f"""
         <html>
         <body style="font-family: Arial, sans-serif; font-size: 12px;">
@@ -1300,12 +1431,17 @@ class GuestBookingWindow(tk.Toplevel):
             <p>Bună ziua,</p>
             <p>Vă rugăm să faceți o rezervare pentru următorii oaspeți:</p>
 
-            <h4>Oaspeți ({len(self.guests_data)} persoane):</h4>
-            <ul>{guests_html}</ul>
+            <table style="border-collapse: collapse; margin: 10px 0; font-size: 12px; width: 100%; border: 1px solid #ddd;">
+                <tr style="background-color: #2E7D32; color: white;">
+                    <th style="padding: 8px 10px; text-align: left;">Oaspete / Guest</th>
+                    <th style="padding: 8px 10px; text-align: left;">Companie</th>
+                    <th style="padding: 8px 10px; text-align: center;">Check-in</th>
+                    <th style="padding: 8px 10px; text-align: center;">Check-out</th>
+                    <th style="padding: 8px 10px; text-align: center;">Nopți</th>
+                </tr>
+                {guest_rows_html}
+            </table>
 
-            <p><strong>Check-in:</strong> {checkin.strftime('%d/%m/%Y')}</p>
-            <p><strong>Check-out:</strong> {checkout.strftime('%d/%m/%Y')}</p>
-            <p><strong>Număr nopți:</strong> {num_nights}</p>
             <p><strong>Număr camere:</strong> {len(self.guests_data)}</p>
 
             {notes_html}
@@ -1347,7 +1483,7 @@ class GuestBookingWindow(tk.Toplevel):
         logger.info(f"Hotel email TO: {to_addr}, CC: {all_cc}")
         sender.send_email(
             to_email=to_addr,
-            subject=f"Rezervare Hotel — {len(self.guests_data)} oaspeți — {checkin.strftime('%d/%m/%Y')} - {checkout.strftime('%d/%m/%Y')}",
+            subject=f"Rezervare Hotel — {len(self.guests_data)} oaspeți — {earliest_checkin.strftime('%d/%m/%Y')} - {latest_checkout.strftime('%d/%m/%Y')}",
             body=body_html,
             is_html=True,
             attachments=attachments if attachments else None,
@@ -1359,7 +1495,7 @@ class GuestBookingWindow(tk.Toplevel):
     # GUEST CONFIRMATION EMAIL
     # ================================================================
     def _send_guest_confirmation_email(self, services, arrival_detail_id):
-        """Invia UNA email di conferma combinata (Hotel + Shuttle) a ogni ospite."""
+        """Invia UNA email di conferma combinata (Hotel + Shuttle) a ogni ospite con le sue date."""
         from email_connector import EmailSender
 
         user_email = self._get_user_email()
@@ -1369,13 +1505,17 @@ class GuestBookingWindow(tk.Toplevel):
         airline_name = self.airline_var.get().strip()
         flight_no = self.flight_number_var.get().strip()
         arrival_date = self.arrival_date.get_date().strftime('%d/%m/%Y')
-        departure_date = self.departure_date.get_date().strftime('%d/%m/%Y')
         arrival_time = self.arrival_time_var.get().strip()
 
         services_label = ' & '.join(services)
 
-        for guest in self.guests_data:
-            guest_email = guest.get('email', '').strip()
+        # Mappa indice ospite → date hotel dal tree (usa guest_idx per evitare problemi con nomi duplicati)
+        guest_hotel_map = {}  # {guest_idx: dates}
+        for iid, dates in self._guest_hotel_dates.items():
+            guest_hotel_map[dates['guest_idx']] = dates
+
+        for guest_idx, guest in enumerate(self.guests_data):
+            guest_email = (guest.get('email') or '').strip()
             guest_name = guest.get('guest_name', '')
 
             if not guest_email:
@@ -1383,6 +1523,14 @@ class GuestBookingWindow(tk.Toplevel):
                 continue
 
             try:
+                # Data di partenza individuale dell'ospite
+                end_visit = guest.get('end_visit', '')
+                if isinstance(end_visit, str):
+                    try: departure_date = datetime.strptime(end_visit, '%Y-%m-%d').strftime('%d/%m/%Y')
+                    except: departure_date = self.departure_date.get_date().strftime('%d/%m/%Y')
+                else:
+                    departure_date = end_visit.strftime('%d/%m/%Y')
+
                 flight_info = ''
                 if airline_name:
                     flight_info += f"<strong>Airline:</strong> {airline_name}<br/>"
@@ -1397,6 +1545,26 @@ class GuestBookingWindow(tk.Toplevel):
                     bg = ' style="background-color: #E3F2FD;"' if i % 2 == 0 else ''
                     icon = '🏨' if svc == 'Hotel' else '🚐'
                     svc_rows += f'<tr{bg}><td style="padding: 8px 15px; font-weight: bold;">{icon} {svc}</td><td style="padding: 8px 15px;">✅ Confirmed</td></tr>\n'
+
+                # Date generali
+                svc_rows += f'<tr><td style="padding: 8px 15px; font-weight: bold;">📅 Arrival Date</td><td style="padding: 8px 15px;">{arrival_date}</td></tr>\n'
+                svc_rows += f'<tr style="background-color: #E3F2FD;"><td style="padding: 8px 15px; font-weight: bold;">📅 Departure Date</td><td style="padding: 8px 15px;">{departure_date}</td></tr>\n'
+
+                # Se hotel è nei servizi, aggiungi date check-in/check-out per questo ospite
+                hotel_dates_html = ''
+                if 'Hotel' in services and guest_idx in guest_hotel_map:
+                    hdates = guest_hotel_map[guest_idx]
+                    checkin_str = hdates['checkin'].strftime('%d/%m/%Y')
+                    checkout_str = hdates['checkout'].strftime('%d/%m/%Y')
+                    nights = (hdates['checkout'] - hdates['checkin']).days
+                    hotel_dates_html = f"""
+                    <p style="margin-top: 10px;"><strong>🏨 Hotel Details:</strong></p>
+                    <ul style="margin-top: 2px;">
+                        <li>Check-in: <strong>{checkin_str}</strong></li>
+                        <li>Check-out: <strong>{checkout_str}</strong></li>
+                        <li>Nights: <strong>{nights}</strong></li>
+                    </ul>
+                    """
 
                 body_html = f"""
                 <html>
@@ -1416,15 +1584,9 @@ class GuestBookingWindow(tk.Toplevel):
                             <th style="padding: 8px 15px; text-align: left;">Status</th>
                         </tr>
                         {svc_rows}
-                        <tr>
-                            <td style="padding: 8px 15px; font-weight: bold;">📅 Arrival Date</td>
-                            <td style="padding: 8px 15px;">{arrival_date}</td>
-                        </tr>
-                        <tr style="background-color: #E3F2FD;">
-                            <td style="padding: 8px 15px; font-weight: bold;">📅 Departure Date</td>
-                            <td style="padding: 8px 15px;">{departure_date}</td>
-                        </tr>
                     </table>
+
+                    {hotel_dates_html}
 
                     {f'<p>{flight_info}</p>' if flight_info else ''}
 
@@ -1463,6 +1625,7 @@ class GuestBookingWindow(tk.Toplevel):
                 # Salva record email ospite in VisitorBookingServiceEmails
                 if arrival_detail_id:
                     self._save_booking_record(arrival_detail_id, guest_email)
+
 
             except Exception as e:
                 logger.error(f"Errore invio conferma {services_label} a {guest_name}: {e}")
