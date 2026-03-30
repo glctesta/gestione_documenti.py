@@ -15,7 +15,7 @@ from email_connector import EmailSender
 from npi.data_models import (
     TaskProdotto, Soggetto, NotificationLog,
     NotificationSchedule, NotificationRecipients,
-    ProgettoNPI, TaskCatalogo
+    ProgettoNPI, TaskCatalogo, WaveNPI
 )
 
 logger = logging.getLogger(__name__)
@@ -139,9 +139,14 @@ class NotificationManagerV2:
         stats = {'notified': 0, 'failed': 0, 'skipped': 0}
 
         try:
-            # Query task scaduti
-            overdue_tasks = self.session.query(TaskProdotto).filter(
+            # Query task scaduti (escludi progetti soft-deleted)
+            overdue_tasks = self.session.query(TaskProdotto).join(
+                WaveNPI, TaskProdotto.WaveID == WaveNPI.WaveID
+            ).join(
+                ProgettoNPI, WaveNPI.ProgettoID == ProgettoNPI.ProgettoId
+            ).filter(
                 and_(
+                    ProgettoNPI.DateOut.is_(None),  # Escludi progetti soft-deleted
                     TaskProdotto.DataFine < datetime.now(),
                     TaskProdotto.Stato.notin_(['Completato', 'Cancellato']),
                     TaskProdotto.PercentualeCompletamento < 100
@@ -185,9 +190,14 @@ class NotificationManagerV2:
         try:
             target_date = datetime.now() + timedelta(days=days_before)
 
-            # Query task in scadenza
-            upcoming_tasks = self.session.query(TaskProdotto).filter(
+            # Query task in scadenza (escludi progetti soft-deleted)
+            upcoming_tasks = self.session.query(TaskProdotto).join(
+                WaveNPI, TaskProdotto.WaveID == WaveNPI.WaveID
+            ).join(
+                ProgettoNPI, WaveNPI.ProgettoID == ProgettoNPI.ProgettoId
+            ).filter(
                 and_(
+                    ProgettoNPI.DateOut.is_(None),  # Escludi progetti soft-deleted
                     TaskProdotto.DataFine.between(
                         datetime.now(),
                         target_date

@@ -2410,6 +2410,441 @@ class OvertimeManager:
             logger.error(f"Error sending weekly overtime analysis email: {e}", exc_info=True)
             return False
 
+    # ==================== MONITORING 48h / 4 MESI ====================
+
+    def get_monitoring_thresholds(self):
+        """
+        Recupera le soglie di monitoraggio da Employee.dbo.OverTimeRules.
+
+        Returns:
+            dict con chiavi: weekly_limit, warning_threshold, critical_threshold,
+                             monitoring_months, max_daily_hours, max_hour_per_month
+        """
+        defaults = {
+            'weekly_limit': 48.0,
+            'warning_threshold': 44.0,
+            'critical_threshold': 47.0,
+            'monitoring_months': 4,
+            'max_daily_hours': 12.0,
+            'max_hour_per_month': 32,
+        }
+        try:
+            query = """
+            SELECT TOP 1
+                ISNULL(WeeklyLimitHours, 48.0),
+                ISNULL(WarningThresholdHours, 44.0),
+                ISNULL(CriticalThresholdHours, 47.0),
+                ISNULL(MonitoringMonths, 4),
+                ISNULL(MaxDailyHours, 12.0),
+                ISNULL(MaxHourPerMonth, 32)
+            FROM Employee.dbo.OverTimeRules
+            WHERE DateOut IS NULL
+            """
+            cursor = self.db.conn.cursor()
+            cursor.execute(query)
+            row = cursor.fetchone()
+            cursor.close()
+            if row:
+                return {
+                    'weekly_limit': float(row[0]),
+                    'warning_threshold': float(row[1]),
+                    'critical_threshold': float(row[2]),
+                    'monitoring_months': int(row[3]),
+                    'max_daily_hours': float(row[4]),
+                    'max_hour_per_month': float(row[5]),
+                }
+        except Exception as e:
+            logger.error(f"Errore recupero soglie monitoraggio: {e}", exc_info=True)
+        return defaults
+
+    def get_employee_weekly_hours_from_timeclocking(self, employee_hire_id, ref_date):
+        """
+        Calcola le ore timbrate per un dipendente nella settimana contenente ref_date.
+        Usa Timeclocking via EmployeeNID per collegare i dati.
+
+        Args:
+            employee_hire_id: EmployeeHireHistoryId
+            ref_date: data di riferimento (date)
+
+        Returns:
+            dict: {
+                'total_hours': float,
+                'daily_breakdown': [(date, hours, is_weekend), ...],
+                'has_weekend_hours': bool,
+                'consecutive_12h_days': int
+            }
+        """
+        from datetime import timedelta
+        # Calcola lunedì e domenica della settimana
+        if isinstance(ref_date, datetime):
+            ref_date = ref_date.date()
+        weekday = ref_date.weekday()  # 0=Mon
+        monday = ref_date - timedelta(days=weekday)
+        sunday = monday + timedelta(days=6)
+
+        query = """
+        SELECT
+            ds.DailyStateDate,
+            ISNULL(SUM(fd.NoMin), 0) AS MinWorked,
+            DATEPART(WEEKDAY, ds.DailyStateDate) AS DayOfWeek  -- 1=Sun, 7=Sat
+        FROM Timeclocking.dbo.DailyState ds
+        INNER JOIN Timeclocking.dbo.Employee te
+            ON te.IDEmployee = ds.IDEmployee
+        INNER JOIN Employee.dbo.Employees e
+            ON e.EmployeeNID COLLATE DATABASE_DEFAULT = te.UniqueID COLLATE DATABASE_DEFAULT
+        INNER JOIN Employee.dbo.EmployeeHireHistory h
+            ON h.EmployeeId = e.EmployeeId
+            AND h.EmployeerId = 2 AND h.EndWorkDate IS NULL
+        INNER JOIN Timeclocking.dbo.EmployeeRequestFractionalDay fd
+            ON fd.IDDailyState = ds.IDDailyState
+        INNER JOIN Timeclocking.dbo.RequestType rt
+            ON rt.IDRequestType = fd.IDRequestType
+            AND rt.IDRequestType = 8
+        WHERE h.EmployeeHireHistoryId = ?
+            AND ds.DailyStateDate BETWEEN ? AND ?
+        GROUP BY ds.DailyStateDate, DATEPART(WEEKDAY, ds.DailyStateDate)
+        ORDER BY ds.DailyStateDate
+        """
+
+        try:
+            cursor = self.db.conn.cursor()
+            cursor.execute(query, (employee_hire_id, monday, sunday))
+            rows = cursor.fetchall()
+            cursor.close()
+
+            total_minutes = 0
+            daily_breakdown = []
+            has_weekend = False
+            consecutive_12h = 0
+            max_consecutive_12h = 0
+            thresholds = self.get_monitoring_thresholds()
+
+            for row in rows:
+                day_date = row[0]
+                minutes = int(row[1] or 0)
+                dow = int(row[2])  # 1=Sun, 7=Sat
+                is_weekend = dow in (1, 7)
+                hours = minutes / 60.0
+                total_minutes += minutes
+
+                if is_weekend and hours > 0:
+                    has_weekend = True
+
+                if hours >= thresholds['max_daily_hours']:
+                    consecutive_12h += 1
+                    max_consecutive_12h = max(max_consecutive_12h, consecutive_12h)
+                else:
+                    consecutive_12h = 0
+
+                daily_breakdown.append((
+                    day_date if isinstance(day_date, date) else day_date.date() if hasattr(day_date, 'date') else day_date,
+                    round(hours, 2),
+                    is_weekend
+                ))
+
+            return {
+                'total_hours': round(total_minutes / 60.0, 2),
+                'daily_breakdown': daily_breakdown,
+                'has_weekend_hours': has_weekend,
+                'consecutive_12h_days': max_consecutive_12h,
+            }
+        except Exception as e:
+            logger.error(f"Errore calcolo ore settimanali Timeclocking per {employee_hire_id}: {e}", exc_info=True)
+            return {
+                'total_hours': 0.0,
+                'daily_breakdown': [],
+                'has_weekend_hours': False,
+                'consecutive_12h_days': 0,
+            }
+
+    def get_4month_weekly_average(self, employee_hire_id, ref_date=None):
+        """
+        Calcola la media ore settimanali su N mesi (configurabile da DB, default 4).
+
+        Args:
+            employee_hire_id: EmployeeHireHistoryId
+            ref_date: data riferimento (default: oggi)
+
+        Returns:
+            dict: {
+                'average_weekly_hours': float,
+                'weeks_analyzed': int,
+                'weekly_data': [(week_start, total_hours), ...],
+                'is_over_limit': bool,
+                'is_warning': bool,
+                'is_critical': bool
+            }
+        """
+        from datetime import timedelta
+        if ref_date is None:
+            ref_date = date.today()
+        elif isinstance(ref_date, datetime):
+            ref_date = ref_date.date()
+
+        thresholds = self.get_monitoring_thresholds()
+        months_back = thresholds['monitoring_months']
+
+        # Calcola data inizio (N mesi fa, allineata al lunedì)
+        if ref_date.month > months_back:
+            start_date = date(ref_date.year, ref_date.month - months_back, 1)
+        else:
+            start_date = date(ref_date.year - 1, ref_date.month + 12 - months_back, 1)
+        # Allinea a lunedì
+        start_weekday = start_date.weekday()
+        if start_weekday != 0:
+            start_date = start_date - timedelta(days=start_weekday)
+
+        # Allinea ref_date a domenica
+        end_date = ref_date + timedelta(days=(6 - ref_date.weekday()))
+
+        query = """
+        ;WITH WeeklyHours AS (
+            SELECT
+                DATEADD(DAY, -(DATEPART(WEEKDAY, ds.DailyStateDate) + 5) % 7, ds.DailyStateDate) AS WeekStart,
+                ISNULL(SUM(fd.NoMin), 0) / 60.0 AS TotalHours
+            FROM Timeclocking.dbo.DailyState ds
+            INNER JOIN Timeclocking.dbo.Employee te
+                ON te.IDEmployee = ds.IDEmployee
+            INNER JOIN Employee.dbo.Employees e
+                ON e.EmployeeNID COLLATE DATABASE_DEFAULT = te.UniqueID COLLATE DATABASE_DEFAULT
+            INNER JOIN Employee.dbo.EmployeeHireHistory h
+                ON h.EmployeeId = e.EmployeeId
+                AND h.EmployeerId = 2 AND h.EndWorkDate IS NULL
+            INNER JOIN Timeclocking.dbo.EmployeeRequestFractionalDay fd
+                ON fd.IDDailyState = ds.IDDailyState
+            INNER JOIN Timeclocking.dbo.RequestType rt
+                ON rt.IDRequestType = fd.IDRequestType
+                AND rt.IDRequestType = 8
+            WHERE h.EmployeeHireHistoryId = ?
+                AND ds.DailyStateDate BETWEEN ? AND ?
+            GROUP BY DATEADD(DAY, -(DATEPART(WEEKDAY, ds.DailyStateDate) + 5) % 7, ds.DailyStateDate)
+        )
+        SELECT WeekStart, TotalHours
+        FROM WeeklyHours
+        ORDER BY WeekStart
+        """
+        try:
+            cursor = self.db.conn.cursor()
+            cursor.execute(query, (employee_hire_id, start_date, end_date))
+            rows = cursor.fetchall()
+            cursor.close()
+
+            weekly_data = []
+            total_hours = 0.0
+            for row in rows:
+                week_start = row[0]
+                hours = float(row[1] or 0)
+                weekly_data.append((week_start, round(hours, 2)))
+                total_hours += hours
+
+            weeks_count = len(weekly_data) if weekly_data else 1
+            avg = round(total_hours / weeks_count, 2)
+
+            return {
+                'average_weekly_hours': avg,
+                'weeks_analyzed': weeks_count,
+                'weekly_data': weekly_data,
+                'is_over_limit': avg >= thresholds['weekly_limit'],
+                'is_warning': thresholds['warning_threshold'] <= avg < thresholds['critical_threshold'],
+                'is_critical': avg >= thresholds['critical_threshold'],
+            }
+        except Exception as e:
+            logger.error(f"Errore calcolo media 4 mesi per {employee_hire_id}: {e}", exc_info=True)
+            return {
+                'average_weekly_hours': 0.0,
+                'weeks_analyzed': 0,
+                'weekly_data': [],
+                'is_over_limit': False,
+                'is_warning': False,
+                'is_critical': False,
+            }
+
+    def classify_overtime_decision(self, employee_hire_id, ref_date=None):
+        """
+        Applica la logica decisionale del documento LogicaStraordinari:
+        1. Ore weekend? → SUPPLEMENTARI
+        2. Volumi elevati (>12h/giorno consecutivi o media 4M > 48h)? → PREMI
+        3. Volumi moderati (media ≤ 48h)? → SUPPLEMENTARI (+ SPLIT se necessario)
+
+        Args:
+            employee_hire_id: EmployeeHireHistoryId
+            ref_date: data riferimento (default: oggi)
+
+        Returns:
+            dict: {
+                'decision': 'SUPPLEMENTARI'|'PREMI'|'SPLIT',
+                'reason': str,
+                'weekly_data': dict from get_employee_weekly_hours_from_timeclocking,
+                'avg_data': dict from get_4month_weekly_average,
+                'thresholds': dict from get_monitoring_thresholds
+            }
+        """
+        if ref_date is None:
+            ref_date = date.today()
+        elif isinstance(ref_date, datetime):
+            ref_date = ref_date.date()
+
+        thresholds = self.get_monitoring_thresholds()
+        weekly = self.get_employee_weekly_hours_from_timeclocking(employee_hire_id, ref_date)
+        avg_data = self.get_4month_weekly_average(employee_hire_id, ref_date)
+
+        result = {
+            'weekly_data': weekly,
+            'avg_data': avg_data,
+            'thresholds': thresholds,
+        }
+
+        # 1. Weekend
+        if weekly['has_weekend_hours']:
+            result['decision'] = 'SUPPLEMENTARI'
+            result['reason'] = 'Ore nel weekend: mantenere come ore supplementari'
+            return result
+
+        # 2. Volumi elevati
+        is_high_volume = (
+            weekly['consecutive_12h_days'] >= 2 or
+            avg_data['is_over_limit'] or
+            weekly['total_hours'] > thresholds['weekly_limit']
+        )
+        if is_high_volume:
+            result['decision'] = 'PREMI'
+            reasons = []
+            if weekly['consecutive_12h_days'] >= 2:
+                reasons.append(f"{weekly['consecutive_12h_days']} giorni consecutivi ≥{thresholds['max_daily_hours']}h")
+            if avg_data['is_over_limit']:
+                reasons.append(f"Media 4 mesi ({avg_data['average_weekly_hours']}h) ≥ {thresholds['weekly_limit']}h")
+            if weekly['total_hours'] > thresholds['weekly_limit']:
+                reasons.append(f"Ore settimana ({weekly['total_hours']}h) > {thresholds['weekly_limit']}h")
+            result['reason'] = 'Volumi elevati: convertire in premi. ' + '; '.join(reasons)
+            return result
+
+        # 3. Volumi moderati
+        if avg_data['average_weekly_hours'] <= thresholds['weekly_limit']:
+            # Verifica se serve split
+            needs_split = weekly['total_hours'] > 40 and not weekly['has_weekend_hours']
+            if needs_split:
+                result['decision'] = 'SPLIT'
+                result['reason'] = (
+                    f"Volumi moderati ({avg_data['average_weekly_hours']}h media): "
+                    f"mantenere come supplementari con redistribuzione (split) su più giorni"
+                )
+            else:
+                result['decision'] = 'SUPPLEMENTARI'
+                result['reason'] = (
+                    f"Volumi controllati ({avg_data['average_weekly_hours']}h media): "
+                    f"mantenere come ore supplementari"
+                )
+            return result
+
+        # Fallback
+        result['decision'] = 'SUPPLEMENTARI'
+        result['reason'] = 'Nessuna condizione speciale rilevata'
+        return result
+
+    def get_monitoring_dashboard_data(self, manager_hire_history_id=None, month=None, year=None):
+        """
+        Aggrega i dati di monitoraggio per tutti i dipendenti (o subordinati del manager).
+        Usa fetch_eligible_employees come fonte primaria per ore mensili e stato,
+        e integra con dati Timeclocking per media 4 mesi e weekend.
+
+        Args:
+            manager_hire_history_id: ID manager per filtrare (None = tutti)
+            month: mese di riferimento
+            year: anno di riferimento
+
+        Returns:
+            list di dict
+        """
+        if month is None:
+            month = datetime.now().month
+        if year is None:
+            year = datetime.now().year
+
+        ref_date = date(year, month, 1)
+        thresholds = self.get_monitoring_thresholds()
+
+        # Recupera dipendenti eleggibili — questa query funziona già correttamente
+        employees = self.fetch_eligible_employees(month, year, manager_hire_history_id)
+        if not employees:
+            return []
+
+        # Solo dipendenti con ore > 0 sono rilevanti per il monitoraggio
+        employees_with_hours = [emp for emp in employees if float(emp[3] or 0) > 0]
+        logger.info(
+            f"get_monitoring_dashboard_data: {len(employees_with_hours)}/{len(employees)} "
+            f"dipendenti con ore straordinario nel mese {month}/{year}"
+        )
+
+        dashboard = []
+        for emp in employees_with_hours:
+            emp_id = emp[0]
+            surname = emp[1] or ''
+            name_first = emp[2] or ''
+            monthly_hours = float(emp[3] or 0)
+            max_hours_month = float(emp[4] or 999)
+            exceeded = int(emp[5] or 0)
+
+            full_name = f"{surname} {name_first}".strip()
+
+            # Stato primario basato su dati già verificati da fetch_eligible_employees
+            if exceeded == 1:
+                status = 'CRITICAL'
+            elif monthly_hours >= max_hours_month * 0.8:
+                status = 'WARNING'
+            else:
+                status = 'OK'
+
+            # Tenta integrazione con dati Timeclocking per media 4 mesi e decisione
+            avg_weekly = 0.0
+            decision = 'N/A'
+            reason = ''
+            has_weekend = False
+            weekly_hours = 0.0
+
+            try:
+                avg_data = self.get_4month_weekly_average(emp_id, ref_date)
+                avg_weekly = avg_data['average_weekly_hours']
+
+                # Se media 4 mesi indica rischio, aggiorna stato
+                if avg_data.get('is_critical', False) and status != 'CRITICAL':
+                    status = 'CRITICAL'
+                elif avg_data.get('is_warning', False) and status == 'OK':
+                    status = 'WARNING'
+
+                classification = self.classify_overtime_decision(emp_id, ref_date)
+                decision = classification.get('decision', 'N/A')
+                reason = classification.get('reason', '')
+                has_weekend = classification.get('weekly_data', {}).get('has_weekend_hours', False)
+                weekly_hours = classification.get('weekly_data', {}).get('total_hours', 0)
+            except Exception as e:
+                logger.warning(f"Errore analisi Timeclocking per {full_name} (ID {emp_id}): {e}")
+                # Fallback: decisione basata su dati mensili
+                if exceeded == 1:
+                    decision = 'PREMI'
+                    reason = f"Ore mensili ({monthly_hours}h) superano limite ({max_hours_month}h)"
+                elif monthly_hours > 0:
+                    decision = 'SUPPLEMENTARI'
+                    reason = f"Ore mensili: {monthly_hours}h (limite: {max_hours_month}h)"
+
+            dashboard.append({
+                'employee_id': emp_id,
+                'name': full_name,
+                'monthly_hours': round(monthly_hours, 2),
+                'avg_4months': avg_weekly,
+                'status': status,
+                'decision': decision,
+                'reason': reason,
+                'has_weekend': has_weekend,
+                'weekly_hours': weekly_hours,
+                'max_hours_month': max_hours_month,
+            })
+
+        # Ordina: CRITICAL prima, poi WARNING, poi OK
+        status_order = {'CRITICAL': 0, 'WARNING': 1, 'OK': 2}
+        dashboard.sort(key=lambda x: (status_order.get(x['status'], 3), x['name']))
+
+        return dashboard
+
     def send_weekly_unauthorized_overtime_email(self):
         """
         Invia email settimanale (ogni lunedì) con i dipendenti (FunctionCode <= 60) che hanno:

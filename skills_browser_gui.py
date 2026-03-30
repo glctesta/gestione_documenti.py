@@ -7,6 +7,9 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import webbrowser
 import logging
+import threading
+import os
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -141,11 +144,19 @@ class ExternalIpsManagerWindow(tk.Toplevel):
             return
 
         try:
+            ip_val = vals[1]
+            port_val = vals[2]
             self.db.cursor.execute(
                 "UPDATE [Employee].[dbo].[ExternalIps] SET [DateOut] = GETDATE() WHERE [ExternalIpID] = ?",
                 (rec_id,)
             )
             self.db.conn.commit()
+
+            # Invia notifica email in background
+            _send_ip_change_notification(
+                self.db, 'deactivated', program, str(ip_val), str(port_val)
+            )
+
             messagebox.showinfo(
                 self.lang.get('success', 'Successo'),
                 self.lang.get('ext_deleted_ok', 'Programma disattivato'),
@@ -237,6 +248,23 @@ class _ExternalIpDialog(tk.Toplevel):
                 )
             self.db.conn.commit()
             self.result = True
+
+            # Invia notifica email in background
+            if self.mode == 'add':
+                _send_ip_change_notification(
+                    self.db, 'added', prog, ip, port
+                )
+            else:
+                old_vals = self.data or {}
+                _send_ip_change_notification(
+                    self.db, 'modified', prog, ip, port,
+                    old_values={
+                        'IP': str(old_vals.get('IP', '')),
+                        'Port': str(old_vals.get('Port', '')),
+                        'Program': str(old_vals.get('Program', ''))
+                    }
+                )
+
             messagebox.showinfo(
                 self.lang.get('success', 'Successo'),
                 self.lang.get('ext_saved_ok', 'Salvato con successo'),
@@ -339,6 +367,204 @@ class BrowserLauncherWindow(tk.Toplevel):
         url = f"http://{prog['ip']}:{prog['port']}"
         logger.info(f"Apertura browser: {url} ({prog['name']})")
         webbrowser.open(url)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Notifica email per modifiche IP
+# ═══════════════════════════════════════════════════════════════════════
+
+def _send_ip_change_notification(db, change_type, program_name, ip, port, old_values=None):
+    """
+    Invia una notifica email professionale a tutti gli utenti SKILL attivi
+    quando un IP esterno viene aggiunto, modificato o disattivato.
+
+    Args:
+        db: Database handler
+        change_type: 'added', 'modified', 'deactivated'
+        program_name: Nome del programma
+        ip: Indirizzo IP corrente
+        port: Porta corrente
+        old_values: dict con IP/Port/Program precedenti (solo per 'modified')
+    """
+    def _do_send():
+        try:
+            from email_connector import EmailSender
+
+            # 1. Query destinatari
+            cursor = db.conn.cursor()
+            cursor.execute("""
+                SELECT e.employeename + ' ' + e.employeesurname AS Employee,
+                       aa.WorkEmail
+                FROM [Employee].[sks].[AppUsers] A
+                INNER JOIN Employee.dbo.EmployeeHireHistory H
+                    ON a.employeeid = h.employeeHireHistoryId
+                    AND h.EndWorkDate IS NULL AND h.EmployeeRId = 2
+                INNER JOIN Employee.dbo.Employees e
+                    ON e.employeeid = h.employeeid AND a.IsActive = 1
+                INNER JOIN Employee.dbo.EmployeeAddress AA
+                    ON AA.EmployeeId = e.employeeid AND aa.DateOut IS NULL
+                WHERE LEN(ISNULL(aa.WorkEmail, '')) > 0
+            """)
+            rows = cursor.fetchall()
+            cursor.close()
+
+            if not rows:
+                logger.warning("IP change notification: nessun destinatario trovato")
+                return
+
+            emails = [r.WorkEmail.strip() for r in rows if r.WorkEmail and r.WorkEmail.strip()]
+            if not emails:
+                return
+
+            # 2. Costruisci contenuto email
+            change_label = {
+                'added': 'New Program Added',
+                'modified': 'Program Configuration Updated',
+                'deactivated': 'Program Deactivated'
+            }.get(change_type, 'Configuration Change')
+
+            subject = f"System Update: External Program Configuration Change \u2014 {program_name}"
+
+            # Dettagli modifica
+            if change_type == 'modified' and old_values:
+                details_html = f"""
+                <table style="border-collapse: collapse; width: 100%; margin: 15px 0;">
+                    <tr style="background-color: #f8f9fa;">
+                        <th style="padding: 10px 15px; text-align: left; border: 1px solid #dee2e6; color: #495057;">Field</th>
+                        <th style="padding: 10px 15px; text-align: left; border: 1px solid #dee2e6; color: #495057;">Previous Value</th>
+                        <th style="padding: 10px 15px; text-align: left; border: 1px solid #dee2e6; color: #495057;">New Value</th>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px 15px; border: 1px solid #dee2e6; font-weight: bold;">Program Name</td>
+                        <td style="padding: 10px 15px; border: 1px solid #dee2e6;">{old_values.get('Program', '')}</td>
+                        <td style="padding: 10px 15px; border: 1px solid #dee2e6;">{program_name}</td>
+                    </tr>
+                    <tr style="background-color: #f8f9fa;">
+                        <td style="padding: 10px 15px; border: 1px solid #dee2e6; font-weight: bold;">IP Address</td>
+                        <td style="padding: 10px 15px; border: 1px solid #dee2e6;">{old_values.get('IP', '')}</td>
+                        <td style="padding: 10px 15px; border: 1px solid #dee2e6;">{ip}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px 15px; border: 1px solid #dee2e6; font-weight: bold;">Port</td>
+                        <td style="padding: 10px 15px; border: 1px solid #dee2e6;">{old_values.get('Port', '')}</td>
+                        <td style="padding: 10px 15px; border: 1px solid #dee2e6;">{port}</td>
+                    </tr>
+                </table>
+                """
+            else:
+                details_html = f"""
+                <table style="border-collapse: collapse; width: 100%; margin: 15px 0;">
+                    <tr style="background-color: #f8f9fa;">
+                        <th style="padding: 10px 15px; text-align: left; border: 1px solid #dee2e6; color: #495057;">Field</th>
+                        <th style="padding: 10px 15px; text-align: left; border: 1px solid #dee2e6; color: #495057;">Value</th>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px 15px; border: 1px solid #dee2e6; font-weight: bold;">Program Name</td>
+                        <td style="padding: 10px 15px; border: 1px solid #dee2e6;">{program_name}</td>
+                    </tr>
+                    <tr style="background-color: #f8f9fa;">
+                        <td style="padding: 10px 15px; border: 1px solid #dee2e6; font-weight: bold;">IP Address</td>
+                        <td style="padding: 10px 15px; border: 1px solid #dee2e6;">{ip}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px 15px; border: 1px solid #dee2e6; font-weight: bold;">Port</td>
+                        <td style="padding: 10px 15px; border: 1px solid #dee2e6;">{port}</td>
+                    </tr>
+                </table>
+                """
+
+            now_str = datetime.now().strftime('%B %d, %Y at %H:%M')
+
+            body_html = f"""
+            <html>
+            <body style="font-family: 'Segoe UI', Arial, sans-serif; color: #333; margin: 0; padding: 0;">
+                <div style="max-width: 650px; margin: 0 auto; padding: 20px;">
+                    <!-- Header with logo -->
+                    <div style="border-bottom: 3px solid #0056b3; padding-bottom: 15px; margin-bottom: 20px;">
+                        <table width="100%" cellpadding="0" cellspacing="0">
+                            <tr>
+                                <td style="font-size: 22px; font-weight: bold; color: #0056b3;">
+                                    External Program Configuration
+                                </td>
+                                <td style="text-align: right;">
+                                    <img src="cid:company_logo" alt="Vandewiele" 
+                                         style="width: 120px; height: auto;" />
+                                </td>
+                            </tr>
+                        </table>
+                    </div>
+
+                    <!-- Change type badge -->
+                    <div style="background-color: {'#28a745' if change_type == 'added' else '#ffc107' if change_type == 'modified' else '#dc3545'};
+                                color: {'#fff' if change_type != 'modified' else '#333'};
+                                display: inline-block; padding: 6px 16px; border-radius: 4px;
+                                font-weight: bold; font-size: 13px; margin-bottom: 15px;">
+                        {change_label.upper()}
+                    </div>
+
+                    <p style="font-size: 14px; line-height: 1.6;">
+                        Dear Colleague,
+                    </p>
+                    <p style="font-size: 14px; line-height: 1.6;">
+                        This is to inform you that a configuration change has been made to the 
+                        external programs registry on <strong>{now_str}</strong>. 
+                        Please find the details below:
+                    </p>
+
+                    {details_html}
+
+                    {'<p style="font-size: 14px; line-height: 1.6;">You can access the program directly using the link below:</p><p style="text-align: center; margin: 20px 0;"><a href="http://' + ip + ':' + port + '" style="background-color: #0056b3; color: #ffffff; padding: 12px 28px; text-decoration: none; border-radius: 5px; font-size: 14px; font-weight: bold; display: inline-block;">&#x1F517; Open ' + program_name + ' &mdash; http://' + ip + ':' + port + '</a></p>' if change_type != 'deactivated' else ''}
+
+                    <p style="font-size: 14px; line-height: 1.6;">
+                        If you have any questions or need assistance accessing this program, 
+                        please contact your department supervisor or the IT department.
+                    </p>
+
+                    <!-- Footer -->
+                    <div style="margin-top: 30px; padding-top: 15px; border-top: 1px solid #dee2e6;">
+                        <p style="font-size: 11px; color: #888; line-height: 1.5;">
+                            This is an automated notification generated by the TraceabilityRS system.
+                            Please do not reply to this email.<br/>
+                            &copy; {datetime.now().year} Vandewiele Romania &mdash; All rights reserved.
+                        </p>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+
+            # 3. Invia email
+            sender = EmailSender()
+            sender.save_credentials("Accounting@Eutron.it", "9jHgFhSs7Vf+")
+
+            primary_to = emails[0]
+            cc_list = emails[1:] if len(emails) > 1 else None
+
+            attachments = []
+            logo_path = os.path.join(os.path.dirname(__file__), 'Logo.png')
+            if os.path.exists(logo_path):
+                attachments.append(('inline', logo_path, 'company_logo'))
+
+            sender.send_email(
+                to_email=primary_to,
+                subject=subject,
+                body=body_html,
+                is_html=True,
+                attachments=attachments if attachments else None,
+                cc_emails=cc_list
+            )
+
+            logger.info(
+                f"IP change notification sent: {change_type} '{program_name}' "
+                f"to {len(emails)} recipients"
+            )
+
+        except Exception as e:
+            logger.error(f"Errore invio notifica modifica IP: {e}", exc_info=True)
+
+    # Esegui in background thread
+    t = threading.Thread(target=_do_send, daemon=True)
+    t.start()
 
 
 # ═══════════════════════════════════════════════════════════════════════

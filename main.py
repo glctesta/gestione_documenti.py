@@ -307,7 +307,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.9.6'  # Versione aggiornata
+APP_VERSION = '2.3.9.9.1'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -4429,405 +4429,6 @@ class Database:
         except pyodbc.Error as e:
             self.last_error_details = str(e)
             return []
-
-    # --- PASTE MANAGEMENT METHODS ---
-    def fetch_paste_producers(self):
-        """Recupera i produttori per le paste."""
-        query = "SELECT [ProducerId], [Producers] FROM [Traceability_RS].[dbo].[Producers] ORDER BY Producers;"
-        try:
-            self.cursor.execute(query)
-            return self.cursor.fetchall()
-        except pyodbc.Error as e:
-            self.last_error_details = str(e)
-            logger.error(f"Errore fetch_paste_producers: {e}")
-            return []
-
-    def fetch_all_pastas(self):
-        """Recupera tutte le paste configurate."""
-        query = """
-        SELECT p.Pastaid, p.ProducerId, p.CreatedAt, p.CreatedBy, p.PastaCode, 
-               p.PastaDataSheet, p.DateEntry, pr.Producers
-        FROM [Traceability_RS].[pst].[Pastas] p
-        LEFT JOIN [Traceability_RS].[dbo].[Producers] pr ON p.ProducerId = pr.ProducerId
-        WHERE p.DateEntry IS NOT NULL
-        ORDER BY p.PastaCode
-        """
-        try:
-            self.cursor.execute(query)
-            return self.cursor.fetchall()
-        except pyodbc.Error as e:
-            self.last_error_details = str(e)
-            logger.error(f"Errore fetch_all_pastas: {e}")
-            return []
-
-    def fetch_pasta_by_id(self, pasta_id):
-        """Recupera i dettagli di una pasta specifica."""
-        query = """
-        SELECT p.Pastaid, p.ProducerId, p.CreatedAt, p.CreatedBy, p.PastaCode, 
-               p.PastaDataSheet, p.DateEntry, s.SiteName
-        FROM [Traceability_RS].[pst].[Pastas] p
-        LEFT JOIN [Traceability_RS].[dbo].[Sites] s ON p.ProducerId = s.IDSite
-        WHERE p.Pastaid = ?
-        """
-        try:
-            self.cursor.execute(query, pasta_id)
-            return self.cursor.fetchone()
-        except pyodbc.Error as e:
-            self.last_error_details = str(e)
-            logger.error(f"Errore fetch_pasta_by_id: {e}")
-            return None
-
-    def insert_pasta(self, producer_id, pasta_code, datasheet_data, user_id):
-        """Inserisce una nuova pasta."""
-        query = """
-        INSERT INTO [Traceability_RS].[pst].[Pastas] 
-        (ProducerId, PastaCode, PastaDataSheet, CreatedBy, CreatedAt, DateEntry)
-        VALUES (?, ?, ?, ?, GETDATE(), GETDATE())
-        """
-        try:
-            self.cursor.execute(query, producer_id, pasta_code, datasheet_data, user_id)
-            self.conn.commit()
-            logger.info(f"Pasta inserita: {pasta_code} da user {user_id}")
-            return True, "Pasta inserita con successo."
-        except pyodbc.Error as e:
-            self.conn.rollback()
-            self.last_error_details = str(e)
-            logger.error(f"Errore insert_pasta: {e}")
-            return False, f"Errore database: {e}"
-
-    def update_pasta(self, pasta_id, producer_id, pasta_code, datasheet_data=None):
-        """Aggiorna una pasta esistente."""
-        if datasheet_data is not None:
-            query = """
-            UPDATE [Traceability_RS].[pst].[Pastas]
-            SET ProducerId = ?, PastaCode = ?, PastaDataSheet = ?
-            WHERE Pastaid = ?
-            """
-            params = (producer_id, pasta_code, datasheet_data, pasta_id)
-        else:
-            query = """
-            UPDATE [Traceability_RS].[pst].[Pastas]
-            SET ProducerId = ?, PastaCode = ?
-            WHERE Pastaid = ?
-            """
-            params = (producer_id, pasta_code, pasta_id)
-        
-        try:
-            self.cursor.execute(query, params)
-            self.conn.commit()
-            logger.info(f"Pasta aggiornata: ID {pasta_id}")
-            return True, "Pasta aggiornata con successo."
-        except pyodbc.Error as e:
-            self.conn.rollback()
-            self.last_error_details = str(e)
-            logger.error(f"Errore update_pasta: {e}")
-            return False, f"Errore database: {e}"
-
-    def delete_pasta(self, pasta_id):
-        """Elimina una pasta (soft delete impostando DateEntry a NULL)."""
-        query = """
-        UPDATE [Traceability_RS].[pst].[Pastas]
-        SET DateEntry = NULL
-        WHERE Pastaid = ?
-        """
-        try:
-            self.cursor.execute(query, pasta_id)
-            self.conn.commit()
-            logger.info(f"Pasta eliminata (soft delete): ID {pasta_id}")
-            return True, "Pasta eliminata con successo."
-        except pyodbc.Error as e:
-            self.conn.rollback()
-            self.last_error_details = str(e)
-            logger.error(f"Errore delete_pasta: {e}")
-            return False, f"Errore database: {e}"
-
-    def insert_pasta_config(self, pasta_id, valability, low_temp, high_temp):
-        """Inserisce la configurazione temperatura per una pasta."""
-        query = """
-        INSERT INTO [Traceability_RS].[pst].[PastaConfigs]
-        (PastaId, Valability, LowTemperature, HighTemperature, DateIn)
-        VALUES (?, ?, ?, ?, GETDATE())
-        """
-        try:
-            self.cursor.execute(query, pasta_id, valability, low_temp, high_temp)
-            self.conn.commit()
-            logger.info(f"Configurazione pasta inserita per PastaId: {pasta_id}")
-            return True, "Configurazione salvata con successo."
-        except pyodbc.Error as e:
-            self.conn.rollback()
-            self.last_error_details = str(e)
-            logger.error(f"Errore insert_pasta_config: {e}")
-            return False, f"Errore database: {e}"
-
-    def update_pasta_config(self, pasta_id, valability, low_temp, high_temp):
-        """Aggiorna la configurazione temperatura per una pasta."""
-        # Prima chiude la configurazione esistente
-        close_query = """
-        UPDATE [Traceability_RS].[pst].[PastaConfigs]
-        SET DateOut = GETDATE()
-        WHERE PastaId = ? AND DateOut IS NULL
-        """
-        # Poi inserisce la nuova configurazione
-        insert_query = """
-        INSERT INTO [Traceability_RS].[pst].[PastaConfigs]
-        (PastaId, Valability, LowTemperature, HighTemperature, DateIn)
-        VALUES (?, ?, ?, ?, GETDATE())
-        """
-        try:
-            self.cursor.execute(close_query, pasta_id)
-            self.cursor.execute(insert_query, pasta_id, valability, low_temp, high_temp)
-            self.conn.commit()
-            logger.info(f"Configurazione pasta aggiornata per PastaId: {pasta_id}")
-            return True, "Configurazione aggiornata con successo."
-        except pyodbc.Error as e:
-            self.conn.rollback()
-            self.last_error_details = str(e)
-            logger.error(f"Errore update_pasta_config: {e}")
-            return False, f"Errore database: {e}"
-
-    def fetch_pasta_config(self, pasta_id):
-        """Recupera la configurazione attiva di una pasta."""
-        query = """
-        SELECT PastaConfigId, PastaId, Valability, LowTemperature, HighTemperature, DateIn, DateOut
-        FROM [Traceability_RS].[pst].[PastaConfigs]
-        WHERE PastaId = ? AND DateOut IS NULL
-        """
-        try:
-            self.cursor.execute(query, pasta_id)
-            return self.cursor.fetchone()
-        except pyodbc.Error as e:
-            self.last_error_details = str(e)
-            logger.error(f"Errore fetch_pasta_config: {e}")
-            return None
-
-    # --- PASTE RECEPTION METHODS ---
-    def generate_label_code(self):
-        """Genera un nuovo codice etichetta progressivo con 12 zeri iniziali."""
-        query = """
-        SELECT MAX(CAST(SUBSTRING(LabelCode, 1, LEN(LabelCode)) AS BIGINT)) AS MaxCode
-        FROM [Traceability_RS].[pst].[PastaLabelCodes]
-        WHERE LabelCode LIKE '0%'
-        """
-        try:
-            self.cursor.execute(query)
-            row = self.cursor.fetchone()
-            max_code = row[0] if row and row[0] else 0
-            new_code = max_code + 1
-            # Formatta con 12 zeri iniziali
-            label_code = str(new_code).zfill(13)  # 13 cifre totali (12 zeri + numero)
-            return label_code
-        except pyodbc.Error as e:
-            self.last_error_details = str(e)
-            logger.error(f"Errore generate_label_code: {e}")
-            return None
-
-    def insert_label_code(self, label_code):
-        """Inserisce un nuovo codice etichetta."""
-        query = """
-        SET NOCOUNT ON;
-        INSERT INTO [Traceability_RS].[pst].[PastaLabelCodes]
-        (LabelCode, LabeCreationDate)
-        VALUES (?, GETDATE());
-        SELECT CAST(SCOPE_IDENTITY() AS INT) AS NewID;
-        """
-        try:
-            self.cursor.execute(query, label_code)
-            row = self.cursor.fetchone()
-            label_id = row[0] if row else None
-            self.conn.commit()
-            logger.info(f"Label code inserito: {label_code}, ID: {label_id}")
-            return label_id
-        except pyodbc.Error as e:
-            self.conn.rollback()
-            self.last_error_details = str(e)
-            logger.error(f"Errore insert_label_code: {e}")
-            return None
-
-    def delete_label_code(self, label_code_id):
-        """Elimina un codice etichetta non utilizzato."""
-        query = """
-        DELETE FROM [Traceability_RS].[pst].[PastaLabelCodes]
-        WHERE LabelCodeId = ?
-        """
-        try:
-            self.cursor.execute(query, label_code_id)
-            self.conn.commit()
-            logger.info(f"Label code eliminato: ID={label_code_id}")
-            return True
-        except pyodbc.Error as e:
-            self.conn.rollback()
-            self.last_error_details = str(e)
-            logger.error(f"Errore delete_label_code: {e}")
-            return False
-
-
-    def fetch_all_pastas_for_reception(self):
-        """Recupera tutte le paste attive per il ricevimento."""
-        query = """
-        SELECT p.Pastaid, p.PastaCode, s.SiteName as ProducerName
-        FROM [Traceability_RS].[pst].[Pastas] p
-        LEFT JOIN [Traceability_RS].[dbo].[Sites] s ON p.ProducerId = s.IDSite
-        WHERE p.DateEntry IS NOT NULL
-        ORDER BY p.PastaCode
-        """
-        try:
-            self.cursor.execute(query)
-            return self.cursor.fetchall()
-        except pyodbc.Error as e:
-            self.last_error_details = str(e)
-            logger.error(f"Errore fetch_all_pastas_for_reception: {e}")
-            return []
-
-    def insert_pasta_log(self, pasta_id, label_code_id, user_name, incoming_doc=None):
-        """Inserisce un log di ricevimento pasta."""
-        query = """
-        INSERT INTO [Traceability_RS].[pst].[PastaLogs]
-        (PastaId, LabeCodeId, GetIn, [User], IncomingDoc)
-        VALUES (?, ?, GETDATE(), ?, ?)
-        """
-        try:
-            self.cursor.execute(query, pasta_id, label_code_id, user_name, incoming_doc)
-            self.conn.commit()
-            logger.info(f"Pasta log inserito: PastaId={pasta_id}, LabelCodeId={label_code_id}, User={user_name}")
-            return True, "Ricevimento registrato con successo."
-        except pyodbc.Error as e:
-            self.conn.rollback()
-            self.last_error_details = str(e)
-            logger.error(f"Errore insert_pasta_log: {e}")
-            return False, f"Errore database: {e}"
-
-    def fetch_pasta_logs(self, limit=100):
-        """Recupera i log di ricevimento paste."""
-        query = """
-        SELECT TOP (?) 
-            pl.PastaLogId, 
-            p.PastaCode, 
-            s.SiteName as ProducerName,
-            lc.LabelCode,
-            pl.GetIn,
-            pl.[User],
-            pl.GetOut,
-            CASE WHEN pl.IncomingDoc IS NULL THEN 0 ELSE 1 END as HasDoc
-        FROM [Traceability_RS].[pst].[PastaLogs] pl
-        INNER JOIN [Traceability_RS].[pst].[Pastas] p ON pl.PastaId = p.Pastaid
-        LEFT JOIN [Traceability_RS].[dbo].[Sites] s ON p.ProducerId = s.IDSite
-        INNER JOIN [Traceability_RS].[pst].[PastaLabelCodes] lc ON pl.LabeCodeId = lc.LabelCodeId
-        ORDER BY pl.GetIn DESC
-        """
-        try:
-            self.cursor.execute(query, limit)
-            return self.cursor.fetchall()
-        except pyodbc.Error as e:
-            self.last_error_details = str(e)
-            logger.error(f"Errore fetch_pasta_logs: {e}")
-            return []
-
-    def fetch_pasta_log_document(self, log_id):
-        """Recupera il documento di un log."""
-        query = """
-        SELECT IncomingDoc
-        FROM [Traceability_RS].[pst].[PastaLogs]
-        WHERE PastaLogId = ?
-        """
-        try:
-            self.cursor.execute(query, log_id)
-            row = self.cursor.fetchone()
-            return row[0] if row else None
-        except pyodbc.Error as e:
-            self.last_error_details = str(e)
-            logger.error(f"Errore fetch_pasta_log_document: {e}")
-            return None
-
-    def update_pasta_log_document(self, log_id, document_data):
-        """Aggiorna il documento di un log."""
-        query = """
-        UPDATE [Traceability_RS].[pst].[PastaLogs]
-        SET IncomingDoc = ?
-        WHERE PastaLogId = ?
-        """
-        try:
-            self.cursor.execute(query, document_data, log_id)
-            self.conn.commit()
-            logger.info(f"Documento aggiornato per PastaLogId: {log_id}")
-            return True, "Documento aggiornato con successo."
-        except pyodbc.Error as e:
-            self.conn.rollback()
-            self.last_error_details = str(e)
-            logger.error(f"Errore update_pasta_log_document: {e}")
-            return False, f"Errore database: {e}"
-
-
-    # --- PASTE REFRIGERATORS MANAGEMENT METHODS ---
-    def fetch_all_refrigerators(self):
-        """Recupera tutti i frigoriferi per paste."""
-        query = """
-        SELECT PastaStoreFrigiderId, PastaStoreFrigiderName, PastaStoreFrigiderLocation, IsConnected
-        FROM [Traceability_RS].[pst].[PastaStoreFrigiders]
-        ORDER BY PastaStoreFrigiderName
-        """
-        try:
-            self.cursor.execute(query)
-            return self.cursor.fetchall()
-        except pyodbc.Error as e:
-            self.last_error_details = str(e)
-            logger.error(f"Errore fetch_all_refrigerators: {e}")
-            return []
-
-    def insert_refrigerator(self, name, location, is_connected):
-        """Inserisce un nuovo frigorifero."""
-        query = """
-        INSERT INTO [Traceability_RS].[pst].[PastaStoreFrigiders]
-        (PastaStoreFrigiderName, PastaStoreFrigiderLocation, IsConnected)
-        VALUES (?, ?, ?)
-        """
-        try:
-            is_connected_int = 1 if is_connected else 0
-            self.cursor.execute(query, name, location, is_connected_int)
-            self.conn.commit()
-            logger.info(f"Frigorifero inserito: {name}")
-            return True, "Frigorifero inserito con successo."
-        except pyodbc.Error as e:
-            self.conn.rollback()
-            self.last_error_details = str(e)
-            logger.error(f"Errore insert_refrigerator: {e}")
-            return False, f"Errore database: {e}"
-
-    def update_refrigerator(self, refrigerator_id, name, location, is_connected):
-        """Aggiorna un frigorifero esistente."""
-        query = """
-        UPDATE [Traceability_RS].[pst].[PastaStoreFrigiders]
-        SET PastaStoreFrigiderName = ?, PastaStoreFrigiderLocation = ?, IsConnected = ?
-        WHERE PastaStoreFrigiderId = ?
-        """
-        try:
-            is_connected_int = 1 if is_connected else 0
-            self.cursor.execute(query, name, location, is_connected_int, refrigerator_id)
-            self.conn.commit()
-            logger.info(f"Frigorifero aggiornato: ID {refrigerator_id}")
-            return True, "Frigorifero aggiornato con successo."
-        except pyodbc.Error as e:
-            self.conn.rollback()
-            self.last_error_details = str(e)
-            logger.error(f"Errore update_refrigerator: {e}")
-            return False, f"Errore database: {e}"
-
-    def delete_refrigerator(self, refrigerator_id):
-        """Elimina un frigorifero."""
-        query = """
-        DELETE FROM [Traceability_RS].[pst].[PastaStoreFrigiders]
-        WHERE PastaStoreFrigiderId = ?
-        """
-        try:
-            self.cursor.execute(query, refrigerator_id)
-            self.conn.commit()
-            logger.info(f"Frigorifero eliminato: ID {refrigerator_id}")
-            return True, "Frigorifero eliminato con successo."
-        except pyodbc.Error as e:
-            self.conn.rollback()
-            self.last_error_details = str(e)
-            logger.error(f"Errore delete_refrigerator: {e}")
-            return False, f"Errore database: {e}"
-
 
 
     def fetch_all(self, query, params=None):
@@ -11401,6 +11002,10 @@ class App(tk.Tk):
         # --- Flag di chiusura per evitare callback dopo destroy ---
         self._closing = False
 
+        # --- VARIABILI PER INACTIVITY AUTO-CLOSE ---
+        self._inactivity_job_id = None
+        self._inactivity_timeout_ms = None  # verrà impostato da _setup_inactivity_monitor
+
         # --- NUOVE VARIABILI PER IL FLASHING ---
         self.birthday_flash_job_id = None
         self.birthday_stop_job_id = None
@@ -11591,6 +11196,9 @@ class App(tk.Tk):
         self._wh_monitor = None
         self._requester_monitor = None
         self.after(5000, self._start_indirect_materials_monitors)
+
+        # --- INACTIVITY AUTO-CLOSE MONITOR ---
+        self._setup_inactivity_monitor()
 
         logger.info("INIT: App initialization complete.")
 
@@ -13130,21 +12738,29 @@ class App(tk.Tk):
         )
 
     def _is_source_file_ready(self, source_path, exe_name):
-        """Verifica che il file sorgente sulla rete sia completo e non in fase di copia.
-        
-        Esegue due controlli:
-        1. Stabilità dimensione file (2 read a distanza di 2 secondi)
-        2. Lock esclusivo (verifica che nessun processo stia scrivendo il file)
-        
+        """Verifica che i file sorgente sulla rete siano completi e pronti per l'aggiornamento.
+
+        Esegue tre controlli in sequenza:
+        0. Manifest (deploy_manifest.json): se presente, verifica che TUTTI i file
+           elencati siano presenti con le dimensioni corrette.
+           Questo previene upgrade parziali quando il trasferimento non è completato.
+        1. Stabilità dimensione file EXE (2 letture a distanza di 2 secondi)
+        2. Lock esclusivo sull'EXE (verifica che nessun processo stia scrivendo)
+
         Returns:
             (bool, str): (pronto, motivo_errore)
         """
         source_file = os.path.join(source_path, exe_name)
-        
+
         if not os.path.exists(source_file):
             logger.warning(f"File sorgente non trovato: {source_file}")
             return False, "File sorgente non trovato"
-        
+
+        # Check 0: Verifica manifest di deploy (previene upgrade parziali)
+        manifest_ok, manifest_reason = self._verify_deploy_manifest(source_path)
+        if not manifest_ok:
+            return False, manifest_reason
+
         # Check 1: Stabilità della dimensione del file (2 secondi di intervallo)
         try:
             size1 = os.path.getsize(source_file)
@@ -13156,7 +12772,7 @@ class App(tk.Tk):
         except OSError as e:
             logger.warning(f"Errore accesso file sorgente: {e}")
             return False, f"Errore accesso file: {e}"
-        
+
         # Check 2: Tentativo di lock esclusivo (verifica che il file non sia bloccato)
         try:
             import msvcrt
@@ -13173,8 +12789,79 @@ class App(tk.Tk):
         except OSError as e:
             logger.warning(f"Impossibile aprire il file sorgente: {e}")
             return False, f"Impossibile aprire il file: {e}"
-        
+
         logger.info(f"File sorgente pronto per l'aggiornamento: {source_file} ({size2} bytes)")
+        return True, ""
+
+    def _verify_deploy_manifest(self, source_path):
+        """Verifica che tutti i file elencati nel deploy_manifest.json siano presenti.
+
+        Se il manifest non esiste (deploy precedente al sistema), salta il controllo.
+        Se il manifest esiste, verifica che OGNI file sia presente con la dimensione corretta.
+
+        Returns:
+            (bool, str): (ok, motivo_errore)
+        """
+        manifest_path = os.path.join(source_path, 'deploy_manifest.json')
+
+        if not os.path.exists(manifest_path):
+            logger.info("deploy_manifest.json non trovato, skip verifica manifest (backward compat)")
+            return True, ""
+
+        try:
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                manifest = json.load(f)
+        except Exception as e:
+            logger.warning(f"Errore lettura deploy_manifest.json: {e}")
+            return False, f"Manifest di deploy illeggibile: {e}"
+
+        expected_files = manifest.get('files', [])
+        total_expected = manifest.get('total_files', len(expected_files))
+
+        if not expected_files:
+            logger.warning("deploy_manifest.json vuoto o senza lista file")
+            return False, "Manifest di deploy vuoto"
+
+        missing = []
+        wrong_size = []
+
+        for entry in expected_files:
+            rel_path = entry['path'].replace('/', os.sep)
+            expected_size = entry['size']
+            full_path = os.path.join(source_path, rel_path)
+
+            if not os.path.exists(full_path):
+                missing.append(rel_path)
+            else:
+                actual_size = os.path.getsize(full_path)
+                if actual_size != expected_size:
+                    wrong_size.append(f"{rel_path} ({actual_size} vs {expected_size})")
+
+        if missing or wrong_size:
+            details = []
+            if missing:
+                details.append(f"{len(missing)} file mancanti")
+                # Log solo i primi 10 per non ingolfare il log
+                for f in missing[:10]:
+                    logger.warning(f"  MANCANTE: {f}")
+                if len(missing) > 10:
+                    logger.warning(f"  ... e altri {len(missing) - 10} file mancanti")
+            if wrong_size:
+                details.append(f"{len(wrong_size)} file con dimensione errata")
+                for f in wrong_size[:5]:
+                    logger.warning(f"  DIM ERRATA: {f}")
+
+            reason = (
+                f"Trasferimento file incompleto: {', '.join(details)}. "
+                f"Presenti {total_expected - len(missing)}/{total_expected} file."
+            )
+            logger.warning(f"_verify_deploy_manifest: {reason}")
+            return False, reason
+
+        logger.info(
+            f"Deploy manifest OK: {total_expected}/{total_expected} file verificati "
+            f"(manifest: {manifest.get('generated_at', '?')})"
+        )
         return True, ""
 
     def _trigger_update(self, version_info, mandatory=True):
@@ -14903,32 +14590,6 @@ class App(tk.Tk):
             action_callback=lambda: tools_gui.open_maint_cycles_manager(self, self.db, self.lang)
         )
 
-    def open_paste_configuration_with_login(self):
-        """Apre la configurazione Paste con login"""
-        def open_paste_config():
-            import paste_manager
-            paste_manager.open_paste_configuration(
-                self, 
-                self.db, 
-                self.lang, 
-                self._temp_authorized_user_id
-            )
-        
-        self._execute_authorized_action(
-            menu_translation_key='paste_form',
-            action_callback=open_paste_config
-        )
-
-    def _open_paste_refrigerators(self):
-        """Apre la gestione frigoriferi paste"""
-        import paste_manager
-        paste_manager.open_paste_refrigerators(
-            self,
-            self.db,
-            self.lang,
-            self._temp_authorized_user_id
-        )
-
 
     def open_new_submission_form(self):
         """Apre la finestra di inserimento nuova segnalazione (senza login)."""
@@ -15301,17 +14962,15 @@ class App(tk.Tk):
         self.coating_submenu = tk.Menu(self.production_submenu, tearoff=0)
         self.coating_materials_submenu = tk.Menu(self.coating_submenu, tearoff=0)
 
-        # Paste - Gestione Paste
-        self.paste_submenu = tk.Menu(self.production_submenu, tearoff=0)
-        self.paste_config_submenu = tk.Menu(self.paste_submenu, tearoff=0)
-        self.paste_transfer_submenu = tk.Menu(self.paste_submenu, tearoff=0)
-
         # Verifiche Prodotti
         self.product_checks_submenu = tk.Menu(self.production_submenu, tearoff=0)
 
         # Rapporti
         self.reports_submenu = tk.Menu(self.production_submenu, tearoff=0)
         self.operativity_submenu = tk.Menu(self.reports_submenu, tearoff=0)
+
+        # RMA Knowledge Base
+        self.rma_submenu = tk.Menu(self.production_submenu, tearoff=0)
 
     def _init_tools_submenus(self):
         """Inizializza i sottomenu di Strumenti"""
@@ -15732,11 +15391,6 @@ class App(tk.Tk):
                                             menu=self.coating_submenu)
         self._update_coating_submenu()
 
-        # 6. Paste - Gestione Paste
-        self.production_submenu.add_cascade(label=self.lang.get('menu_paste', "Paste"),
-                                            menu=self.paste_submenu)
-        self._update_paste_submenu()
-
         # 7. Verifiche Prodotti
         self.production_submenu.add_cascade(label=self.lang.get('menu_product_checks', "Verifiche"),
                                             menu=self.product_checks_submenu)
@@ -15746,6 +15400,13 @@ class App(tk.Tk):
         self.production_submenu.add_cascade(label=self.lang.get('submenu_reports_prod', "Rapporti"),
                                             menu=self.reports_submenu)
         self._update_reports_submenu()
+
+        # 9. RMA Knowledge Base
+        self.production_submenu.add_separator()
+        self.production_submenu.add_command(
+            label=self.lang.get('menu_rma_kb', '🔧 RMA Knowledge Base'),
+            command=self.open_rma_knowledge_base
+        )
 
     def _update_declarations_submenu(self):
         """Aggiorna il sottomenu Dichiarazioni"""
@@ -15970,129 +15631,6 @@ class App(tk.Tk):
         )
 
 
-    def _update_paste_submenu(self):
-        """Aggiorna il sottomenu Paste"""
-        self.paste_submenu.delete(0, 'end')
-
-        # 1. Configurazione
-        self.paste_submenu.add_cascade(label=self.lang.get('submenu_paste_configuration', "Configurazione"),
-                                       menu=self.paste_config_submenu)
-        self._update_paste_config_submenu()
-
-        # 2. Ricevimento
-        self.paste_submenu.add_command(
-            label=self.lang.get('submenu_paste_reception', "Ricevimento"),
-            command=self.open_paste_reception_with_login
-        )
-
-        # 3. Trasferimento
-        self.paste_submenu.add_cascade(label=self.lang.get('submenu_paste_transfer', "Trasferimento"),
-                                       menu=self.paste_transfer_submenu)
-        self._update_paste_transfer_submenu()
-
-    def _update_paste_config_submenu(self):
-        """Aggiorna il sottomenu Configurazione Paste"""
-        self.paste_config_submenu.delete(0, 'end')
-
-        # Paste
-        self.paste_config_submenu.add_command(
-            label=self.lang.get('submenu_paste_products', "Paste"),
-            command=self.open_paste_configuration_with_login
-        )
-
-        # Frigoriferi
-        self.paste_config_submenu.add_command(
-            label=self.lang.get('submenu_paste_refrigerators', "Frigoriferi"),
-            command=lambda: self._execute_authorized_action(
-                'manage_paste_refrigerators',
-                lambda: self._open_paste_refrigerators()
-            )
-        )
-
-        # Locazioni Frigoriferi (sostituisce Allarmi)
-        self.paste_config_submenu.add_command(
-            label=self.lang.get('submenu_paste_locations', "Locazioni Frigoriferi"),
-            command=self._open_paste_locations
-        )
-        
-        # Produttori
-        self.paste_config_submenu.add_command(
-            label=self.lang.get('submenu_paste_producers', "Produttori"),
-            command=lambda: self._open_producers()
-        )
-        
-        # Stampanti
-        self.paste_config_submenu.add_command(
-            label=self.lang.get('submenu_paste_printers', "Stampanti"),
-            command=lambda: self._execute_authorized_action(
-                'config_printers',
-                lambda: self._open_printer_config()
-            )
-        )
-
-    def _open_printer_config(self):
-        """Apre la finestra di configurazione stampanti"""
-        import printer_config_manager
-        try:
-            user = getattr(self, 'last_authenticated_user_name', 'Unknown')
-            printer_config_manager.open_printer_config(
-                self,
-                self.db,
-                self.lang,
-                user
-            )
-        except Exception as e:
-            logger.error(f"Errore apertura configurazione stampanti: {e}")
-            messagebox.showerror(
-                self.lang.get('error', 'Errore'),
-                f"Impossibile aprire la configurazione stampanti: {str(e)}"
-            )
-
-    def _update_paste_transfer_submenu(self):
-        """Aggiorna il sottomenu Trasferimento Paste"""
-        self.paste_transfer_submenu.delete(0, 'end')
-
-        # In Produzione
-        self.paste_transfer_submenu.add_command(
-            label=self.lang.get('submenu_paste_to_production', "In Produzione"),
-            command=self._open_paste_to_production
-        )
-
-        # Presa In Carico
-        self.paste_transfer_submenu.add_command(
-            label=self.lang.get('submenu_paste_take_charge', "Presa In Carico"),
-            command=self._open_paste_take_charge
-        )
-
-        # Inizio Uso
-        self.paste_transfer_submenu.add_command(
-            label=self.lang.get('submenu_paste_start_use', "Inizio Uso"),
-            command=lambda: messagebox.showinfo("Info", "Funzione Inizio Uso - Da implementare")
-        )
-
-        # Fine Uso
-        self.paste_transfer_submenu.add_command(
-            label=self.lang.get('submenu_paste_end_use', "Fine Uso"),
-            command=lambda: messagebox.showinfo("Info", "Funzione Fine Uso - Da implementare")
-        )
-
-    def _open_paste_to_production(self):
-        """Apre la finestra di trasferimento paste a produzione"""
-        def action():
-            import paste_transfer
-            paste_transfer.open_paste_to_production(
-                self, self.db, self.lang, self.last_authenticated_user_name
-            )
-        self._execute_authorized_action('submenu_paste_to_production', action)
-
-    def _open_paste_take_charge(self):
-        """Apre la finestra presa in carico paste"""
-        def action():
-            import paste_take_charge
-            paste_take_charge.open_paste_take_charge(
-                self, self.db, self.lang, self.last_authenticated_user_name
-            )
-        self._execute_authorized_action('submenu_paste_take_charge', action)
 
     def _update_product_checks_submenu(self):
         """Aggiorna il sottomenu Verifiche Prodotti"""
@@ -16135,6 +15673,19 @@ class App(tk.Tk):
             VerificationReportsWindow(self, self.db, self.lang, user)
         except Exception as e:
             messagebox.showerror("Errore", f"Impossibile aprire i rapporti: {e}")
+
+    def open_rma_knowledge_base(self):
+        """Apre la finestra RMA Knowledge Base (ricerca pubblica, inserimento con login)"""
+        logger.info("Apertura RMA Knowledge Base")
+        try:
+            from rma_knowledge_gui import RmaKnowledgeBaseWindow
+            RmaKnowledgeBaseWindow(self, self.db, self.lang)
+        except Exception as e:
+            logger.error(f"Errore apertura RMA Knowledge Base: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"{self.lang.get('rma_open_error', 'Errore apertura RMA Knowledge Base')}: {e}"
+            )
 
     def _update_reports_submenu(self):
         """Aggiorna il sottomenu Rapporti"""
@@ -16556,9 +16107,6 @@ class App(tk.Tk):
             label=self.lang.get('submenu_kanban', 'KanBan'),
             command=lambda: self._open_manual('produzione_kanban'))
         prod_manual_menu.add_command(
-            label=self.lang.get('menu_paste', 'Paste'),
-            command=lambda: self._open_manual('produzione_paste'))
-        prod_manual_menu.add_command(
             label=self.lang.get('submenu_reports_prod', 'Rapporti'),
             command=lambda: self._open_manual('produzione_rapporti'))
         prod_manual_menu.add_command(
@@ -16608,15 +16156,29 @@ class App(tk.Tk):
             label=self.lang.get('submenu_settings_email', 'Manage Setting Emails'),
             command=lambda: self._open_manual('strumenti_settings_email'))
 
+    def _get_resource_path(self, *sub_path):
+        """Restituisce il percorso di una risorsa bundled (manuals, docs, ecc.).
+        Cerca prima nella root dell'exe, poi in _internal/ (dove PyInstaller onedir
+        posiziona i datas)."""
+        app_dir = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__))
+        # 1. Cerca nella root dell'exe
+        path = os.path.join(app_dir, *sub_path)
+        if os.path.exists(path):
+            return path
+        # 2. Cerca in _internal/ (PyInstaller onedir)
+        internal_path = os.path.join(app_dir, '_internal', *sub_path)
+        if os.path.exists(internal_path):
+            return internal_path
+        return None
+
     def _open_manual(self, section_key):
         """Apre il manuale PDF corrispondente nella lingua corrente.
         Cerca in manuals/{lang}/{section_key}.pdf
         Se non trovato, mostra un messaggio placeholder."""
         lang_code = self.lang.current_language if hasattr(self.lang, 'current_language') else 'it'
-        app_dir = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__))
-        manual_path = os.path.join(app_dir, 'manuals', lang_code, f'{section_key}.pdf')
+        manual_path = self._get_resource_path('manuals', lang_code, f'{section_key}.pdf')
 
-        if os.path.exists(manual_path):
+        if manual_path:
             try:
                 os.startfile(manual_path)
                 logger.info(f"Aperto manuale: {manual_path}")
@@ -16628,8 +16190,8 @@ class App(tk.Tk):
                     parent=self)
         else:
             # Prova fallback su italiano
-            fallback_path = os.path.join(app_dir, 'manuals', 'it', f'{section_key}.pdf')
-            if lang_code != 'it' and os.path.exists(fallback_path):
+            fallback_path = self._get_resource_path('manuals', 'it', f'{section_key}.pdf')
+            if lang_code != 'it' and fallback_path:
                 try:
                     os.startfile(fallback_path)
                     logger.info(f"Aperto manuale (fallback IT): {fallback_path}")
@@ -16647,10 +16209,9 @@ class App(tk.Tk):
     def _open_npi_manual(self):
         """Apre il manuale NPI (HTML bilingue self-contained) nel browser predefinito."""
         import webbrowser
-        app_dir = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__))
-        manual_path = os.path.join(app_dir, 'docs', 'NPI_User_Manual.html')
+        manual_path = self._get_resource_path('docs', 'NPI_User_Manual.html')
 
-        if os.path.exists(manual_path):
+        if manual_path:
             try:
                 webbrowser.open(f'file:///{manual_path.replace(os.sep, "/")}')
                 logger.info(f"Aperto manuale NPI: {manual_path}")
@@ -16661,20 +16222,20 @@ class App(tk.Tk):
                     f"Impossibile aprire il manuale NPI: {e}",
                     parent=self)
         else:
+            app_dir = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__))
             messagebox.showinfo(
                 self.lang.get('menu_manuals', 'Manuali'),
                 self.lang.get('npi_manual_not_found',
                              "Il manuale NPI non e' stato trovato.\n\n"
-                             f"Percorso atteso: {manual_path}"),
+                             f"Percorso atteso: {os.path.join(app_dir, 'docs', 'NPI_User_Manual.html')}"),
                 parent=self)
 
     def _open_npi_checklist_manual(self):
         """Apre il manuale NPI Checklist (MD.RAQ.089) in formato Markdown nel browser."""
         import webbrowser
-        app_dir = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__))
-        manual_path = os.path.join(app_dir, 'docs', 'Manual_NPI_Checklist_RO.md')
+        manual_path = self._get_resource_path('docs', 'Manual_NPI_Checklist_RO.md')
 
-        if os.path.exists(manual_path):
+        if manual_path:
             try:
                 webbrowser.open(f'file:///{manual_path.replace(os.sep, "/")}')
                 logger.info(f"Aperto manuale NPI Checklist: {manual_path}")
@@ -16685,11 +16246,12 @@ class App(tk.Tk):
                     f"Impossibile aprire il manuale NPI Checklist: {e}",
                     parent=self)
         else:
+            app_dir = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__))
             messagebox.showinfo(
                 self.lang.get('menu_manuals', 'Manuali'),
                 self.lang.get('npi_checklist_manual_not_found',
                              "Il manuale NPI Checklist non e' stato trovato.\n\n"
-                             f"Percorso atteso: {manual_path}"),
+                             f"Percorso atteso: {os.path.join(app_dir, 'docs', 'Manual_NPI_Checklist_RO.md')}"),
                 parent=self)
 
     def _open_logs_viewer(self):
@@ -17734,28 +17296,6 @@ class App(tk.Tk):
         
         self._execute_simple_login(action_callback=open_booking_manager)
 
-    def open_paste_reception_with_login(self):
-        """Apre la finestra ricevimento paste con login"""
-        def open_paste_reception(user_name):
-            import paste_manager
-            paste_manager.open_paste_reception(self, self.db, self.lang, user_name)
-        
-        self._execute_simple_login(action_callback=open_paste_reception)
-
-    def _open_paste_locations(self):
-        """Apre la finestra gestione locazioni frigoriferi"""
-        def action():
-            import paste_manager
-            paste_manager.open_paste_locations(self, self.db, self.lang, self.last_authenticated_user_name)
-        
-        self._execute_authorized_action('submenu_paste_locations', action)
-
-    def _open_producers(self):
-        """Apre la finestra gestione produttori"""
-        def action():
-            from paste_manager import ProducersWindow
-            ProducersWindow(self, self.db, self.lang)
-        self._execute_authorized_action('submenu_paste_producers', action)
 
     def open_guest_registration_with_login(self):
         import guests_gui
@@ -18574,6 +18114,87 @@ class App(tk.Tk):
             authorized_action
         )
 
+    # ══════════════════════════════════════════════════════════════════════
+    #  INACTIVITY AUTO-CLOSE
+    # ══════════════════════════════════════════════════════════════════════
+
+    _STAY_ALIVE_CONFIG = 'stayAlive.json'
+
+    def _get_stay_alive_path(self) -> str:
+        """Ritorna il path del file stayAlive.json (nella directory dei log)."""
+        import os
+        log_dir = os.path.join(os.getenv('LOCALAPPDATA', '.'), 'TraceabilityRS', 'logs')
+        os.makedirs(log_dir, exist_ok=True)
+        return os.path.join(log_dir, self._STAY_ALIVE_CONFIG)
+
+    def _load_stay_alive_minutes(self) -> int:
+        """Legge il timeout dal file JSON. Se non esiste, lo crea con default 60."""
+        import json
+        import os
+        config_path = self._get_stay_alive_path()
+        default_minutes = 60
+
+        try:
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                minutes = int(data.get('stayAlive', default_minutes))
+                if minutes <= 0:
+                    minutes = default_minutes
+                logger.info(f"Inactivity timeout loaded: {minutes} min (from {config_path})")
+                return minutes
+        except Exception as e:
+            logger.warning(f"Error reading {config_path}: {e}")
+
+        # File non esiste o errore: crea con il default
+        try:
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump({'stayAlive': default_minutes}, f, indent=2)
+            logger.info(f"Created default stayAlive config: {config_path} ({default_minutes} min)")
+        except Exception as e:
+            logger.warning(f"Cannot create {config_path}: {e}")
+
+        return default_minutes
+
+    def _setup_inactivity_monitor(self):
+        """Configura il monitor di inattività. Chiude l'app dopo N minuti senza interazione."""
+        minutes = self._load_stay_alive_minutes()
+        self._inactivity_timeout_ms = minutes * 60 * 1000
+
+        # Bind di tutti gli eventi di interazione utente
+        self.bind_all('<Motion>',       self._reset_inactivity_timer)
+        self.bind_all('<ButtonPress>',  self._reset_inactivity_timer)
+        self.bind_all('<KeyPress>',     self._reset_inactivity_timer)
+        self.bind_all('<MouseWheel>',   self._reset_inactivity_timer)
+
+        # Avvia il primo timer
+        self._inactivity_job_id = self.after(self._inactivity_timeout_ms, self._on_inactivity_timeout)
+        logger.info(f"Inactivity monitor active: auto-close after {minutes} min of inactivity")
+
+    def _reset_inactivity_timer(self, event=None):
+        """Resetta il timer di inattività ad ogni interazione utente."""
+        if self._closing:
+            return
+        # Cancella il timer corrente
+        if self._inactivity_job_id:
+            try:
+                self.after_cancel(self._inactivity_job_id)
+            except Exception:
+                pass
+        # Riavvia il timer
+        if self._inactivity_timeout_ms:
+            self._inactivity_job_id = self.after(
+                self._inactivity_timeout_ms, self._on_inactivity_timeout
+            )
+
+    def _on_inactivity_timeout(self):
+        """Chiamato quando scade il timer di inattività. Chiude l'app."""
+        if self._closing:
+            return
+        minutes = (self._inactivity_timeout_ms or 0) // 60000
+        logger.info(f"Inactivity timeout reached ({minutes} min). Auto-closing application.")
+        self._on_closing(force_quit=True)
+
     # ------------------------------------------------------------------ #
     #  Monitor Materiali Indiretti                                          #
     # ------------------------------------------------------------------ #
@@ -18608,6 +18229,14 @@ class App(tk.Tk):
         # Segnala che l'app sta chiudendo (blocca callback periodici)
         self._closing = True
 
+        # Ferma il timer di inattività
+        if self._inactivity_job_id:
+            try:
+                self.after_cancel(self._inactivity_job_id)
+            except Exception:
+                pass
+            self._inactivity_job_id = None
+
         # Ferma monitor materiali indiretti
         if hasattr(self, '_wh_monitor') and self._wh_monitor:
             self._wh_monitor.stop()
@@ -18640,7 +18269,13 @@ class App(tk.Tk):
         ):
             self.db.disconnect()
             self.destroy()
-        # else: l'utente ha cliccato Annulla, non fare nulla
+        else:
+            # L'utente ha annullato: riattiva e riavvia il monitor inattività
+            self._closing = False
+            if self._inactivity_timeout_ms:
+                self._inactivity_job_id = self.after(
+                    self._inactivity_timeout_ms, self._on_inactivity_timeout
+                )
 
 class UpdateNotificationDialog(tk.Toplevel):
     """Dialogo per notificare un nuovo aggiornamento e chiedere l'azione desiderata."""

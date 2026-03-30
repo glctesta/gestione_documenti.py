@@ -517,6 +517,7 @@ class NotificationManagerV2:
                        AND tp.PercentualeCompletamento < 100
                        AND tp.OwnerID IS NOT NULL
                        AND ISNULL(proj.OnHold, 0) = 0
+                       AND proj.DateOut IS NULL
                      """)
 
             results = self.session.execute(query).fetchall()
@@ -712,6 +713,8 @@ class NotificationManagerV2:
                                 a.WorkEmail                              AS Email,
                                 DATEDIFF(DAY, GETDATE(), tp.DataFine)    AS GiorniAllaScadenza
                          FROM TaskProdotto tp
+                                  LEFT JOIN Traceability_rs.dbo.WaveNPI w ON tp.WaveID = w.WaveID
+                                  LEFT JOIN Traceability_rs.dbo.ProgettiNPI proj ON w.ProgettoID = proj.ProgettoID
                                   LEFT JOIN Employee.dbo.EmployeeHireHistory s ON tp.OwnerID = s.EmployeeHireHistoryId
                                   LEFT JOIN Employee.dbo.Employees e ON e.EmployeeId = s.EmployeeId
                                   LEFT JOIN Employee.dbo.EmployeeAddress a ON a.EmployeeId = e.EmployeeId
@@ -719,6 +722,7 @@ class NotificationManagerV2:
                            AND tp.Stato NOT IN ('Completato', 'Cancellato')
                            AND tp.PercentualeCompletamento < 100
                            AND tp.OwnerID IS NOT NULL
+                           AND proj.DateOut IS NULL
                          """)
 
             results = self.session.execute(query, {'days_before': days_before}).fetchall()

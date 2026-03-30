@@ -2659,6 +2659,8 @@ class GestoreNPI:
                 ProgettoNPI.DataInizio
             ).join(
                 Prodotto, ProgettoNPI.ProdottoID == Prodotto.ProdottoID
+            ).where(
+                ProgettoNPI.DateOut.is_(None)  # Escludi progetti soft-deleted
             )
             
             # Applica filtro anno se specificato
@@ -2723,6 +2725,8 @@ class GestoreNPI:
             # 1. Totale Progetti
             query = select(func.count(ProgettoNPI.ProgettoId)).join(
                 Prodotto, ProgettoNPI.ProdottoID == Prodotto.ProdottoID
+            ).where(
+                ProgettoNPI.DateOut.is_(None)  # Escludi progetti soft-deleted
             )
             if year_condition is not None:
                 query = query.where(year_condition)
@@ -2733,7 +2737,10 @@ class GestoreNPI:
             # 2. Progetti Completati
             query = select(func.count(ProgettoNPI.ProgettoId)).join(
                 Prodotto, ProgettoNPI.ProdottoID == Prodotto.ProdottoID
-            ).where(ProgettoNPI.StatoProgetto == 'Chiuso')
+            ).where(
+                ProgettoNPI.DateOut.is_(None),  # Escludi progetti soft-deleted
+                ProgettoNPI.StatoProgetto == 'Chiuso'
+            )
             if year_filter:
                 # Per progetti chiusi, aggiungi filtro anno (solo DataInizio)
                 query = query.where(func.year(ProgettoNPI.DataInizio) == year_filter)
@@ -2746,6 +2753,7 @@ class GestoreNPI:
                 Prodotto, ProgettoNPI.ProdottoID == Prodotto.ProdottoID
             ).where(
                 and_(
+                    ProgettoNPI.DateOut.is_(None),  # Escludi progetti soft-deleted
                     ProgettoNPI.StatoProgetto != 'Chiuso',
                     ProgettoNPI.ScadenzaProgetto < datetime.now()
                 )
@@ -2762,6 +2770,7 @@ class GestoreNPI:
                     func.count(ProgettoNPI.ProgettoId).label('count')
                 )
                 .join(Prodotto, ProgettoNPI.ProdottoID == Prodotto.ProdottoID)
+                .where(ProgettoNPI.DateOut.is_(None))  # Escludi progetti soft-deleted
             )
             
             if year_condition is not None:
@@ -3816,7 +3825,7 @@ class GestoreNPI:
 
     def add_npi_document(self, task_prodotto_id, doc_type_id, title, body, user,
                          note=None, replaces_doc_id=None, doc_value=None,
-                         due_date=None, IDSite=None):  # ← Aggiungi questo parametro
+                         due_date=None, IDSite=None, budget_item_id=None):
         """
         Aggiunge un nuovo documento NPI al database.
         """
@@ -3848,7 +3857,8 @@ class GestoreNPI:
                     DateOut=due_date,
                     VersionNumber=version_number,
                     Note=note,
-                    IDSite=IDSite
+                    IDSite=IDSite,
+                    BudgetItemId=budget_item_id
                 )
 
                 session.add(new_doc)
@@ -4198,6 +4208,112 @@ class GestoreNPI:
         except Exception as e:
             session.rollback()
             logger.error(f"Errore aggiornamento documento {doc_id}: {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+
+    # ========================================
+    # DOCUMENTI ↔ BUDGET ITEM
+    # ========================================
+
+    def get_documents_for_budget_item(self, budget_item_id):
+        """Recupera tutti i documenti associati a una riga di budget."""
+        session = self._get_session()
+        try:
+            from .data_models import NpiDocument, NpiDocumentType
+            stmt = (
+                select(NpiDocument)
+                .options(joinedload(NpiDocument.document_type))
+                .where(
+                    NpiDocument.BudgetItemId == budget_item_id,
+                    NpiDocument.DateOut.is_(None)
+                )
+                .order_by(NpiDocument.DateIn.desc())
+            )
+            docs = session.scalars(stmt).all()
+            result = []
+            for doc in docs:
+                result.append({
+                    'doc_id': doc.NpiDocumentId,
+                    'doc_title': doc.DocumentTitle or '',
+                    'doc_type': doc.document_type.NpiDocumentDescription if doc.document_type else 'N/A',
+                    'date_in': doc.DateIn.strftime('%d/%m/%Y %H:%M') if doc.DateIn else '',
+                    'user': doc.User or '',
+                    'value': doc.ValueInEur
+                })
+            return result
+        except Exception as e:
+            logger.error(f"Errore get_documents_for_budget_item({budget_item_id}): {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+
+    def link_document_to_budget_item(self, doc_id, budget_item_id):
+        """Associa un documento esistente a una riga di budget."""
+        session = self._get_session()
+        try:
+            from .data_models import NpiDocument
+            doc = session.get(NpiDocument, doc_id)
+            if not doc:
+                raise ValueError(f"Documento {doc_id} non trovato")
+            doc.BudgetItemId = budget_item_id
+            session.commit()
+            logger.info(f"Documento {doc_id} collegato a budget item {budget_item_id}")
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Errore link_document_to_budget_item: {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+
+    def unlink_document_from_budget_item(self, doc_id):
+        """Rimuove l'associazione di un documento da una riga di budget (non elimina il doc)."""
+        session = self._get_session()
+        try:
+            from .data_models import NpiDocument
+            doc = session.get(NpiDocument, doc_id)
+            if not doc:
+                raise ValueError(f"Documento {doc_id} non trovato")
+            doc.BudgetItemId = None
+            session.commit()
+            logger.info(f"Documento {doc_id} scollegato da budget item")
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Errore unlink_document_from_budget_item: {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+
+    def get_unlinked_project_documents(self, project_id):
+        """Recupera i documenti del progetto NON associati a nessun budget item."""
+        session = self._get_session()
+        try:
+            from .data_models import NpiDocument, TaskProdotto, WaveNPI
+            stmt = (
+                select(NpiDocument)
+                .join(TaskProdotto, NpiDocument.TaskProdottoId == TaskProdotto.TaskProdottoID)
+                .join(WaveNPI, TaskProdotto.WaveID == WaveNPI.WaveID)
+                .options(joinedload(NpiDocument.document_type))
+                .where(
+                    WaveNPI.ProgettoID == project_id,
+                    NpiDocument.DateOut.is_(None),
+                    NpiDocument.BudgetItemId.is_(None)
+                )
+                .order_by(NpiDocument.DateIn.desc())
+            )
+            docs = session.scalars(stmt).all()
+            result = []
+            for doc in docs:
+                result.append({
+                    'doc_id': doc.NpiDocumentId,
+                    'doc_title': doc.DocumentTitle or '',
+                    'doc_type': doc.document_type.NpiDocumentDescription if doc.document_type else 'N/A',
+                    'date_in': doc.DateIn.strftime('%d/%m/%Y %H:%M') if doc.DateIn else '',
+                    'user': doc.User or ''
+                })
+            return result
+        except Exception as e:
+            logger.error(f"Errore get_unlinked_project_documents({project_id}): {e}", exc_info=True)
             raise
         finally:
             session.close()
@@ -5337,3 +5453,420 @@ class GestoreNPI:
             raise
         finally:
             session.close()
+
+    # ================================================================== #
+    #  NPI CHECKLIST (Summary Sheet MD.RAQ.089)                          #
+    # ================================================================== #
+
+    def get_checklist_families_for_project(self, project_id):
+        """Restituisce le famiglie con configurazione checklist per un progetto.
+        Ritorna solo famiglie che hanno ChecklistSection impostato e task attivi nel progetto."""
+        session = self._get_session()
+        try:
+            from sqlalchemy import text
+            result = session.execute(text("""
+                SELECT DISTINCT
+                    f.FamilyNpiID, f.NpiFamily, f.ChecklistSection,
+                    f.CL_HasPrograms, f.CL_HasMaterials, f.CL_HasProductionData,
+                    f.CL_HasVerification, f.CL_HasPreformingChecks, f.CL_HasCoating,
+                    f.CL_SortOrder
+                FROM dbo.FamilyNpis f
+                INNER JOIN dbo.FamilyNpiLogs fl ON f.FamilyNpiID = fl.FamilyNpiID AND fl.DateEnd IS NULL
+                INNER JOIN dbo.TaskProdotto tp ON fl.TaskID = tp.TaskID
+                INNER JOIN dbo.WaveNPI w ON tp.WaveID = w.WaveID
+                WHERE w.ProgettoID = :pid
+                  AND f.DateEnd IS NULL
+                  AND f.ChecklistSection IS NOT NULL
+                  AND f.ChecklistSection != ''
+                ORDER BY f.CL_SortOrder, f.NpiFamily
+            """), {'pid': project_id}).fetchall()
+            return [{
+                'family_id': r[0], 'family_name': r[1], 'section': r[2],
+                'has_programs': bool(r[3]), 'has_materials': bool(r[4]),
+                'has_production_data': bool(r[5]), 'has_verification': bool(r[6]),
+                'has_preforming_checks': bool(r[7]), 'has_coating': bool(r[8]),
+                'sort_order': r[9]
+            } for r in result]
+        except Exception as e:
+            logger.error(f"Errore get_checklist_families_for_project({project_id}): {e}", exc_info=True)
+            return []
+        finally:
+            session.close()
+
+    def get_orders_for_project(self, project_id):
+        """Restituisce gli ordini associati al prodotto del progetto NPI."""
+        session = self._get_session()
+        try:
+            from sqlalchemy import text
+            result = session.execute(text("""
+                SELECT o.idorder, o.OrderNumber, p.ProductCode, p.ProductName
+                FROM Traceability_RS.dbo.Orders o
+                JOIN Traceability_RS.dbo.Products p ON o.idproduct = p.idproduct
+                WHERE p.ProductCode IN (
+                    SELECT pr.CodiceProdotto FROM dbo.Prodotti pr
+                    INNER JOIN dbo.ProgettiNPI pn ON pr.ProdottoID = pn.ProdottoID
+                    WHERE pn.ProgettoID = :pid
+                )
+                ORDER BY o.idorder DESC
+            """), {'pid': project_id}).fetchall()
+            return [{'order_id': r[0], 'order_code': r[1],
+                     'product_code': r[2], 'product_desc': r[3]} for r in result]
+        except Exception as e:
+            logger.error(f"Errore get_orders_for_project({project_id}): {e}", exc_info=True)
+            return []
+        finally:
+            session.close()
+
+    def create_checklist_session(self, project_id, user, order_id=None, product_code=None,
+                                 order_qty=None, check_date=None,
+                                 has_smt_top=True, has_smt_bottom=False,
+                                 has_pth=True, has_ict=True, has_fct=True, has_coating=False):
+        """Crea una nuova sessione checklist NPI."""
+        session = self._get_session()
+        try:
+            from .data_models import NpiChecklistSession
+            cl = NpiChecklistSession(
+                ProgettoID=project_id,
+                OrderId=order_id,
+                ProductCode=product_code,
+                OrderQuantity=order_qty,
+                CheckDate=check_date or datetime.now(),
+                HasSMT_TOP=has_smt_top,
+                HasSMT_BOTTOM=has_smt_bottom,
+                HasPTH=has_pth,
+                HasICT=has_ict,
+                HasFCT=has_fct,
+                HasCoating=has_coating,
+                CreatedBy=user,
+                CreatedDate=datetime.now(),
+                Status='InLavorazione'
+            )
+            session.add(cl)
+            session.commit()
+            session.refresh(cl)
+            logger.info(f"Checklist sessione {cl.SessionId} creata per progetto {project_id}")
+            return cl.SessionId
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Errore create_checklist_session: {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+
+    def get_checklist_sessions(self, project_id):
+        """Restituisce tutte le sessioni checklist di un progetto."""
+        session = self._get_session()
+        try:
+            from .data_models import NpiChecklistSession
+            sessions = session.query(NpiChecklistSession).filter(
+                NpiChecklistSession.ProgettoID == project_id,
+                NpiChecklistSession.DateOut.is_(None)
+            ).order_by(NpiChecklistSession.CreatedDate.desc()).all()
+            return [{
+                'session_id': s.SessionId,
+                'order_id': s.OrderId,
+                'product_code': s.ProductCode,
+                'order_qty': s.OrderQuantity,
+                'check_date': s.CheckDate.strftime('%d/%m/%Y') if s.CheckDate else '',
+                'status': s.Status,
+                'created_by': s.CreatedBy,
+                'created_date': s.CreatedDate.strftime('%d/%m/%Y %H:%M') if s.CreatedDate else '',
+                'has_smt_top': s.HasSMT_TOP, 'has_smt_bottom': s.HasSMT_BOTTOM,
+                'has_pth': s.HasPTH, 'has_ict': s.HasICT, 'has_fct': s.HasFCT,
+                'has_coating': s.HasCoating,
+            } for s in sessions]
+        except Exception as e:
+            logger.error(f"Errore get_checklist_sessions({project_id}): {e}", exc_info=True)
+            return []
+        finally:
+            session.close()
+
+    def load_checklist_session(self, session_id):
+        """Carica una sessione checklist completa con tutti i dati correlati."""
+        session = self._get_session()
+        try:
+            from .data_models import (NpiChecklistSession, NpiChecklistProgram,
+                NpiChecklistMaterial, NpiChecklistProductionData, NpiChecklistVerification,
+                NpiChecklistPreformingCheck, NpiChecklistAction, NpiChecklistRework)
+
+            cl = session.get(NpiChecklistSession, session_id)
+            if not cl:
+                return None
+
+            data = {
+                'session': {
+                    'session_id': cl.SessionId,
+                    'project_id': cl.ProgettoID,
+                    'order_id': cl.OrderId,
+                    'product_code': cl.ProductCode,
+                    'order_qty': cl.OrderQuantity,
+                    'check_date': cl.CheckDate,
+                    'status': cl.Status,
+                    'has_smt_top': cl.HasSMT_TOP, 'has_smt_bottom': cl.HasSMT_BOTTOM,
+                    'has_pth': cl.HasPTH, 'has_ict': cl.HasICT, 'has_fct': cl.HasFCT,
+                    'has_coating': cl.HasCoating,
+                    'final_approval': cl.FinalApproval,
+                    'resp_qualita': cl.ResponsabileQualita,
+                    'resp_produzione': cl.ResponsabileProduzione,
+                    'resp_ingegneria': cl.ResponsabileIngegneria,
+                    'approved_by': cl.ApprovedBy,
+                    'approved_date': cl.ApprovedDate,
+                },
+                'programs': [{
+                    'program_id': p.ProgramId, 'section': p.ProcessSection,
+                    'step': p.ProcessStep, 'line_nr': p.LineNr,
+                    'program_name': p.ProgramName, 'result': p.Result,
+                    'responsible': p.ResponsabileName, 'date': p.ProcessDate,
+                    'note': p.Note, 'has_file': p.ProgramFile is not None,
+                    'file_name': p.ProgramFileName
+                } for p in cl.programs],
+                'materials': [{
+                    'material_id': m.MaterialId, 'section': m.ProcessSection,
+                    'type': m.MaterialType, 'code_pn': m.CodePN, 'note': m.Note
+                } for m in cl.materials],
+                'production_data': [{
+                    'id': pd.ProductionDataId, 'process': pd.ProcessName,
+                    'date': pd.ProcessDate, 'produced': pd.ProducedQty,
+                    'inspected': pd.InspectedQty, 'passed': pd.PassQty,
+                    'failed': pd.FailQty, 'note': pd.Note,
+                    'auto': pd.IsAutoPopulated
+                } for pd in cl.production_data],
+                'verifications': [{
+                    'id': v.VerificationId, 'section': v.SectionName,
+                    'conform': v.ConformStatus, 'inspected_qty': v.InspectedQty,
+                    'result': v.InspectionResult, 'cq_resp': v.CQResponsible,
+                    'date': v.VerificationDate, 'note': v.Note
+                } for v in cl.verifications],
+                'preforming_checks': [{
+                    'id': pc.CheckId, 'item': pc.CheckItem,
+                    'result': pc.Result, 'note': pc.Note
+                } for pc in cl.preforming_checks],
+                'actions': [{
+                    'id': a.ActionId, 'comment': a.Comment,
+                    'responsible': a.Responsabil, 'close_date': a.DataChiusura,
+                    'status': a.Status
+                } for a in cl.actions],
+                'rework': [{
+                    'id': r.ReworkId, 'serial': r.SerialNr,
+                    'fail_ict': r.FailICT, 'fail_fct': r.FailFCT,
+                    'diagnosis': r.Diagnoza, 'reference': r.Referinta,
+                    'rework_resp': r.ReworkResp
+                } for r in cl.rework_items],
+            }
+            return data
+        except Exception as e:
+            logger.error(f"Errore load_checklist_session({session_id}): {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+
+    def save_checklist_session(self, session_id, data, user):
+        """Salva/aggiorna tutti i dati di una sessione checklist (multi-sessione)."""
+        session = self._get_session()
+        try:
+            from .data_models import (NpiChecklistSession, NpiChecklistProgram,
+                NpiChecklistMaterial, NpiChecklistProductionData, NpiChecklistVerification,
+                NpiChecklistPreformingCheck, NpiChecklistAction, NpiChecklistRework)
+
+            cl = session.get(NpiChecklistSession, session_id)
+            if not cl:
+                raise ValueError(f"Sessione {session_id} non trovata")
+
+            # Update header
+            hdr = data.get('session', {})
+            if 'order_id' in hdr:
+                cl.OrderId = hdr['order_id']
+            if 'product_code' in hdr:
+                cl.ProductCode = hdr['product_code']
+            if 'order_qty' in hdr:
+                cl.OrderQuantity = hdr['order_qty']
+            if 'check_date' in hdr:
+                cl.CheckDate = hdr['check_date']
+            for flag in ['has_smt_top', 'has_smt_bottom', 'has_pth', 'has_ict', 'has_fct', 'has_coating']:
+                col = 'Has' + flag[4:].replace('_', '_').upper().replace('HAS_', '')
+                col_map = {
+                    'has_smt_top': 'HasSMT_TOP', 'has_smt_bottom': 'HasSMT_BOTTOM',
+                    'has_pth': 'HasPTH', 'has_ict': 'HasICT', 'has_fct': 'HasFCT',
+                    'has_coating': 'HasCoating',
+                }
+                if flag in hdr:
+                    setattr(cl, col_map[flag], hdr[flag])
+            if 'resp_qualita' in hdr:
+                cl.ResponsabileQualita = hdr['resp_qualita']
+            if 'resp_produzione' in hdr:
+                cl.ResponsabileProduzione = hdr['resp_produzione']
+            if 'resp_ingegneria' in hdr:
+                cl.ResponsabileIngegneria = hdr['resp_ingegneria']
+            if 'status' in hdr:
+                cl.Status = hdr['status']
+            cl.LastModifiedBy = user
+            cl.LastModifiedDate = datetime.now()
+
+            # ---- Programs ----
+            if 'programs' in data:
+                # Delete existing and re-insert
+                session.query(NpiChecklistProgram).filter(
+                    NpiChecklistProgram.SessionId == session_id).delete()
+                for p in data['programs']:
+                    prog = NpiChecklistProgram(
+                        SessionId=session_id,
+                        ProcessSection=p.get('section', ''),
+                        ProcessStep=p.get('step', ''),
+                        LineNr=p.get('line_nr'),
+                        ProgramName=p.get('program_name'),
+                        Result=p.get('result'),
+                        ResponsabileName=p.get('responsible'),
+                        ProcessDate=p.get('date'),
+                        Note=p.get('note'),
+                        ProgramFile=p.get('program_file'),
+                        ProgramFileName=p.get('file_name'),
+                    )
+                    session.add(prog)
+
+            # ---- Materials ----
+            if 'materials' in data:
+                session.query(NpiChecklistMaterial).filter(
+                    NpiChecklistMaterial.SessionId == session_id).delete()
+                for m in data['materials']:
+                    mat = NpiChecklistMaterial(
+                        SessionId=session_id,
+                        ProcessSection=m.get('section', ''),
+                        MaterialType=m.get('type', ''),
+                        CodePN=m.get('code_pn'),
+                        Note=m.get('note'),
+                    )
+                    session.add(mat)
+
+            # ---- Production Data ----
+            if 'production_data' in data:
+                session.query(NpiChecklistProductionData).filter(
+                    NpiChecklistProductionData.SessionId == session_id).delete()
+                for pd_item in data['production_data']:
+                    pdata = NpiChecklistProductionData(
+                        SessionId=session_id,
+                        ProcessName=pd_item.get('process', ''),
+                        ProcessDate=pd_item.get('date'),
+                        ProducedQty=pd_item.get('produced'),
+                        InspectedQty=pd_item.get('inspected'),
+                        PassQty=pd_item.get('passed'),
+                        FailQty=pd_item.get('failed'),
+                        Note=pd_item.get('note'),
+                        IsAutoPopulated=pd_item.get('auto', False),
+                    )
+                    session.add(pdata)
+
+            # ---- Verifications ----
+            if 'verifications' in data:
+                session.query(NpiChecklistVerification).filter(
+                    NpiChecklistVerification.SessionId == session_id).delete()
+                for v in data['verifications']:
+                    verif = NpiChecklistVerification(
+                        SessionId=session_id,
+                        SectionName=v.get('section', ''),
+                        ConformStatus=v.get('conform'),
+                        InspectedQty=v.get('inspected_qty'),
+                        InspectionResult=v.get('result'),
+                        CQResponsible=v.get('cq_resp'),
+                        VerificationDate=v.get('date'),
+                        Note=v.get('note'),
+                    )
+                    session.add(verif)
+
+            # ---- Preforming Checks ----
+            if 'preforming_checks' in data:
+                session.query(NpiChecklistPreformingCheck).filter(
+                    NpiChecklistPreformingCheck.SessionId == session_id).delete()
+                for pc in data['preforming_checks']:
+                    check = NpiChecklistPreformingCheck(
+                        SessionId=session_id,
+                        CheckItem=pc.get('item', ''),
+                        Result=pc.get('result'),
+                        Note=pc.get('note'),
+                    )
+                    session.add(check)
+
+            # ---- Actions ----
+            if 'actions' in data:
+                session.query(NpiChecklistAction).filter(
+                    NpiChecklistAction.SessionId == session_id).delete()
+                for a in data['actions']:
+                    act = NpiChecklistAction(
+                        SessionId=session_id,
+                        Comment=a.get('comment'),
+                        Responsabil=a.get('responsible'),
+                        DataChiusura=a.get('close_date'),
+                        Status=a.get('status'),
+                    )
+                    session.add(act)
+
+            # ---- Rework ----
+            if 'rework' in data:
+                session.query(NpiChecklistRework).filter(
+                    NpiChecklistRework.SessionId == session_id).delete()
+                for r in data['rework']:
+                    rw = NpiChecklistRework(
+                        SessionId=session_id,
+                        SerialNr=r.get('serial'),
+                        FailICT=r.get('fail_ict'),
+                        FailFCT=r.get('fail_fct'),
+                        Diagnoza=r.get('diagnosis'),
+                        Referinta=r.get('reference'),
+                        ReworkResp=r.get('rework_resp'),
+                    )
+                    session.add(rw)
+
+            session.commit()
+            logger.info(f"Checklist sessione {session_id} salvata (user={user})")
+            return True
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Errore save_checklist_session({session_id}): {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+
+    def approve_checklist_session(self, session_id, user):
+        """Approva definitivamente una sessione checklist (solo owner progetto)."""
+        session = self._get_session()
+        try:
+            from .data_models import NpiChecklistSession
+            cl = session.get(NpiChecklistSession, session_id)
+            if not cl:
+                raise ValueError(f"Sessione {session_id} non trovata")
+            cl.FinalApproval = True
+            cl.ApprovedBy = user
+            cl.ApprovedDate = datetime.now()
+            cl.Status = 'Completato'
+            cl.LastModifiedBy = user
+            cl.LastModifiedDate = datetime.now()
+            session.commit()
+            logger.info(f"Checklist sessione {session_id} approvata da {user}")
+            return True
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Errore approve_checklist_session({session_id}): {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+
+    def delete_checklist_session(self, session_id, user):
+        """Soft-delete di una sessione checklist."""
+        session = self._get_session()
+        try:
+            from .data_models import NpiChecklistSession
+            cl = session.get(NpiChecklistSession, session_id)
+            if not cl:
+                raise ValueError(f"Sessione {session_id} non trovata")
+            cl.DateOut = datetime.now()
+            cl.LastModifiedBy = user
+            cl.LastModifiedDate = datetime.now()
+            session.commit()
+            logger.info(f"Checklist sessione {session_id} cancellata da {user}")
+            return True
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Errore delete_checklist_session({session_id}): {e}", exc_info=True)
+            raise
+        finally:
+            session.close()
+

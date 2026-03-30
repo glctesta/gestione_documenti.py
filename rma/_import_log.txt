@@ -1,0 +1,143 @@
+2026-03-27 13:42:37,337  INFO      ============================================================
+2026-03-27 13:42:37,337  INFO      RMA Import avviato
+2026-03-27 13:42:37,338  INFO      Excel: c:\Users\gtesta\PythonProjetcs\Python\PrductionDocumentation\rma\Elenco schede EVOCA_ELECTROLUX 01012021_11032026.xls
+2026-03-27 13:42:37,338  INFO      ============================================================
+2026-03-27 13:42:37,338  INFO      Lettura Excel...
+2026-03-27 13:42:37,855  INFO      Righe trovate: 6357, Colonne: 46
+2026-03-27 13:42:37,855  INFO      Connessione al database...
+2026-03-27 13:43:20,851  INFO        Progresso: 50/6357 (0%) - traduzioni: 50
+2026-03-27 13:44:16,884  INFO        Progresso: 100/6357 (1%) - traduzioni: 100
+2026-03-27 13:45:22,096  INFO        Progresso: 150/6357 (2%) - traduzioni: 150
+2026-03-27 13:46:39,074  INFO        Progresso: 200/6357 (3%) - traduzioni: 200
+2026-03-27 13:47:33,691  INFO        Progresso: 250/6357 (3%) - traduzioni: 250
+2026-03-27 13:48:46,453  INFO        Progresso: 300/6357 (4%) - traduzioni: 300
+2026-03-27 13:49:07,112  INFO        Progresso: 350/6357 (5%) - traduzioni: 350
+2026-03-27 13:49:07,551  INFO        Progresso: 400/6357 (6%) - traduzioni: 400
+2026-03-27 13:49:08,027  INFO        Progresso: 450/6357 (7%) - traduzioni: 450
+2026-03-27 13:49:35,662  INFO        Progresso: 500/6357 (7%) - traduzioni: 500
+2026-03-27 13:50:46,864  INFO        Progresso: 550/6357 (8%) - traduzioni: 550
+2026-03-27 13:50:48,909  WARNING   Translation failed for '+ pista sollevata...': + pista sollevata --> No translation was found using the current translator. Try another translator?
+2026-03-27 13:51:41,805  INFO        Progresso: 600/6357 (9%) - traduzioni: 600
+2026-03-27 13:53:22,204  INFO        Progresso: 650/6357 (10%) - traduzioni: 650
+2026-03-27 13:53:57,135  INFO        Progresso: 700/6357 (11%) - traduzioni: 700
+2026-03-27 13:54:54,980  INFO        Progresso: 750/6357 (11%) - traduzioni: 750
+2026-03-27 13:55:26,617  INFO        Progresso: 800/6357 (12%) - traduzioni: 800
+2026-03-27 13:56:19,272  INFO        Progresso: 850/6357 (13%) - traduzioni: 850
+2026-03-27 13:56:57,457  INFO        Progresso: 900/6357 (14%) - traduzioni: 900
+2026-03-27 13:57:59,138  INFO        Progresso: 950/6357 (14%) - traduzioni: 950
+2026-03-27 13:59:00,306  INFO        Progresso: 1000/6357 (15%) - traduzioni: 1000
+2026-03-27 13:59:35,876  INFO        Progresso: 1050/6357 (16%) - traduzioni: 1050
+2026-03-27 13:59:40,706  INFO        Progresso: 1100/6357 (17%) - traduzioni: 1100
+2026-03-27 14:00:20,521  INFO        Progresso: 1150/6357 (18%) - traduzioni: 1150
+2026-03-27 14:01:14,922  INFO        Progresso: 1200/6357 (18%) - traduzioni: 1200
+2026-03-27 14:01:57,717  INFO        Progresso: 1250/6357 (19%) - traduzioni: 1250
+2026-03-27 14:03:25,686  INFO        Progresso: 1300/6357 (20%) - traduzioni: 1300
+2026-03-27 14:04:26,805  INFO        Progresso: 1350/6357 (21%) - traduzioni: 1350
+2026-03-27 14:05:39,088  INFO        Progresso: 1400/6357 (22%) - traduzioni: 1400
+2026-03-27 14:06:59,596  INFO        Progresso: 1450/6357 (22%) - traduzioni: 1450
+2026-03-27 14:07:51,574  INFO        Progresso: 1500/6357 (23%) - traduzioni: 1500
+2026-03-27 14:08:46,936  INFO        Progresso: 1550/6357 (24%) - traduzioni: 1550
+2026-03-27 14:09:10,167  INFO        Progresso: 1600/6357 (25%) - traduzioni: 1600
+2026-03-27 14:09:44,121  INFO        Progresso: 1650/6357 (25%) - traduzioni: 1650
+2026-03-27 14:10:33,614  INFO        Progresso: 1700/6357 (26%) - traduzioni: 1700
+2026-03-27 14:11:30,097  INFO        Progresso: 1750/6357 (27%) - traduzioni: 1750
+2026-03-27 14:12:04,819  INFO        Progresso: 1800/6357 (28%) - traduzioni: 1800
+2026-03-27 14:12:22,203  INFO        Progresso: 1850/6357 (29%) - traduzioni: 1850
+2026-03-27 14:12:56,596  INFO        Progresso: 1900/6357 (29%) - traduzioni: 1900
+2026-03-27 14:13:32,678  INFO        Progresso: 1950/6357 (30%) - traduzioni: 1950
+2026-03-27 14:14:07,721  INFO        Progresso: 2000/6357 (31%) - traduzioni: 2000
+2026-03-27 14:14:38,100  INFO        Progresso: 2050/6357 (32%) - traduzioni: 2050
+2026-03-27 14:15:18,298  INFO        Progresso: 2100/6357 (33%) - traduzioni: 2100
+2026-03-27 14:15:48,047  INFO        Progresso: 2150/6357 (33%) - traduzioni: 2150
+2026-03-27 14:16:08,120  INFO        Progresso: 2200/6357 (34%) - traduzioni: 2200
+2026-03-27 14:16:54,015  INFO        Progresso: 2250/6357 (35%) - traduzioni: 2250
+2026-03-27 14:17:47,779  INFO        Progresso: 2300/6357 (36%) - traduzioni: 2300
+2026-03-27 14:18:42,397  INFO        Progresso: 2350/6357 (36%) - traduzioni: 2350
+2026-03-27 14:19:26,495  INFO        Progresso: 2400/6357 (37%) - traduzioni: 2400
+2026-03-27 14:19:50,884  INFO        Progresso: 2450/6357 (38%) - traduzioni: 2450
+2026-03-27 14:20:31,259  INFO        Progresso: 2500/6357 (39%) - traduzioni: 2500
+2026-03-27 14:21:23,787  INFO        Progresso: 2550/6357 (40%) - traduzioni: 2550
+2026-03-27 14:22:32,200  INFO        Progresso: 2600/6357 (40%) - traduzioni: 2600
+2026-03-27 14:23:11,445  INFO        Progresso: 2650/6357 (41%) - traduzioni: 2650
+2026-03-27 14:23:30,677  INFO        Progresso: 2700/6357 (42%) - traduzioni: 2700
+2026-03-27 14:24:16,638  INFO        Progresso: 2750/6357 (43%) - traduzioni: 2750
+2026-03-27 14:25:00,096  INFO        Progresso: 2800/6357 (44%) - traduzioni: 2800
+2026-03-27 14:25:31,960  INFO        Progresso: 2850/6357 (44%) - traduzioni: 2850
+2026-03-27 14:26:19,476  INFO        Progresso: 2900/6357 (45%) - traduzioni: 2900
+2026-03-27 14:27:22,489  INFO        Progresso: 2950/6357 (46%) - traduzioni: 2950
+2026-03-27 14:28:30,774  INFO        Progresso: 3000/6357 (47%) - traduzioni: 3000
+2026-03-27 14:29:23,644  INFO        Progresso: 3050/6357 (47%) - traduzioni: 3050
+2026-03-27 14:30:15,066  INFO        Progresso: 3100/6357 (48%) - traduzioni: 3100
+2026-03-27 14:31:20,689  INFO        Progresso: 3150/6357 (49%) - traduzioni: 3150
+2026-03-27 14:32:34,578  INFO        Progresso: 3200/6357 (50%) - traduzioni: 3200
+2026-03-27 14:33:20,241  INFO        Progresso: 3250/6357 (51%) - traduzioni: 3250
+2026-03-27 14:34:07,041  INFO        Progresso: 3300/6357 (51%) - traduzioni: 3300
+2026-03-27 14:34:55,775  INFO        Progresso: 3350/6357 (52%) - traduzioni: 3350
+2026-03-27 14:35:59,289  INFO        Progresso: 3400/6357 (53%) - traduzioni: 3400
+2026-03-27 14:37:13,070  INFO        Progresso: 3450/6357 (54%) - traduzioni: 3450
+2026-03-27 14:37:29,026  INFO        Progresso: 3500/6357 (55%) - traduzioni: 3500
+2026-03-27 14:37:59,478  INFO        Progresso: 3550/6357 (55%) - traduzioni: 3550
+2026-03-27 14:38:54,476  INFO        Progresso: 3600/6357 (56%) - traduzioni: 3600
+2026-03-27 14:39:31,855  INFO        Progresso: 3650/6357 (57%) - traduzioni: 3650
+2026-03-27 14:40:24,541  INFO        Progresso: 3700/6357 (58%) - traduzioni: 3700
+2026-03-27 14:41:19,275  INFO        Progresso: 3750/6357 (58%) - traduzioni: 3750
+2026-03-27 14:42:17,166  INFO        Progresso: 3800/6357 (59%) - traduzioni: 3800
+2026-03-27 14:43:20,135  INFO        Progresso: 3850/6357 (60%) - traduzioni: 3850
+2026-03-27 14:44:20,288  INFO        Progresso: 3900/6357 (61%) - traduzioni: 3900
+2026-03-27 14:45:28,774  INFO        Progresso: 3950/6357 (62%) - traduzioni: 3950
+2026-03-27 14:46:12,930  WARNING   Translation failed for 'Controllo visivo eseguito dalla Tamara  anche al primo rient...': Controllo visivo eseguito dalla Tamara  anche al primo rientro - Programmazione eseguita dalla produzione --> No translation was found using the current translator. Try another translator?
+2026-03-27 14:46:25,979  INFO        Progresso: 4000/6357 (62%) - traduzioni: 4000
+2026-03-27 14:47:20,773  INFO        Progresso: 4050/6357 (63%) - traduzioni: 4050
+2026-03-27 14:47:50,030  INFO        Progresso: 4100/6357 (64%) - traduzioni: 4100
+2026-03-27 14:48:46,395  INFO        Progresso: 4150/6357 (65%) - traduzioni: 4150
+2026-03-27 14:49:04,511  INFO        Progresso: 4200/6357 (66%) - traduzioni: 4200
+2026-03-27 14:49:56,469  INFO        Progresso: 4250/6357 (66%) - traduzioni: 4250
+2026-03-27 14:50:51,328  INFO        Progresso: 4300/6357 (67%) - traduzioni: 4300
+2026-03-27 14:52:05,195  INFO        Progresso: 4350/6357 (68%) - traduzioni: 4350
+2026-03-27 14:53:15,937  INFO        Progresso: 4400/6357 (69%) - traduzioni: 4400
+2026-03-27 14:54:04,200  INFO        Progresso: 4450/6357 (70%) - traduzioni: 4450
+2026-03-27 14:55:27,876  INFO        Progresso: 4500/6357 (70%) - traduzioni: 4500
+2026-03-27 14:57:07,669  INFO        Progresso: 4550/6357 (71%) - traduzioni: 4550
+2026-03-27 14:58:37,531  INFO        Progresso: 4600/6357 (72%) - traduzioni: 4600
+2026-03-27 14:59:00,705  INFO        Progresso: 4650/6357 (73%) - traduzioni: 4650
+2026-03-27 14:59:49,919  INFO        Progresso: 4700/6357 (73%) - traduzioni: 4700
+2026-03-27 15:00:52,783  INFO        Progresso: 4750/6357 (74%) - traduzioni: 4750
+2026-03-27 15:01:30,844  INFO        Progresso: 4800/6357 (75%) - traduzioni: 4800
+2026-03-27 15:02:33,599  INFO        Progresso: 4850/6357 (76%) - traduzioni: 4850
+2026-03-27 15:03:33,183  INFO        Progresso: 4900/6357 (77%) - traduzioni: 4900
+2026-03-27 15:04:10,670  INFO        Progresso: 4950/6357 (77%) - traduzioni: 4950
+2026-03-27 15:05:05,800  INFO        Progresso: 5000/6357 (78%) - traduzioni: 5000
+2026-03-27 15:06:07,452  INFO        Progresso: 5050/6357 (79%) - traduzioni: 5050
+2026-03-27 15:06:35,264  INFO        Progresso: 5100/6357 (80%) - traduzioni: 5100
+2026-03-27 15:07:04,292  INFO        Progresso: 5150/6357 (81%) - traduzioni: 5150
+2026-03-27 15:08:01,285  INFO        Progresso: 5200/6357 (81%) - traduzioni: 5200
+2026-03-27 15:08:37,034  INFO        Progresso: 5250/6357 (82%) - traduzioni: 5250
+2026-03-27 15:09:24,801  INFO        Progresso: 5300/6357 (83%) - traduzioni: 5300
+2026-03-27 15:10:06,793  INFO        Progresso: 5350/6357 (84%) - traduzioni: 5350
+2026-03-27 15:10:50,884  INFO        Progresso: 5400/6357 (84%) - traduzioni: 5400
+2026-03-27 15:11:26,264  INFO        Progresso: 5450/6357 (85%) - traduzioni: 5450
+2026-03-27 15:12:10,792  INFO        Progresso: 5500/6357 (86%) - traduzioni: 5500
+2026-03-27 15:13:14,547  INFO        Progresso: 5550/6357 (87%) - traduzioni: 5550
+2026-03-27 15:15:00,665  INFO        Progresso: 5600/6357 (88%) - traduzioni: 5600
+2026-03-27 15:16:24,135  INFO        Progresso: 5650/6357 (88%) - traduzioni: 5650
+2026-03-27 15:16:47,969  WARNING   Translation failed for 'FCT fail: test power on faill, su jig non ho 3.3v e 5v a bam...': FCT fail: test power on faill, su jig non ho 3.3v e 5v a bamco alinetata è pass --> No translation was found using the current translator. Try another translator?
+2026-03-27 15:17:16,190  INFO        Progresso: 5700/6357 (89%) - traduzioni: 5700
+2026-03-27 15:18:00,374  INFO        Progresso: 5750/6357 (90%) - traduzioni: 5750
+2026-03-27 15:19:05,028  INFO        Progresso: 5800/6357 (91%) - traduzioni: 5800
+2026-03-27 15:20:00,101  INFO        Progresso: 5850/6357 (92%) - traduzioni: 5850
+2026-03-27 15:21:10,083  INFO        Progresso: 5900/6357 (92%) - traduzioni: 5900
+2026-03-27 15:22:35,239  INFO        Progresso: 5950/6357 (93%) - traduzioni: 5950
+2026-03-27 15:23:23,159  INFO        Progresso: 6000/6357 (94%) - traduzioni: 6000
+2026-03-27 15:24:26,779  INFO        Progresso: 6050/6357 (95%) - traduzioni: 6050
+2026-03-27 15:25:15,073  INFO        Progresso: 6100/6357 (95%) - traduzioni: 6100
+2026-03-27 15:26:30,854  INFO        Progresso: 6150/6357 (96%) - traduzioni: 6150
+2026-03-27 15:27:22,058  INFO        Progresso: 6200/6357 (97%) - traduzioni: 6200
+2026-03-27 15:28:14,838  INFO        Progresso: 6250/6357 (98%) - traduzioni: 6250
+2026-03-27 15:29:22,891  INFO        Progresso: 6300/6357 (99%) - traduzioni: 6300
+2026-03-27 15:30:32,628  INFO        Progresso: 6350/6357 (99%) - traduzioni: 6350
+2026-03-27 15:30:32,733  INFO      ============================================================
+2026-03-27 15:30:32,734  INFO      Import completato!
+2026-03-27 15:30:32,734  INFO        Inseriti:  6357
+2026-03-27 15:30:32,734  INFO        Errori:    0
+2026-03-27 15:30:32,735  INFO        Traduzioni: 6357
+2026-03-27 15:30:32,735  INFO      ============================================================

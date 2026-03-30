@@ -539,11 +539,11 @@ class TranslationDialog(tk.Toplevel):
             self.db.conn.commit()
             
             self.result = True
-            messagebox.showinfo(
-                self.lang.get('success', 'Successo'),
-                self.lang.get('translation_saved', 'Traduzione salvata con successo'),
-                parent=self
-            )
+            # messagebox.showinfo(
+            #     self.lang.get('success', 'Successo'),
+            #     self.lang.get('translation_saved', 'Traduzione salvata con successo'),
+            #     parent=self
+            # )
             self.destroy()
             
         except Exception as e:

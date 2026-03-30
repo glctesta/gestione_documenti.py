@@ -1,0 +1,376 @@
+Total Rows: 6357, Total Cols: 46
+
+=== COLUMNS ===
+[ 0] Item                                          dtype=int64      non_null= 6357 unique=17
+[ 1] Id. scheda                                    dtype=int64      non_null= 6357 unique=5180
+[ 2] Stato                                         dtype=object     non_null= 6357 unique=3
+[ 3] N° ordine                                     dtype=object     non_null= 6357 unique=144
+[ 4] Riga ordine                                   dtype=int64      non_null= 6357 unique=13
+[ 5] Quantità                                      dtype=int64      non_null= 6357 unique=1
+[ 6] Serial number                                 dtype=object     non_null= 6357 unique=4936
+[ 7] Codice parte cliente                          dtype=object     non_null= 4948 unique=76
+[ 8] Codice produttore                             dtype=float64    non_null=    0 unique=0
+[ 9] Sett. prod.                                   dtype=object     non_null= 6357 unique=314
+[10] Revisione                                     dtype=float64    non_null=    0 unique=0
+[11] Descrizione guasto                            dtype=object     non_null= 6355 unique=2309
+[12] N° doc. cliente                               dtype=object     non_null= 6352 unique=138
+[13] Data doc. cliente                             dtype=datetime64[ns] non_null= 6340 unique=129
+[14] Provenienza                                   dtype=object     non_null= 6185 unique=3
+[15] Operatore                                     dtype=object     non_null= 6357 unique=12
+[16] Nuovo serial number                           dtype=object     non_null=  245 unique=177
+[17] Codice causa guasto                           dtype=object     non_null= 6357 unique=4
+[18] Causa guasto                                  dtype=object     non_null= 6357 unique=4
+[19] Descrizione parte                             dtype=object     non_null= 6357 unique=102
+[20] Tipo garanzia                                 dtype=object     non_null= 6357 unique=3
+[21] Tempo rip.                                    dtype=int64      non_null= 6357 unique=21
+[22] Prezzo                                        dtype=int64      non_null= 6357 unique=1
+[23] Data chiusura                                 dtype=datetime64[ns] non_null= 6357 unique=424
+[24] Tipo ordine                                   dtype=object     non_null= 6357 unique=2
+[25] Data ordine                                   dtype=datetime64[ns] non_null= 6357 unique=144
+[26] Codice cliente                                dtype=int64      non_null= 6357 unique=5
+[27] Cliente                                       dtype=object     non_null= 6357 unique=5
+[28] Codice parte                                  dtype=object     non_null= 6357 unique=102
+[29] Causale doc.                                  dtype=object     non_null= 6340 unique=3
+[30] Sito prod.                                    dtype=object     non_null= 6357 unique=5
+[31] RMA                                           dtype=object     non_null= 6357 unique=144
+[32] Sito master                                   dtype=object     non_null= 6357 unique=1
+[33] Reference                                     dtype=object     non_null= 3944 unique=640
+[34] Tipo guasto                                   dtype=object     non_null= 4673 unique=10
+[35] Dettaglio tipo guasto                         dtype=object     non_null= 4673 unique=21
+[36] Note guasto                                   dtype=object     non_null= 2294 unique=663
+[37] Cod. tipo guasto                              dtype=object     non_null= 4673 unique=10
+[38] Cod. dett. tipo guasto                        dtype=object     non_null= 4673 unique=22
+[39] Assembly                                      dtype=object     non_null= 4073 unique=133
+[40] Costo                                         dtype=float64    non_null= 6357 unique=697
+[41] Data consegna                                 dtype=datetime64[ns] non_null= 4946 unique=496
+[42] Già riparata                                  dtype=bool       non_null= 6357 unique=2
+[43] Resp. processo                                dtype=object     non_null= 1695 unique=17
+[44] Data test                                     dtype=object     non_null= 6357 unique=473
+[45] Tipo test                                     dtype=object     non_null= 4697 unique=3
+
+=== FIRST 5 ROWS (transposed) ===
+
+--- Row 0 ---
+  Item: 1
+  Id. scheda: 81434
+  Stato: 'Spedita'
+  N° ordine: 'ICR002450'
+  Riga ordine: 10
+  Quantità: 1
+  Serial number: '50602TI49198920'
+  Codice parte cliente: '835250602'
+  Codice produttore: nan
+  Sett. prod.: '2019/49'
+  Revisione: nan
+  Descrizione guasto: 'esce scritta  den x ( manca sportellino )\r\nnessun difetto evidente'
+  N° doc. cliente: 'DDT n. 20100046 del 27/02/20'
+  Data doc. cliente: Timestamp('2020-02-27 00:00:00')
+  Provenienza: 'Supply line'
+  Operatore: 'BRIGNOLI'
+  Nuovo serial number: nan
+  Codice causa guasto: 'FC03'
+  Causa guasto: 'sconosciuto'
+  Descrizione parte: 'PCBA  Macchina 9100 NECTA con display AMPIRE 3mm REV. C'
+  Tipo garanzia: 'Warranty YES'
+  Tempo rip.: 30
+  Prezzo: 0
+  Data chiusura: Timestamp('2021-09-27 00:00:00')
+  Tipo ordine: 'CR'
+  Data ordine: Timestamp('2020-03-04 08:03:59')
+  Codice cliente: 120127
+  Cliente: 'EVOCA SPA'
+  Codice parte: 'PFZA+T10AM3-9100/C'
+  Causale doc.: 'Warranty'
+  Sito prod.: 'Eutron'
+  RMA: 'ICR002450'
+  Sito master: 'Eutron'
+  Reference: 'SPORTELLODX'
+  Tipo guasto: 'problema di componente'
+  Dettaglio tipo guasto: 'componente mancante'
+  Note guasto: 'Andata in dave per analisi'
+  Cod. tipo guasto: 'CC03'
+  Cod. dett. tipo guasto: 'FCMP01'
+  Assembly: 'SLZA+T10AM3-9100/C'
+  Costo: 0.2298
+  Data consegna: Timestamp('2020-01-07 00:00:00')
+  Già riparata: False
+  Resp. processo: nan
+  Data test: '2020-05-18'
+  Tipo test: 'Visual Inspection'
+
+--- Row 1 ---
+  Item: 1
+  Id. scheda: 82701
+  Stato: 'Spedita'
+  N° ordine: 'ICR002487'
+  Riga ordine: 1
+  Quantità: 1
+  Serial number: '50602TI03209926'
+  Codice parte cliente: '835250602'
+  Codice produttore: nan
+  Sett. prod.: '2020/03'
+  Revisione: nan
+  Descrizione guasto: 'esce scritta  den x\r\nnessun difetto evidente'
+  N° doc. cliente: 'DDT n. 20100082 del 04/06/20'
+  Data doc. cliente: Timestamp('2020-06-04 00:00:00')
+  Provenienza: 'Supply line'
+  Operatore: 'BRIGNOLI'
+  Nuovo serial number: nan
+  Codice causa guasto: 'FC04'
+  Causa guasto: 'nessun difetto (NDF)'
+  Descrizione parte: 'PCBA  Macchina 9100 NECTA con display AMPIRE 3mm REV. C'
+  Tipo garanzia: 'Warranty YES'
+  Tempo rip.: 30
+  Prezzo: 0
+  Data chiusura: Timestamp('2021-09-27 00:00:00')
+  Tipo ordine: 'CR'
+  Data ordine: Timestamp('2020-06-09 14:47:09')
+  Codice cliente: 120127
+  Cliente: 'EVOCA SPA'
+  Codice parte: 'PFZA+T10AM3-9100/C'
+  Causale doc.: 'Warranty'
+  Sito prod.: 'Eutron'
+  RMA: 'ICR002487'
+  Sito master: 'Eutron'
+  Reference: nan
+  Tipo guasto: nan
+  Dettaglio tipo guasto: nan
+  Note guasto: 'Analizzate da Dave'
+  Cod. tipo guasto: nan
+  Cod. dett. tipo guasto: nan
+  Assembly: nan
+  Costo: 0.0
+  Data consegna: Timestamp('2020-06-09 00:00:00')
+  Già riparata: False
+  Resp. processo: nan
+  Data test: '2021-09-27'
+  Tipo test: nan
+
+--- Row 2 ---
+  Item: 1
+  Id. scheda: 84918
+  Stato: 'Spedita'
+  N° ordine: 'ICR002549'
+  Riga ordine: 3
+  Quantità: 1
+  Serial number: '64801TI09952'
+  Codice parte cliente: '673564801'
+  Codice produttore: nan
+  Sett. prod.: '2020/26'
+  Revisione: nan
+  Descrizione guasto: 'non girano motodosatori\r\nnessun difetto evidente'
+  N° doc. cliente: 'DDT N. 20100151 DEL 22/09/2020'
+  Data doc. cliente: Timestamp('2020-09-22 00:00:00')
+  Provenienza: 'Supply line'
+  Operatore: 'ZANOLI'
+  Nuovo serial number: nan
+  Codice causa guasto: 'FC04'
+  Causa guasto: 'nessun difetto (NDF)'
+  Descrizione parte: 'PCBA  Click Click Board       6735/648/01 versione ridotta'
+  Tipo garanzia: 'Warranty NO'
+  Tempo rip.: 15
+  Prezzo: 0
+  Data chiusura: Timestamp('2021-02-02 00:00:00')
+  Tipo ordine: 'CR'
+  Data ordine: Timestamp('2020-10-13 11:36:53')
+  Codice cliente: 120127
+  Cliente: 'EVOCA SPA'
+  Codice parte: 'PFZA+64801CC'
+  Causale doc.: 'Warranty'
+  Sito prod.: 'Eutron'
+  RMA: 'ICR002549'
+  Sito master: 'Eutron'
+  Reference: nan
+  Tipo guasto: nan
+  Dettaglio tipo guasto: nan
+  Note guasto: nan
+  Cod. tipo guasto: nan
+  Cod. dett. tipo guasto: nan
+  Assembly: nan
+  Costo: 0.0
+  Data consegna: Timestamp('2020-07-14 00:00:00')
+  Già riparata: False
+  Resp. processo: nan
+  Data test: '2021-02-02'
+  Tipo test: nan
+
+--- Row 3 ---
+  Item: 1
+  Id. scheda: 84919
+  Stato: 'Spedita'
+  N° ordine: 'ICR002549'
+  Riga ordine: 3
+  Quantità: 1
+  Serial number: '64801TI10876'
+  Codice parte cliente: '673564801'
+  Codice produttore: nan
+  Sett. prod.: '2020/31'
+  Revisione: nan
+  Descrizione guasto: 'connettore J10 corto\r\nnessun difetto evidente'
+  N° doc. cliente: 'DDT N. 20100151 DEL 22/09/2020'
+  Data doc. cliente: Timestamp('2020-09-22 00:00:00')
+  Provenienza: 'Supply line'
+  Operatore: 'ZANOLI'
+  Nuovo serial number: nan
+  Codice causa guasto: 'FC01'
+  Causa guasto: 'processo fornitore'
+  Descrizione parte: 'PCBA  Click Click Board       6735/648/01 versione ridotta'
+  Tipo garanzia: 'Warranty YES'
+  Tempo rip.: 20
+  Prezzo: 0
+  Data chiusura: Timestamp('2021-02-03 00:00:00')
+  Tipo ordine: 'CR'
+  Data ordine: Timestamp('2020-10-13 11:36:53')
+  Codice cliente: 120127
+  Cliente: 'EVOCA SPA'
+  Codice parte: 'PFZA+64801CC'
+  Causale doc.: 'Warranty'
+  Sito prod.: 'Eutron'
+  RMA: 'ICR002549'
+  Sito master: 'Eutron'
+  Reference: 'J10'
+  Tipo guasto: 'problema di componente'
+  Dettaglio tipo guasto: 'componente errato'
+  Note guasto: nan
+  Cod. tipo guasto: 'CC03'
+  Cod. dett. tipo guasto: 'FCMP05'
+  Assembly: 'SLZA+64801CC'
+  Costo: 0.0899
+  Data consegna: Timestamp('2020-07-14 00:00:00')
+  Già riparata: False
+  Resp. processo: 'PTH 170067 (Reset)'
+  Data test: '2021-02-03'
+  Tipo test: 'Visual Inspection'
+
+--- Row 4 ---
+  Item: 1
+  Id. scheda: 84920
+  Stato: 'Spedita'
+  N° ordine: 'ICR002549'
+  Riga ordine: 3
+  Quantità: 1
+  Serial number: '64801TI09780'
+  Codice parte cliente: '673564801'
+  Codice produttore: nan
+  Sett. prod.: '2020/26'
+  Revisione: nan
+  Descrizione guasto: 'connettore J12 corto\r\nnessun difetto evidente'
+  N° doc. cliente: 'DDT N. 20100151 DEL 22/09/2020'
+  Data doc. cliente: Timestamp('2020-09-22 00:00:00')
+  Provenienza: 'Supply line'
+  Operatore: 'ZANOLI'
+  Nuovo serial number: nan
+  Codice causa guasto: 'FC01'
+  Causa guasto: 'processo fornitore'
+  Descrizione parte: 'PCBA  Click Click Board       6735/648/01 versione ridotta'
+  Tipo garanzia: 'Warranty YES'
+  Tempo rip.: 20
+  Prezzo: 0
+  Data chiusura: Timestamp('2021-02-03 00:00:00')
+  Tipo ordine: 'CR'
+  Data ordine: Timestamp('2020-10-13 11:36:53')
+  Codice cliente: 120127
+  Cliente: 'EVOCA SPA'
+  Codice parte: 'PFZA+64801CC'
+  Causale doc.: 'Warranty'
+  Sito prod.: 'Eutron'
+  RMA: 'ICR002549'
+  Sito master: 'Eutron'
+  Reference: 'J12'
+  Tipo guasto: 'problema di componente'
+  Dettaglio tipo guasto: 'componente errato'
+  Note guasto: nan
+  Cod. tipo guasto: 'CC03'
+  Cod. dett. tipo guasto: 'FCMP05'
+  Assembly: 'SLZA+64801CC'
+  Costo: 0.1227
+  Data consegna: Timestamp('2020-07-14 00:00:00')
+  Già riparata: False
+  Resp. processo: 'PTH 170067 (Reset)'
+  Data test: '2021-02-03'
+  Tipo test: 'Visual Inspection'
+
+=== UNIQUE VALUES FOR KEY COLUMNS ===
+
+--- Item (17 unique) ---
+  1
+  10
+  11
+  12
+  13
+  14
+  15
+  16
+  17
+  2
+  3
+  4
+  5
+  6
+  7
+  8
+  9
+
+--- Cliente (5 unique) ---
+  ELECTROLUX PROFESSIONAL AG
+  ELECTROLUX PROFESSIONAL SPA
+  EVOCA MANUFACTURING ROMANIA SRL
+  EVOCA SPA
+  Electrolux (Shanghai ) Professional
+
+--- Codice cliente (5 unique) ---
+  120127
+  120128
+  260
+  50101
+  50108
+
+--- Già riparata (2 unique) ---
+  False
+  True
+
+--- Resp. processo (17 unique) ---
+  PTH 035000 (Colonna)
+  PTH 040037 (Dytron)
+  PTH 110033 (Megatronic)
+  PTH 110040 (Meba)
+  PTH 170067 (Reset)
+  PTH Eutron Italy
+  PTH Eutron Kunshan
+  SMT 040037 (Dytron)
+  SMT 110033 (Megatronic)
+  SMT 110040 (Meba)
+  SMT 170067 (Reset)
+  SMT Eutron Italy
+  SMT Eutron Kunshan
+  TEST 110040 (Meba)
+  TEST 170067 (Reset)
+  TEST Eutron Italy
+  TEST Eutron Kunshan
+
+--- Sito prod. (5 unique) ---
+  Eu. Kunshan
+  Eutron
+  Meba
+  Megatronic
+  Vandewiele Romania
+
+--- Tipo test (3 unique) ---
+  Test FCT
+  Test ICT
+  Visual Inspection
+
+=== STATISTICS ===
+Date range: 
+  Data doc. cliente: 2020-02-27 00:00:00 to 2102-06-18 00:00:00 (6340 values)
+  Data chiusura: 2021-01-26 00:00:00 to 2026-02-05 00:00:00 (6357 values)
+  Data ordine: 2020-03-04 08:03:59 to 2026-01-22 13:37:53 (6357 values)
+  Data consegna: 1900-01-01 00:00:00 to 2025-12-11 00:00:00 (4946 values)
+  Data test: 2020-05-18 00:00:00 to 2026-02-05 00:00:00 (6357 values)
+
+Rows by Cliente:
+  EVOCA SPA: 5442
+  ELECTROLUX PROFESSIONAL SPA: 663
+  EVOCA MANUFACTURING ROMANIA SRL: 237
+  ELECTROLUX PROFESSIONAL AG: 14
+  Electrolux (Shanghai ) Professional: 1

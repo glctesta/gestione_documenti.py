@@ -4,9 +4,10 @@ Form per l'autorizzazione delle richieste di straordinario
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox
-from datetime import datetime
+from tkinter import ttk, messagebox, filedialog
+from datetime import datetime, timedelta
 import logging
+from tkcalendar import DateEntry
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ class OvertimeApprovalWindow(tk.Toplevel):
         filter_frame = ttk.LabelFrame(main_frame, text=self.lang.get('filters', 'Filtri'), padding="10")
         filter_frame.pack(fill=tk.X, pady=5)
         
+        # Stato
         ttk.Label(filter_frame, text=self.lang.get('status', 'Stato:')).grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
         self.status_var = tk.StringVar(value='Pending')
         status_combo = ttk.Combobox(
@@ -68,18 +70,44 @@ class OvertimeApprovalWindow(tk.Toplevel):
         status_combo.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
         status_combo.bind('<<ComboboxSelected>>', lambda e: self._load_pending_requests())
         
+        # Data Da
+        ttk.Label(filter_frame, text=self.lang.get('date_from', 'Da:')).grid(row=0, column=2, padx=(20, 5), pady=5, sticky=tk.W)
+        self.date_from = DateEntry(
+            filter_frame,
+            width=12,
+            date_pattern='dd/mm/yyyy',
+            background='darkblue',
+            foreground='white',
+            borderwidth=2
+        )
+        self.date_from.set_date(datetime.now() - timedelta(days=30))
+        self.date_from.grid(row=0, column=3, padx=5, pady=5, sticky=tk.W)
+        
+        # Data A
+        ttk.Label(filter_frame, text=self.lang.get('date_to', 'A:')).grid(row=0, column=4, padx=(10, 5), pady=5, sticky=tk.W)
+        self.date_to = DateEntry(
+            filter_frame,
+            width=12,
+            date_pattern='dd/mm/yyyy',
+            background='darkblue',
+            foreground='white',
+            borderwidth=2
+        )
+        self.date_to.set_date(datetime.now())
+        self.date_to.grid(row=0, column=5, padx=5, pady=5, sticky=tk.W)
+        
         ttk.Button(
             filter_frame,
             text=self.lang.get('refresh', 'Aggiorna'),
             command=self._load_pending_requests
-        ).grid(row=0, column=2, padx=5, pady=5)
+        ).grid(row=0, column=6, padx=10, pady=5)
         
         # === LISTA RICHIESTE ===
         list_frame = ttk.LabelFrame(main_frame, text=self.lang.get('requests_list', 'Richieste'), padding="10")
         list_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         
         columns = ('id', 'number', 'date', 'supervisor', 'employees', 'total_hours', 'status')
-        self.tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=15)
+        self.tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=15, selectmode='extended')
         
         self.tree.heading('id', text='ID')
         self.tree.heading('number', text=self.lang.get('request_number', 'Numero'))
@@ -135,10 +163,129 @@ class OvertimeApprovalWindow(tk.Toplevel):
 
         ttk.Button(
             action_frame,
+            text=self.lang.get('generate_report', '📊 Genera Rapporto'),
+            command=self._export_filtered_to_excel
+        ).pack(side=tk.RIGHT, padx=5)
+
+        ttk.Button(
+            action_frame,
             text=self.lang.get('close', 'Chiudi'),
             command=self.destroy
         ).pack(side=tk.RIGHT, padx=5)
     
+    def _export_filtered_to_excel(self):
+        """Esporta i dati filtrati del treeview in un file Excel formattato."""
+        items = self.tree.get_children()
+        if not items:
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('no_data_to_export', 'Nessun dato da esportare'),
+                parent=self
+            )
+            return
+
+        import os
+
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        except ImportError:
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                "Libreria openpyxl non installata.\nInstallare con: pip install openpyxl",
+                parent=self
+            )
+            return
+
+        try:
+            # Prepara path file
+            output_dir = r"C:\Temp"
+            os.makedirs(output_dir, exist_ok=True)
+
+            date_from_str = self.date_from.get_date().strftime('%d-%m-%Y')
+            date_to_str = self.date_to.get_date().strftime('%d-%m-%Y')
+            status = self.status_var.get()
+            filename = f"OvertimeApproval_{status}_{date_from_str}_to_{date_to_str}.xlsx"
+            file_path = os.path.join(output_dir, filename)
+
+            # Se file bloccato, aggiungi timestamp
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path, 'ab'):
+                        pass
+                except PermissionError:
+                    ts = datetime.now().strftime('%H%M%S')
+                    filename = f"OvertimeApproval_{status}_{date_from_str}_to_{date_to_str}_{ts}.xlsx"
+                    file_path = os.path.join(output_dir, filename)
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Autorizzazioni Straordinari"
+
+            # Stili
+            header_font = Font(bold=True, color="FFFFFF", size=10)
+            header_fill = PatternFill(start_color="2E5090", end_color="2E5090", fill_type="solid")
+            header_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            cell_align = Alignment(vertical='top', wrap_text=True)
+            thin_border = Border(
+                left=Side(style='thin'), right=Side(style='thin'),
+                top=Side(style='thin'), bottom=Side(style='thin')
+            )
+
+            # Intestazioni
+            headers = ['ID', 'Numero', 'Data', 'Supervisore', 'N. Dipendenti', 'Ore Totali', 'Stato']
+            col_widths = [8, 15, 18, 25, 14, 12, 12]
+
+            for col, header in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col, value=header)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = header_align
+                cell.border = thin_border
+                ws.column_dimensions[cell.column_letter].width = col_widths[col - 1]
+
+            # Dati dal treeview
+            for row_idx, item in enumerate(items, 2):
+                values = self.tree.item(item)['values']
+                for col_idx, value in enumerate(values, 1):
+                    cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                    cell.alignment = cell_align
+                    cell.border = thin_border
+
+            last_row = len(items) + 1
+
+            # Riga totale
+            total_row = last_row + 1
+            ws.cell(row=total_row, column=4, value="TOTALE:").font = Font(bold=True, size=10)
+            sum_cell = ws.cell(row=total_row, column=6, value=f"=SUM(F2:F{last_row})")
+            sum_cell.font = Font(bold=True, size=10)
+            sum_cell.alignment = Alignment(horizontal='center')
+
+            # Titolo informativo
+            ws.cell(row=total_row + 2, column=1,
+                    value=f"Periodo: {date_from_str} - {date_to_str} | Stato: {status}")
+
+            # Auto-filtro
+            ws.auto_filter.ref = f"A1:G{last_row}"
+
+            wb.save(file_path)
+
+            open_file = messagebox.askyesno(
+                self.lang.get('success', 'Successo'),
+                f"File Excel salvato:\n{file_path}\n\nVuoi aprire il file?",
+                parent=self
+            )
+            if open_file:
+                os.startfile(file_path)
+
+        except Exception as e:
+            logger.error(f"Errore export Excel: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Errore export Excel:\n{str(e)}",
+                parent=self
+            )
+
     def _load_pending_requests(self):
         """Carica le richieste in attesa di approvazione, filtrate per gerarchia."""
         # Pulisci treeview
@@ -146,6 +293,10 @@ class OvertimeApprovalWindow(tk.Toplevel):
             self.tree.delete(item)
 
         status_filter = self.status_var.get()
+        
+        # Recupera date dal filtro
+        date_from = self.date_from.get_date().strftime('%Y-%m-%d')
+        date_to = self.date_to.get_date().strftime('%Y-%m-%d 23:59:59')
 
         # Determina filtro gerarchico sui dipendenti
         subordinate_filter = ""
@@ -170,6 +321,11 @@ class OvertimeApprovalWindow(tk.Toplevel):
                     logger.info(f"Nessun subalterno per ID {self.user_id}, lista richieste vuota")
                     return
 
+        # Filtro ApprovelDate: solo Pending richiede IS NULL
+        approval_date_filter = ""
+        if status_filter == 'Pending':
+            approval_date_filter = "AND s.ApprovelDate IS NULL"
+
         # Query per recuperare richieste
         query = f"""
         WITH StoryAggregated AS (
@@ -186,7 +342,8 @@ class OvertimeApprovalWindow(tk.Toplevel):
         MAX(ApprovedId) AS ApprovedId,
         MAX(CAST(Approved AS INT)) AS Approved
     FROM ResetServices.dbo.ExtraTimeApprovalStory
-    WHERE Datesys >'2026-02-01'
+    WHERE Datesys >= ?
+      AND Datesys <= ?
     GROUP BY ExtraHourApprovalId, ApprovelDate
 )
 SELECT
@@ -204,14 +361,15 @@ LEFT JOIN resetservices.dbo.tbuserkey u
     ON a.IdChief = u.idanga
 LEFT JOIN ResetServices.dbo.TbRegistro r
     ON a.IdRegistro = r.Contatore
-WHERE s.ApprovelDate IS NULL
-  AND a.DateSys > '2026-02-01'
+WHERE a.DateSys >= ? AND a.DateSys <= ?
+  {approval_date_filter}
   {subordinate_filter}
         """
 
-        if status_filter == 'Pending':
-            query += " AND s.ApprovedId IS NULL"
-        elif status_filter == 'Approved':
+        # Parametri: date_from, date_to per CTE + date_from, date_to per WHERE + eventuali subordinate IDs
+        query_params = [date_from, date_to, date_from, date_to] + filter_ids
+
+        if status_filter == 'Approved':
             query += " AND s.Approved = 1"
         elif status_filter == 'Rejected':
             query += " AND s.Approved = 0 AND s.ApprovedId IS NOT NULL"
@@ -222,7 +380,7 @@ WHERE s.ApprovelDate IS NULL
 
         try:
             cursor = self.db.conn.cursor()
-            cursor.execute(query, filter_ids)
+            cursor.execute(query, query_params)
             results = cursor.fetchall()
             cursor.close()
 
@@ -263,7 +421,13 @@ WHERE s.ApprovelDate IS NULL
         RequestDetailsWindow(self, self.db, self.lang, request_id)
     
     def _approve_or_reject(self, approve):
-        """Approva o rifiuta la richiesta selezionata."""
+        """Approva o rifiuta le richieste selezionate (supporta selezione multipla).
+        
+        Ogni richiesta viene elaborata singolarmente:
+        - DB update individuale
+        - Generazione PDF/Excel individuale
+        - Invio email individuale
+        """
         selected = self.tree.selection()
         if not selected:
             messagebox.showwarning(
@@ -273,127 +437,165 @@ WHERE s.ApprovelDate IS NULL
             )
             return
         
-        request_id = self.tree.item(selected[0])['values'][0]
-        request_number = self.tree.item(selected[0])['values'][1]
         action = 'approvare' if approve else 'rifiutare'
+        count = len(selected)
         
-        # Conferma
+        # Conferma unica per tutte le richieste selezionate
+        if count == 1:
+            confirm_msg = self.lang.get('confirm_action', f'Confermare {action} la richiesta?')
+        else:
+            confirm_msg = self.lang.get(
+                'confirm_action_multiple',
+                f'Confermare {action} {count} richieste selezionate?'
+            )
+        
         confirm = messagebox.askyesno(
             self.lang.get('confirm', 'Conferma'),
-            self.lang.get('confirm_action', f'Confermare {action} la richiesta?'),
+            confirm_msg,
             parent=self
         )
         
         if not confirm:
             return
         
-        # Aggiorna database
-        try:
-            # Recupera IdChief per inviare email
-            chief_query = """
-            SELECT IdChief 
-            FROM ResetServices.dbo.ExtraTimeApproval 
-            WHERE ExtraHourApprovalId = ?
-            """
-            chief_result = self.db.fetch_one(chief_query, (request_id,))
-            requester_id = chief_result[0] if chief_result else None
+        # Elabora ogni richiesta singolarmente
+        success_count = 0
+        error_list = []
+        
+        for item in selected:
+            request_id = self.tree.item(item)['values'][0]
+            request_number = self.tree.item(item)['values'][1]
             
-            cursor = self.db.conn.cursor()
-            
-            # Se approvato, chiama SP Registro per ottenere ID approvazione
-            approval_id = None
-            if approve:
-                from datetime import datetime
-                registro_query = """
-                EXEC ResetServices.dbo.Registro 
-                    @tipo=192, 
-                    @anno=?, 
-                    @data=?, 
-                    @operatore=?, 
-                    @obj=?, 
-                    @chichiama=0
-                """
-                
-                cursor.execute(
-                    registro_query,
-                    (datetime.now().year, datetime.now().strftime('%Y-%m-%d'), self.user_id, request_id)
-                )
-                
-                # Recupera il risultato della SP
-                result = cursor.fetchone()
-                if result:
-                    approval_id = result[0]
-                    logger.info(f"Registro SP returned approval_id: {approval_id}")
-                else:
-                    logger.warning("Registro SP did not return a value")
-                    approval_id = self.user_id  # Fallback
-            
-            # Aggiorna stato approvazione
-            update_query = """
-            UPDATE ResetServices.dbo.ExtraTimeApprovalStory
-            SET ApprovedId = ?,
-                Approved = ?,
-                ApprovelDate = GETDATE()
-            WHERE ExtraHourApprovalId = ?
-            """
-            
-            cursor.execute(update_query, (approval_id if approve else self.user_id, 1 if approve else 0, request_id))
-            self.db.conn.commit()
-            cursor.close()
-            
-            # Invia email di notifica al richiedente
-            if requester_id:
-                from .overtime_manager import OvertimeManager
-                manager = OvertimeManager(self.db)
-                extra_attachments = []
-
-                # Genera PDF di conferma approvazione (solo se approvato)
-                if approve:
-                    approval_pdf = manager.generate_approval_confirmation_pdf(
-                        request_id=request_id,
-                        approver_name=self.user_name
-                    )
-                    if approval_pdf:
-                        logger.info(f"Approval confirmation PDF generated: {approval_pdf}")
-                        extra_attachments.append(approval_pdf)
-
-                    # Genera Excel con lista dipendenti, ore e totale mensile
-                    approval_excel = manager.generate_approval_excel(request_id=request_id)
-                    if approval_excel:
-                        logger.info(f"Approval Excel generated: {approval_excel}")
-                        extra_attachments.append(approval_excel)
-
-                    # Genera PDF foglio firma dipendenti (rumeno)
-                    signature_pdf = manager.generate_employee_signature_pdf(request_id=request_id)
-                    if signature_pdf:
-                        logger.info(f"Employee signature PDF generated: {signature_pdf}")
-                        extra_attachments.append(signature_pdf)
-
-                manager.send_approval_notification(
-                    request_id=request_id,
-                    request_number=request_number,
-                    requester_id=requester_id,
-                    approved=approve,
-                    approver_name=self.user_name,
-                    extra_attachments=extra_attachments if extra_attachments else None
-                )
-            
-            messagebox.showinfo(
-                self.lang.get('success', 'Successo'),
-                self.lang.get('request_updated', 'Richiesta aggiornata con successo'),
+            try:
+                self._process_single_approval(request_id, request_number, approve)
+                success_count += 1
+            except Exception as e:
+                logger.error(f"Errore elaborazione richiesta {request_number}: {e}", exc_info=True)
+                error_list.append(f"{request_number}: {str(e)}")
+        
+        # Riepilogo finale
+        if error_list:
+            error_summary = '\n'.join(error_list[:10])
+            messagebox.showwarning(
+                self.lang.get('partial_success', 'Elaborazione Parziale'),
+                f"{success_count}/{count} richieste elaborate con successo.\n\n"
+                f"Errori:\n{error_summary}",
                 parent=self
             )
+        else:
+            if count == 1:
+                messagebox.showinfo(
+                    self.lang.get('success', 'Successo'),
+                    self.lang.get('request_updated', 'Richiesta aggiornata con successo'),
+                    parent=self
+                )
+            else:
+                messagebox.showinfo(
+                    self.lang.get('success', 'Successo'),
+                    f"{count} richieste elaborate con successo.",
+                    parent=self
+                )
+        
+        # Ricarica lista
+        self._load_pending_requests()
+    
+    def _process_single_approval(self, request_id, request_number, approve):
+        """Elabora una singola approvazione/rifiuto: DB, PDF, email.
+        
+        Raises Exception se qualcosa va storto (gestita dal chiamante).
+        """
+        # Recupera IdChief per inviare email
+        chief_query = """
+        SELECT IdChief 
+        FROM ResetServices.dbo.ExtraTimeApproval 
+        WHERE ExtraHourApprovalId = ?
+        """
+        chief_result = self.db.fetch_one(chief_query, (request_id,))
+        requester_id = chief_result[0] if chief_result else None
+        
+        cursor = self.db.conn.cursor()
+        
+        # Se approvato, chiama SP Registro per ottenere ID approvazione
+        approval_id = None
+        if approve:
+            from datetime import datetime
+            registro_query = """
+            EXEC ResetServices.dbo.Registro 
+                @tipo=192, 
+                @anno=?, 
+                @data=?, 
+                @operatore=?, 
+                @obj=?, 
+                @chichiama=0
+            """
             
-            # Ricarica lista
-            self._load_pending_requests()
+            cursor.execute(
+                registro_query,
+                (datetime.now().year, datetime.now().strftime('%Y-%m-%d'), self.user_id, request_id)
+            )
             
-        except Exception as e:
+            # Recupera il risultato della SP
+            result = cursor.fetchone()
+            if result:
+                approval_id = result[0]
+                logger.info(f"Registro SP returned approval_id: {approval_id} for request {request_id}")
+            else:
+                logger.warning(f"Registro SP did not return a value for request {request_id}")
+                approval_id = self.user_id  # Fallback
+        
+        # Aggiorna stato approvazione
+        update_query = """
+        UPDATE ResetServices.dbo.ExtraTimeApprovalStory
+        SET ApprovedId = ?,
+            Approved = ?,
+            ApprovelDate = GETDATE()
+        WHERE ExtraHourApprovalId = ?
+        """
+        
+        try:
+            cursor.execute(update_query, (approval_id if approve else self.user_id, 1 if approve else 0, request_id))
+            self.db.conn.commit()
+        except Exception:
             self.db.conn.rollback()
-            logger.error(f"Errore aggiornamento richiesta: {e}", exc_info=True)
-            messagebox.showerror(
-                self.lang.get('error', 'Errore'),
-                f"Errore aggiornamento richiesta:\n{str(e)}",
-                parent=self
+            raise
+        finally:
+            cursor.close()
+        
+        # Invia email di notifica al richiedente
+        if requester_id:
+            from .overtime_manager import OvertimeManager
+            manager = OvertimeManager(self.db)
+            extra_attachments = []
+
+            # Genera PDF di conferma approvazione (solo se approvato)
+            if approve:
+                approval_pdf = manager.generate_approval_confirmation_pdf(
+                    request_id=request_id,
+                    approver_name=self.user_name
+                )
+                if approval_pdf:
+                    logger.info(f"Approval confirmation PDF generated: {approval_pdf}")
+                    extra_attachments.append(approval_pdf)
+
+                # Genera Excel con lista dipendenti, ore e totale mensile
+                approval_excel = manager.generate_approval_excel(request_id=request_id)
+                if approval_excel:
+                    logger.info(f"Approval Excel generated: {approval_excel}")
+                    extra_attachments.append(approval_excel)
+
+                # Genera PDF foglio firma dipendenti (rumeno)
+                signature_pdf = manager.generate_employee_signature_pdf(request_id=request_id)
+                if signature_pdf:
+                    logger.info(f"Employee signature PDF generated: {signature_pdf}")
+                    extra_attachments.append(signature_pdf)
+
+            manager.send_approval_notification(
+                request_id=request_id,
+                request_number=request_number,
+                requester_id=requester_id,
+                approved=approve,
+                approver_name=self.user_name,
+                extra_attachments=extra_attachments if extra_attachments else None
             )
 
     def _ask_question(self):

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Modulo per la gestione delle verifiche periodiche sui prodotti.
 Gestisce:
 - Configurazione periodicitÃ  verifiche per prodotto
@@ -887,8 +887,14 @@ class ProductVerificationWindow(tk.Toplevel):
         """
         Connette alla directory di rete e cerca un PDF con il LabelCode nel nome.
 
+        Strategia di connessione (risolve conflitti multi-credenziale):
+        1. Prova accesso diretto senza 'net use' (credenziali Windows dell'utente)
+        2. Se fallisce, disconnette eventuali connessioni conflittuali
+        3. Riconnette con le credenziali specifiche (YXLON)
+        4. Disconnette SOLO se la connessione è stata creata da noi
+
         Args:
-            ip_user_pass: Stringa "IP;USERID;PASSWORD" (IP è un percorso UNC)
+            ip_user_pass: Stringa "UNC_PATH;USERID;PASSWORD"
             label_code: Il LabelCode da cercare nel nome del file
 
         Returns:
@@ -897,6 +903,9 @@ class ProductVerificationWindow(tk.Toplevel):
                 pdf_bytes: bytes del PDF se trovato, None altrimenti
         """
         import glob
+
+        network_path = None
+        we_connected = False  # True solo se NOI abbiamo creato la connessione
 
         try:
             parts = ip_user_pass.split(';')
@@ -908,18 +917,49 @@ class ProductVerificationWindow(tk.Toplevel):
             userid = parts[1].strip()
             password = parts[2].strip()
 
-            logger.info(f"Connecting to network share: {network_path}")
+            # -----------------------------------------------------------------
+            # STEP 1: Prova accesso diretto (senza net use)
+            #         Funziona se l'utente ha già accesso con le sue credenziali
+            # -----------------------------------------------------------------
+            if os.path.isdir(network_path):
+                logger.info(f"Direct access OK to: {network_path}")
+                return self._search_xray_pdf(network_path, label_code)
 
-            # Connetti alla share di rete con 'net use'
-            connect_cmd = f'net use "{network_path}" /user:{userid} "{password}" 2>&1'
+            logger.info(f"Direct access failed, trying net use for: {network_path}")
+
+            # -----------------------------------------------------------------
+            # STEP 2: Disconnetti connessioni conflittuali allo stesso server
+            #         Windows non permette 2 connessioni allo stesso server
+            #         con credenziali diverse (errore 1219)
+            # -----------------------------------------------------------------
+            # Estrai il nome server dal path UNC (es. \\10.140.22.27 da \\10.140.22.27\share)
+            server_name = self._extract_server_from_unc(network_path)
+            if server_name:
+                self._disconnect_existing_connections(server_name)
+
+            # -----------------------------------------------------------------
+            # STEP 3: Connetti con le credenziali specifiche
+            # -----------------------------------------------------------------
+            connect_cmd = f'net use "{network_path}" /user:{userid} "{password}"'
             try:
                 result = subprocess.run(
                     connect_cmd, shell=True, capture_output=True, text=True, timeout=15
                 )
-                # Connessione OK o già connesso (errcode 0 o messaggio "already")
-                if result.returncode != 0 and 'already' not in result.stderr.lower():
-                    logger.error(f"Net use failed: {result.stderr or result.stdout}")
+                output_text = (result.stdout + result.stderr).lower()
+
+                if result.returncode == 0:
+                    we_connected = True
+                    logger.info(f"Net use connected successfully to: {network_path}")
+                elif result.returncode == 2:
+                    # Errore 2 = "already connected" su tutte le localizzazioni
+                    logger.info(f"Share already connected: {network_path}")
+                else:
+                    logger.error(
+                        f"Net use failed (rc={result.returncode}): "
+                        f"{result.stdout.strip()} {result.stderr.strip()}"
+                    )
                     return ('error', None)
+
             except subprocess.TimeoutExpired:
                 logger.error(f"Connection timeout to {network_path}")
                 return ('error', None)
@@ -927,37 +967,102 @@ class ProductVerificationWindow(tk.Toplevel):
                 logger.error(f"Connection error: {conn_err}")
                 return ('error', None)
 
-            # Cerca il file PDF con il LabelCode nel nome
-            search_pattern = os.path.join(network_path, f'*{label_code}*.pdf')
-            pdf_files = glob.glob(search_pattern)
+            # -----------------------------------------------------------------
+            # STEP 4: Verifica che il path sia ora accessibile
+            # -----------------------------------------------------------------
+            if not os.path.isdir(network_path):
+                logger.error(f"Path not accessible after net use: {network_path}")
+                return ('error', None)
 
-            if pdf_files:
-                # Prendi il primo match
-                pdf_path = pdf_files[0]
-                logger.info(f"X-Ray PDF found: {pdf_path}")
-                try:
-                    with open(pdf_path, 'rb') as f:
-                        pdf_bytes = f.read()
-                    return ('found', pdf_bytes)
-                except Exception as read_err:
-                    logger.error(f"Error reading PDF: {read_err}")
-                    return ('error', None)
-            else:
-                logger.info(f"No PDF found matching '{label_code}' in {network_path}")
-                return ('not_found', None)
+            return self._search_xray_pdf(network_path, label_code)
 
         except Exception as e:
             logger.error(f"Error in _connect_and_fetch_xray_pdf: {e}", exc_info=True)
             return ('error', None)
         finally:
-            # Disconnetti la share (best effort)
+            # Disconnetti la share SOLO se l'abbiamo connessa noi
+            if we_connected and network_path:
+                try:
+                    subprocess.run(
+                        f'net use "{network_path}" /delete /y',
+                        shell=True, capture_output=True, timeout=5
+                    )
+                    logger.info(f"Disconnected share: {network_path}")
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _extract_server_from_unc(unc_path):
+        """
+        Estrae il nome/IP del server da un percorso UNC.
+        Es: '\\\\10.140.22.27\\Share' -> '\\\\10.140.22.27'
+        """
+        # Normalizza i separatori
+        path = unc_path.replace('/', '\\')
+        # Rimuovi i \\ iniziali
+        if path.startswith('\\\\'):
+            stripped = path[2:]
+            # Il server è tutto prima del primo \
+            sep = stripped.find('\\')
+            if sep > 0:
+                return '\\\\' + stripped[:sep]
+            return '\\\\' + stripped
+        return None
+
+    @staticmethod
+    def _disconnect_existing_connections(server_name):
+        """
+        Disconnette tutte le connessioni esistenti verso un server.
+        Necessario per evitare l'errore 1219 (multiple connections).
+        """
+        try:
+            # Lista connessioni attive verso questo server
+            result = subprocess.run(
+                'net use', shell=True, capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    # Cerca righe che contengono il nome del server
+                    if server_name.lower().lstrip('\\\\') in line.lower():
+                        # Estrai il path dalla riga (seconda o terza colonna)
+                        parts = line.split()
+                        for part in parts:
+                            if part.startswith('\\\\'):
+                                logger.info(f"Disconnecting conflicting share: {part}")
+                                subprocess.run(
+                                    f'net use "{part}" /delete /y',
+                                    shell=True, capture_output=True, timeout=5
+                                )
+                                break
+        except Exception as e:
+            logger.warning(f"Error disconnecting existing connections: {e}")
+
+    @staticmethod
+    def _search_xray_pdf(network_path, label_code):
+        """
+        Cerca un PDF con il LabelCode nel nome nella directory specificata.
+
+        Returns:
+            tuple: (status, pdf_bytes)
+        """
+        import glob
+
+        search_pattern = os.path.join(network_path, f'*{label_code}*.pdf')
+        pdf_files = glob.glob(search_pattern)
+
+        if pdf_files:
+            pdf_path = pdf_files[0]
+            logger.info(f"X-Ray PDF found: {pdf_path}")
             try:
-                subprocess.run(
-                    f'net use "{network_path}" /delete /y 2>&1',
-                    shell=True, capture_output=True, timeout=5
-                )
-            except:
-                pass
+                with open(pdf_path, 'rb') as f:
+                    pdf_bytes = f.read()
+                return ('found', pdf_bytes)
+            except Exception as read_err:
+                logger.error(f"Error reading PDF: {read_err}")
+                return ('error', None)
+        else:
+            logger.info(f"No PDF found matching '{label_code}' in {network_path}")
+            return ('not_found', None)
 
     def _on_checklist_double_click(self, event):
         """Apre il documento se presente"""

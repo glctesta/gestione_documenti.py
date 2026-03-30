@@ -1,0 +1,117 @@
+=== SERIAL NUMBER PATTERNS ===
+Total: 6357
+Example SNs:
+  50602TI49198920
+  50602TI03209926
+  64801TI09952
+  64801TI10876
+  64801TI09780
+  64801TI06952
+  64801TI08301
+  64801TI08083
+  64801TI09532
+  64801TI08621
+  64801TI09549
+  64801TI10873
+  64801TI09290
+  64801TI10209
+  64801TI09706
+  64801TI10875
+  64801TI09474
+  64801TI09495
+  64801TI09233
+  64801TI09233
+
+Length distribution:
+  len=6: 236
+  len=7: 12
+  len=8: 112
+  len=9: 5
+  len=10: 28
+  len=11: 133
+  len=12: 2627
+  len=14: 46
+  len=15: 723
+  len=16: 1976
+  len=17: 26
+  len=18: 69
+  len=19: 6
+  len=21: 284
+  len=23: 1
+  len=32: 73
+
+Contains TI: 5205 / 6357 (81.9%)
+
+=== SETT. PROD. PATTERNS ===
+Examples: ['2019/49', '2020/03', '2020/26', '2020/31', '2020/26', '2020/04', '2020/20', '2020/20', '2020/26', '2020/20']
+Format: YYYY/WW
+
+=== GIA RIPARATA ===
+  False: 6045 (95.1%)
+  True: 312 (4.9%)
+
+=== OPERATORI ===
+  [1669] MALZANNI
+  [1472] BRIGNOLI
+  [1102] ZANOLI
+  [ 735] ZANOTTI
+  [ 480] Reset
+  [ 387] Meba
+  [ 318] BENELLI
+  [  72] PIROVANO
+  [  54] Rizzo
+  [  45] ALBORGHETTI
+  [  16] Yazhou Sang
+  [   7] FERRARI
+
+=== STATO ===
+  [6344] Spedita
+  [   7] Order desk
+  [   6] Spedizione
+
+=== TIPO GARANZIA ===
+  [3131] Warranty YES
+  [2806] Warranty NO
+  [ 420] Scrap
+
+=== CODICE CAUSA GUASTO ===
+  [1695] FC01
+  [1684] FC04
+  [1541] FC03
+  [1437] FC02
+
+=== COD. TIPO GUASTO ===
+  [2623] CC03
+  [ 495] CC01
+  [ 484] CC13
+  [ 401] CC10
+  [ 362] CC02
+  [ 161] CC05
+  [ 132] CC07
+  [  11] CC12
+  [   3] CC11
+  [   1] CC04
+
+=== COD. DETT. TIPO GUASTO ===
+  [1119] FCMP03
+  [ 671] FCMP04
+  [ 401] CC10
+  [ 397] FSLD01
+  [ 362] CC02
+  [ 360] FUPG02
+  [ 311] FCMP05
+  [ 209] FCMP06
+  [ 161] CC05
+  [ 150] FCMP01
+  [ 143] FCMP02
+  [ 132] CC07
+  [ 124] FUPG01
+  [  82] FSLD04
+  [  20] FCMP07
+  [  11] CC12
+  [  10] FSLD06
+  [   4] FSLD07
+  [   2] FPCB02
+  [   2] FSLD03
+  [   1] FPCB03
+  [   1] CC04

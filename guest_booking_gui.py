@@ -1091,8 +1091,9 @@ class GuestBookingWindow(tk.Toplevel):
         errors = []
         successes = []
 
-        # Crea record VisitorArrivalDetails (dati volo/arrivo)
-        arrival_detail_id = None
+        # Crea record VisitorArrivalDetails per OGNI visitatore (FK diretta)
+        # arrival_detail_ids: {guest_idx: VisitorArrivalDetailId}
+        arrival_detail_ids = {}
         try:
             arrival_date = self.arrival_date.get_date()
             departure_date = self.departure_date.get_date()
@@ -1141,6 +1142,7 @@ class GuestBookingWindow(tk.Toplevel):
                 messagebox.showwarning(
                     self.lang.get('warning', 'Attenzione'),
                     "Città aeroporto (Timisoara) non trovata nel database. Contattare l'amministratore.")
+                self._hide_progress()
                 return
 
             # DateTimeArrival = data + ora arrivo
@@ -1154,25 +1156,33 @@ class GuestBookingWindow(tk.Toplevel):
             else:
                 dt_arrival = datetime.combine(arrival_date, datetime.min.time())
 
+            dt_departure = datetime.combine(departure_date, datetime.min.time())
+
+            # Crea un record per ogni ospite del gruppo
             cursor = self.db.conn.cursor()
-            cursor.execute("""
-                INSERT INTO Employee.dbo.VisitorArrivalDetails
-                    (AirportCityId, HotelId, FlightNumber, FlightCompanyId, DateTimeArrival, DateSys, DateOut)
-                OUTPUT INSERTED.VisitorArrivalDetailId
-                VALUES (?, ?, ?, ?, ?, GETDATE(), ?)
-            """, (airport_city_id, hotel_id, flight_no or None, flight_company_id, dt_arrival,
-                  datetime.combine(departure_date, datetime.min.time())))
-            row = cursor.fetchone()
-            arrival_detail_id = row[0] if row else None
+            for guest_idx, guest in enumerate(self.guests_data):
+                visitor_id = guest.get('visitor_id')  # FK diretta da Visitors
+                cursor.execute("""
+                    INSERT INTO Employee.dbo.VisitorArrivalDetails
+                        (AirportCityId, HotelId, FlightNumber, FlightCompanyId,
+                         DateTimeArrival, DateSys, DateOut, VisitorId)
+                    OUTPUT INSERTED.VisitorArrivalDetailId
+                    VALUES (?, ?, ?, ?, ?, GETDATE(), ?, ?)
+                """, (airport_city_id, hotel_id, flight_no or None, flight_company_id,
+                      dt_arrival, dt_departure, visitor_id))
+                row = cursor.fetchone()
+                detail_id = row[0] if row else None
+                arrival_detail_ids[guest_idx] = detail_id
+                logger.info(f"Creato VisitorArrivalDetails ID={detail_id} "
+                            f"per {guest.get('guest_name','?')} (VisitorId={visitor_id})")
             self.db.conn.commit()
             cursor.close()
-            logger.info(f"Creato VisitorArrivalDetails ID={arrival_detail_id}")
         except Exception as e:
             logger.error(f"Errore creazione VisitorArrivalDetails: {e}")
             import traceback
             logger.error(traceback.format_exc())
 
-        logger.info(f"arrival_detail_id = {arrival_detail_id}")
+        logger.info(f"arrival_detail_ids = {arrival_detail_ids}")
 
         # Invia email shuttle
         if not skip_shuttle:
@@ -1186,10 +1196,13 @@ class GuestBookingWindow(tk.Toplevel):
                 try:
                     self._send_shuttle_email(shuttle)
                     successes.append('Shuttle')
-                    if arrival_detail_id:
-                        self._save_booking_record(arrival_detail_id, self._shuttle_data[shuttle][1])
-                    else:
-                        logger.warning("Shuttle: booking record NON salvato perché arrival_detail_id è None")
+                    # Salva booking record per ogni ospite
+                    shuttle_email = self._shuttle_data[shuttle][1]
+                    for gidx, detail_id in arrival_detail_ids.items():
+                        if detail_id:
+                            self._save_booking_record(detail_id, shuttle_email)
+                    if not arrival_detail_ids:
+                        logger.warning("Shuttle: booking record NON salvato perché arrival_detail_ids è vuoto")
                 except Exception as e:
                     logger.error(f"Errore invio email shuttle: {e}")
                     import traceback
@@ -1208,10 +1221,13 @@ class GuestBookingWindow(tk.Toplevel):
                 try:
                     self._send_hotel_email(hotel)
                     successes.append('Hotel')
-                    if arrival_detail_id:
-                        self._save_booking_record(arrival_detail_id, self._hotel_data[hotel][1])
-                    else:
-                        logger.warning("Hotel: booking record NON salvato perché arrival_detail_id è None")
+                    # Salva booking record per ogni ospite
+                    hotel_email = self._hotel_data[hotel][1]
+                    for gidx, detail_id in arrival_detail_ids.items():
+                        if detail_id:
+                            self._save_booking_record(detail_id, hotel_email)
+                    if not arrival_detail_ids:
+                        logger.warning("Hotel: booking record NON salvato perché arrival_detail_ids è vuoto")
                 except Exception as e:
                     logger.error(f"Errore invio email hotel: {e}")
                     import traceback
@@ -1219,10 +1235,10 @@ class GuestBookingWindow(tk.Toplevel):
                     errors.append(f"Hotel: {e}")
 
         # Invio conferma unica agli ospiti (combinata Hotel + Shuttle)
-        if successes and arrival_detail_id:
+        if successes and arrival_detail_ids:
             self.progress_label.config(text=self.lang.get('sending_guest_confirm', 'Invio conferma ospiti...'))
             self.update_idletasks()
-            self._send_guest_confirmation_email(successes, arrival_detail_id)
+            self._send_guest_confirmation_email(successes, arrival_detail_ids)
 
         # Report
         self._hide_progress()
@@ -1494,8 +1510,13 @@ class GuestBookingWindow(tk.Toplevel):
     # ================================================================
     # GUEST CONFIRMATION EMAIL
     # ================================================================
-    def _send_guest_confirmation_email(self, services, arrival_detail_id):
-        """Invia UNA email di conferma combinata (Hotel + Shuttle) a ogni ospite con le sue date."""
+    def _send_guest_confirmation_email(self, services, arrival_detail_ids):
+        """Invia UNA email di conferma combinata (Hotel + Shuttle) a ogni ospite con le sue date.
+        
+        Args:
+            services: lista servizi inviati (es. ['Shuttle', 'Hotel'])
+            arrival_detail_ids: dict {guest_idx: VisitorArrivalDetailId}
+        """
         from email_connector import EmailSender
 
         user_email = self._get_user_email()
@@ -1623,8 +1644,9 @@ class GuestBookingWindow(tk.Toplevel):
                 logger.info(f"Conferma {services_label} inviata a {guest_name} ({guest_email})")
 
                 # Salva record email ospite in VisitorBookingServiceEmails
-                if arrival_detail_id:
-                    self._save_booking_record(arrival_detail_id, guest_email)
+                guest_detail_id = arrival_detail_ids.get(guest_idx)
+                if guest_detail_id:
+                    self._save_booking_record(guest_detail_id, guest_email)
 
 
             except Exception as e:

@@ -178,6 +178,14 @@ class ProjectWindow(tk.Toplevel):
         self.export_button = ttk.Button(toolbar_row1, text=self.lang.get('btn_export_excel', 'Export Excel'), command=self._export_cost_report, state=tk.DISABLED)
         self.export_button.pack(side=tk.LEFT, padx=5)
 
+        # Bottone Budget
+        self.budget_button = ttk.Button(toolbar_row1, text=self.lang.get('btn_budget', '💰 Budget'), command=self._open_budget_window)
+        self.budget_button.pack(side=tk.LEFT, padx=5)
+
+        # Bottone Checklist NPI
+        self.checklist_button = ttk.Button(toolbar_row1, text=self.lang.get('btn_checklist', '📋 Checklist'), command=self._open_checklist_window)
+        self.checklist_button.pack(side=tk.LEFT, padx=5)
+
         # SECONDA RIGA - Filtri e checkbox
         toolbar_row2 = ttk.Frame(header_frame)
         toolbar_row2.pack(side=tk.TOP, fill=tk.X)
@@ -626,11 +634,20 @@ class ProjectWindow(tk.Toplevel):
             # Applica la logica di auto-selezione e blocco
             if not self.is_project_owner:
                 # L'utente NON è l'owner del progetto
-                if self.logged_in_user in self.owner_filter_map:
+                # Usa logged_user_id per il confronto (già risolto case-insensitive)
+                logged_user_name_in_map = None
+                if logged_user_id:
+                    # Cerca il nome nella mappa usando l'ID (evita problemi di case)
+                    for nome, sid in self.owner_filter_map.items():
+                        if sid == logged_user_id:
+                            logged_user_name_in_map = nome
+                            break
+                
+                if logged_user_name_in_map:
                     # L'utente loggato ha task assegnati, imposta il filtro su di lui
-                    self.owner_filter_var.set(self.logged_in_user)
+                    self.owner_filter_var.set(logged_user_name_in_map)
                     self.owner_filter_combo.config(state='disabled')
-                    logger.info(f"Filtro persone impostato su '{self.logged_in_user}' e bloccato (non è l'owner del progetto)")
+                    logger.info(f"Filtro persone impostato su '{logged_user_name_in_map}' (ID={logged_user_id}) e bloccato (non è l'owner del progetto)")
                 else:
                     # 🆕 L'utente loggato NON ha task assegnati → BLOCCA ACCESSO
                     messagebox.showerror(
@@ -2086,6 +2103,72 @@ class ProjectWindow(tk.Toplevel):
         except Exception as e:
             logger.error(f"Errore apertura finestra gerarchia: {e}", exc_info=True)
             messagebox.showerror("Errore", f"Impossibile aprire la finestra gerarchia:\n{e}", parent=self)
+    
+    def _open_budget_window(self):
+        """Apre la finestra di gestione budget per il progetto NPI corrente."""
+        try:
+            if not self.progetto:
+                messagebox.showwarning(
+                    self.lang.get('warning', 'Attenzione'),
+                    self.lang.get('budget_load_project_first', 'Carica prima i dati del progetto.'),
+                    parent=self
+                )
+                return
+
+            from .budget_window import BudgetWindow
+
+            project_name = ''
+            if self.progetto.prodotto:
+                project_name = f"{self.progetto.prodotto.Cliente or ''} - {self.progetto.prodotto.CodiceProdotto or ''} {self.progetto.prodotto.NomeProdotto or ''}"
+            elif self.progetto.NomeProgetto:
+                project_name = self.progetto.NomeProgetto
+
+            BudgetWindow(
+                master=self,
+                npi_manager=self.npi_manager,
+                lang=self.lang,
+                project_id=self.project_id,
+                project_name=project_name.strip(),
+                logged_in_user=self.logged_in_user
+            )
+        except Exception as e:
+            logger.error(f"Errore apertura finestra budget: {e}", exc_info=True)
+            messagebox.showerror("Errore", f"Impossibile aprire la finestra budget:\n{e}", parent=self)
+
+    def _open_checklist_window(self):
+        """Apre la finestra NPI Checklist (Summary Sheet) per il progetto corrente."""
+        try:
+            if not self.progetto:
+                messagebox.showwarning(
+                    self.lang.get('warning', 'Attenzione'),
+                    self.lang.get('cl_load_project_first', 'Carica prima i dati del progetto.'),
+                    parent=self
+                )
+                return
+
+            from .npi_checklist_window import NpiChecklistWindow
+
+            project_name = ''
+            product_code = ''
+            if self.progetto.prodotto:
+                project_name = f"{self.progetto.prodotto.Cliente or ''} - {self.progetto.prodotto.CodiceProdotto or ''} {self.progetto.prodotto.NomeProdotto or ''}"
+                product_code = self.progetto.prodotto.CodiceProdotto or ''
+            elif self.progetto.NomeProgetto:
+                project_name = self.progetto.NomeProgetto
+
+            NpiChecklistWindow(
+                parent=self,
+                npi_manager=self.npi_manager,
+                project_id=self.project_id,
+                project_name=project_name.strip(),
+                product_code=product_code,
+                logged_in_user=self.logged_in_user,
+                lang=self.lang,
+                is_owner=getattr(self, 'is_project_owner', False)
+            )
+        except Exception as e:
+            logger.error(f"Errore apertura finestra checklist: {e}", exc_info=True)
+            messagebox.showerror("Errore", f"Impossibile aprire la finestra checklist:\n{e}", parent=self)
     
     def _update_children_count(self):
         """Aggiorna il conteggio dei progetti figli."""

@@ -2280,6 +2280,178 @@ class ProjectManagementFrame(ttk.Frame):
         """Ricarica i dati dal database."""
         self._load_projects()
 
+# --- Frame per la gestione delle Categorie Budget ---
+class BudgetCategoriesFrame(ttk.Frame):
+    """Tab per gestire le categorie di budget NPI (CRUD)."""
+
+    def __init__(self, master, npi_manager, lang, **kwargs):
+        super().__init__(master, **kwargs)
+        self.npi_manager = npi_manager
+        self.lang = lang
+        self.selected_id = None
+        self.pack(fill=tk.BOTH, expand=True)
+
+        paned = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Lista categorie
+        list_frame = ttk.Frame(paned, padding=10)
+        paned.add(list_frame, weight=1)
+
+        cols = (self.lang.get('col_id', 'ID'), self.lang.get('budget_cat_name', 'Nome Categoria'))
+        self.tree = ttk.Treeview(list_frame, columns=cols, show='headings', selectmode='browse')
+        for col in cols:
+            self.tree.heading(col, text=col)
+        self.tree.column(cols[0], width=50)
+        self.tree.column(cols[1], width=250)
+        self.tree.pack(fill=tk.BOTH, expand=True)
+        self.tree.bind('<<TreeviewSelect>>', self._on_select)
+
+        # Checkbox mostra anche le eliminate
+        self.show_deleted_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(list_frame, text=self.lang.get('budget_cat_show_deleted', 'Mostra eliminate'),
+                        variable=self.show_deleted_var, command=self._load_data).pack(anchor='w', pady=5)
+
+        # Form
+        form_frame = ttk.LabelFrame(paned, text=self.lang.get('budget_cat_detail', 'Dettaglio Categoria'), padding=10)
+        paned.add(form_frame, weight=1)
+
+        ttk.Label(form_frame, text=self.lang.get('budget_cat_name', 'Nome Categoria:')).grid(
+            row=0, column=0, sticky='w', pady=5)
+        self.name_var = tk.StringVar()
+        ttk.Entry(form_frame, textvariable=self.name_var, width=30).grid(
+            row=0, column=1, sticky='ew', padx=5, pady=5)
+        form_frame.columnconfigure(1, weight=1)
+
+        btn_frame = ttk.Frame(form_frame)
+        btn_frame.grid(row=1, column=0, columnspan=2, pady=20, sticky='e')
+        ttk.Button(btn_frame, text=self.lang.get('btn_new', 'Nuovo'),
+                   command=self._clear_form).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text=self.lang.get('btn_save', 'Salva'),
+                   command=self._save).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text=self.lang.get('btn_delete', 'Elimina'),
+                   command=self._delete).pack(side='left', padx=5)
+        self.restore_btn = ttk.Button(btn_frame, text=self.lang.get('btn_restore', '↩ Ripristina'),
+                                       command=self._restore, state=tk.DISABLED)
+        self.restore_btn.pack(side='left', padx=5)
+
+        self._load_data()
+
+    def _load_data(self):
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        try:
+            session = self.npi_manager._get_session()
+            try:
+                from npi.data_models import NpiBudgetCategory
+                query = session.query(NpiBudgetCategory)
+                show_deleted = self.show_deleted_var.get()
+                if not show_deleted:
+                    query = query.filter(NpiBudgetCategory.DateOut.is_(None))
+                cats = query.order_by(NpiBudgetCategory.CategoryName).all()
+                for c in cats:
+                    tag = ('deleted',) if c.DateOut else ()
+                    self.tree.insert('', tk.END, iid=str(c.CategoryId),
+                                     values=(c.CategoryId, c.CategoryName), tags=tag)
+            finally:
+                session.close()
+        except Exception as e:
+            logger.error(f"Errore caricamento categorie budget: {e}", exc_info=True)
+
+        self.tree.tag_configure('deleted', foreground='#CC4400', font=('', 0, 'italic'))
+
+    def _on_select(self, event=None):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        self.selected_id = int(sel[0])
+        vals = self.tree.item(sel[0])['values']
+        self.name_var.set(vals[1] if len(vals) > 1 else '')
+        tags = self.tree.item(sel[0], 'tags')
+        if 'deleted' in tags:
+            self.restore_btn.config(state=tk.NORMAL)
+        else:
+            self.restore_btn.config(state=tk.DISABLED)
+
+    def _clear_form(self):
+        self.selected_id = None
+        self.name_var.set('')
+        self.restore_btn.config(state=tk.DISABLED)
+        if self.tree.selection():
+            self.tree.selection_remove(self.tree.selection())
+
+    def _save(self):
+        name = self.name_var.get().strip()
+        if not name:
+            from tkinter import messagebox
+            messagebox.showerror(self.lang.get('error_title', 'Errore'),
+                                 self.lang.get('budget_cat_name_required', 'Il nome categoria è obbligatorio.'),
+                                 parent=self)
+            return
+        try:
+            session = self.npi_manager._get_session()
+            try:
+                from npi.data_models import NpiBudgetCategory
+                if self.selected_id:
+                    cat = session.query(NpiBudgetCategory).get(self.selected_id)
+                    if cat:
+                        cat.CategoryName = name
+                else:
+                    cat = NpiBudgetCategory(CategoryName=name)
+                    session.add(cat)
+                session.commit()
+            finally:
+                session.close()
+            self._load_data()
+            self._clear_form()
+        except Exception as e:
+            from tkinter import messagebox
+            messagebox.showerror(self.lang.get('error_title', 'Errore'), str(e), parent=self)
+
+    def _delete(self):
+        if not self.selected_id:
+            return
+        from tkinter import messagebox
+        if not messagebox.askyesno(self.lang.get('confirm_delete_title', 'Conferma'),
+                                    self.lang.get('budget_cat_confirm_delete', 'Eliminare questa categoria?'),
+                                    parent=self):
+            return
+        try:
+            session = self.npi_manager._get_session()
+            try:
+                from npi.data_models import NpiBudgetCategory
+                from datetime import datetime
+                cat = session.query(NpiBudgetCategory).get(self.selected_id)
+                if cat:
+                    cat.DateOut = datetime.now()
+                    session.commit()
+            finally:
+                session.close()
+            self.selected_id = None
+            self._load_data()
+            self._clear_form()
+        except Exception as e:
+            messagebox.showerror(self.lang.get('error_title', 'Errore'), str(e), parent=self)
+
+    def _restore(self):
+        if not self.selected_id:
+            return
+        try:
+            session = self.npi_manager._get_session()
+            try:
+                from npi.data_models import NpiBudgetCategory
+                cat = session.query(NpiBudgetCategory).get(self.selected_id)
+                if cat:
+                    cat.DateOut = None
+                    session.commit()
+            finally:
+                session.close()
+            self._load_data()
+            self._clear_form()
+        except Exception as e:
+            from tkinter import messagebox
+            messagebox.showerror(self.lang.get('error_title', 'Errore'), str(e), parent=self)
+
 
 class NpiConfigWindow(tk.Toplevel):
     def __init__(self, master, npi_manager, lang, authorized_user, db=None, product_id_to_select=None, **kwargs):
@@ -2307,6 +2479,7 @@ class NpiConfigWindow(tk.Toplevel):
         self.defaults_frame = DefaultCatalogFrame(notebook, self.npi_manager, self.lang)
         self.family_frame = FamilyManagementFrame(notebook, self.npi_manager, self.lang)
         self.family_links_frame = FamilyLinksManagementFrame(notebook, self.npi_manager, self.lang)
+        self.budget_cat_frame = BudgetCategoriesFrame(notebook, self.npi_manager, self.lang)
 
         notebook.add(self.subj_frame, text=self.lang.get('tab_subjects_title'))
         notebook.add(self.prod_frame, text=self.lang.get('tab_products_title'))
@@ -2316,6 +2489,7 @@ class NpiConfigWindow(tk.Toplevel):
         notebook.add(self.defaults_frame, text=self.lang.get('tab_defaults_title', 'Defaults'))
         notebook.add(self.family_frame, text=self.lang.get('tab_families_title', 'Famiglie'))
         notebook.add(self.family_links_frame, text=self.lang.get('tab_family_links_title', 'Collegamenti Famiglie'))
+        notebook.add(self.budget_cat_frame, text=self.lang.get('tab_budget_categories', 'Categorie Budget'))
 
         def on_tab_changed(event):
             try:
@@ -2715,8 +2889,11 @@ class FamilyManagementFrame(ttk.Frame):
         self.tree.bind('<<TreeviewSelect>>', self._on_family_select)
         
         # Form dettagli famiglia
-        form_frame = ttk.LabelFrame(paned_window, text=self.lang.get('family_details_title', 'Dettagli Famiglia'), padding=10)
-        paned_window.add(form_frame, weight=2)
+        right_frame = ttk.Frame(paned_window)
+        paned_window.add(right_frame, weight=2)
+        
+        form_frame = ttk.LabelFrame(right_frame, text=self.lang.get('family_details_title', 'Dettagli Famiglia'), padding=10)
+        form_frame.pack(fill=tk.X, padx=5, pady=(0, 5))
         
         ttk.Label(form_frame, text=self.lang.get('label_family_name', 'Nome Famiglia:')).grid(row=0, column=0, sticky=tk.W, pady=5)
         self.family_name_entry = ttk.Entry(form_frame, width=40)
@@ -2730,6 +2907,35 @@ class FamilyManagementFrame(ttk.Frame):
         ttk.Button(btn_frame, text=self.lang.get('btn_new', 'Nuovo'), command=self._new_family).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text=self.lang.get('btn_save', 'Salva'), command=self._save_family).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text=self.lang.get('btn_delete', 'Elimina'), command=self._delete_family).pack(side=tk.LEFT, padx=5)
+        
+        # 🆕 Linked Tasks treeview with filter
+        linked_frm = ttk.LabelFrame(right_frame, text=self.lang.get('linked_tasks_title', 'Task Collegati'), padding=10)
+        linked_frm.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Filter bar
+        filter_bar = ttk.Frame(linked_frm)
+        filter_bar.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(filter_bar, text="🔍").pack(side=tk.LEFT, padx=(0, 3))
+        self.linked_filter_var = tk.StringVar()
+        linked_filter_entry = ttk.Entry(filter_bar, textvariable=self.linked_filter_var, width=30)
+        linked_filter_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        linked_filter_entry.bind('<KeyRelease>', lambda e: self._load_linked_tasks())
+        ttk.Button(filter_bar, text=self.lang.get('btn_reset_filter', '↺ Reset'),
+                   command=lambda: (self.linked_filter_var.set(''), self._load_linked_tasks())).pack(side=tk.LEFT)
+        
+        # Treeview
+        linked_cols = (self.lang.get('col_id', 'ID'), self.lang.get('col_task_name', 'Nome Task'), self.lang.get('col_category', 'Categoria'))
+        self.linked_tasks_tree = ttk.Treeview(linked_frm, columns=linked_cols, show='headings', selectmode='browse')
+        for col in linked_cols:
+            self.linked_tasks_tree.heading(col, text=col)
+        self.linked_tasks_tree.column(linked_cols[0], width=50)
+        self.linked_tasks_tree.column(linked_cols[1], width=250)
+        self.linked_tasks_tree.column(linked_cols[2], width=150)
+        
+        linked_scroll = ttk.Scrollbar(linked_frm, orient=tk.VERTICAL, command=self.linked_tasks_tree.yview)
+        self.linked_tasks_tree.configure(yscrollcommand=linked_scroll.set)
+        self.linked_tasks_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        linked_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         
         self._load_families()
     
@@ -2763,6 +2969,7 @@ class FamilyManagementFrame(ttk.Frame):
             if family:
                 self.family_name_entry.delete(0, tk.END)
                 self.family_name_entry.insert(0, family.NpiFamily)
+            self._load_linked_tasks()
         except Exception as e:
             messagebox.showerror(
                 self.lang.get('db_error_title', 'Errore Database'),
@@ -2770,11 +2977,36 @@ class FamilyManagementFrame(ttk.Frame):
                 parent=self
             )
     
+    def _load_linked_tasks(self):
+        """Carica i task collegati alla famiglia selezionata, con filtro testo."""
+        for item in self.linked_tasks_tree.get_children():
+            self.linked_tasks_tree.delete(item)
+        
+        if not self.selected_family_id:
+            return
+        
+        filter_text = self.linked_filter_var.get().strip().lower() if hasattr(self, 'linked_filter_var') else ''
+        
+        try:
+            links = self.npi_manager.get_family_links(self.selected_family_id)
+            for link in links:
+                task = link.task
+                task_name = task.NomeTask or ''
+                if filter_text and filter_text not in task_name.lower():
+                    continue
+                category_name = task.categoria.Category if task.categoria else 'N/A'
+                self.linked_tasks_tree.insert('', tk.END, values=(task.TaskID, task_name, category_name))
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Errore caricamento task collegati: {e}", exc_info=True)
+    
     def _new_family(self):
         """Pulisce il form per creare una nuova famiglia."""
         self.selected_family_id = None
         self.family_name_entry.delete(0, tk.END)
         self.tree.selection_remove(*self.tree.selection())
+        for item in self.linked_tasks_tree.get_children():
+            self.linked_tasks_tree.delete(item)
     
     def _save_family(self):
         """Salva (crea o aggiorna) una famiglia."""
@@ -2898,6 +3130,17 @@ class FamilyLinksManagementFrame(ttk.Frame):
         available_frame = ttk.LabelFrame(paned_window, text=self.lang.get('available_tasks_title', 'Task Disponibili'), padding=10)
         paned_window.add(available_frame, weight=1)
         
+        # 🆕 Filter bar for available tasks
+        filter_frame = ttk.Frame(available_frame)
+        filter_frame.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(filter_frame, text="🔍").pack(side=tk.LEFT, padx=(0, 3))
+        self.task_filter_var = tk.StringVar()
+        self.task_filter_entry = ttk.Entry(filter_frame, textvariable=self.task_filter_var, width=30)
+        self.task_filter_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        self.task_filter_entry.bind('<KeyRelease>', self._on_task_filter_change)
+        ttk.Button(filter_frame, text=self.lang.get('btn_reset_filter', '↺ Reset'),
+                   command=self._reset_task_filter).pack(side=tk.LEFT)
+        
         cols_available = (self.lang.get('col_id', 'ID'), self.lang.get('col_task_name', 'Nome Task'), self.lang.get('col_category', 'Categoria'))
         self.available_tree = ttk.Treeview(available_frame, columns=cols_available, show='headings', selectmode='browse')
         for col in cols_available:
@@ -2960,16 +3203,21 @@ class FamilyLinksManagementFrame(ttk.Frame):
             )
     
     def _load_available_tasks(self):
-        """Carica i task disponibili (non collegati) per la famiglia selezionata."""
+        """Carica i task disponibili (non collegati) per la famiglia selezionata, con filtro testo."""
         for item in self.available_tree.get_children():
             self.available_tree.delete(item)
         
         if not self.selected_family_id:
             return
         
+        filter_text = self.task_filter_var.get().strip().lower() if hasattr(self, 'task_filter_var') else ''
+        
         try:
             tasks = self.npi_manager.get_available_tasks_for_family(self.selected_family_id)
             for task in tasks:
+                # Applica filtro testo sul nome task
+                if filter_text and filter_text not in (task.NomeTask or '').lower():
+                    continue
                 category_name = task.categoria.Category if task.categoria else 'N/A'
                 self.available_tree.insert('', tk.END, values=(task.TaskID, task.NomeTask, category_name))
         except Exception as e:
@@ -2978,6 +3226,15 @@ class FamilyLinksManagementFrame(ttk.Frame):
                 f"Errore caricamento task disponibili: {e}",
                 parent=self
             )
+    
+    def _on_task_filter_change(self, event=None):
+        """Ricarica i task disponibili applicando il filtro testo."""
+        self._load_available_tasks()
+    
+    def _reset_task_filter(self):
+        """Resetta il filtro testo e ricarica tutti i task disponibili."""
+        self.task_filter_var.set('')
+        self._load_available_tasks()
     
     def _link_task(self):
         """Collega un task alla famiglia selezionata."""

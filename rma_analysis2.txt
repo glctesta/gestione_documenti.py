@@ -1,0 +1,235 @@
+=== COLONNE CHIAVE MANCANTI ===
+Codice scheda: MANCANTE
+Azione Correttiva: MANCANTE
+Difetto riscontrato: MANCANTE
+Tipo reso: MANCANTE
+
+=== TOP 30 DESCRIZIONI GUASTO ===
+  [ 159] Errato allineamento dei componenti display
+  [ 102] non carica software
+nessun difetto evidente
+  [  98] NP
+  [  88] non carica programma
+nessun difetto evidente
+  [  51] Non si accende
+  [  47] Guasto scheda macchina
+  [  44] Load interrotto
+  [  41] Short circuit
+  [  41] non carica programma
+nn
+  [  41] non carica chiave 2
+nessun difetto evidente
+  [  38] malfunzionamento
+nn
+  [  33] Non funziona contaimpulsi
+  [  32] LE SCHEDE NON SI SINCRONIZZANO CON LA GETTONIERA
+  [  32] non carica software
+  [  31] Non funziona display
+  [  30] non legge il tocco
+  [  30] non carica programma
+  [  30] Connettore errato
+  [  28] Applicare variante 10200
+  [  28] problemi di "accensione" del display
+  [  28] Non si accende display
+  [  27] non si puo caricare il sw o manca il connettore J19.
+  [  27] Relè elettrovalvola ( FINDER ) non sgancia , rimane chiuso ( sempre attivo )
+  [  27] rotto P70  ( rotto durante il montaggio )
+nessun difetto evidente
+  [  27] Defective
+  [  26] non funziona segnale acustico    BUZZER non funzionante
+nessun difetto evidente
+  [  26] bruciata
+nessun difetto evidente
+  [  26] Non si programma
+  [  24] Non funziona buzzer
+  [  24] Risalita di stagno nei fori J2
+
+=== CAUSE GUASTO ===
+  [1695] processo fornitore
+  [1684] nessun difetto (NDF)
+  [1541] sconosciuto
+  [1437] processo cliente
+
+=== TIPO GUASTO ===
+  [2623] problema di componente
+  [ 495] difetto di saldatura
+  [ 484] aggiornamento
+  [ 401] rottamato
+  [ 362] difetto di assemblaggio
+  [ 161] difetto attribuibile ad altro materiale
+  [ 132] software
+  [  11] scheda bruciata
+  [   3] pcb
+  [   1] errore di cablaggio
+
+=== DETTAGLIO TIPO GUASTO ===
+  [1119] componente difettoso
+  [ 671] componente danneggiato
+  [ 401] rottamato
+  [ 397] saldatura/risalita mancante
+  [ 362] difetto di assemblaggio
+  [ 360] hardware
+  [ 311] componente errato
+  [ 256] software
+  [ 209] componente bruciato
+  [ 161] difetto attribuibile ad altro materiale
+  [ 150] componente mancante
+  [ 143] componente invertito
+  [  82] corto circuito
+  [  20] componente spiazzato
+  [  11] scheda bruciata
+  [  10] saldatura fredda
+  [   4] microsfere
+  [   2] piazzola danneggiata/sollevata
+  [   2] saldatura grassa
+  [   1] open on pcb
+  [   1] errore di cablaggio
+
+=== TOP 20 CODICI PARTE ===
+  [ 504] PFZA+67A017501
+  [ 281] PFZA+T10AM3-9100/F
+  [ 237] PFZA+01601UI
+  [ 229] PFZA+83A153000
+  [ 223] PFZA+68300MB/D
+  [ 198] PFZA+59003PS
+  [ 195] PFZA+01802MCB
+  [ 178] PFZA+83A153002
+  [ 178] PFEX+673613K00-CN
+  [ 176] PFZA+T10AM3-9100/E
+  [ 174] PFZA+55607NC
+  [ 173] PFZA+57505SA
+  [ 170] PFZA+T10AM3-9100/D
+  [ 162] PFZA+65405KA
+  [ 155] PFZA+65408KA
+  [ 153] PFZA+68601NC-CN
+  [ 151] PFZA+67A020101
+  [ 146] PFZA+64803AT
+  [ 139] PFZA+T10AM3-9100/C
+  [ 121] PFSA+67A000000/B
+
+=== TOP 20 DESCRIZIONI PARTE ===
+  [ 504] PCBA Actuators 67A017501 EVOCA
+  [ 281] PCBA  Macchina 9100 NECTA con display AMPIRE 3mm REV. F
+  [ 237] PCBA User Interface Board NG 673201601
+  [ 229] Assieme CARRIER + SOM NEW KORO 83A153000
+  [ 223] PCBA 1604 Project Multiport New Canto REV 04 673568300
+  [ 198] PCBA  Power  Supply   673559003
+  [ 195] PCBA  Main  Board  Control   6732/018/02
+  [ 178] Assieme CARRIER + SOM NEW KORO 83A153002
+  [ 178] PCBA DIWAP UI UC/FL/GW-ELT 673613K00 CHN
+  [ 176] PCBA  Macchina 9100 NECTA con display AMPIRE 3mm REV. E
+  [ 174] PCBA New CPU  Rev. A       673555607 Lead free
+  [ 173] PCBA Solista Attuazione 673557505  LeadFree
+  [ 170] PCBA  Macchina 9100 NECTA con display AMPIRE 3mm REV. D
+  [ 162] PCBA  Kalea  Board       6735/654/05
+  [ 155] PCBA Kalea Board 673565408 EVOCA
+  [ 153] PCBA New CPU  Rev. A  ridotta TANGO SL  6735/686/01 CHINA
+  [ 151] PCBA H&C CPU 67A020101 EVOCA
+  [ 146] PCBA Attuazioni 9x00 673564803 EVOCA
+  [ 139] PCBA  Macchina 9100 NECTA con display AMPIRE 3mm REV. C
+  [ 121] PCBA  Scheda Low End 67A000000  SAGA COFFEE  Rev.B  LFree
+
+=== TOP 30 NOTE GUASTO (campo chiave per soluzioni) ===
+  [ 100] Aggiornato OS ver. 4.0.2-2
+  [  94] Esegiuito PRG 04 n. 10671
+  [  88] Smaltimento magazzino
+  [  46] Aggiornato OS ver. 3.0.8-2
+  [  40] Controllo visivo eseguito dalla Tamara
+  [  38] In corto
+  [  36] Effettuato PFG 10671
+  [  33] Aggiornamento impossibile causa nuova revisione CS
+  [  30] Riprogrammata con USB + SD
+  [  28] Applicato variante 10200
+  [  27] Eseguito collaudo con simulatore fornito dal cliente
+  [  26] Eseguito PRG04 N. 10711
+  [  24] Riprogrammata perchè falliva TEST STARTUP
+  [  24] Sostitiuto relè FINDER con TYCO
+  [  24] Smaltimento magazziono
+  [  24] sostituito componente con risalita di stagno
+  [  23] collaudate da Eleonora - visivo da Tamara
+  [  21] Pin non inserito
+  [  21] Effettuato PRG 10760 , visivo effettuato da Eleonora
+  [  20] Display non allineato
+  [  20] Eseguito PRG04 N. 10852 - Controllo visivo eseguito da Eleonora
+  [  20] pin non inserito nel pcb
+  [  20] PRG04 N. 10770
+  [  19] Sostituito BT1 scarica
+  [  17] Deformato
+  [  17] Riprogrammato
+  [  16] variante eseguita errata
+  [  16] Controllo visivo eseguito dalla Tamara  - Programmazione eseguita dalla produzione
+  [  16] Eseguito PRG04 N. 10852
+  [  16] Smaltimento mmagazzino
+
+=== TOP 20 REFERENCE (componente specifico) ===
+  [ 160] DISPLAY
+  [ 129] J8
+  [ 110] J9
+  [ 100] U33
+  [  91] MOD_SOM
+  [  82] DS3
+  [  81] DS2
+  [  78] DS1
+  [  65] J18
+  [  64] U29
+  [  63] J29
+  [  62] J10
+  [  59] SLEU+SOM-STM32
+  [  56] U1
+  [  53] U105
+  [  53] J2
+  [  52] C13
+  [  46] J12
+  [  46] J11
+  [  46] BUZZER1
+
+=== TOP 20 ASSEMBLY ===
+  [ 349] SLZA+67A017501
+  [ 177] PFEX+673613K00-CN
+  [ 175] SLZA+68300MB/D
+  [ 152] SLZA+59003PS
+  [ 146] SLZA+01601UI
+  [ 129] SLZA+63601CB
+  [ 129] CMVA+ZA-FRDISP-AMPIR
+  [ 115] SLZA+67A007400
+  [ 115] SLNC+68601NC
+  [ 111] SLZA+67A007403
+  [ 108] SLZA+64803AT
+  [ 102] SLNC+57505SA
+  [  98] SLSA+67A000000/B
+  [  95] SLNC+55508NA
+  [  89] SLZA+65408KA
+  [  83] SLZA+67A021400
+  [  77] SLZA+65410KA
+  [  76] SLZA+67A020101
+  [  74] SLNC+55607NC
+  [  72] SLZA+01802MCB
+
+=== CROSS-TAB: Top 10 Codice parte x Tipo guasto ===
+Tipo guasto         aggiornamento  difetto attribuibile ad altro materiale  difetto di assemblaggio  difetto di saldatura  pcb  problema di componente  rottamato  scheda bruciata  software   All
+Codice parte                                                                                                                                                                                      
+PFEX+673613K00-CN               0                                        0                      159                     1    0                      18          0                0         0   178
+PFZA+01601UI                    0                                        9                        7                     2    0                     127          8                0         0   153
+PFZA+01802MCB                   0                                        2                        0                     4    0                      65          8                0         0    79
+PFZA+59003PS                    0                                        3                        1                    80    0                      68         13                1         0   166
+PFZA+67A017501                  1                                        7                        5                    58    1                     282          5                1         0   360
+PFZA+68300MB/D                  0                                        2                        0                    64    0                     110          3                0         0   179
+PFZA+83A153000                 28                                        0                        7                    30    0                      82          4                4        69   224
+PFZA+83A153002                  0                                        3                        3                    28    0                      90         13                0        11   148
+PFZA+T10AM3-9100/E             66                                        0                        2                    10    0                      52          0                0        11   141
+PFZA+T10AM3-9100/F              0                                        2                       26                    27    0                     153          5                0         4   217
+All                            95                                       28                      210                   304    1                    1047         59                6        95  1845
+
+=== PROVENIENZA ===
+  [6082] Supply line
+  [ 100] Front line
+  [   3] n.d.
+
+=== CAUSALE DOC ===
+  [4872] Warranty
+  [ 894] IPR/KPR
+  [ 574] Repair
+
+=== TIPO ORDINE ===
+  [5442] CR
+  [ 915] PR

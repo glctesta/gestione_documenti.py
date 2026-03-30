@@ -27,6 +27,9 @@ class GuestManagementWindow(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
 
+        # Stato ordinamento: {tree_widget: (colonna, reverse)}
+        self._sort_state = {}
+
         self._build_ui()
         self._load_bookings()
         self._load_companies()
@@ -94,15 +97,23 @@ class GuestManagementWindow(tk.Toplevel):
         self.booking_tree = ttk.Treeview(parent, columns=columns, show='headings',
                                           selectmode='browse', height=18)
 
-        self.booking_tree.heading('id', text='ID')
-        self.booking_tree.heading('service', text=self.lang.get('col_service', 'Servizio'))
-        self.booking_tree.heading('guest_name', text=self.lang.get('col_guest_name', 'Ospite'))
-        self.booking_tree.heading('flight', text=self.lang.get('col_flight', 'Volo'))
-        self.booking_tree.heading('arrival_date', text=self.lang.get('col_arrival_date', 'Data Arrivo'))
-        self.booking_tree.heading('departure_date', text=self.lang.get('col_departure_date', 'Data Partenza'))
-        self.booking_tree.heading('service_email', text=self.lang.get('col_service_email', 'Email Servizio'))
-        self.booking_tree.heading('sent_date', text=self.lang.get('col_sent_date', 'Inviato'))
-        self.booking_tree.heading('confirmed', text=self.lang.get('col_confirmed', 'Confermato'))
+        # Etichette originali per le colonne (usate per reset frecce)
+        self._booking_col_labels = {
+            'id': 'ID',
+            'service': self.lang.get('col_service', 'Servizio'),
+            'guest_name': self.lang.get('col_guest_name', 'Ospite'),
+            'flight': self.lang.get('col_flight', 'Volo'),
+            'arrival_date': self.lang.get('col_arrival_date', 'Data Arrivo'),
+            'departure_date': self.lang.get('col_departure_date', 'Data Partenza'),
+            'service_email': self.lang.get('col_service_email', 'Email Servizio'),
+            'sent_date': self.lang.get('col_sent_date', 'Inviato'),
+            'confirmed': self.lang.get('col_confirmed', 'Confermato'),
+        }
+        for col, label in self._booking_col_labels.items():
+            self.booking_tree.heading(
+                col, text=label,
+                command=lambda c=col: self._sort_treeview(self.booking_tree, c, self._booking_col_labels)
+            )
 
         self.booking_tree.column('id', width=40, anchor='center')
         self.booking_tree.column('service', width=80, anchor='center')
@@ -140,6 +151,7 @@ class GuestManagementWindow(tk.Toplevel):
                     vad.FlightNumber,
                     vad.DateTimeArrival,
                     vad.DateOut,
+                    vad.VisitorId,
                     fc.CompanyName AS AirlineName,
                     CASE 
                         WHEN EXISTS (
@@ -154,17 +166,23 @@ class GuestManagementWindow(tk.Toplevel):
                         ) THEN 'Hotel'
                         ELSE 'Guest'
                     END AS ServiceType,
-                    STUFF(
-                        (SELECT DISTINCT ', ' + v2.GuestName
-                         FROM Employee.dbo.Visitors v2
-                         WHERE CAST(v2.StartVisit AS DATE) = CAST(vad.DateTimeArrival AS DATE)
-                           AND v2.EndVisit >= vad.DateOut
-                         FOR XML PATH(''), TYPE
-                        ).value('.', 'NVARCHAR(MAX)')
-                    , 1, 2, '') AS GuestNames
+                    -- JOIN diretto su VisitorId; fallback date-match per record legacy
+                    CASE
+                        WHEN vad.VisitorId IS NOT NULL THEN v.GuestName
+                        ELSE STUFF(
+                            (SELECT DISTINCT ', ' + v2.GuestName
+                             FROM Employee.dbo.Visitors v2
+                             WHERE CAST(v2.StartVisit AS DATE) = CAST(vad.DateTimeArrival AS DATE)
+                               AND v2.EndVisit >= vad.DateOut
+                             FOR XML PATH(''), TYPE
+                            ).value('.', 'NVARCHAR(MAX)')
+                        , 1, 2, '')
+                    END AS GuestNames
                 FROM Employee.dbo.VisitorBookingServiceEmails bse
                 INNER JOIN Employee.dbo.VisitorArrivalDetails vad
                     ON bse.VisitorArrivalDetailId = vad.VisitorArrivalDetailId
+                LEFT JOIN Employee.dbo.Visitors v
+                    ON vad.VisitorId = v.VisitorId
                 LEFT JOIN Employee.dbo.FlyghtCompanies fc
                     ON vad.FlightCompanyId = fc.FlightCompanyId
             """
@@ -211,6 +229,10 @@ class GuestManagementWindow(tk.Toplevel):
 
             cursor.close()
             logger.info(f"Caricati {len(self._booking_data)} booking")
+
+            # Applica ordinamento default: Data Arrivo DESC
+            self._sort_state[id(self.booking_tree)] = ('arrival_date', False)  # pre-set per toggle a DESC
+            self._sort_treeview(self.booking_tree, 'arrival_date', self._booking_col_labels)
         except Exception as e:
             logger.error(f"Errore caricamento booking: {e}")
             messagebox.showerror(self.lang.get('error', 'Errore'), f"Errore: {e}")
@@ -252,7 +274,7 @@ class GuestManagementWindow(tk.Toplevel):
             messagebox.showerror(self.lang.get('error', 'Errore'), f"Errore: {e}")
 
     def _resend_booking_email(self):
-        """Reinvia l'email di booking."""
+        """Reinvia l'email di booking differenziando Hotel/Shuttle con dettagli specifici."""
         data = self._get_selected_booking()
         if not data:
             return
@@ -263,10 +285,12 @@ class GuestManagementWindow(tk.Toplevel):
                 self.lang.get('no_email_for_booking', 'Nessuna email associata a questo booking.'))
             return
 
+        service_type = data.get('service_type', 'Guest')
+        service_label = '🚐 Shuttle' if service_type == 'Shuttle' else '🏨 Hotel' if service_type == 'Hotel' else service_type
+
         if not messagebox.askyesno(
             self.lang.get('confirm', 'Conferma'),
-            self.lang.get('confirm_resend',
-                          f"Reinviare l'email di prenotazione a {data['email']}?")):
+            f"Reinviare l'email di prenotazione {service_label} a {data['email']}?"):
             return
 
         try:
@@ -275,36 +299,114 @@ class GuestManagementWindow(tk.Toplevel):
             user_email = self._get_user_email()
             logo_path = os.path.join(os.path.dirname(__file__), 'Logo.png')
 
-            # Determina se è shuttle o hotel dal tipo di servizio (email)
+            # Recupera nome fornitore servizio dal DB
+            provider_name = self._get_provider_name(data['email'])
+
+            # Dati volo
             flight_info = ''
             if data['airline_name']:
-                flight_info += f"<strong>Compagnia:</strong> {data['airline_name']}<br/>"
+                flight_info += f"<strong>Compagnia aerea:</strong> {data['airline_name']}<br/>"
             if data['flight_number']:
-                flight_info += f"<strong>Volo:</strong> {data['flight_number']}<br/>"
+                flight_info += f"<strong>Numero volo:</strong> {data['flight_number']}<br/>"
 
             arr_date = data['arrival_date'].strftime('%d/%m/%Y %H:%M') if data['arrival_date'] else 'N/D'
+            arr_date_short = data['arrival_date'].strftime('%d/%m/%Y') if data['arrival_date'] else 'N/D'
             dep_date = data['departure_date'].strftime('%d/%m/%Y') if data['departure_date'] else 'N/D'
+
+            # Lista ospiti
+            guest_names = data.get('guest_names', '')
+            guests_html = ''
+            if guest_names:
+                names = [n.strip() for n in guest_names.split(',') if n.strip()]
+                guests_html = '<h4>Oaspeți ({} persoane):</h4><ul>{}</ul>'.format(
+                    len(names),
+                    ''.join([f'<li><strong>{n}</strong></li>' for n in names])
+                )
+
+            # --- Contenuto specifico per tipo di servizio ---
+            if service_type == 'Shuttle':
+                title_html = '<h3 style="color: #1565C0;">🚐 Reiterare cerere transport / Transport Request Resend</h3>'
+                service_details = f"""
+                    {guests_html}
+                    {flight_info}
+                    <p><strong>Data sosire:</strong> {arr_date}</p>
+                    <p><strong>Data plecare:</strong> {dep_date}</p>
+                """
+                if provider_name:
+                    service_details = f'<p><strong>Serviciu transport:</strong> {provider_name}</p>' + service_details
+                confirm_text_ro = "Vă rugăm să confirmați primirea acestei cereri de transport și că serviciul a fost rezervat."
+                confirm_text_en = "Please confirm receipt of this transport request and that the service has been booked."
+                subject_line = f"Reiterare Transport — {arr_date_short}"
+                accent_color = '#1565C0'
+                bg_color = '#FFF3E0'
+                border_color = '#E65100'
+
+            elif service_type == 'Hotel':
+                # Calcola notti se possibile
+                nights_html = ''
+                if data['arrival_date'] and data['departure_date']:
+                    num_nights = (data['departure_date'] - data['arrival_date'].date() 
+                                  if hasattr(data['arrival_date'], 'date') 
+                                  else data['departure_date'] - data['arrival_date']).days
+                    if num_nights > 0:
+                        nights_html = f'<p><strong>Număr nopți:</strong> {num_nights}</p>'
+
+                # Numero camere = numero ospiti
+                num_guests = len([n for n in guest_names.split(',') if n.strip()]) if guest_names else 1
+
+                # Dati aziendali per fatturazione
+                company_html = self._get_company_billing_html()
+
+                title_html = '<h3 style="color: #2E7D32;">🏨 Reiterare cerere rezervare hotel / Hotel Reservation Resend</h3>'
+                service_details = f"""
+                    {f'<p><strong>Hotel:</strong> {provider_name}</p>' if provider_name else ''}
+                    {guests_html}
+                    <p><strong>Check-in:</strong> {arr_date_short}</p>
+                    <p><strong>Check-out:</strong> {dep_date}</p>
+                    {nights_html}
+                    <p><strong>Număr camere:</strong> {num_guests}</p>
+                    {company_html}
+                """
+                confirm_text_ro = "Vă rugăm să confirmați primirea acestei cereri de rezervare și că camerele au fost rezervate."
+                confirm_text_en = "Please confirm receipt of this reservation request and that the rooms have been booked."
+                subject_line = f"Reiterare Rezervare Hotel — {arr_date_short} - {dep_date}"
+                accent_color = '#2E7D32'
+                bg_color = '#E8F5E9'
+                border_color = '#2E7D32'
+            else:
+                # Fallback generico
+                title_html = '<h3 style="color: #1565C0;">Reiterare cerere rezervare / Booking Request Resend</h3>'
+                service_details = f"""
+                    {guests_html}
+                    {flight_info}
+                    <p><strong>Data sosire:</strong> {arr_date}</p>
+                    <p><strong>Data plecare:</strong> {dep_date}</p>
+                """
+                confirm_text_ro = "Vă rugăm să confirmați primirea acestei cereri și că serviciul a fost rezervat."
+                confirm_text_en = "Please confirm receipt of this request and that the service has been booked."
+                subject_line = f"Reiterare Rezervare — {arr_date_short}"
+                accent_color = '#1565C0'
+                bg_color = '#FFF3E0'
+                border_color = '#E65100'
 
             body_html = f"""
             <html>
             <body style="font-family: Arial, sans-serif; font-size: 12px;">
                 <img src="cid:company_logo" alt="Logo" style="width: 150px; margin-bottom: 10px;" /><br/>
-                <h3 style="color: #1565C0;">Reiterare cerere rezervare / Booking Request Resend</h3>
+                {title_html}
                 <p>Bună ziua,</p>
                 <p>Vă reiterăm cererea de rezervare necunoscută ca confirmată:</p>
 
-                {flight_info}
-                <p><strong>Data sosire:</strong> {arr_date}</p>
-                <p><strong>Data plecare:</strong> {dep_date}</p>
+                {service_details}
 
-                <div style="background-color: #FFF3E0; border-left: 4px solid #E65100; padding: 10px; margin: 15px 0;">
+                <div style="background-color: {bg_color}; border-left: 4px solid {border_color}; padding: 10px; margin: 15px 0;">
                     <p style="color: #B71C1C; font-weight: bold; font-size: 12px;">⚠ IMPORTANT / IMPORTANT:</p>
                     <p style="color: #333; font-size: 11px;">
-                        Vă rugăm să confirmați primirea acestei cereri și că serviciul a fost rezervat.<br/>
+                        {confirm_text_ro}<br/>
                         Vă rugăm să trimiteți confirmarea la adresa: <strong>{user_email if user_email else 'expeditorul acestui email'}</strong>
                     </p>
                     <p style="color: #333; font-size: 11px; font-style: italic;">
-                        Please confirm receipt of this request and that the service has been booked.<br/>
+                        {confirm_text_en}<br/>
                         Please send confirmation to: <strong>{user_email if user_email else 'the sender of this email'}</strong>
                     </p>
                 </div>
@@ -323,13 +425,20 @@ class GuestManagementWindow(tk.Toplevel):
 
             cc = user_email if user_email else None
 
+            # Supporta email multiple separate da ';'
+            email_addresses = [e.strip() for e in data['email'].split(';') if e.strip()]
+            to_addr = email_addresses[0]
+            extra_cc = email_addresses[1:]
+            all_cc = extra_cc + ([cc] if cc else [])
+
+            logger.info(f"Resend {service_type} email TO: {to_addr}, CC: {all_cc}")
             sender.send_email(
-                to_email=data['email'],
-                subject=f"Reiterare Rezervare — {arr_date}",
+                to_email=to_addr,
+                subject=subject_line,
                 body=body_html,
                 is_html=True,
                 attachments=attachments if attachments else None,
-                cc_emails=cc
+                cc_emails=all_cc if all_cc else None
             )
 
             # Aggiorna SentOnDate
@@ -372,12 +481,12 @@ class GuestManagementWindow(tk.Toplevel):
                     ON v.VisitorDataId = vd.VisitorDataID
                 WHERE v.EndVisit >= ?
                   AND v.VisitorId NOT IN (
-                      SELECT DISTINCT v2.VisitorId
-                      FROM Employee.dbo.Visitors v2
-                      INNER JOIN Employee.dbo.VisitorArrivalDetails vad
-                          ON CAST(v2.StartVisit AS DATE) = CAST(vad.DateTimeArrival AS DATE)
+                      -- FK diretta: ospiti con VisitorArrivalDetails collegato
+                      SELECT vad.VisitorId
+                      FROM Employee.dbo.VisitorArrivalDetails vad
                       INNER JOIN Employee.dbo.VisitorBookingServiceEmails bse
                           ON bse.VisitorArrivalDetailId = vad.VisitorArrivalDetailId
+                      WHERE vad.VisitorId IS NOT NULL
                   )
                 ORDER BY v.StartVisit, v.GuestName
             """
@@ -566,11 +675,18 @@ class GuestManagementWindow(tk.Toplevel):
         self.guests_tree = ttk.Treeview(parent, columns=columns, show='headings',
                                          selectmode='browse', height=14)
 
-        self.guests_tree.heading('id', text='ID')
-        self.guests_tree.heading('guest_name', text=self.lang.get('col_guest_name', 'Nome Ospite'))
-        self.guests_tree.heading('email', text='Email')
-        self.guests_tree.heading('phone', text=self.lang.get('col_phone', 'Telefono'))
-        self.guests_tree.heading('company', text=self.lang.get('col_company', 'Società'))
+        self._guests_col_labels = {
+            'id': 'ID',
+            'guest_name': self.lang.get('col_guest_name', 'Nome Ospite'),
+            'email': 'Email',
+            'phone': self.lang.get('col_phone', 'Telefono'),
+            'company': self.lang.get('col_company', 'Società'),
+        }
+        for col, label in self._guests_col_labels.items():
+            self.guests_tree.heading(
+                col, text=label,
+                command=lambda c=col: self._sort_treeview(self.guests_tree, c, self._guests_col_labels)
+            )
 
         self.guests_tree.column('id', width=50, anchor='center')
         self.guests_tree.column('guest_name', width=200)
@@ -684,6 +800,10 @@ class GuestManagementWindow(tk.Toplevel):
                 ))
 
             cursor.close()
+
+            # Applica ordinamento default: Nome Ospite ASC
+            self._sort_state.pop(id(self.guests_tree), None)  # reset per forzare ASC
+            self._sort_treeview(self.guests_tree, 'guest_name', self._guests_col_labels)
         except Exception as e:
             logger.error(f"Errore caricamento ospiti: {e}")
             messagebox.showerror(self.lang.get('error', 'Errore'), f"Errore: {e}")
@@ -731,6 +851,98 @@ class GuestManagementWindow(tk.Toplevel):
         except Exception as e:
             logger.error(f"Errore salvataggio dati ospite: {e}")
             messagebox.showerror(self.lang.get('error', 'Errore'), f"Errore: {e}")
+
+    # ================================================================
+    # HELPER METHODS
+    # ================================================================
+    def _get_provider_name(self, email):
+        """Recupera il nome del fornitore (Hotel/Shuttle) dall'email di prenotazione."""
+        try:
+            cursor = self.db.conn.cursor()
+            cursor.execute("""
+                SELECT vsd.Name, t.TownName
+                FROM Employee.dbo.VisitorSupportersData vsd
+                INNER JOIN Employee.Geo.Towns t ON vsd.CityId = t.TownId
+                WHERE vsd.ReservationEmail LIKE ? AND vsd.DateOut IS NULL
+            """, (f'%{email}%',))
+            row = cursor.fetchone()
+            cursor.close()
+            if row:
+                return f"{row.Name} — {row.TownName}" if row.TownName else row.Name
+        except Exception as e:
+            logger.warning(f"Errore recupero nome fornitore per email {email}: {e}")
+        return None
+
+    def _get_company_billing_html(self):
+        """Recupera i dati aziendali Vandewiele per la fatturazione hotel."""
+        try:
+            cursor = self.db.conn.cursor()
+            cursor.execute("""
+                SELECT EmployeerName, [Address], t.TownName, c.CountyName,
+                       EmployeerFiscalCode, ChamberOfCommercNo
+                FROM Employee.dbo.Employeers e
+                INNER JOIN Employee.Geo.Towns t ON e.TownId = t.TownId
+                INNER JOIN Employee.Geo.Counties c ON t.CountyId = c.CountyId
+                WHERE EmployeerId = 2
+            """)
+            row = cursor.fetchone()
+            cursor.close()
+            if row:
+                return f"""
+                <h4>Date companie gazdă:</h4>
+                <table style="border-collapse: collapse;">
+                    <tr><td style="padding: 3px 10px; font-weight: bold;">Companie:</td>
+                        <td>{row.EmployeerName}</td></tr>
+                    <tr><td style="padding: 3px 10px; font-weight: bold;">Adresă:</td>
+                        <td>{row.Address}, {row.TownName}, {row.CountyName}</td></tr>
+                    <tr><td style="padding: 3px 10px; font-weight: bold;">CUI:</td>
+                        <td>{row.EmployeerFiscalCode}</td></tr>
+                    <tr><td style="padding: 3px 10px; font-weight: bold;">Nr. Reg. Comerț:</td>
+                        <td>{row.ChamberOfCommercNo}</td></tr>
+                </table>
+                """
+        except Exception as e:
+            logger.warning(f"Errore recupero dati aziendali: {e}")
+        return ''
+
+    # ================================================================
+    # SORTING
+    # ================================================================
+    def _sort_treeview(self, tree, col, col_labels):
+        """Ordina un Treeview cliccando sull'intestazione della colonna."""
+        # Determina direzione: toggle se stessa colonna, altrimenti ASC
+        current = self._sort_state.get(id(tree))
+        if current and current[0] == col:
+            reverse = not current[1]
+        else:
+            reverse = False
+
+        self._sort_state[id(tree)] = (col, reverse)
+
+        # Leggi tutti gli item
+        items = [(tree.set(iid, col), iid) for iid in tree.get_children('')]
+
+        # Ordina: prova numerico, altrimenti stringa case-insensitive
+        def sort_key(item):
+            val = item[0]
+            try:
+                return (0, float(val))
+            except (ValueError, TypeError):
+                return (1, val.lower() if val else '')
+
+        items.sort(key=sort_key, reverse=reverse)
+
+        # Riposiziona gli item
+        for index, (_, iid) in enumerate(items):
+            tree.move(iid, '', index)
+
+        # Aggiorna intestazioni: reset tutte, poi freccia sulla colonna attiva
+        arrow = ' ▼' if reverse else ' ▲'
+        for c, label in col_labels.items():
+            if c == col:
+                tree.heading(c, text=label + arrow)
+            else:
+                tree.heading(c, text=label)
 
     # ================================================================
     # CLOSE

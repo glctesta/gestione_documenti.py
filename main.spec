@@ -20,7 +20,7 @@ files_to_include = [
     'zebra_printer_config.json',
     'Complains_numeration.json',  # File per numerazione reclami
     'npi_notifications_config.json',  # Configurazione notifiche automatiche NPI
-    'updater.exe'  # Updater per aggiornamenti automatici
+    'updater.exe'  # mantenuto per compatibilità retroattiva - rimpiazzato da dist/updater/ onedir
 ]
 
 for file in files_to_include:
@@ -41,6 +41,27 @@ for _d in ('tcl8.6', 'tk8.6'):
 # Aggiungi la directory npi se esiste
 if os.path.exists('npi'):
     datas_list.append(('npi', 'npi'))
+
+# Aggiungi la directory manuals (manuali PDF multilingua)
+if os.path.exists('manuals'):
+    datas_list.append(('manuals', 'manuals'))
+
+# Aggiungi la directory docs (manuale NPI HTML)
+if os.path.exists('docs'):
+    datas_list.append(('docs', 'docs'))
+
+# Aggiungi updater come onedir (NO onefile — evita estrazione in %TEMP% che fallisce dal parent frozen)
+_updater_src = os.path.join('dist', 'updater')
+if os.path.isdir(_updater_src):
+    # Copia l'intera cartella dist/updater/ → _internal/updater/
+    for _root, _dirs, _fnames in os.walk(_updater_src):
+        for _fname in _fnames:
+            _abs = os.path.join(_root, _fname)
+            _rel_dir = os.path.relpath(_root, 'dist')
+            datas_list.append((_abs, _rel_dir))
+    print(f'[spec] Incluso updater onedir da {_updater_src}')
+else:
+    print(f'[spec] ATTENZIONE: {_updater_src} non trovato — eseguire: pyinstaller --noconfirm --clean updater.spec')
 
 a = Analysis(
     ['main.py'],

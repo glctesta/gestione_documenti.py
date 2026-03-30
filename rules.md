@@ -1,9 +1,5 @@
-# Regole Progetto TraceabilityRS
+After finishing PyInstaller compilation, always sign the EXE files:
 
-## Regole di Sviluppo
-
-Quando aggiungiamo una nuova funzione, la modifichiamo o la cancelliamo  NON devono essere alterate le altre funzionalita' del programma che NON hanno legami con la funzione in questione.
-- Per le GUI tkinter: usa sempre ttk widgets, pattern LabelFrame con Treeview+Scrollbar
-- I nomi delle colonne dal database vw_Soggetti sono: SoggettoId, NomeSoggetto, Email, Tipo, MSTeamsUserID
-- Le email si inviano tramite `email_connector.EmailSender`, gli indirizzi multipli sono separati da `;`
-- Le impostazioni si leggono da `traceability_rs.dbo.Settings` con colonna `atribute` e `value`
+```powershell
+signtool.exe sign /sha1 "a21358bd1e887cef30c0ae40c7e8b9c885b833b3" /fd SHA256 /tr http://time.certum.pl /td sha256 /v "C:\Users\gtesta\PythonProjetcs\Python\PrductionDocumentation\dist\DocumentManagement\DocumentManagement.exe" "C:\Users\gtesta\PythonProjetcs\Python\PrductionDocumentation\dist\DocumentManagement\_internal\updater.exe"
+```

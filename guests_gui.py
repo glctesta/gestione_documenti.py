@@ -1089,13 +1089,15 @@ class GuestRegistrationWindow(tk.Toplevel):
                 cursor.close()
                 message = self.lang.get('visitor_updated', 'Visitatore aggiornato con successo')
             else:
-                # Insert con VisitorDataId
+                # Insert con VisitorDataId — OUTPUT per catturare VisitorId
                 query = """
                     INSERT INTO Employee.dbo.Visitors (
                         RegistryId, CompanyName, GuestName, StartVisit, EndVisit,
                         Pourpose, WelcomeMessage, ShowFrom, ShowUntil, 
                         IsActive, CreatedAt, SponsorGuy, VisitorDataId
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, GETDATE(), ?, ?)
+                    )
+                    OUTPUT INSERTED.VisitorId
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, GETDATE(), ?, ?)
                 """
                 cursor = self.db.conn.cursor()
                 cursor.execute(query, (
@@ -1103,9 +1105,12 @@ class GuestRegistrationWindow(tk.Toplevel):
                     pourpose, welcome, show_from, show_until, sponsor,
                     visitor_data_id
                 ))
+                row = cursor.fetchone()
+                new_visitor_id = row[0] if row else None
                 self.db.conn.commit()
                 cursor.close()
                 message = self.lang.get('visitor_saved', 'Visitatore registrato con successo')
+                logger.info(f"Visitatore registrato: '{guest}' VisitorId={new_visitor_id}")
 
                 # Aggiungi alla lista sessione per il booking
                 self._session_visitors.append({
@@ -1115,7 +1120,8 @@ class GuestRegistrationWindow(tk.Toplevel):
                     'start_visit': start_visit,
                     'end_visit': end_visit,
                     'sponsor': sponsor,
-                    'visitor_data_id': visitor_data_id
+                    'visitor_data_id': visitor_data_id,
+                    'visitor_id': new_visitor_id
                 })
 
             messagebox.showinfo(self.lang.get('success', 'Successo'), message)

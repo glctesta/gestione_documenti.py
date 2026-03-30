@@ -9,15 +9,21 @@ from tkinter import ttk, messagebox
 from datetime import datetime
 
 # ------------------------------------------------------------------ #
-#  Percorso log centralizzato (usato sia da log() che dal ticket)     #
+#  Percorso log centralizzato (nella stessa dir del programma padre)  #
 # ------------------------------------------------------------------ #
-_LOG_FILE = os.path.join(os.path.expanduser("~"), "Downloads", "maintenance_app_updater.log")
+_LOG_DIR = os.path.join(
+    os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local")),
+    "TraceabilityRS", "logs"
+)
+os.makedirs(_LOG_DIR, exist_ok=True)
+_LOG_FILE = os.path.join(_LOG_DIR, "updater.log")
 
 
 def log(message):
     try:
         with open(_LOG_FILE, "a", encoding="utf-8") as f:
             f.write(f"{datetime.now()}: {message}\n")
+            f.flush()
     except Exception as e:
         print(f"Failed to write to log: {e}")
 
@@ -97,8 +103,14 @@ class UpdateProgressWindow(tk.Tk):
         self.progress_bar["value"] = value
         self._file_var.set(file_text)
 
-    # File da NON sovrascrivere (configurazioni utente locali)
-    PRESERVE_FILES = {'updater.exe', 'printer_config.json', 'user_settings.json'}
+    # File da NON sovrascrivere (configurazioni locali + DLL di runtime bloccate dal processo)
+    PRESERVE_FILES = {
+        'updater.exe',
+        'printer_config.json',
+        'user_settings.json',
+        'vcruntime140.dll',
+        'vcruntime140_1.dll',
+    }
 
     def _copy_worker(self, file_list):
         """
@@ -106,10 +118,16 @@ class UpdateProgressWindow(tk.Tk):
         NON chiama mai direttamente widget tkinter — usa self.after() come ponte.
         """
         errors = []
+        total = len(file_list)
+        log(f"_copy_worker: avvio copia di {total} file")
 
         for i, (root, name) in enumerate(file_list):
             # Aggiorna la GUI tramite after (thread-safe)
             self.after(0, self._set_progress, i + 1, f"Copia di: {name}")
+
+            # Log periodico ogni 50 file
+            if (i + 1) % 50 == 0:
+                log(f"_copy_worker: progresso {i + 1}/{total}")
 
             # Salta file di configurazione locale che non devono essere sovrascritti
             if name.lower() in self.PRESERVE_FILES:
@@ -132,6 +150,7 @@ class UpdateProgressWindow(tk.Tk):
                         break
                     except PermissionError:
                         if attempt < max_retries - 1:
+                            log(f"PermissionError su {name}, tentativo {attempt + 1}/{max_retries}")
                             time.sleep(1)
                         else:
                             raise
@@ -141,6 +160,7 @@ class UpdateProgressWindow(tk.Tk):
                 log(msg)
                 errors.append(msg)
 
+        log(f"_copy_worker: copia completata. {total - len(errors)} OK, {len(errors)} errori")
         # Al termine notifica il thread principale
         self.after(0, self._on_copy_done, errors)
 
@@ -181,23 +201,31 @@ class UpdateProgressWindow(tk.Tk):
 
     def start_update(self):
         """Attende la chiusura dell'app principale poi avvia il thread di copia."""
-        # Attesa iniziale per permettere all'app principale di chiudersi
+        log("start_update: attesa 2 secondi per chiusura app principale...")
         self.after(2000, self._perform_update)
 
     def _perform_update(self):
         """Verifica le directory e lancia il worker in un thread separato."""
         try:
+            log(f"_perform_update: verifica source_path='{self.source_path}'")
+
             if not os.path.exists(self.source_path):
                 raise FileNotFoundError(f"Directory sorgente non trovata: {self.source_path}")
 
+            log(f"_perform_update: source_path esiste. Verifica dest_path='{self.dest_path}'")
+
             if not os.path.exists(self.dest_path):
                 os.makedirs(self.dest_path, exist_ok=True)
+
+            log("_perform_update: inizio scansione file (os.walk)...")
 
             # Crea la lista dei file da copiare
             file_list = []
             for root, _, files in os.walk(self.source_path):
                 for name in files:
                     file_list.append((root, name))
+
+            log(f"_perform_update: scansione completata, trovati {len(file_list)} file")
 
             if not file_list:
                 raise Exception("Nessun file trovato nella directory sorgente")
@@ -210,6 +238,7 @@ class UpdateProgressWindow(tk.Tk):
             # Avvia la copia in un thread separato per non bloccare la GUI
             t = threading.Thread(target=self._copy_worker, args=(file_list,), daemon=True)
             t.start()
+            log("_perform_update: thread di copia avviato")
 
         except Exception as e:
             log(f"ERRORE CRITICO nell'updater: {e}")

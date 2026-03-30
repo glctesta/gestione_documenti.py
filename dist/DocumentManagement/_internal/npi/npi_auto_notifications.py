@@ -345,6 +345,7 @@ class NpiAutoNotificationService:
                 LEFT JOIN dbo.TaskCatalogo tc     ON tc.TaskID = t.TaskID
                 LEFT JOIN dbo.vw_Soggetti task_owner ON task_owner.SoggettoId = t.OwnerID
                 WHERE p.StatoProgetto != 'Chiuso'
+                  AND p.DateOut IS NULL
                   AND t.OwnerID IS NOT NULL
                   AND (p.OnHold IS NULL OR p.OnHold = 0)
                 ORDER BY owner.NomeSoggetto, task_owner.NomeSoggetto, t.DataScadenza
@@ -809,6 +810,7 @@ class NpiAutoNotificationService:
                 LEFT JOIN dbo.TaskCatalogo tc     ON tc.TaskID = t.TaskID
                 LEFT JOIN dbo.vw_Soggetti task_owner ON task_owner.SoggettoId = t.OwnerID
                 WHERE p.StatoProgetto != 'Chiuso'
+                  AND p.DateOut IS NULL
                   AND t.OwnerID IS NOT NULL
                   AND (p.OnHold IS NULL OR p.OnHold = 0)
                   AND task_owner.Tipo <> 'Cliente'
@@ -2087,6 +2089,7 @@ class NpiAutoNotificationService:
                     subqueryload(ProgettoNPI.waves).subqueryload(WaveNPI.tasks)
                 )
                 .where(ProgettoNPI.OnHold != True)
+                .where(ProgettoNPI.DateOut.is_(None))
                 .order_by(ProgettoNPI.ProgettoId)
             ).all()
 

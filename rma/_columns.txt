@@ -1,0 +1,50 @@
+  A (col  0): Item                                          | 1
+  B (col  1): Id. scheda                                    | 81434
+  C (col  2): Stato                                         | Spedita
+  D (col  3): N° ordine                                     | ICR002450
+  E (col  4): Riga ordine                                   | 10
+  F (col  5): Quantità                                      | 1
+  G (col  6): Serial number                                 | 50602TI49198920
+  H (col  7): Codice parte cliente                          | 835250602
+  I (col  8): Codice produttore                             | (empty)
+  J (col  9): Sett. prod.                                   | 2019/49
+  K (col 10): Revisione                                     | (empty)
+  L (col 11): Descrizione guasto                            | esce scritta  den x ( manca sportellino )
+nessun difetto evidente
+  M (col 12): N° doc. cliente                               | DDT n. 20100046 del 27/02/20
+  N (col 13): Data doc. cliente                             | 2020-02-27 00:00:00
+  O (col 14): Provenienza                                   | Supply line
+  P (col 15): Operatore                                     | BRIGNOLI
+  Q (col 16): Nuovo serial number                           | (empty)
+  R (col 17): Codice causa guasto                           | FC03
+  S (col 18): Causa guasto                                  | sconosciuto
+  T (col 19): Descrizione parte                             | PCBA  Macchina 9100 NECTA con display AMPIRE 3mm REV. C
+  U (col 20): Tipo garanzia                                 | Warranty YES
+  V (col 21): Tempo rip.                                    | 30
+  W (col 22): Prezzo                                        | 0
+  X (col 23): Data chiusura                                 | 2021-09-27 00:00:00
+  Y (col 24): Tipo ordine                                   | CR
+  Z (col 25): Data ordine                                   | 2020-03-04 08:03:59
+ AA (col 26): Codice cliente                                | 120127
+ AB (col 27): Cliente                                       | EVOCA SPA
+ AC (col 28): Codice parte                                  | PFZA+T10AM3-9100/C
+ AD (col 29): Causale doc.                                  | Warranty
+ AE (col 30): Sito prod.                                    | Eutron
+ AF (col 31): RMA                                           | ICR002450
+ AG (col 32): Sito master                                   | Eutron
+ AH (col 33): Reference                                     | SPORTELLODX
+ AI (col 34): Tipo guasto                                   | problema di componente
+ AJ (col 35): Dettaglio tipo guasto                         | componente mancante
+ AK (col 36): Note guasto                                   | Andata in dave per analisi
+ AL (col 37): Cod. tipo guasto                              | CC03
+ AM (col 38): Cod. dett. tipo guasto                        | FCMP01
+ AN (col 39): Assembly                                      | SLZA+T10AM3-9100/C
+ AO (col 40): Costo                                         | 0.2298
+ AP (col 41): Data consegna                                 | 2020-01-07 00:00:00
+ AQ (col 42): Già riparata                                  | False
+ AR (col 43): Resp. processo                                | (empty)
+ AS (col 44): Data test                                     | 2020-05-18
+ AT (col 45): Tipo test                                     | Visual Inspection
+
+Total columns: 46
+Total rows: 6357

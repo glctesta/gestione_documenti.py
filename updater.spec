@@ -1,77 +1,50 @@
-# -*- mode: python ; coding: utf-8 -*-
-# updater.spec – PyInstaller spec per updater.exe
-# Aggiornato per includere le dipendenze del sistema di ticketing automatico.
+# updater.spec — builds updater as --onedir (no temp extraction = no hang)
+# Output: dist/updater/ — will be placed inside main app's _internal/updater/
 
-import os
-
-_PROJECT = os.path.abspath('.')
+block_cipher = None
 
 a = Analysis(
     ['updater.py'],
-    pathex=[_PROJECT],
+    pathex=['.'],
     binaries=[],
-    datas=[
-        # Credenziali cifrate necessarie per lettura email destinataria dal DB
-        ('encryption_key.key', '.'),
-        ('db_config.enc',      '.'),
-        # Credenziali email per EmailSender
-        ('email_credentials.enc', '.'),
-    ],
-    hiddenimports=[
-        # Ticketing / email
-        'email_connector',
-        'config_manager',
-        # pyodbc – per lettura email destinataria dal DB
-        'pyodbc',
-        # Pillow – screenshot (opzionale)
-        'PIL',
-        'PIL.ImageGrab',
-        'PIL.Image',
-        # Cryptography – usata da email_connector e config_manager
-        'cryptography',
-        'cryptography.fernet',
-        # SMTP
-        'smtplib',
-        'email',
-        'email.mime',
-        'email.mime.multipart',
-        'email.mime.text',
-        'email.mime.base',
-        'email.mime.image',
-        'email.encoders',
-        # Standard
-        'json',
-        'threading',
-        'traceback',
-    ],
+    datas=[],
+    hiddenimports=['tkinter', 'tkinter.ttk', 'tkinter.messagebox'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['pyodbc', 'config_manager', 'email_connector'],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
     noarchive=False,
-    optimize=0,
 )
 
-pyz = PYZ(a.pure)
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='updater',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
-    console=False,
+    upx=False,
+    console=True,    # MUST be True — console=False breaks tkinter silently on some Windows configs
     disable_windowed_traceback=False,
-    argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['logo.ico'],
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name='updater',
 )
