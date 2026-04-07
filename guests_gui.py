@@ -605,8 +605,205 @@ class GuestRegistrationWindow(tk.Toplevel):
 
     def _after_booking_closed(self):
         """Callback chiamata dopo la chiusura del booking window"""
-        logger.info("Booking chiuso, prompt sala riunioni")
+        logger.info("Booking chiuso, invio email management e prompt sala riunioni")
+        # Invio email al management con lista visitatori futuri
+        try:
+            self._send_management_visitor_email()
+        except Exception as e:
+            logger.error(f"Errore invio email management visitatori: {e}")
         self._prompt_room_booking()
+
+    # ================================================================
+    # EMAIL MANAGEMENT — LISTA VISITATORI FUTURI
+    # ================================================================
+    def _send_management_visitor_email(self):
+        """Invia email al management con l'elenco dei visitatori futuri.
+
+        - Destinatari: Sys_email_management da traceability_rs.dbo.settings
+        - Contenuto: tabella raggruppata per giorno con società, persona, scopo,
+          pickup organizzato, hotel
+        - Viene inviata UNA sola volta al giorno (flag SentEmailToManagement)
+        """
+        import utils
+        from email_connector import EmailSender
+        import os
+
+        conn = self.db.conn
+
+        # 1. Verifica se ci sono visitatori futuri NON ancora segnalati
+        check_query = """
+            SELECT COUNT(*) AS cnt
+            FROM Employee.dbo.Visitors v
+            WHERE v.EndVisit >= CAST(GETDATE() AS DATE)
+              AND (v.SentEmailToManagement IS NULL OR v.SentEmailToManagement = 0)
+        """
+        try:
+            cursor = conn.cursor()
+            cursor.execute(check_query)
+            row = cursor.fetchone()
+            cursor.close()
+            if not row or row.cnt == 0:
+                logger.info("Nessun visitatore nuovo da notificare al management")
+                return
+        except Exception as e:
+            logger.error(f"Errore check visitatori da notificare: {e}")
+            return
+
+        # 2. Recupera destinatari
+        try:
+            recipients = utils.get_email_recipients(conn, 'Sys_email_management')
+        except Exception as e:
+            logger.error(f"Errore recupero email management: {e}")
+            return
+        if not recipients:
+            logger.warning("Nessun destinatario Sys_email_management configurato")
+            return
+
+        # 3. Recupera tutti i visitatori da oggi in poi
+        query = """
+            SELECT 
+                v.VisitorId,
+                CAST(v.StartVisit AS DATE) AS VisitDate,
+                v.CompanyName,
+                v.GuestName,
+                v.Pourpose,
+                v.SponsorGuy,
+                CASE 
+                    WHEN EXISTS (
+                        SELECT 1 FROM Employee.dbo.VisitorArrivalDetails vad 
+                        WHERE vad.VisitorId = v.VisitorId
+                    ) THEN 1 ELSE 0 
+                END AS HasPickup,
+                (
+                    SELECT TOP 1 sd.SupporterName 
+                    FROM Employee.dbo.VisitorArrivalDetails vad
+                    INNER JOIN Employee.dbo.SupporterData sd 
+                        ON sd.SupporterDataId = vad.HotelId
+                    WHERE vad.VisitorId = v.VisitorId
+                ) AS HotelName,
+                v.StartVisit,
+                v.EndVisit
+            FROM Employee.dbo.Visitors v
+            WHERE v.EndVisit >= CAST(GETDATE() AS DATE)
+            ORDER BY CAST(v.StartVisit AS DATE), v.CompanyName, v.GuestName
+        """
+        try:
+            cursor = conn.cursor()
+            cursor.execute(query)
+            visitors = cursor.fetchall()
+            cursor.close()
+        except Exception as e:
+            logger.error(f"Errore recupero visitatori per email management: {e}")
+            return
+
+        if not visitors:
+            logger.info("Nessun visitatore futuro trovato")
+            return
+
+        # 4. Costruisci tabella HTML raggruppata per giorno
+        from collections import OrderedDict
+        days = OrderedDict()
+        for v in visitors:
+            day_key = v.VisitDate
+            if day_key not in days:
+                days[day_key] = []
+            days[day_key].append(v)
+
+        table_rows = ''
+        for day, day_visitors in days.items():
+            day_str = day.strftime('%A %d/%m/%Y') if hasattr(day, 'strftime') else str(day)
+            # Header giorno
+            table_rows += f'''
+            <tr style="background-color: #0078D4; color: white;">
+                <td colspan="6" style="padding: 8px 12px; font-weight: bold; font-size: 13px;">
+                    📅 {day_str} — {len(day_visitors)} vizitator(i)
+                </td>
+            </tr>
+            '''
+            for i, v in enumerate(day_visitors):
+                bg = ' style="background-color: #F8F9FA;"' if i % 2 == 0 else ''
+                pickup_icon = '✅' if v.HasPickup else '❌'
+                hotel = v.HotelName or '—'
+                start_str = v.StartVisit.strftime('%d/%m') if v.StartVisit else ''
+                end_str = v.EndVisit.strftime('%d/%m') if v.EndVisit else ''
+                table_rows += f'''
+                <tr{bg}>
+                    <td style="padding: 6px 10px;">{v.CompanyName or '—'}</td>
+                    <td style="padding: 6px 10px;">{v.GuestName or '—'}</td>
+                    <td style="padding: 6px 10px;">{v.Pourpose or '—'}</td>
+                    <td style="padding: 6px 10px; text-align: center;">{start_str} — {end_str}</td>
+                    <td style="padding: 6px 10px; text-align: center;">{pickup_icon}</td>
+                    <td style="padding: 6px 10px;">{hotel}</td>
+                </tr>
+                '''
+
+        today_str = datetime.now().strftime('%d/%m/%Y')
+        logo_path = os.path.join(os.path.dirname(__file__), 'Logo.png')
+
+        body_html = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; font-size: 12px; color: #333;">
+            <img src="cid:company_logo" alt="Vandewiele" style="width: 150px; margin-bottom: 10px;" /><br/>
+            <h2 style="color: #0078D4;">Listă Vizitatori Programați / Scheduled Visitors List</h2>
+            <p>Data raport: <strong>{today_str}</strong></p>
+            <p>Mai jos este lista actualizată a vizitatorilor programați de astăzi în continuare:</p>
+
+            <table style="border-collapse: collapse; margin: 15px 0; font-size: 12px; width: 100%; border: 1px solid #ddd;">
+                <tr style="background-color: #2C3E50; color: white;">
+                    <th style="padding: 8px 10px; text-align: left;">Companie</th>
+                    <th style="padding: 8px 10px; text-align: left;">Persoană</th>
+                    <th style="padding: 8px 10px; text-align: left;">Scop vizită</th>
+                    <th style="padding: 8px 10px; text-align: center;">Perioadă</th>
+                    <th style="padding: 8px 10px; text-align: center;">Pickup</th>
+                    <th style="padding: 8px 10px; text-align: left;">Hotel</th>
+                </tr>
+                {table_rows}
+            </table>
+
+            <p style="color: #888; font-size: 10px; margin-top: 20px;">
+                Total vizitatori: {len(visitors)}<br/>
+                Email generată automat de TraceabilityRS — {self.user_name}
+            </p>
+        </body>
+        </html>
+        """
+
+        # 5. Invio email
+        try:
+            sender = EmailSender()
+            attachments = []
+            if os.path.exists(logo_path):
+                attachments.append(('inline', logo_path, 'company_logo'))
+
+            sender.send_email(
+                to_email=', '.join(recipients),
+                subject=f"Vizitatori Programați — {today_str} — {len(visitors)} persoane",
+                body=body_html,
+                is_html=True,
+                attachments=attachments if attachments else None
+            )
+            logger.info(f"Email management visitatori inviata a {recipients}, {len(visitors)} visitatori")
+        except Exception as e:
+            logger.error(f"Errore invio email management: {e}")
+            return
+
+        # 6. Segna i visitatori come notificati (SentEmailToManagement = 1)
+        try:
+            visitor_ids = [v.VisitorId for v in visitors]
+            if visitor_ids:
+                placeholders = ','.join(['?' for _ in visitor_ids])
+                cursor = conn.cursor()
+                cursor.execute(f"""
+                    UPDATE Employee.dbo.Visitors
+                    SET SentEmailToManagement = 1
+                    WHERE VisitorId IN ({placeholders})
+                      AND (SentEmailToManagement IS NULL OR SentEmailToManagement = 0)
+                """, visitor_ids)
+                conn.commit()
+                cursor.close()
+                logger.info(f"Marcati {len(visitor_ids)} visitatori come SentEmailToManagement=1")
+        except Exception as e:
+            logger.error(f"Errore update SentEmailToManagement: {e}")
 
     def _prompt_room_booking(self):
         """Prompt per prenotazione sala riunioni"""
