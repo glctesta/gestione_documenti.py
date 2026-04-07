@@ -307,7 +307,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.0.1.4'  # Versione aggiornata
+APP_VERSION = '2.4.0.1.6'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -13309,7 +13309,225 @@ class App(tk.Tk):
             'verifica_discrepanze',
             self._schedule_verification_check
         ))
+
+        # Ritardo 15 secondi: Email settimanale visitatori (solo lunedì)
+        self.after(15000, lambda: self._delayed_task(
+            'email_settimanale_visitatori',
+            self._check_weekly_visitor_email
+        ))
     
+    def _check_weekly_visitor_email(self):
+        """Invia email settimanale con lista visitatori programmati (solo lunedì, una volta).
+        
+        - Verifica che oggi sia lunedì
+        - Verifica che non sia già stata inviata questa settimana
+        - Recupera visitatori da lunedì a domenica della settimana corrente
+        - Invia a Sys_email_management
+        - Registra invio in settings (SentWeeklyVisitorEmail_<data>)
+        """
+        import threading
+        
+        def _send_weekly():
+            try:
+                from datetime import datetime, timedelta
+                from collections import OrderedDict
+                import utils
+                from email_connector import EmailSender
+                import os
+
+                today = datetime.now().date()
+                
+                # Solo lunedì (0 = Monday)
+                if today.weekday() != 0:
+                    logger.debug("Weekly visitor email: non è lunedì, skip")
+                    return
+
+                conn = self.db.conn
+                week_key = today.strftime('%Y-%m-%d')
+                setting_key = f'SentWeeklyVisitorEmail_{week_key}'
+
+                # Verifica se già inviata questa settimana
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT COUNT(*) AS cnt 
+                        FROM traceability_rs.dbo.settings 
+                        WHERE atribute = ?
+                    """, setting_key)
+                    row = cursor.fetchone()
+                    cursor.close()
+                    if row and row.cnt > 0:
+                        logger.info(f"Weekly visitor email già inviata per settimana {week_key}")
+                        return
+                except Exception as e:
+                    logger.error(f"Errore check weekly email sent: {e}")
+                    return
+
+                # Recupera destinatari
+                try:
+                    recipients = utils.get_email_recipients(conn, 'Sys_email_management')
+                except Exception as e:
+                    logger.error(f"Weekly visitor email: errore recupero destinatari: {e}")
+                    return
+                if not recipients:
+                    logger.warning("Weekly visitor email: nessun destinatario Sys_email_management")
+                    return
+
+                # Date settimana corrente (lunedì → domenica)
+                monday = today
+                sunday = today + timedelta(days=6)
+
+                # Query visitatori della settimana
+                query = """
+                    SELECT 
+                        v.VisitorId,
+                        CAST(v.StartVisit AS DATE) AS VisitDate,
+                        v.CompanyName,
+                        v.GuestName,
+                        v.Pourpose,
+                        v.SponsorGuy,
+                        CASE 
+                            WHEN EXISTS (
+                                SELECT 1 FROM Employee.dbo.VisitorArrivalDetails vad 
+                                WHERE vad.VisitorId = v.VisitorId
+                            ) THEN 1 ELSE 0 
+                        END AS HasPickup,
+                        (
+                            SELECT TOP 1 vsd.Name 
+                            FROM Employee.dbo.VisitorArrivalDetails vad
+                            INNER JOIN Employee.dbo.VisitorSupportersData vsd 
+                                ON vsd.SupporterDataId = vad.HotelId
+                            WHERE vad.VisitorId = v.VisitorId
+                        ) AS HotelName,
+                        v.StartVisit,
+                        v.EndVisit
+                    FROM Employee.dbo.Visitors v
+                    WHERE CAST(v.StartVisit AS DATE) BETWEEN ? AND ?
+                       OR (CAST(v.StartVisit AS DATE) < ? AND CAST(v.EndVisit AS DATE) >= ?)
+                    ORDER BY CAST(v.StartVisit AS DATE), v.CompanyName, v.GuestName
+                """
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute(query, (monday, sunday, monday, monday))
+                    visitors = cursor.fetchall()
+                    cursor.close()
+                except Exception as e:
+                    logger.error(f"Weekly visitor email: errore query visitatori: {e}")
+                    return
+
+                if not visitors:
+                    logger.info("Weekly visitor email: nessun visitatore per questa settimana")
+                    # Registra comunque per non ritentare
+                    self._mark_weekly_email_sent(conn, setting_key)
+                    return
+
+                # Costruisci tabella raggruppata per giorno
+                days = OrderedDict()
+                for v in visitors:
+                    day_key = v.VisitDate
+                    if day_key not in days:
+                        days[day_key] = []
+                    days[day_key].append(v)
+
+                table_rows = ''
+                for day, day_visitors in days.items():
+                    day_str = day.strftime('%A %d/%m/%Y') if hasattr(day, 'strftime') else str(day)
+                    table_rows += f'''
+                    <tr style="background-color: #0078D4; color: white;">
+                        <td colspan="6" style="padding: 8px 12px; font-weight: bold; font-size: 13px;">
+                            📅 {day_str} — {len(day_visitors)} vizitator(i)
+                        </td>
+                    </tr>
+                    '''
+                    for i, v in enumerate(day_visitors):
+                        bg = ' style="background-color: #F8F9FA;"' if i % 2 == 0 else ''
+                        pickup_icon = '✅' if v.HasPickup else '❌'
+                        hotel = v.HotelName or '—'
+                        start_str = v.StartVisit.strftime('%d/%m') if v.StartVisit else ''
+                        end_str = v.EndVisit.strftime('%d/%m') if v.EndVisit else ''
+                        table_rows += f'''
+                        <tr{bg}>
+                            <td style="padding: 6px 10px;">{v.CompanyName or '—'}</td>
+                            <td style="padding: 6px 10px;">{v.GuestName or '—'}</td>
+                            <td style="padding: 6px 10px;">{v.Pourpose or '—'}</td>
+                            <td style="padding: 6px 10px; text-align: center;">{start_str} — {end_str}</td>
+                            <td style="padding: 6px 10px; text-align: center;">{pickup_icon}</td>
+                            <td style="padding: 6px 10px;">{hotel}</td>
+                        </tr>
+                        '''
+
+                today_str = today.strftime('%d/%m/%Y')
+                monday_str = monday.strftime('%d/%m/%Y')
+                sunday_str = sunday.strftime('%d/%m/%Y')
+                logo_path = os.path.join(os.path.dirname(__file__), 'Logo.png')
+
+                body_html = f"""
+                <html>
+                <body style="font-family: Arial, sans-serif; font-size: 12px; color: #333;">
+                    <img src="cid:company_logo" alt="Vandewiele" style="width: 150px; margin-bottom: 10px;" /><br/>
+                    <h2 style="color: #0078D4;">📋 Programare Vizitatori Săptămâna {monday_str} — {sunday_str}</h2>
+                    <h3 style="color: #2C3E50;">Weekly Visitors Schedule</h3>
+                    <p>Raport generat: <strong>{today_str}</strong></p>
+
+                    <table style="border-collapse: collapse; margin: 15px 0; font-size: 12px; width: 100%; border: 1px solid #ddd;">
+                        <tr style="background-color: #2C3E50; color: white;">
+                            <th style="padding: 8px 10px; text-align: left;">Companie</th>
+                            <th style="padding: 8px 10px; text-align: left;">Persoană</th>
+                            <th style="padding: 8px 10px; text-align: left;">Scop vizită</th>
+                            <th style="padding: 8px 10px; text-align: center;">Perioadă</th>
+                            <th style="padding: 8px 10px; text-align: center;">Pickup</th>
+                            <th style="padding: 8px 10px; text-align: left;">Hotel</th>
+                        </tr>
+                        {table_rows}
+                    </table>
+
+                    <p style="color: #888; font-size: 10px; margin-top: 20px;">
+                        Total vizitatori săptămâna aceasta: {len(visitors)}<br/>
+                        Email generată automat de TraceabilityRS
+                    </p>
+                </body>
+                </html>
+                """
+
+                # Invio email
+                sender = EmailSender()
+                attachments = []
+                if os.path.exists(logo_path):
+                    attachments.append(('inline', logo_path, 'company_logo'))
+
+                sender.send_email(
+                    to_email=', '.join(recipients),
+                    subject=f"Programare Vizitatori — Săptămâna {monday_str} - {sunday_str} — {len(visitors)} persoane",
+                    body=body_html,
+                    is_html=True,
+                    attachments=attachments if attachments else None
+                )
+                logger.info(f"Weekly visitor email inviata a {recipients}, {len(visitors)} visitatori")
+
+                # Registra invio
+                self._mark_weekly_email_sent(conn, setting_key)
+
+            except Exception as e:
+                logger.error(f"Errore _check_weekly_visitor_email: {e}", exc_info=True)
+
+        # Esegui in thread separato per non bloccare la UI
+        t = threading.Thread(target=_send_weekly, daemon=True)
+        t.start()
+
+    def _mark_weekly_email_sent(self, conn, setting_key):
+        """Registra in settings che l'email settimanale è stata inviata."""
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO traceability_rs.dbo.settings (atribute, [VALUE])
+                VALUES (?, ?)
+            """, (setting_key, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+            conn.commit()
+            cursor.close()
+            logger.info(f"Registrato invio weekly email: {setting_key}")
+        except Exception as e:
+            logger.error(f"Errore registrazione weekly email sent: {e}")
+
     def _delayed_task(self, task_name, task_function):
         """
         Esegue un task in background con gestione errori e logging.
