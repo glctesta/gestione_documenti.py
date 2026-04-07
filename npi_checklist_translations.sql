@@ -202,5 +202,109 @@ IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='de' AND Tra
 INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('de','cl_date','Datum:');
 GO
 
+-- cl_no_family_sections (warning when no checklist families configured)
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='it' AND TranslationKey='cl_no_family_sections')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('it','cl_no_family_sections','⚠️ Nessuna famiglia con ChecklistSection configurata per questo progetto.
+Configurare le famiglie NPI nella sezione Configurazione.');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='ro' AND TranslationKey='cl_no_family_sections')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro','cl_no_family_sections',N'⚠️ Nicio familie cu ChecklistSection configurată pentru acest proiect.
+Configurați familiile NPI în secțiunea Configurare.');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='en' AND TranslationKey='cl_no_family_sections')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('en','cl_no_family_sections','⚠️ No family with ChecklistSection configured for this project.
+Configure NPI families in the Configuration section.');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='sv' AND TranslationKey='cl_no_family_sections')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv','cl_no_family_sections','⚠️ Ingen familj med ChecklistSection konfigurerad för detta projekt.
+Konfigurera NPI-familjer i konfigurationssektionen.');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='de' AND TranslationKey='cl_no_family_sections')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('de','cl_no_family_sections','⚠️ Keine Familie mit ChecklistSection für dieses Projekt konfiguriert.
+Konfigurieren Sie die NPI-Familien im Konfigurationsbereich.');
+GO
+
+-- cl_resp_quality, cl_resp_production, cl_resp_engineering
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='it' AND TranslationKey='cl_resp_quality')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('it','cl_resp_quality','Responsabile Qualità Processo');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='ro' AND TranslationKey='cl_resp_quality')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro','cl_resp_quality',N'Responsabil Calitate Proces');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='en' AND TranslationKey='cl_resp_quality')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('en','cl_resp_quality','Process Quality Responsible');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='sv' AND TranslationKey='cl_resp_quality')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv','cl_resp_quality','Processkvalitetsansvarig');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='de' AND TranslationKey='cl_resp_quality')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('de','cl_resp_quality','Prozessqualitätsverantwortlicher');
+GO
+
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='it' AND TranslationKey='cl_resp_production')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('it','cl_resp_production','Responsabile Produzione');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='ro' AND TranslationKey='cl_resp_production')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro','cl_resp_production',N'Responsabil Producție');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='en' AND TranslationKey='cl_resp_production')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('en','cl_resp_production','Production Responsible');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='sv' AND TranslationKey='cl_resp_production')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv','cl_resp_production','Produktionsansvarig');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='de' AND TranslationKey='cl_resp_production')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('de','cl_resp_production','Produktionsverantwortlicher');
+GO
+
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='it' AND TranslationKey='cl_resp_engineering')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('it','cl_resp_engineering','Responsabile Ingegneria Processo');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='ro' AND TranslationKey='cl_resp_engineering')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro','cl_resp_engineering',N'Responsabil Inginer Process');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='en' AND TranslationKey='cl_resp_engineering')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('en','cl_resp_engineering','Process Engineer Responsible');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='sv' AND TranslationKey='cl_resp_engineering')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv','cl_resp_engineering','Processingenjörsansvarig');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='de' AND TranslationKey='cl_resp_engineering')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('de','cl_resp_engineering','Prozessingenieur Verantwortlicher');
+GO
+
+-- cl_actions_comments, cl_confirm_delete, cl_confirm_approve, cl_select_session
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='it' AND TranslationKey='cl_actions_comments')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('it','cl_actions_comments','Commenti / Azioni');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='ro' AND TranslationKey='cl_actions_comments')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro','cl_actions_comments',N'Comentarii / Acțiuni');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='en' AND TranslationKey='cl_actions_comments')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('en','cl_actions_comments','Comments / Actions');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='sv' AND TranslationKey='cl_actions_comments')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv','cl_actions_comments','Kommentarer / Åtgärder');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='de' AND TranslationKey='cl_actions_comments')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('de','cl_actions_comments','Kommentare / Aktionen');
+GO
+
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='it' AND TranslationKey='cl_select_session')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('it','cl_select_session','Selezionare o creare una sessione.');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='ro' AND TranslationKey='cl_select_session')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro','cl_select_session',N'Selectați sau creați o sesiune.');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='en' AND TranslationKey='cl_select_session')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('en','cl_select_session','Select or create a session.');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='sv' AND TranslationKey='cl_select_session')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv','cl_select_session','Välj eller skapa en session.');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='de' AND TranslationKey='cl_select_session')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('de','cl_select_session','Sitzung auswählen oder erstellen.');
+GO
+
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='it' AND TranslationKey='cl_confirm_delete')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('it','cl_confirm_delete','Eliminare questa sessione?');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='ro' AND TranslationKey='cl_confirm_delete')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro','cl_confirm_delete',N'Ștergeți această sesiune?');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='en' AND TranslationKey='cl_confirm_delete')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('en','cl_confirm_delete','Delete this session?');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='sv' AND TranslationKey='cl_confirm_delete')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv','cl_confirm_delete','Radera denna session?');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='de' AND TranslationKey='cl_confirm_delete')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('de','cl_confirm_delete','Diese Sitzung löschen?');
+GO
+
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='it' AND TranslationKey='cl_confirm_approve')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('it','cl_confirm_approve','Approvare questa checklist? Non sarà più modificabile.');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='ro' AND TranslationKey='cl_confirm_approve')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro','cl_confirm_approve',N'Aprobați această checklist? Nu va mai putea fi modificată.');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='en' AND TranslationKey='cl_confirm_approve')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('en','cl_confirm_approve','Approve this checklist? It will no longer be editable.');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='sv' AND TranslationKey='cl_confirm_approve')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv','cl_confirm_approve','Godkänn denna checklista? Den kan inte längre redigeras.');
+IF NOT EXISTS (SELECT 1 FROM dbo.AppTranslations WHERE LanguageCode='de' AND TranslationKey='cl_confirm_approve')
+INSERT INTO dbo.AppTranslations (LanguageCode, TranslationKey, TranslationValue) VALUES ('de','cl_confirm_approve','Diese Checkliste genehmigen? Sie kann nicht mehr bearbeitet werden.');
+GO
+
 PRINT '✅ Traduzioni NPI Checklist completate'
 GO

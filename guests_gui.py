@@ -675,10 +675,10 @@ class GuestRegistrationWindow(tk.Toplevel):
                     ) THEN 1 ELSE 0 
                 END AS HasPickup,
                 (
-                    SELECT TOP 1 sd.SupporterName 
+                    SELECT TOP 1 vsd.Name 
                     FROM Employee.dbo.VisitorArrivalDetails vad
-                    INNER JOIN Employee.dbo.SupporterData sd 
-                        ON sd.SupporterDataId = vad.HotelId
+                    INNER JOIN Employee.dbo.VisitorSupportersData vsd 
+                        ON vsd.SupporterDataId = vad.HotelId
                     WHERE vad.VisitorId = v.VisitorId
                 ) AS HotelName,
                 v.StartVisit,
