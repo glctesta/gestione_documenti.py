@@ -425,11 +425,15 @@ class GuestManagementWindow(tk.Toplevel):
 
             cc = user_email if user_email else None
 
+            # Aggiungi ConfirmationEmails da VisitorPlanToCharges
+            confirmation_emails = self._get_confirmation_emails_by_detail(
+                data.get('arrival_detail_id'))
+
             # Supporta email multiple separate da ';'
             email_addresses = [e.strip() for e in data['email'].split(';') if e.strip()]
             to_addr = email_addresses[0]
             extra_cc = email_addresses[1:]
-            all_cc = extra_cc + ([cc] if cc else [])
+            all_cc = extra_cc + ([cc] if cc else []) + confirmation_emails
 
             logger.info(f"Resend {service_type} email TO: {to_addr}, CC: {all_cc}")
             sender.send_email(
@@ -646,6 +650,47 @@ class GuestManagementWindow(tk.Toplevel):
         except Exception as e:
             logger.warning(f"Impossibile recuperare email utente: {e}")
             return None
+
+    def _get_confirmation_emails_by_detail(self, arrival_detail_id):
+        """Recupera ConfirmationEmails da VisitorPlanToCharges partendo da un ArrivalDetailId.
+        
+        Catena: VisitorArrivalDetails.VisitorId → Visitors.VisitorDataId
+        → VisitorData.VisitorPlanToChargeID → VisitorPlanToCharges.ConfirmationEmails
+        
+        Returns:
+            Lista di indirizzi email unici, oppure lista vuota.
+        """
+        if not arrival_detail_id:
+            return []
+        emails = set()
+        try:
+            query = """
+                SELECT DISTINCT vpc.ConfirmationEmails
+                FROM Employee.dbo.VisitorArrivalDetails vad
+                INNER JOIN Employee.dbo.Visitors v
+                    ON vad.VisitorId = v.VisitorId
+                INNER JOIN Employee.dbo.VisitorData vd
+                    ON v.VisitorDataId = vd.VisitorDataID
+                INNER JOIN Employee.dbo.VisitorPlanToCharges vpc
+                    ON vd.VisitorPlanToChargeID = vpc.VisitorPlanToChargeID
+                WHERE vad.VisitorArrivalDetailId = ?
+                    AND vpc.ConfirmationEmails IS NOT NULL
+                    AND vpc.ConfirmationEmails != ''
+            """
+            cursor = self.db.conn.cursor()
+            cursor.execute(query, (arrival_detail_id,))
+            for row in cursor.fetchall():
+                if row.ConfirmationEmails:
+                    for email in row.ConfirmationEmails.replace(',', ';').split(';'):
+                        email = email.strip()
+                        if email and '@' in email:
+                            emails.add(email)
+            cursor.close()
+            if emails:
+                logger.info(f"ConfirmationEmails per ArrivalDetail {arrival_detail_id}: {emails}")
+        except Exception as e:
+            logger.warning(f"Errore recupero ConfirmationEmails: {e}")
+        return list(emails)
 
     # ================================================================
     # TAB 2 — DATI OSPITI

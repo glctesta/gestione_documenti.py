@@ -219,7 +219,7 @@ from typing import Optional, List, Dict, Tuple
 #   coating_gui, product_checks_gui, guests_gui, guest_management_gui,
 #   guest_settings_gui, guest_rules_gui, guests_report_generator,
 #   assign_submissions_gui, submissions_management_gui, fct_transfer,
-#   calibration_gui, add_complaint, printer_config_manager,
+#   calibration_gui, printer_config_manager,
 #   npi.windows.dashboard_window, npi.windows.gantt_window,
 #   npi.windows.config_window, npi.windows.project_window,
 #   traceability (TraceabilityManager)
@@ -307,7 +307,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.3.9.9.1'  # Versione aggiornata
+APP_VERSION = '2.4.0.1.3'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -4456,66 +4456,6 @@ class Database:
                 logger.exception(f"[DATABASE] Errore inaspettato fetch_all: {e}")
                 return []
 
-    def get_claim_document(self, claim_log_id: int, output_path: str) -> bool:
-        """
-        Recupera il documento allegato a un reclamo e lo salva su disco
-
-        Args:
-            claim_log_id: ID del reclamo
-            output_path: Percorso dove salvare il file
-
-        Returns:
-            bool: True se successo, False altrimenti
-        """
-        try:
-            query = """
-                    SELECT
-                        [TransportDocumentData]
-                    FROM [Traceability_RS].[clm].[ClaimLogs]
-                    WHERE [ClaimLogId] = ? \
-                    """
-
-            result = self.fetch_one(query, (claim_log_id,))
-
-            if result and result[0]:
-                file_data = result[0]
-
-                with open(output_path, 'wb') as f:
-                    f.write(file_data)
-
-                logger.info(f"[DATABASE] File salvato: {output_path} ({len(file_data)} bytes)")
-                return True
-            else:
-                logger.warning(f"[DATABASE] Nessun documento trovato per reclamo {claim_log_id}")
-                return False
-
-        except Exception as e:
-            logger.exception(f"[DATABASE] Errore recupero documento: {e}")
-            return False
-
-    def delete_claim_document(self, claim_log_id: int) -> bool:
-        """
-        Elimina il documento allegato a un reclamo
-
-        Args:
-            claim_log_id: ID del reclamo
-
-        Returns:
-            bool: True se successo, False altrimenti
-        """
-        try:
-            query = """
-                    UPDATE [Traceability_RS].[clm].[ClaimLogs]
-                    SET [TransportDocumentData] = NULL
-                    WHERE [ClaimLogId] = ? \
-                    """
-
-            return self.execute_query(query, (claim_log_id,))
-
-        except Exception as e:
-            logger.exception(f"[DATABASE] Errore eliminazione documento: {e}")
-            return False
-
     def fetch_one(self, query, params=None):
         """
         Esegue una query SELECT e restituisce il primo risultato
@@ -4596,653 +4536,6 @@ class Database:
                 self.conn.rollback()
                 logger.exception(f"[DATABASE] Errore inaspettato execute_query_with_id: {e}")
                 return None
-
-###sALVATAGGIO DATI COMPLAIN
-    def insert_claim_header(self, header) -> Optional[int]:
-        """
-        Inserisce la testata del reclamo e restituisce l'ID generato usando OUTPUT INSERTED.
-        """
-        try:
-            # Usiamo OUTPUT INSERTED.ClaimLogId per ricevere immediatamente l'ID,
-            # funziona meglio di SCOPE_IDENTITY() con pyodbc.
-            query = """
-                    INSERT INTO [Traceability_RS].[clm].[ClaimLogs]
-                    ([ClaimTypeId]
-                        , [IdProduct]
-                        , [DateClaim]
-                        , [AWB]
-                        , [TransportDocument]
-                        , [DateSys]
-                        , [CustomerClaimNumber]
-                        , [InternalClaimNumber]
-                        , [ShortClaimDescription]
-                        , [TargetDate]
-                        , [Quantity]
-                        , [ClaimDecisionId]
-                        , [USERName])
-                        OUTPUT INSERTED.ClaimLogId
-                    VALUES
-                        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
-                    """
-
-            # Preparazione parametri (TransportDocumentData rimosso)
-            params = (
-                header.ClaimTypeId,
-                header.IdProduct,
-                header.DateClaim,
-                header.AWB,
-                header.TransportDocument,
-                header.DateSys,
-                header.CustomerClaimNumber,
-                header.InternalClaimNumber,
-                header.ShortClaimDescription,
-                header.TargetDate,
-                header.Quantity,
-                header.ClaimDecisionId,
-                header.USERName
-            )
-
-            cursor = self.conn.cursor()
-
-            logger.debug(f"[DATABASE] Esecuzione INSERT header con InternalClaimNumber: {header.InternalClaimNumber}")
-
-            # Eseguiamo la query
-            cursor.execute(query, params)
-
-            # Recuperiamo subito l'ID restituito dalla clausola OUTPUT
-            row = cursor.fetchone()
-
-            if row:
-                new_id = int(row[0])
-                self.conn.commit()  # Confermiamo la transazione solo se abbiamo l'ID
-                cursor.close()
-                logger.info(f"[DATABASE] Header inserito con successo. ClaimLogId generato: {new_id}")
-                return new_id
-            else:
-                logger.error("[DATABASE] INSERT eseguita ma nessun ID restituito da OUTPUT INSERTED.")
-                self.conn.rollback()
-                cursor.close()
-                return None
-
-        except Exception as e:
-            logger.exception(f"[DATABASE] Errore critico in insert_claim_header: {e}")
-            try:
-                self.conn.rollback()
-            except:
-                pass
-            return None
-
-    def insert_claim_details(self, claim_log_id: int, claim_details: List) -> bool:
-        """
-        Inserisce i dettagli di un reclamo nel database
-
-        Args:
-            claim_log_id: ID della testata del reclamo
-            claim_details: Lista di dettagli (ClaimDetail objects o dict)
-
-        Returns:
-            bool: True se successo, False altrimenti
-        """
-        try:
-            query = """
-                    INSERT INTO [Traceability_RS].[clm].[ClaimDataLogs]
-                    ([ClaimLogId],
-                        [FirstInspectionResultId],
-                        [LabelCod],
-                        [RootCause],
-                        [SummaryCorrectiveAction],
-                        [SummaryPreventiveAction],
-                        [ClaimStatusId],
-                    [ClaimDefectId])
-                    VALUES
-                        (?, ?, ?, ?, ?, ?, ?, ?) \
-                    """
-
-            for detail in claim_details:
-                # Se Ã¨ un dict
-                if isinstance(detail, dict):
-                    params = (
-                        claim_log_id,
-                        detail.get('FirstInspectionResultId'),
-                        detail.get('LabelCod'),
-                        detail.get('RootCause'),
-                        detail.get('SummaryCorrectiveAction'),
-                        detail.get('SummaryPreventiveAction'),
-                        detail.get('ClaimStatusId'),
-                        detail.get('ClaimDefectId')
-                    )
-                else:
-                    # Se Ã¨ un oggetto ClaimDetail
-                    params = (
-                        claim_log_id,
-                        detail.FirstInspectionResultId,
-                        detail.LabelCod,
-                        detail.RootCause,
-                        detail.SummaryCorrectiveAction,
-                        detail.SummaryPreventiveAction,
-                        detail.ClaimStatusId,
-                        detail.ClaimDefectId
-                    )
-
-                success = self.execute_query(query, params)
-                if not success:
-                    return False
-
-            logger.info(f"[DATABASE] {len(claim_details)} dettagli reclamo inseriti per ClaimLogId={claim_log_id}")
-            return True
-
-        except Exception as e:
-            logger.exception(f"[DATABASE] Errore inserimento dettagli reclamo: {e}")
-            return False
-
-    def update_claim_detail(self, detail_id: int, detail_data: Dict) -> bool:
-        """
-        Aggiorna un dettaglio specifico di un reclamo
-
-        Args:
-            detail_id: ID del dettaglio (ClaimLogDataId)
-            detail_data: Dizionario con i dati da aggiornare
-
-        Returns:
-            bool: True se successo, False altrimenti
-        """
-        try:
-            query = """
-                    UPDATE [Traceability_RS].[clm].[ClaimDataLogs]
-                    SET [FirstInspectionResultId] = ?,
-                        [LabelCod] = ?,
-                        [RootCause] = ?,
-                        [SummaryCorrectiveAction] = ?,
-                        [SummaryPreventiveAction] = ?,
-                        [ClaimStatusId] = ?,
-                        [ClaimDefectId] = ?
-                    WHERE [ClaimLogDataId] = ? \
-                    """
-
-            params = (
-                detail_data.get('FirstInspectionResultId'),
-                detail_data.get('LabelCod'),
-                detail_data.get('RootCause', ''),
-                detail_data.get('SummaryCorrectiveAction', ''),
-                detail_data.get('SummaryPreventiveAction', ''),
-                detail_data.get('ClaimStatusId'),
-                detail_data.get('ClaimDefectId'),
-                detail_id
-            )
-
-            success = self.execute_query(query, params)
-            
-            if success:
-                logger.info(f"[DATABASE] Dettaglio reclamo aggiornato: ClaimLogDataId={detail_id}")
-            else:
-                logger.error(f"[DATABASE] Errore aggiornamento dettaglio reclamo: ClaimLogDataId={detail_id}")
-            
-            return success
-
-        except Exception as e:
-            logger.exception(f"[DATABASE] Errore aggiornamento dettaglio reclamo: {e}")
-            return False
-
-    def get_claim_by_id(self, claim_log_id: int) -> Optional[Dict]:
-        """
-        Recupera una testata di reclamo dal database
-
-        Args:
-            claim_log_id: ID del reclamo
-
-        Returns:
-            dict: Dati del reclamo, None se non trovato
-        """
-        try:
-            query = """
-                    SELECT
-                        [ClaimLogId], [ClaimTypeId], [IdProduct], [DateClaim], [AWB], [TransportDocument], [TransportDocumentData], [DateSys], [CustomerClaimNumber], [InternalClaimNumber], [ShortClaimDescription], [TargetDate], [Quantity], [ClaimDecisionId], [USERName]
-                    FROM [Traceability_RS].[clm].[ClaimLogs]
-                    WHERE [ClaimLogId] = ? \
-                    """
-
-            result = self.fetch_one(query, (claim_log_id,))
-
-            if result:
-                return {
-                    'ClaimLogId': result[0],
-                    'ClaimTypeId': result[1],
-                    'IdProduct': result[2],
-                    'DateClaim': result[3],
-                    'AWB': result[4],
-                    'TransportDocument': result[5],
-                    'TransportDocumentData': result[6],
-                    'DateSys': result[7],
-                    'CustomerClaimNumber': result[8],
-                    'InternalClaimNumber': result[9],
-                    'ShortClaimDescription': result[10],
-                    'TargetDate': result[11],
-                    'Quantity': result[12],
-                    'ClaimDecisionId': result[13],
-                    'USERName': result[14]
-                }
-
-            return None
-
-        except Exception as e:
-            logger.exception(f"[DATABASE] Errore recupero reclamo: {e}")
-            return None
-
-    def get_claim_details(self, claim_log_id: int) -> List[Dict]:
-        """
-        Recupera i dettagli di un reclamo
-
-        Args:
-            claim_log_id: ID della testata del reclamo
-
-        Returns:
-            List[dict]: Lista dei dettagli del reclamo
-        """
-        try:
-            query = """
-                    SELECT
-                        [ClaimLogDataId], [ClaimLogId], [FirstInspectionResultId], [LabelCod], [RootCause], [SummaryCorrectiveAction], [SummaryPreventiveAction], [ClaimStatusId], [ClaimDefectId]
-                    FROM [Traceability_RS].[clm].[ClaimDataLogs]
-                    WHERE [ClaimLogId] = ?
-                    ORDER BY [ClaimLogDataId] \
-                    """
-
-            results = self.fetch_all(query, (claim_log_id,))
-
-            details = []
-            for row in results:
-                details.append({
-                    'ClaimLogDataId': row[0],
-                    'ClaimLogId': row[1],
-                    'FirstInspectionResultId': row[2],
-                    'LabelCod': row[3],
-                    'RootCause': row[4],
-                    'SummaryCorrectiveAction': row[5],
-                    'SummaryPreventiveAction': row[6],
-                    'ClaimStatusId': row[7],
-                    'ClaimDefectId': row[8]
-                })
-
-            return details
-
-        except Exception as e:
-            logger.exception(f"[DATABASE] Errore recupero dettagli reclamo: {e}")
-            return []
-
-    def get_claims_by_date_range(self, start_date: str, end_date: str) -> List[Dict]:
-        """
-        Recupera i reclami in un intervallo di date
-
-        Args:
-            start_date: Data inizio (formato YYYY-MM-DD)
-            end_date: Data fine (formato YYYY-MM-DD)
-
-        Returns:
-            List[dict]: Lista dei reclami
-        """
-        try:
-            query = """
-                    SELECT
-                        [ClaimLogId], [ClaimTypeId], [InternalClaimNumber], [CustomerClaimNumber], [ShortClaimDescription], [DateClaim], [TargetDate], [Quantity], [USERName]
-                    FROM [Traceability_RS].[clm].[ClaimLogs]
-                    WHERE [DateClaim] BETWEEN ? AND ?
-                    ORDER BY [DateClaim] DESC \
-                    """
-
-            results = self.fetch_all(query, (start_date, end_date))
-
-            claims = []
-            for row in results:
-                claims.append({
-                    'ClaimLogId': row[0],
-                    'ClaimTypeId': row[1],
-                    'InternalClaimNumber': row[2],
-                    'CustomerClaimNumber': row[3],
-                    'ShortClaimDescription': row[4],
-                    'DateClaim': row[5],
-                    'TargetDate': row[6],
-                    'Quantity': row[7],
-                    'USERName': row[8]
-                })
-
-            return claims
-
-        except Exception as e:
-            logger.exception(f"[DATABASE] Errore recupero reclami per data: {e}")
-            return []
-
-    def get_claims_by_client(self, client_id: int) -> List[Dict]:
-        """
-        Recupera i reclami di un cliente
-
-        Args:
-            client_id: ID del cliente (IDFinalClient)
-
-        Returns:
-            List[dict]: Lista dei reclami del cliente
-        """
-        try:
-            query = """
-                    SELECT
-                        [ClaimLogId], [InternalClaimNumber], [CustomerClaimNumber], [ShortClaimDescription], [DateClaim], [Quantity], [USERName]
-                    FROM [Traceability_RS].[clm].[ClaimLogs]
-                    WHERE [IDFinalClient] = ?
-                    ORDER BY [DateClaim] DESC \
-                    """
-
-            results = self.fetch_all(query, (client_id,))
-
-            claims = []
-            for row in results:
-                claims.append({
-                    'ClaimLogId': row[0],
-                    'InternalClaimNumber': row[1],
-                    'CustomerClaimNumber': row[2],
-                    'ShortClaimDescription': row[3],
-                    'DateClaim': row[4],
-                    'Quantity': row[5],
-                    'USERName': row[6]
-                })
-
-            return claims
-
-        except Exception as e:
-            logger.exception(f"[DATABASE] Errore recupero reclami per cliente: {e}")
-            return []
-
-    def search_claims(self, search_term: str) -> List[Dict]:
-        """
-        Cerca reclami per numero interno o numero cliente
-
-        Args:
-            search_term: Termine di ricerca
-
-        Returns:
-            List[dict]: Lista dei reclami trovati
-        """
-        try:
-            query = """
-                    SELECT TOP 100 [ClaimLogId],
-                    [InternalClaimNumber],
-                    [CustomerClaimNumber],
-                    [ShortClaimDescription],
-                    [DateClaim],
-                    [Quantity],
-                    [USERName]
-                    FROM [Traceability_RS].[clm].[ClaimLogs]
-                    WHERE [InternalClaimNumber] LIKE ?
-                       OR [CustomerClaimNumber] LIKE ?
-                       OR [ShortClaimDescription] LIKE ?
-                    ORDER BY [DateClaim] DESC \
-                    """
-
-            search_pattern = f"%{search_term}%"
-            results = self.fetch_all(query, (search_pattern, search_pattern, search_pattern))
-
-            claims = []
-            for row in results:
-                claims.append({
-                    'ClaimLogId': row[0],
-                    'InternalClaimNumber': row[1],
-                    'CustomerClaimNumber': row[2],
-                    'ShortClaimDescription': row[3],
-                    'DateClaim': row[4],
-                    'Quantity': row[5],
-                    'USERName': row[6]
-                })
-
-            return claims
-
-        except Exception as e:
-            logger.exception(f"[DATABASE] Errore ricerca reclami: {e}")
-            return []
-
-    # === NUOVI METODI PER GESTIONE DOCUMENTI RECLAMI ===
-    
-    def fetch_claim_doc_types(self):
-        """
-        Recupera i tipi di documento disponibili per i reclami
-        
-        Returns:
-            List[tuple]: Lista di tuple (ClaimDocTypeId, ClaimDocType)
-        """
-        try:
-            query = """
-                    SELECT [ClaimDocTypeId], [ClaimDocType]
-                    FROM [Traceability_RS].[dbo].[ClaimDocTypes]
-                    ORDER BY [ClaimDocType] \
-                    """
-            
-            results = self.fetch_all(query)
-            logger.debug(f"[DATABASE] Caricati {len(results)} tipi di documento reclami")
-            return results
-            
-        except Exception as e:
-            logger.exception(f"[DATABASE] Errore caricamento tipi documento reclami: {e}")
-            return []
-    
-    def save_claim_document(self, claim_log_id: int, doc_type_id: int, doc_data: bytes, doc_name: str) -> bool:
-        """
-        Salva un documento nella tabella ClaimLogDocs
-        
-        Args:
-            claim_log_id: ID del reclamo
-            doc_type_id: ID del tipo di documento
-            doc_data: Dati binari del documento
-            doc_name: Nome del file (non salvato - solo per logging)
-            
-        Returns:
-            bool: True se successo, False altrimenti
-        """
-        try:
-            # NOTE: DocumentName column doesn't exist in ClaimLogDocs table
-            # Only ClaimLogId, ClaimDocTypeId, and ClaimDoc are stored
-            query = """
-                    INSERT INTO [Traceability_RS].[dbo].[ClaimLogDocs]
-                    ([ClaimLogId], [ClaimDocTypeId], [ClaimDoc])
-                    VALUES (?, ?, ?)
-                    """
-            
-            params = (claim_log_id, doc_type_id, doc_data)
-            
-            success = self.execute_query(query, params)
-            
-            if success:
-                logger.info(f"[DATABASE] Documento '{doc_name}' salvato per ClaimLogId={claim_log_id}, Type={doc_type_id}")
-            else:
-                logger.error(f"[DATABASE] Errore salvataggio documento '{doc_name}' per ClaimLogId={claim_log_id}")
-                
-            return success
-            
-        except Exception as e:
-            logger.exception(f"[DATABASE] Errore salvataggio documento reclamo: {e}")
-            return False
-
-    
-    def get_claim_documents_count(self, claim_log_id: int) -> int:
-        """
-        Recupera il numero di documenti caricati per un reclamo
-        
-        Args:
-            claim_log_id: ID del reclamo
-            
-        Returns:
-            int: Numero di documenti caricati
-        """
-        try:
-            query = """
-                    SELECT COUNT(*) as DocCount
-                    FROM [Traceability_RS].[dbo].[ClaimLogDocs]
-                    WHERE [ClaimLogId] = ? \
-                    """
-            
-            result = self.fetch_one(query, (claim_log_id,))
-            
-            if result:
-                count = int(result[0])
-                logger.debug(f"[DATABASE] ClaimLogId={claim_log_id} ha {count} documenti")
-                return count
-            else:
-                return 0
-                
-        except Exception as e:
-            logger.exception(f"[DATABASE] Errore conteggio documenti reclamo: {e}")
-            return 0
-    
-    def send_claim_notification_email(self, claim_log_id: int, claim_header) -> bool:
-        """
-        Invia email di notifica per un reclamo completato
-        
-        Args:
-            claim_log_id: ID del reclamo
-            claim_header: Oggetto ClaimHeader con i dati del reclamo
-            
-        Returns:
-            bool: True se successo, False altrimenti
-        """
-        try:
-            # Recupera gli indirizzi email dalla configurazione
-            query_setting = """
-                           SELECT [Value]
-                           FROM [Traceability_RS].[dbo].[settings]
-                           WHERE [atribute] = 'sys_claim_notice' \
-                           """
-            
-            result = self.fetch_one(query_setting)
-            
-            if not result or not result[0]:
-                logger.warning("[DATABASE] Impostazione 'sys_claim_notice' non trovata o vuota")
-                return False
-            
-            email_addresses = result[0]
-            logger.debug(f"[DATABASE] Email destinatari notifica reclamo: {email_addresses}")
-            
-            # Prepara il contenuto dell'email
-            subject = f"Nuovo Reclamo: {claim_header.InternalClaimNumber}"
-            
-            body = f"""
-Nuovo reclamo inserito nel sistema:
-
-Numero Interno: {claim_header.InternalClaimNumber}
-Numero Cliente: {claim_header.CustomerClaimNumber}
-Descrizione: {claim_header.ShortClaimDescription}
-Data Reclamo: {claim_header.DateClaim}
-Data Target: {claim_header.TargetDate}
-QuantitÃ : {claim_header.Quantity}
-Inserito da: {claim_header.USERName}
-
-Accedi al sistema per visualizzare i dettagli completi.
-"""
-            
-            # Invia l'email usando il metodo esistente (se disponibile)
-            # Nota: Questo richiede che esista un metodo send_email nel database o in utils
-            try:
-                # Prova a importare e usare il metodo di invio email
-                import utils
-                if hasattr(utils, 'send_email'):
-                    success = utils.send_email(
-                        recipients=email_addresses,
-                        subject=subject,
-                        body=body
-                    )
-                    if success:
-                        logger.info(f"[DATABASE] Email notifica inviata per ClaimLogId={claim_log_id}")
-                    else:
-                        logger.error(f"[DATABASE] Errore invio email per ClaimLogId={claim_log_id}")
-                    return success
-                else:
-                    logger.warning("[DATABASE] Metodo send_email non disponibile in utils")
-                    # TODO: Implementare invio email alternativo
-                    return False
-                    
-            except ImportError:
-                logger.warning("[DATABASE] Modulo utils non disponibile per invio email")
-                return False
-                
-        except Exception as e:
-            logger.exception(f"[DATABASE] Errore invio notifica email reclamo: {e}")
-            return False
-
-    def update_claim_header(self, claim_log_id: int, updates: dict) -> bool:
-        """
-        Aggiorna una testata di reclamo
-
-        Args:
-            claim_log_id: ID della testata
-            updates: Dizionario con i campi da aggiornare
-
-        Returns:
-            bool: True se successo, False altrimenti
-        """
-        try:
-            if not updates:
-                return False
-
-            # Costruisci la query dinamicamente
-            set_clause = ", ".join([f"[{k}] = %s" for k in updates.keys()])
-            values = list(updates.values())
-            values.append(claim_log_id)
-
-            query = f"""
-                UPDATE [Traceability_RS].[clm].[ClaimLogs]
-                SET {set_clause}
-                WHERE [ClaimLogId] = %s
-            """
-
-            cursor = self.conn.cursor()
-            cursor.execute(query, values)
-            self.conn.commit()
-            cursor.close()
-
-            logger.info(f"[DATABASE] Testata reclamo aggiornata: ClaimLogId={claim_log_id}")
-            return True
-
-        except Exception as e:
-            logger.exception(f"[DATABASE] Errore aggiornamento testata: {e}")
-            self.conn.rollback()
-            return False
-
-    def delete_claim(self, claim_log_id: int) -> bool:
-        """
-        Elimina un reclamo (testata e dettagli)
-
-        Args:
-            claim_log_id: ID della testata
-
-        Returns:
-            bool: True se successo, False altrimenti
-        """
-        try:
-            cursor = self.conn.cursor()
-
-            # Elimina prima i dettagli
-            query_details = """
-                            DELETE \
-                            FROM [Traceability_RS].[clm].[ClaimDataLogs]
-                            WHERE [ClaimLogId] = %s \
-                            """
-            cursor.execute(query_details, (claim_log_id,))
-
-            # Poi elimina la testata
-            query_header = """
-                           DELETE \
-                           FROM [Traceability_RS].[clm].[ClaimLogs]
-                           WHERE [ClaimLogId] = %s \
-                           """
-            cursor.execute(query_header, (claim_log_id,))
-
-            self.conn.commit()
-            cursor.close()
-
-            logger.info(f"[DATABASE] Reclamo eliminato: ClaimLogId={claim_log_id}")
-            return True
-
-        except Exception as e:
-            logger.exception(f"[DATABASE] Errore eliminazione reclamo: {e}")
-            self.conn.rollback()
-            return False
-
-    ###fine metodi db claims
 
     def add_new_site(self, name, address, vat, country, logo):
         """Aggiunge una nuova compagnia."""
@@ -11044,6 +10337,15 @@ class App(tk.Tk):
             return
         logger.info("Connessione al database stabilita con successo")
 
+        # Leggi modalita' piano produzione PRIMA della costruzione menu
+        try:
+            import plan_alert_escalation as _pae_early
+            self._plan_check_mode = _pae_early.get_plan_check_mode(self.db.conn)
+        except Exception as e:
+            logger.warning(f"Errore lettura plan check mode all'avvio: {e}")
+            self._plan_check_mode = 'False'
+        logger.info(f"Piano produzione: modalita' iniziale '{self._plan_check_mode}'")
+
         # Carica la lingua salvata
         if self._splash:
             self._splash.update_progress(30, "Caricamento traduzioni...")
@@ -11188,6 +10490,21 @@ class App(tk.Tk):
         self._weekly_overtime_email_stop_event = threading.Event()
         self._start_weekly_overtime_email_background_task()
 
+        # Inizializza il thread per escalation piano produzione
+        self._plan_alert_thread = None
+        self._plan_alert_stop_event = threading.Event()
+        self._plan_alert_monthly_sent = None  # Track mese corrente
+        self._plan_alert_weekly_sent = None   # Track settimana corrente
+        # _plan_check_mode gia' letto all'avvio (dopo connessione DB)
+        if self._plan_check_mode != 'False':
+            self._start_plan_alert_background_task()
+        else:
+            logger.info("Piano produzione: worker NON avviato (Sys_enable_control_plan_check=False)")
+
+        # Inizializza il thread per FAI Autocheck da PlanningMachine
+        self._fai_autocheck_thread = None
+        self._fai_autocheck_stop_event = threading.Event()
+        self._start_fai_autocheck_background_task()
 
         # Batch generazione rapporti attività ospiti (da 1 gen a ieri)
         self.after(15000, self._start_activity_reports_batch)
@@ -11898,6 +11215,178 @@ class App(tk.Tk):
         
         logger.info("Background task FAI fails email terminato")
 
+    # — Plan Alert Escalation ———————————————————————————
+    def _start_plan_alert_background_task(self):
+        """Avvia il thread per escalation alert piano produzione."""
+        try:
+            if self._plan_alert_thread is None or not self._plan_alert_thread.is_alive():
+                self._plan_alert_stop_event.clear()
+                self._plan_alert_thread = threading.Thread(
+                    target=self._plan_alert_escalation_worker,
+                    daemon=True,
+                    name="PlanAlertEscalationWorker"
+                )
+                self._plan_alert_thread.start()
+                logger.info("Background task per escalation piano produzione avviato")
+        except Exception as e:
+            logger.error(f"Errore avvio background task plan alert: {e}", exc_info=True)
+
+    def _plan_alert_escalation_worker(self):
+        """
+        Worker thread per:
+        1. Escalation 60 min: controlla alert non giustificati, invia sollecitazioni
+        2. Report mensile: 1° giorno del mese, riepilogo mese precedente
+        3. Report settimanale: ogni lunedì, pattern ricorrenti prodotti+fasi
+        """
+        import plan_alert_escalation as pae
+        from business_days import should_send_notification
+        from datetime import datetime, timedelta
+        import time
+
+        logger.info("Worker Plan Alert Escalation avviato")
+
+        while not self._plan_alert_stop_event.is_set():
+            try:
+                now = datetime.now()
+                current_date = now.date()
+                current_hour = now.hour
+
+                # Rileggi modalità ad ogni ciclo (può cambiare a runtime)
+                try:
+                    mode = pae.get_plan_check_mode(self.db.conn)
+                except Exception:
+                    mode = 'False'
+                
+                if mode == 'False':
+                    time.sleep(300)  # 5 min e ricontrolla
+                    continue
+
+                # Solo durante orario lavorativo (7-18)
+                if current_hour < 7 or current_hour > 18:
+                    time.sleep(300)  # 5 min fuori orario
+                    continue
+
+                # --- 1) Escalation 60 min ---
+                if should_send_notification(country_code='RO'):
+                    try:
+                        sent = pae.check_and_escalate(
+                            self.db.conn, logo_path="logo.png", mode=mode)
+                        if sent > 0:
+                            logger.info(f"Plan Alert: inviate {sent} email escalation")
+                    except Exception as e:
+                        logger.error(
+                            f"Errore escalation piano: {e}", exc_info=True)
+
+                # --- 2) Report mensile (1° giorno del mese, ore 8) ---
+                if (now.day == 1 and current_hour == 8
+                        and self._plan_alert_monthly_sent != current_date):
+                    try:
+                        ok = pae.send_monthly_summary(
+                            self.db.conn, logo_path="logo.png", mode=mode)
+                        if ok:
+                            logger.info("Report mensile piano produzione inviato")
+                        self._plan_alert_monthly_sent = current_date
+                    except Exception as e:
+                        logger.error(
+                            f"Errore report mensile piano: {e}", exc_info=True)
+
+                # --- 3) Report settimanale (lunedì, ore 9) ---
+                if (now.weekday() == 0 and current_hour == 9
+                        and self._plan_alert_weekly_sent != current_date):
+                    try:
+                        ok = pae.send_weekly_pattern_check(
+                            self.db.conn, logo_path="logo.png", mode=mode)
+                        if ok:
+                            logger.info("Report settimanale pattern piano inviato")
+                        self._plan_alert_weekly_sent = current_date
+                    except Exception as e:
+                        logger.error(
+                            f"Errore report settimanale piano: {e}", exc_info=True)
+
+                # Attendi 60 secondi
+                time.sleep(60)
+
+            except Exception as e:
+                logger.error(
+                    f"Errore nel worker plan alert: {e}", exc_info=True)
+                time.sleep(300)  # 5 min in caso di errore
+
+        logger.info("Background task plan alert escalation terminato")
+
+    # ────────────────────────────────────────────────────────────
+    # BACKGROUND TASK: FAI Autocheck da PlanningMachine
+    # ────────────────────────────────────────────────────────────
+
+    def _start_fai_autocheck_background_task(self):
+        """Avvia il thread per FAI Autocheck da PlanningMachine."""
+        try:
+            if self._fai_autocheck_thread is None or not self._fai_autocheck_thread.is_alive():
+                self._fai_autocheck_stop_event.clear()
+                self._fai_autocheck_thread = threading.Thread(
+                    target=self._fai_autocheck_worker,
+                    daemon=True,
+                    name="FaiAutocheckWorker"
+                )
+                self._fai_autocheck_thread.start()
+                logger.info("Background task FAI Autocheck avviato")
+        except Exception as e:
+            logger.error(f"Errore avvio background task FAI Autocheck: {e}", exc_info=True)
+
+    def _fai_autocheck_worker(self):
+        """
+        Worker thread per FAI Autocheck.
+        Ogni 30 minuti legge il planning Excel e invia email preventive
+        per i controlli FAI obbligatori non ancora eseguiti.
+        """
+        import fai_autocheck
+        from business_days import should_send_notification
+        import time
+
+        logger.info("Worker FAI Autocheck avviato")
+
+        while not self._fai_autocheck_stop_event.is_set():
+            try:
+                now = datetime.now()
+                current_hour = now.hour
+
+                # Solo giorni lavorativi (RO)
+                if not should_send_notification(country_code='RO'):
+                    time.sleep(300)  # 5 min e ricontrolla
+                    continue
+
+                # Solo orario produzione (6:00 - 22:00)
+                if current_hour < 6 or current_hour >= 22:
+                    time.sleep(300)  # 5 min fuori orario
+                    continue
+
+                # Verifica connessione DB
+                if not self.db._ensure_connection():
+                    logger.error("FAI Autocheck: connessione DB non disponibile")
+                    time.sleep(300)
+                    continue
+
+                # Esegui ciclo autocheck
+                try:
+                    sent = fai_autocheck.run_autocheck_cycle(
+                        self.db.conn, logo_path="Logo.png")
+                    if sent > 0:
+                        logger.info(f"FAI Autocheck: inviate {sent} email preventive")
+                except Exception as e:
+                    logger.error(
+                        f"FAI Autocheck: errore nel ciclo: {e}", exc_info=True)
+
+                # Attendi 30 minuti
+                for _ in range(180):  # 180 × 10s = 30 min
+                    if self._fai_autocheck_stop_event.is_set():
+                        break
+                    time.sleep(10)
+
+            except Exception as e:
+                logger.error(
+                    f"Errore nel worker FAI Autocheck: {e}", exc_info=True)
+                time.sleep(300)  # 5 min in caso di errore
+
+        logger.info("Background task FAI Autocheck terminato")
 
 
     def _show_verification_notification(self, count):
@@ -11940,6 +11429,12 @@ class App(tk.Tk):
             logger.info("Arresto background task email settimanale overtime...")
             self._weekly_overtime_email_stop_event.set()
             self._weekly_overtime_email_thread.join(timeout=5)
+
+        # Ferma il thread FAI Autocheck
+        if hasattr(self, '_fai_autocheck_thread') and self._fai_autocheck_thread and self._fai_autocheck_thread.is_alive():
+            logger.info("Arresto background task FAI Autocheck...")
+            self._fai_autocheck_stop_event.set()
+            self._fai_autocheck_thread.join(timeout=5)
 
         # Ferma anche il servizio notifiche automatiche NPI
         try:
@@ -12635,6 +12130,40 @@ class App(tk.Tk):
                 self.lang.get('error', 'Errore'),
                 f"Impossibile aprire il rapporto FAI fails:\n{e}"
             )
+
+    def open_plan_discrepancy_with_login(self):
+        """Apre la finestra discrepanze piano produzione con autenticazione."""
+        # Rileggi il modo ad ogni apertura (può cambiare a runtime)
+        try:
+            import plan_alert_escalation as pae
+            mode = pae.get_plan_check_mode(self.db.conn)
+        except Exception:
+            mode = 'False'
+        if mode == 'False':
+            messagebox.showinfo(
+                self.lang.get('info', 'Info'),
+                'Piano produzione: funzionalità disabilitata.\n'
+                'Contattare IT per abilitare (Sys_enable_control_plan_check).')
+            return
+        self._execute_authorized_action(
+            menu_translation_key='giustifica_discrepanze_piano',
+            action_callback=lambda: self._open_plan_discrepancy()
+        )
+
+    def _open_plan_discrepancy(self):
+        """Apre la finestra discrepanze piano produzione."""
+        try:
+            import plan_discrepancy_gui
+            plan_discrepancy_gui.open_plan_discrepancy(
+                self, self.db, self.lang, self.last_authenticated_user_name
+            )
+        except Exception as e:
+            logger.error(f"Errore apertura discrepanze piano: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire le discrepanze piano:\n{e}"
+            )
+
     
     def send_fai_fails_email_with_login(self):
         """Invia email automatica FAI fails con autenticazione"""
@@ -13654,6 +13183,17 @@ class App(tk.Tk):
         self._execute_simple_login(
             action_callback=lambda user_name: label_printing_gui.open_printer_settings_window(
                 self, self.db, self.lang, user_name
+            )
+        )
+
+    def open_stock_value_with_login(self):
+        """Apre la finestra Stock Value dopo autorizzazione."""
+        logger.info("open_stock_value_with_login: avvio")
+        import stock_value_gui
+        self._execute_authorized_action(
+            menu_translation_key='valore_stock',
+            action_callback=lambda: stock_value_gui.open_stock_value(
+                self, self.db, self.lang, self.last_authenticated_user_name
             )
         )
 
@@ -14907,9 +14447,6 @@ class App(tk.Tk):
         self.tools_menu = tk.Menu(self.menubar, tearoff=0)
         self.help_menu = tk.Menu(self.menubar, tearoff=0)
         self.npi_menu = tk.Menu(self.operations_menu, tearoff=0)
-        # Menu Gestione Reclami
-        self.complaints_menu = tk.Menu(self.menubar, tearoff=False)
-        self.complaints_submenu = tk.Menu(self.complaints_menu, tearoff=False)
         
         # Menu Personale
         self.personnel_menu = tk.Menu(self.operations_menu, tearoff=0)
@@ -15075,14 +14612,6 @@ class App(tk.Tk):
 
         self.operations_menu.add_separator()
 
-        # 3. Popola il sottomenu 'Gestione Reclami'
-        self.operations_menu.add_cascade(
-            label=self.lang.get('menu_complaints_management', 'Gestione Reclami'),
-            menu=self.complaints_menu
-        )
-        self._update_complaints_menu()
-
-        self.operations_menu.add_separator()
 
         # 4. Popola il sottomenu 'Personale'
         self.operations_menu.add_cascade(
@@ -15361,6 +14890,12 @@ class App(tk.Tk):
             command=self._open_tipo_materiali
         )
 
+        # --- Stock Value ---
+        materials_menu.add_separator()
+        materials_menu.add_command(
+            label=self.lang.get('menu_stock_value', 'Stock Value'),
+            command=self.open_stock_value_with_login
+        )
 
     def _update_production_submenu(self):
         """Aggiorna il sottomenu Produzione con tutte le sezioni"""
@@ -15430,6 +14965,12 @@ class App(tk.Tk):
             menu=self.line_validation_submenu
         )
         self._update_line_validation_submenu()
+        # Piano produzione — sotto Validazione linea, solo se abilitato
+        if getattr(self, '_plan_check_mode', 'False') != 'False':
+            self.declarations_submenu.add_command(
+                label=self.lang.get('piano_produzione', "Piano produzione"),
+                command=self.open_plan_discrepancy_with_login
+            )
 
     def _update_line_validation_submenu(self):
         """Aggiorna il sottomenu Validazione linea"""
@@ -16018,11 +15559,6 @@ class App(tk.Tk):
         self.manuals_menu.add_cascade(
             label=self.lang.get('menu_operations', 'Operazioni'), menu=ops_menu)
 
-        # 4a. Gestione Reclami
-        ops_menu.add_command(
-            label=self.lang.get('menu_complaints_management', 'Gestione Reclami'),
-            command=lambda: self._open_manual('operazioni_gestione_reclami'))
-
         # 4b. NPI Management (sottomenu)
         npi_manual_menu = tk.Menu(ops_menu, tearoff=0)
         ops_menu.add_cascade(
@@ -16103,6 +15639,10 @@ class App(tk.Tk):
         fai_manual_menu.add_command(
             label=self.lang.get('rapporto_fai_fails', 'Rapporto FAI fails'),
             command=lambda: self._open_manual('operazioni_rapporto_fai_fails'))
+        fai_manual_menu.add_separator()
+        fai_manual_menu.add_command(
+            label=self.lang.get('fai_autocheck_manual', 'FAI Autocheck (Manual)'),
+            command=self._open_fai_autocheck_manual)
         prod_manual_menu.add_command(
             label=self.lang.get('submenu_kanban', 'KanBan'),
             command=lambda: self._open_manual('produzione_kanban'))
@@ -16252,6 +15792,30 @@ class App(tk.Tk):
                 self.lang.get('npi_checklist_manual_not_found',
                              "Il manuale NPI Checklist non e' stato trovato.\n\n"
                              f"Percorso atteso: {os.path.join(app_dir, 'docs', 'Manual_NPI_Checklist_RO.md')}"),
+                parent=self)
+
+    def _open_fai_autocheck_manual(self):
+        """Apre il manuale FAI Autocheck (PDF) dal folder docs."""
+        manual_path = self._get_resource_path('docs', 'FAI_Autocheck_Manual_RO.pdf')
+
+        if manual_path:
+            try:
+                os.startfile(manual_path)
+                logger.info(f"Aperto manuale FAI Autocheck: {manual_path}")
+            except Exception as e:
+                logger.error(f"Errore apertura manuale FAI Autocheck: {e}")
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire il manuale FAI Autocheck: {e}",
+                    parent=self)
+        else:
+            app_dir = os.path.dirname(os.path.abspath(
+                sys.executable if getattr(sys, 'frozen', False) else __file__))
+            messagebox.showinfo(
+                self.lang.get('menu_manuals', 'Manuali'),
+                self.lang.get('fai_autocheck_manual_not_found',
+                             "Manualul FAI Autocheck nu a fost gasit.\n\n"
+                             f"Cale asteptata: {os.path.join(app_dir, 'docs', 'FAI_Autocheck_Manual_RO.pdf')}"),
                 parent=self)
 
     def _open_logs_viewer(self):
@@ -16915,164 +16479,6 @@ class App(tk.Tk):
         except Exception as e:
             logger.error("Errore nell'apertura della NpiConfigWindow: %s", e, exc_info=True)
             messagebox.showerror("Errore", f"Impossibile aprire la configurazione NPI: {e}")
-
-    def _update_complaints_menu(self):
-        """Aggiorna il sottomenu Reclami con tutte le sezioni"""
-        self.complaints_menu.delete(0, 'end')
-
-        # 1. Aggiungi Reclamo
-        self.complaints_menu.add_command(
-            label=self.lang.get('menu_add_complaint', 'Aggiungi Reclamo'),
-            command=self._add_complaint
-        )
-        # 2. Gestisci Reclamo
-        self.complaints_menu.add_command(
-            label=self.lang.get('menu_manage_complaint', 'Gestisci Reclamo'),
-            command=self._manage_complaint
-        )
-
-        # 3. Analisi Reclami
-        self.complaints_menu.add_command(
-            label=self.lang.get('menu_complaints_analysis', 'Analisi Reclami'),
-            command=self._analyze_complaints
-        )
-
-        # 4. Report Reclami
-        self.complaints_menu.add_command(
-            label=self.lang.get('menu_complaints_report', 'Report Reclami'),
-            command=self._complaints_report
-        )
-
-    def _add_complaint(self):
-        """Apre la finestra per aggiungere un reclamo - con autorizzazione"""
-        self._execute_authorized_action(
-            'aggiungi_reclami',
-            self._add_complaint_authorized
-        )
-
-    def _add_complaint_authorized(self):
-        """
-        Esegue l'aggiunta reclamo dopo autorizzazione
-        Chiamato solo se l'utente Ã¨ autorizzato
-        """
-        from add_complaint import AddComplaintWindow
-        try:
-            title = self.lang.get('title_add_complaint', 'Aggiungi Reclamo')
-            logger.info(f"[COMPLAINTS] Utente {self.last_authenticated_user_name} ha accesso a: {title}")
-
-            #Apri finestra per aggiungere un nuovo reclamo
-            AddComplaintWindow(
-                self,
-                self.db,
-                self.lang,
-                self.last_authenticated_user_name
-            )
-
-            logger.debug(f"[COMPLAINTS] Finestra aggiunta reclamo aperta")
-
-        except Exception as e:
-            logger.exception(f"[COMPLAINTS] Errore nell'apertura aggiunta reclamo: {e}")
-            messagebox.showerror(
-                "Errore",
-                f"Errore nell'apertura della finestra: {str(e)}",
-                parent=self
-            )
-
-    def _manage_complaint(self):
-        """Apre la finestra per la gestione del reclamo"""
-        self._execute_authorized_action(
-            'gestici_reclami',
-            self._manage_complaint_authorized
-        )
-
-    def _manage_complaint_authorized(self):
-        """
-                Esegue l'aggiunta reclamo dopo autorizzazione
-                Chiamato solo se l'utente Ã¨ autorizzato
-                """
-        try:
-            title = self.lang.get('title_add_complaint', 'Aggiungi Reclamo')
-            logger.info(f"[COMPLAINTS] Utente {self.last_authenticated_user_name} ha accesso a: {title}")
-
-            # TODO: Implementare la finestra di aggiunta reclamo
-            messagebox.showinfo(
-                title,
-                f"Funzione in fase di sviluppo\nUtente autorizzato: {self.last_authenticated_user_name}",
-                parent=self
-            )
-            logger.debug(f"[COMPLAINTS] Finestra aggiunta reclamo aperta")
-
-        except Exception as e:
-            logger.exception(f"[COMPLAINTS] Errore nell'apertura aggiunta reclamo: {e}")
-            messagebox.showerror(
-                "Errore",
-                f"Errore nell'apertura della finestra: {str(e)}",
-                parent=self
-            )
-
-    def _analyze_complaints(self):
-        """Apre la finestra per analizzare reclami - con autorizzazione"""
-        self._execute_authorized_action(
-            'analizza_reclami',
-            self._analyze_complaints_authorized
-        )
-
-    def _analyze_complaints_authorized(self):
-        """
-        Esegue l'analisi reclami dopo autorizzazione
-        Chiamato solo se l'utente Ã¨ autorizzato
-        """
-        try:
-            title = self.lang.get('title_analyze_complaints', 'Analisi Reclami')
-            logger.info(f"[COMPLAINTS] Utente {self.last_authenticated_user_name} ha accesso a: {title}")
-
-            # TODO: Implementare la finestra di analisi reclami
-            messagebox.showinfo(
-                title,
-                f"Funzione in fase di sviluppo\nUtente autorizzato: {self.last_authenticated_user_name}",
-                parent=self
-            )
-            logger.debug(f"[COMPLAINTS] Finestra analisi reclami aperta")
-
-        except Exception as e:
-            logger.exception(f"[COMPLAINTS] Errore nell'apertura analisi reclami: {e}")
-            messagebox.showerror(
-                "Errore",
-                f"Errore nell'apertura della finestra: {str(e)}",
-                parent=self
-            )
-
-    def _complaints_report(self):
-        """Apre la finestra per il report reclami - con autorizzazione"""
-        self._execute_authorized_action(
-            'report_reclami',
-            self._complaints_report_authorized
-        )
-
-    def _complaints_report_authorized(self):
-        """
-        Esegue il report reclami dopo autorizzazione
-        Chiamato solo se l'utente Ã¨ autorizzato
-        """
-        try:
-            title = self.lang.get('title_complaints_report', 'Report Reclami')
-            logger.info(f"[COMPLAINTS] Utente {self.last_authenticated_user_name} ha accesso a: {title}")
-
-            # TODO: Implementare la finestra di report reclami
-            messagebox.showinfo(
-                title,
-                f"Funzione in fase di sviluppo\nUtente autorizzato: {self.last_authenticated_user_name}",
-                parent=self
-            )
-            logger.debug(f"[COMPLAINTS] Finestra report reclami aperta")
-
-        except Exception as e:
-            logger.exception(f"[COMPLAINTS] Errore nell'apertura report reclami: {e}")
-            messagebox.showerror(
-                "Errore",
-                f"Errore nell'apertura della finestra: {str(e)}",
-                parent=self
-            )
 
     def open_coating_thickness_with_login(self):
         """Apre la finestra di controllo spessore coating dopo login"""
@@ -18320,6 +17726,30 @@ class UpdateNotificationDialog(tk.Toplevel):
         self.destroy()
 
 if __name__ == "__main__":
+    # ── Kill processi orfani di DocumentManagement.exe ──────────────────── #
+    try:
+        import psutil
+        current_pid = os.getpid()
+        exe_name = "DocumentManagement.exe"
+        killed = []
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                if (proc.info['name'] and
+                    proc.info['name'].lower() == exe_name.lower() and
+                    proc.info['pid'] != current_pid):
+                    proc.kill()
+                    killed.append(proc.info['pid'])
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        if killed:
+            print(f"[STARTUP] Killed {len(killed)} orphan process(es): {killed}")
+            logger.info(f"[STARTUP] Killed {len(killed)} orphan DocumentManagement.exe process(es): PID {killed}")
+    except ImportError:
+        pass  # psutil non disponibile (es. in dev senza venv)
+    except Exception as e:
+        print(f"[STARTUP] Error killing orphan processes: {e}")
+    # ──────────────────────────────────────────────────────────────────── #
+
     try:
         app = App()
 

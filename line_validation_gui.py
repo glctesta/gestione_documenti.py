@@ -160,6 +160,8 @@ class LineValidationWindow(tk.Toplevel):
         # Bind per filtro ricerca live
         self.order_combo.bind('<KeyRelease>', self._filter_orders)
         self.order_combo.bind('<<ComboboxSelected>>', self._on_order_selected)
+        self.order_combo.bind('<Return>', self._on_order_confirm)
+        self.order_combo.bind('<FocusOut>', self._on_order_confirm)
         
         # Quarta riga - Checkboxes tipo validazione
         row4 = ttk.Frame(header_frame)
@@ -299,14 +301,16 @@ class LineValidationWindow(tk.Toplevel):
         header.columnconfigure(2, minsize=200)  # Equipment
         header.columnconfigure(3, minsize=40)   # OK
         header.columnconfigure(4, minsize=60)   # Not OK
-        header.columnconfigure(5, minsize=250)  # Note
+        header.columnconfigure(5, minsize=40)   # N/A
+        header.columnconfigure(6, minsize=250)  # Note
         
         ttk.Label(header, text="Step", font=('Arial', 9, 'bold')).grid(row=0, column=0, sticky='w', padx=2)
         ttk.Label(header, text="Descrizione", font=('Arial', 9, 'bold')).grid(row=0, column=1, sticky='w', padx=2)
         ttk.Label(header, text="Equipment", font=('Arial', 9, 'bold')).grid(row=0, column=2, sticky='w', padx=2)
         ttk.Label(header, text="OK", font=('Arial', 9, 'bold')).grid(row=0, column=3, sticky='w', padx=2)
         ttk.Label(header, text="Not OK", font=('Arial', 9, 'bold')).grid(row=0, column=4, sticky='w', padx=2)
-        ttk.Label(header, text="Note", font=('Arial', 9, 'bold')).grid(row=0, column=5, sticky='w', padx=2)
+        ttk.Label(header, text="N/A", font=('Arial', 9, 'bold')).grid(row=0, column=5, sticky='w', padx=2)
+        ttk.Label(header, text="Note", font=('Arial', 9, 'bold')).grid(row=0, column=6, sticky='w', padx=2)
         
         # Contenitore per gli step (sarà popolato dinamicamente)
         self.steps_container = ttk.Frame(self.scrollable_frame)
@@ -362,13 +366,17 @@ class LineValidationWindow(tk.Toplevel):
         try:
             query = """
             SELECT 
-                [FaiTemplateId],
-                [NrDocument],
-                [Revision],
-                [FaiTitle],
-                [RevisionDate]
-            FROM [Traceability_RS].[fai].[FaiTemplates]
-            ORDER BY [FaiTemplateId] DESC
+                f.[FaiTemplateId],
+                f.[NrDocument],
+                f.[Revision],
+                f.[FaiTitle],
+                f.[RevisionDate],
+                ISNULL(f.[Autocheck], 0) AS Autocheck,
+                f.[IdPhase],
+                ISNULL(p.[PhaseName], '') AS PhaseName
+            FROM [Traceability_RS].[fai].[FaiTemplates] f
+            LEFT JOIN [Traceability_RS].[dbo].[Phases] p ON p.[IdPhase] = f.[IdPhase]
+            ORDER BY f.[FaiTemplateId] DESC
             """
             
             logger.info(f"Esecuzione query template FAI...")
@@ -389,7 +397,10 @@ class LineValidationWindow(tk.Toplevel):
                         'NrDocument': template.NrDocument,
                         'Revision': template.Revision,
                         'FaiTitle': template.FaiTitle,
-                        'RevisionDate': template.RevisionDate
+                        'RevisionDate': template.RevisionDate,
+                        'Autocheck': bool(template.Autocheck),
+                        'IdPhase': template.IdPhase,
+                        'PhaseName': template.PhaseName
                     }
                     for template in result
                 }
@@ -437,6 +448,16 @@ class LineValidationWindow(tk.Toplevel):
             self.current_validation_labels = self._load_validation_labels_for_template(self.current_template_id)
             self._build_validation_checkboxes()
             self._load_fai_steps()
+
+            # Se Autocheck=1, carica ordini dal file Excel PlanningMachine
+            if template_data.get('Autocheck'):
+                phase_name = template_data.get('PhaseName', '')
+                logger.info(f"Template Autocheck=1 selezionato, fase={phase_name}")
+                self._load_orders_from_planning(phase_name)
+            else:
+                # Template normale: ripristina tutti gli ordini
+                self.order_combo['values'] = []
+                self.all_orders = list(self.orders_map.keys())
         else:
             self.template_desc_label.config(text="")
     
@@ -478,11 +499,8 @@ class LineValidationWindow(tk.Toplevel):
                 
                 # Salva lista completa per filtro ricerca
                 self.all_orders = list(self.orders_map.keys())
-                self.order_combo['values'] = self.all_orders
-                
-                if self.orders_map:
-                    self.order_combo.current(0)
-                    self._on_order_selected()
+                # 🆕 Combo inizia vuoto — l'utente digita per filtrare
+                self.order_combo['values'] = []
             else:
                 logger.warning("Nessun ordine trovato")
                 messagebox.showwarning(
@@ -501,6 +519,139 @@ class LineValidationWindow(tk.Toplevel):
                 parent=self
             )
     
+    def _load_orders_from_planning(self, phase_name):
+        """
+        Carica ordini dal file Excel PlanningMachine per template Autocheck=1.
+        
+        Logica:
+        - Legge il file più recente in T:\Planning\, tab PlanningMachine
+        - Filtra righe con PHASE matching e PlannedStart nelle prossime 4 ore
+        - Cross-reference con Traceability_RS.dbo.Orders per ottenere IDOrder
+        - Ordini con start >= 3h → direttamente nella lista
+        - Ordini con start < 3h → nella lista ma marcati, al salvataggio
+          registra TimeOnSchedule nella tabella tracking
+        """
+        from datetime import timedelta
+        import fai_autocheck
+
+        try:
+            # 1. Leggi planning Excel (riusa la logica di fai_autocheck)
+            planning_rows = fai_autocheck.read_planning_excel()
+            if not planning_rows:
+                logger.warning("Autocheck: nessuna riga nel planning Excel")
+                self.all_orders = list(self.orders_map.keys())
+                self.order_combo['values'] = []
+                self.status_label.config(
+                    text="⚠️ Nessuna riga trovata nel planning Excel",
+                    foreground="orange")
+                return
+
+            # 2. Filtra per fase
+            phase_upper = phase_name.strip().upper()
+            matching_rows = [r for r in planning_rows
+                             if r['phase'].upper() == phase_upper]
+
+            if not matching_rows:
+                logger.info(f"Autocheck: nessun ordine per fase {phase_name}")
+                self.all_orders = list(self.orders_map.keys())
+                self.order_combo['values'] = []
+                self.status_label.config(
+                    text=f"⚠️ Nessun ordine pianificato per fase {phase_name}",
+                    foreground="orange")
+                return
+
+            # 3. Risolvi OrderNumber → IDOrder dal DB
+            now = datetime.now()
+            three_hours = timedelta(hours=3)
+            autocheck_orders = {}  # key = display_str, value = order_data
+            self._planning_schedule = {}  # Track PlannedStart per ordine
+
+            for pr in matching_rows:
+                order_number = pr['order_number']
+                planned_start = pr['planned_start']
+                hours_until = (planned_start - now).total_seconds() / 3600
+
+                # Cerca ordine nel DB
+                try:
+                    self.db.cursor.execute("""
+                        SELECT o.IDOrder, o.OrderNumber, o.orderquantity,
+                               p.productcode, p.productname
+                        FROM [Traceability_RS].[dbo].[Orders] o
+                        INNER JOIN [Traceability_RS].[dbo].[Products] p
+                            ON o.IDProduct = p.IDProduct
+                        WHERE o.OrderNumber = ?
+                    """, (order_number,))
+                    row = self.db.cursor.fetchone()
+                except Exception as e:
+                    logger.warning(f"Autocheck: errore ricerca ordine {order_number}: {e}")
+                    continue
+
+                if not row:
+                    logger.debug(f"Autocheck: ordine {order_number} non trovato in DB")
+                    continue
+
+                # Indicatore temporale
+                planned_str = planned_start.strftime('%H:%M')
+                if hours_until >= 3:
+                    time_icon = "✅"
+                    time_note = f"Start {planned_str} (in {hours_until:.0f}h)"
+                else:
+                    time_icon = "⏰"
+                    time_note = f"Start {planned_str} (in {hours_until:.0f}h — LATE!)"
+
+                display_key = f"{time_icon} {row.OrderNumber} - {row.productcode} - {row.productname} [{time_note}]"
+
+                autocheck_orders[display_key] = {
+                    'IDOrder': row.IDOrder,
+                    'OrderNumber': row.OrderNumber,
+                    'OrderQuantity': row.orderquantity,
+                    'ProductCode': row.productcode,
+                    'ProductName': row.productname
+                }
+
+                # Salva PlannedStart per questo ordine (per registrazione)
+                self._planning_schedule[row.IDOrder] = {
+                    'planned_start': planned_start,
+                    'hours_until': hours_until,
+                    'is_late': hours_until < 3
+                }
+
+            if not autocheck_orders:
+                logger.info("Autocheck: nessun ordine matchato nel DB")
+                self.all_orders = list(self.orders_map.keys())
+                self.order_combo['values'] = []
+                self.status_label.config(
+                    text="⚠️ Ordini planning non trovati nel database",
+                    foreground="orange")
+                return
+
+            # 4. Aggiorna orders_map con gli ordini dal planning
+            self.orders_map.update(autocheck_orders)
+            planning_keys = list(autocheck_orders.keys())
+            self.all_orders = planning_keys
+            self.order_combo['values'] = planning_keys
+
+            # Info
+            late_count = sum(1 for s in self._planning_schedule.values()
+                             if s['is_late'])
+            self.status_label.config(
+                text=f"📋 {len(planning_keys)} ordini da planning "
+                     f"({late_count} in ritardo <3h)",
+                foreground='#B71C1C' if late_count else '#2E7D32')
+
+            logger.info(f"Autocheck: caricati {len(planning_keys)} ordini "
+                        f"dal planning Excel per fase {phase_name}")
+
+        except Exception as e:
+            logger.error(f"Errore caricamento ordini da planning: {e}",
+                         exc_info=True)
+            # Fallback agli ordini DB normali
+            self.all_orders = list(self.orders_map.keys())
+            self.order_combo['values'] = []
+            self.status_label.config(
+                text=f"❌ Errore lettura planning: {e}",
+                foreground="red")
+
     def _load_fai_steps(self):
         """Carica gli step FAI dal database per il template selezionato"""
         try:
@@ -589,22 +740,47 @@ class LineValidationWindow(tk.Toplevel):
             )
     
     def _filter_orders(self, event=None):
-        """Filtra gli ordini nel combobox mentre l'utente digita"""
+        """Filtra gli ordini nel combobox mentre l'utente digita (solo aggiorna la lista, non seleziona)"""
         try:
             # Ottieni il testo corrente
             search_text = self.order_var.get().lower()
             
-            # Filtra gli ordini che contengono il testo
-            if search_text:
+            # Filtra gli ordini che contengono il testo (minimo 2 caratteri)
+            if search_text and len(search_text) >= 2:
                 filtered = [order for order in self.all_orders if search_text in order.lower()]
             else:
-                filtered = self.all_orders
+                filtered = []
             
-            # Aggiorna i valori del combobox
+            # Aggiorna i valori del combobox senza aprire il dropdown
             self.order_combo['values'] = filtered
             
         except Exception as e:
             logger.error(f"Errore filtro ordini: {e}")
+    
+    def _on_order_confirm(self, event=None):
+        """Conferma la selezione dell'ordine (su Enter o FocusOut)"""
+        try:
+            search_text = self.order_var.get().strip()
+            if not search_text:
+                return
+            
+            # Cerca corrispondenza esatta nella lista
+            if search_text in self.orders_map:
+                self._on_order_selected()
+                return
+            
+            # Se c'è un solo risultato filtrato, selezionalo automaticamente
+            current_values = self.order_combo['values']
+            if current_values and len(current_values) == 1:
+                self.order_var.set(current_values[0])
+                self._on_order_selected()
+            elif current_values and len(current_values) > 1:
+                # Più risultati: apri il dropdown per far scegliere
+                self.order_combo.event_generate('<Down>')
+            else:
+                logger.warning(f"Nessun ordine trovato per: {search_text}")
+        except Exception as e:
+            logger.error(f"Errore conferma ordine: {e}")
     
     def _populate_checklist(self):
         """Popola la checklist con gli step FAI"""
@@ -621,7 +797,8 @@ class LineValidationWindow(tk.Toplevel):
         self.steps_container.columnconfigure(2, minsize=200)  # Equipment
         self.steps_container.columnconfigure(3, minsize=40)   # OK
         self.steps_container.columnconfigure(4, minsize=60)   # Not OK
-        self.steps_container.columnconfigure(5, minsize=250)  # Note
+        self.steps_container.columnconfigure(5, minsize=40)   # N/A
+        self.steps_container.columnconfigure(6, minsize=250)  # Note
         
         # Crea una riga per ogni step
         for idx, step in enumerate(self.step_details):
@@ -655,6 +832,7 @@ class LineValidationWindow(tk.Toplevel):
 
             ok_var = tk.BooleanVar()
             not_ok_var = tk.BooleanVar()
+            na_var = tk.BooleanVar()
 
             if response_yes_no:
                 # OK checkbox
@@ -665,30 +843,39 @@ class LineValidationWindow(tk.Toplevel):
                 not_ok_check = ttk.Checkbutton(self.steps_container, variable=not_ok_var)
                 not_ok_check.grid(row=idx, column=4, padx=2, pady=1)
 
-                # Configura i command ora che entrambe le variabili esistono
-                ok_check.configure(command=lambda ok=ok_var, nok=not_ok_var, st=step: self._on_ok_check(ok, nok, st))
-                not_ok_check.configure(command=lambda ok=ok_var, nok=not_ok_var, st=step: self._on_not_ok_check(ok, nok, st))
+                # N/A checkbox
+                na_check = ttk.Checkbutton(self.steps_container, variable=na_var)
+                na_check.grid(row=idx, column=5, padx=2, pady=1)
+
+                # Configura i command ora che tutte le variabili esistono
+                ok_check.configure(command=lambda ok=ok_var, nok=not_ok_var, na=na_var, st=step: self._on_ok_check(ok, nok, na, st))
+                not_ok_check.configure(command=lambda ok=ok_var, nok=not_ok_var, na=na_var, st=step: self._on_not_ok_check(ok, nok, na, st))
+                na_check.configure(command=lambda ok=ok_var, nok=not_ok_var, na=na_var, st=step: self._on_na_check(ok, nok, na, st))
             else:
-                # Per step a testo/data non mostriamo la logica OK/Not OK
+                # Per step a testo/data non mostriamo la logica OK/Not OK ma mostriamo N/A
                 tk.Label(self.steps_container, text='-', width=3, background=bg_color, anchor='center', font=('Arial', 9)).grid(row=idx, column=3, padx=2, pady=1)
                 tk.Label(self.steps_container, text='-', width=6, background=bg_color, anchor='center', font=('Arial', 9)).grid(row=idx, column=4, padx=2, pady=1)
+                na_check = ttk.Checkbutton(self.steps_container, variable=na_var)
+                na_check.grid(row=idx, column=5, padx=2, pady=1)
             
             # Note entry
             note_entry = ttk.Entry(self.steps_container, width=35, font=('Arial', 9))
-            note_entry.grid(row=idx, column=5, sticky='ew', padx=2, pady=1)
+            note_entry.grid(row=idx, column=6, sticky='ew', padx=2, pady=1)
             
             # Salva riferimenti nel dizionario usando FaiStepDetailId come chiave
             self.step_widgets[step.FaiStepDetailId] = {
                 'ok_var': ok_var,
                 'not_ok_var': not_ok_var,
+                'na_var': na_var,
                 'note_entry': note_entry,
                 'response_yes_no': response_yes_no
             }
     
-    def _on_ok_check(self, ok_var, not_ok_var, step_detail):
-        """Gestisce il check di OK (deseleziona Not OK e gestisce KeepOnsameLine)"""
+    def _on_ok_check(self, ok_var, not_ok_var, na_var, step_detail):
+        """Gestisce il check di OK (deseleziona Not OK e N/A, gestisce KeepOnsameLine)"""
         if ok_var.get():
             not_ok_var.set(False)
+            na_var.set(False)
             
             # Se KeepOnsameLine=true, deseleziona gli altri OK dello stesso gruppo
             if step_detail.KeepOnsameLine:
@@ -703,10 +890,11 @@ class LineValidationWindow(tk.Toplevel):
                         if other_step_id in self.step_widgets:
                             self.step_widgets[other_step_id]['ok_var'].set(False)
     
-    def _on_not_ok_check(self, ok_var, not_ok_var, step_detail):
-        """Gestisce il check di Not OK (deseleziona OK e richiede dettagli problema)"""
+    def _on_not_ok_check(self, ok_var, not_ok_var, na_var, step_detail):
+        """Gestisce il check di Not OK (deseleziona OK e N/A, richiede dettagli problema)"""
         if not_ok_var.get():
             ok_var.set(False)
+            na_var.set(False)
             
             # Apri dialog per raccogliere dettagli del problema
             step_id = step_detail.FaiStepDetailId
@@ -721,6 +909,13 @@ class LineValidationWindow(tk.Toplevel):
                 else:
                     # Se l'utente annulla, deseleziona NOT OK
                     not_ok_var.set(False)
+    
+    def _on_na_check(self, ok_var, not_ok_var, na_var, step_detail):
+        """Gestisce il check di N/A (deseleziona OK e Not OK)"""
+        if na_var.get():
+            ok_var.set(False)
+            not_ok_var.set(False)
+            logger.info(f"Step {step_detail.Step} marcato come N/A")
     
     def _show_problem_dialog(self, step_detail):
         """Mostra dialog per inserire dettagli del problema"""
@@ -903,7 +1098,7 @@ class LineValidationWindow(tk.Toplevel):
             self.labelcode_validated = False
     
     def _validate_all_steps_filled(self):
-        """Valida step considerando regola KeepOnsameLine"""
+        """Valida step considerando regola KeepOnsameLine e N/A"""
         missing_steps = []
         keep_on_same_line_groups = {}
         
@@ -914,6 +1109,13 @@ class LineValidationWindow(tk.Toplevel):
             step_id = step.FaiStepDetailId
             if step_id in self.step_widgets:
                 widgets = self.step_widgets[step_id]
+                
+                # 🆕 Se N/A è selezionato, lo step è considerato compilato — skip validazione
+                is_na = widgets['na_var'].get()
+                if is_na:
+                    logger.info(f"⏭️ Step {step.Step} marcato come N/A — skip validazione")
+                    continue
+                
                 is_ok = widgets['ok_var'].get()
                 is_not_ok = widgets['not_ok_var'].get()
                 notes = widgets['note_entry'].get().strip()
@@ -1095,13 +1297,17 @@ class LineValidationWindow(tk.Toplevel):
                 return
             
             # Trova il primo step con risposta per creare il log master
+            # (N/A è considerato una risposta valida)
             first_step_with_answer = None
             for step in self.step_details:
                 step_id = step.FaiStepDetailId
                 if step_id in self.step_widgets:
                     widgets = self.step_widgets[step_id]
                     is_logical_response = widgets.get('response_yes_no', True)
-                    if is_logical_response:
+                    is_na = widgets['na_var'].get()
+                    if is_na:
+                        has_answer = True
+                    elif is_logical_response:
                         has_answer = widgets['ok_var'].get() or widgets['not_ok_var'].get()
                     else:
                         has_answer = bool(widgets['note_entry'].get().strip())
@@ -1121,22 +1327,23 @@ class LineValidationWindow(tk.Toplevel):
             # Inserisci il PRIMO record in FaiLogs per ottenere il FaiLogId auto-generato
             first_widgets = self.step_widgets[first_step_with_answer.FaiStepDetailId]
             first_is_logical = first_widgets.get('response_yes_no', True)
-            is_ok = first_widgets['ok_var'].get() if first_is_logical else True
-            is_not_ok = first_widgets['not_ok_var'].get() if first_is_logical else False
+            first_is_na = first_widgets['na_var'].get()
+            is_ok = first_widgets['ok_var'].get() if (first_is_logical and not first_is_na) else (not first_is_na)
+            is_not_ok = first_widgets['not_ok_var'].get() if (first_is_logical and not first_is_na) else False
             notes = first_widgets['note_entry'].get().strip()
-            problem_desc = notes if (first_is_logical and is_not_ok) else None
+            problem_desc = notes if (first_is_logical and is_not_ok and not first_is_na) else None
             
             # Usa OUTPUT per recuperare l'ID generato direttamente
             first_log_query = """
             INSERT INTO Traceability_RS.fai.FaiLogs 
-            (FaiStepDetailId, Operator, IsOk, ProblemDescription, RoutCauseProblem, CorrectiveAction, Dati, OrderId, DateIn, LabelCode)
+            (FaiStepDetailId, Operator, IsOk, ProblemDescription, RoutCauseProblem, CorrectiveAction, Dati, OrderId, DateIn, LabelCode, IsNA)
             OUTPUT INSERTED.FaiLogId
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), ?, ?)
             """
             
-            # Recupera dettagli problema se NOT OK
-            root_cause = first_widgets.get('root_cause', None) if (first_is_logical and is_not_ok) else None
-            corrective = first_widgets.get('corrective_action', None) if (first_is_logical and is_not_ok) else None
+            # Recupera dettagli problema se NOT OK (e non N/A)
+            root_cause = first_widgets.get('root_cause', None) if (first_is_logical and is_not_ok and not first_is_na) else None
+            corrective = first_widgets.get('corrective_action', None) if (first_is_logical and is_not_ok and not first_is_na) else None
             
             first_log_params = (
                 first_step_with_answer.FaiStepDetailId,
@@ -1147,7 +1354,8 @@ class LineValidationWindow(tk.Toplevel):
                 corrective,
                 notes,  # 🆕 Salva note/codice stencil in Dati
                 order_data['IDOrder'],
-                labelcode_value  # 🆕 LabelCode validato
+                labelcode_value,  # 🆕 LabelCode validato
+                1 if first_is_na else 0  # 🆕 N/A flag
             )
             
             # Usa cursor direttamente 
@@ -1178,22 +1386,29 @@ class LineValidationWindow(tk.Toplevel):
                 if step_id in self.step_widgets:
                     widgets = self.step_widgets[step_id]
                     is_logical_response = widgets.get('response_yes_no', True)
-                    is_ok = widgets['ok_var'].get() if is_logical_response else True
-                    is_not_ok = widgets['not_ok_var'].get() if is_logical_response else False
+                    step_is_na = widgets['na_var'].get()
+                    is_ok = widgets['ok_var'].get() if (is_logical_response and not step_is_na) else (not step_is_na)
+                    is_not_ok = widgets['not_ok_var'].get() if (is_logical_response and not step_is_na) else False
                     notes = widgets['note_entry'].get().strip()
                     
-                    # Inserisci nel log se c'è una risposta
-                    has_answer = (is_ok or is_not_ok) if is_logical_response else bool(notes)
+                    # Inserisci nel log se c'è una risposta (N/A è una risposta valida)
+                    if step_is_na:
+                        has_answer = True
+                    elif is_logical_response:
+                        has_answer = is_ok or is_not_ok
+                    else:
+                        has_answer = bool(notes)
+                    
                     if has_answer:
                         log_query = """
                         INSERT INTO Traceability_RS.fai.FaiLogs 
-                        (FaiStepDetailId, Operator, IsOk, ProblemDescription, RoutCauseProblem, CorrectiveAction, Dati, OrderId, DateIn, LabelCode)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), ?)
+                        (FaiStepDetailId, Operator, IsOk, ProblemDescription, RoutCauseProblem, CorrectiveAction, Dati, OrderId, DateIn, LabelCode, IsNA)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), ?, ?)
                         """
                         
-                        problem_desc = notes if (is_logical_response and is_not_ok) else None
-                        root_cause = widgets.get('root_cause', None) if (is_logical_response and is_not_ok) else None
-                        corrective = widgets.get('corrective_action', None) if (is_logical_response and is_not_ok) else None
+                        problem_desc = notes if (is_logical_response and is_not_ok and not step_is_na) else None
+                        root_cause = widgets.get('root_cause', None) if (is_logical_response and is_not_ok and not step_is_na) else None
+                        corrective = widgets.get('corrective_action', None) if (is_logical_response and is_not_ok and not step_is_na) else None
                         
                         log_params = (
                             step_id,
@@ -1204,7 +1419,8 @@ class LineValidationWindow(tk.Toplevel):
                             corrective,
                             notes,  # 🆕 Salva note/codice stencil in Dati
                             order_data['IDOrder'],
-                            labelcode_value  # 🆕 LabelCode validato
+                            labelcode_value,  # 🆕 LabelCode validato
+                            1 if step_is_na else 0  # 🆕 N/A flag
                         )
                         
                         self.db.execute_query(log_query, log_params)
@@ -1239,18 +1455,83 @@ class LineValidationWindow(tk.Toplevel):
             logger.info(f"Validazione FAI salvata con successo - FaiLogId: {fai_log_id}")
             
             self.current_fai_log_id = fai_log_id
+
+            # ── Autocheck: registra TimeOnSchedule se ordine < 3h ─────
+            try:
+                selected_template = self.template_var.get()
+                tpl_info = self.templates_map.get(selected_template, {})
+                order_id = order_data['IDOrder']
+
+                if (tpl_info.get('Autocheck')
+                        and hasattr(self, '_planning_schedule')
+                        and order_id in self._planning_schedule):
+                    schedule = self._planning_schedule[order_id]
+                    planned_start = schedule['planned_start']
+                    is_late = schedule['is_late']
+                    status = 'VERIFIED_LATE' if is_late else 'VERIFIED_ON_TIME'
+
+                    try:
+                        self.db.cursor.execute("""
+                            INSERT INTO [Traceability_RS].[fai].[FaiAutocheckNotifications]
+                                (OrderNumber, IdPhase, PhaseName, FaiTemplateId,
+                                 FaiTitle, NrDocument, Revision,
+                                 PlannedStart, DetectionTime,
+                                 ProductionQtyAtCheck, PresenceChecked,
+                                 NotificationStatus,
+                                 VerificationCompleted, VerificationCompletedTime,
+                                 Notes)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, GETDATE(),
+                                    0, 0, ?,
+                                    1, GETDATE(), ?)
+                        """, (
+                            order_data['OrderNumber'],
+                            tpl_info.get('IdPhase', 0),
+                            tpl_info.get('PhaseName', ''),
+                            tpl_info.get('FaiTemplateId', 0),
+                            tpl_info.get('FaiTitle', ''),
+                            tpl_info.get('NrDocument', ''),
+                            tpl_info.get('Revision', ''),
+                            planned_start,
+                            status,
+                            f"FaiLogId={fai_log_id}, Operator={self.user_name}"
+                        ))
+                        self.db.conn.commit()
+                        logger.info(
+                            f"Autocheck tracking: {status} per ordine "
+                            f"{order_data['OrderNumber']}, "
+                            f"PlannedStart={planned_start}")
+                    except Exception as track_err:
+                        # Non bloccare il salvataggio per errori di tracking
+                        logger.warning(
+                            f"Autocheck tracking non registrato: {track_err}")
+            except Exception as autocheck_err:
+                logger.warning(f"Errore autocheck tracking: {autocheck_err}")
+
             
-            # Calcola risultato finale (basato sull'ultimo step)
+            # Calcola risultato finale (basato sugli step non-N/A)
+            # Per step logici (OK/Not OK): usa il valore OK
+            # Per step testuali: la presenza di note = OK
             final_result = True
-            last_step_ok = None
-            for step in reversed(self.step_details):
+            has_any_not_ok = False
+            for step in self.step_details:
                 step_id = step.FaiStepDetailId
                 if step_id in self.step_widgets:
                     widgets = self.step_widgets[step_id]
-                    if widgets['ok_var'].get() or widgets['not_ok_var'].get():
-                        last_step_ok = widgets['ok_var'].get()
-                        break
-            final_result = last_step_ok if last_step_ok is not None else True
+                    # Skip step N/A nel calcolo risultato finale
+                    if widgets['na_var'].get():
+                        continue
+                    is_logical = widgets.get('response_yes_no', True)
+                    if is_logical:
+                        if widgets['not_ok_var'].get():
+                            has_any_not_ok = True
+                            break
+                    else:
+                        # Step testuale: se non ha note è considerato mancante (ma non blocca se N/A)
+                        notes = widgets['note_entry'].get().strip()
+                        if not notes:
+                            has_any_not_ok = True
+                            break
+            final_result = not has_any_not_ok
             
             # ── Genera e salva il PDF (SEMPRE, indipendentemente dall'email) ─────
             logger.info("[PDF] Inizio generazione automatica report FAI.")
@@ -1303,11 +1584,30 @@ class LineValidationWindow(tk.Toplevel):
                     product_name = order_data.get('ProductName', order_data.get('ProductCode', 'Unknown'))
                     order_num    = order_data.get('OrderNumber', order_data.get('IDOrder', 'Unknown'))
 
+                    # 🆕 Recupera il nome del template FAI (PTH/SMT/etc.) dal database
+                    template_name = 'N/A'
+                    try:
+                        tpl_query = """
+                        SELECT TOP 1 t.FaiTitle
+                        FROM Traceability_RS.fai.FaiLogs l
+                        INNER JOIN Traceability_RS.fai.FaiStepDetails d ON l.FaiStepDetailId = d.FaiStepDetailId
+                        INNER JOIN Traceability_RS.fai.FaiSteps s ON d.FatStepId = s.FatStepId
+                        INNER JOIN Traceability_RS.fai.FaiTemplates t ON s.FaiTemplateId = t.FaiTemplateId
+                        WHERE l.FaiLogId = ?
+                        """
+                        self.db.cursor.execute(tpl_query, (fai_log_id,))
+                        tpl_row = self.db.cursor.fetchone()
+                        if tpl_row and tpl_row.FaiTitle:
+                            template_name = tpl_row.FaiTitle
+                        logger.info(f"[EMAIL] Template FAI rilevato: {template_name}")
+                    except Exception as tpl_err:
+                        logger.warning(f"[EMAIL] Impossibile recuperare il nome template: {tpl_err}")
+
                     result_text  = 'PASSED \u2713' if final_result else 'FAILED \u2717'
                     result_label = 'PASSED'       if final_result else 'FAILED'
                     result_icon  = '\u2713'        if final_result else '\u2717'
                     result_color = 'green'         if final_result else 'red'
-                    subject      = f"FAI Validation Report - {product_name} - Order {order_num} - {result_text}"
+                    subject      = f"FAI Validation Report - {template_name} - {product_name} - Order {order_num} - {result_text}"
 
                     html_body = f"""
                     <html>
@@ -1334,6 +1634,7 @@ class LineValidationWindow(tk.Toplevel):
                         <div class="content">
                             <div class="result">Risultato Finale: {result_label} {result_icon}</div>
                             <table class="info-table">
+                                <tr><td>Template / Model:</td><td><strong>{template_name}</strong></td></tr>
                                 <tr><td>Product:</td>        <td><strong>{product_name}</strong></td></tr>
                                 <tr><td>Order Number:</td>   <td><strong>{order_num}</strong></td></tr>
                                 <tr><td>Validation Date:</td><td>{datetime.now().strftime('%d/%m/%Y %H:%M')}</td></tr>

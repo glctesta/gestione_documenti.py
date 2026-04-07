@@ -270,11 +270,17 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
                     AR.[DateStart],
                     AR.[DateEnd],
                     DATEDIFF(DAY, AR.[DateStart], AR.[DateEnd]) + 1 AS NrDays,
-                    DATEDIFF(HOUR, AR.[DateStart], AR.[DateEnd]) AS NrHours,
+                    CASE
+                        WHEN R.IsConsideredEntireDay = 0
+                             AND AR.FromTime IS NOT NULL AND AR.ToTime IS NOT NULL
+                        THEN DATEDIFF(MINUTE, AR.FromTime, AR.ToTime) / 60.0
+                        ELSE NULL
+                    END AS NrHours,
                     AR.FromTime,
                     AR.ToTime,
                     H.EmployeeHireHistoryId,
-                    R.IDRequestType
+                    R.IDRequestType,
+                    R.IsConsideredEntireDay
                 FROM
                     [Employee].[dbo].[AbsenceRequestes] AR
                 INNER JOIN
@@ -319,16 +325,35 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
             
         # Aggiunge le richieste
         for req in requests:
-            values = (
-                req.AbsenceRequestId,
-                req.RequestType,
-                req.Employee,
-                req.RecordedOnDate.strftime('%d/%m/%Y') if req.RecordedOnDate else '',
-                req.DateStart.strftime('%d/%m/%Y') if req.DateStart else '',
-                req.DateEnd.strftime('%d/%m/%Y') if req.DateEnd else '',
-                req.NrDays if req.NrDays else '',
-                req.NrHours if req.NrHours else ''
-            )
+            is_hourly = hasattr(req, 'IsConsideredEntireDay') and req.IsConsideredEntireDay == 0
+            if is_hourly:
+                # Assenza oraria: mostra ore, niente giorni
+                hours_display = ''
+                if req.NrHours is not None:
+                    h = float(req.NrHours)
+                    hours_display = f"{h:.1f}" if h != int(h) else str(int(h))
+                values = (
+                    req.AbsenceRequestId,
+                    req.RequestType,
+                    req.Employee,
+                    req.RecordedOnDate.strftime('%d/%m/%Y') if req.RecordedOnDate else '',
+                    req.DateStart.strftime('%d/%m/%Y') if req.DateStart else '',
+                    req.DateEnd.strftime('%d/%m/%Y') if req.DateEnd else '',
+                    '',   # Giorni vuoto per assenze orarie
+                    hours_display
+                )
+            else:
+                # Assenza giornaliera: mostra giorni, niente ore
+                values = (
+                    req.AbsenceRequestId,
+                    req.RequestType,
+                    req.Employee,
+                    req.RecordedOnDate.strftime('%d/%m/%Y') if req.RecordedOnDate else '',
+                    req.DateStart.strftime('%d/%m/%Y') if req.DateStart else '',
+                    req.DateEnd.strftime('%d/%m/%Y') if req.DateEnd else '',
+                    req.NrDays if req.NrDays else '',
+                    ''    # Ore vuoto per assenze giornaliere
+                )
             self.tree.insert('', tk.END, values=values)
             
     def _on_request_select(self, event):
@@ -362,8 +387,41 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
             # self.modify_btn.config(state=tk.NORMAL)  # Disabilitato temporaneamente
             self.reject_btn.config(state=tk.NORMAL)
             
-            # Mostra le informazioni
-            info_text = f"""
+            # Mostra le informazioni — distingue assenza giornaliera/oraria
+            is_hourly = (hasattr(self.selected_request, 'IsConsideredEntireDay')
+                         and self.selected_request.IsConsideredEntireDay == 0)
+
+            if is_hourly:
+                # Formatta FromTime / ToTime
+                from_time_str = ''
+                to_time_str = ''
+                if self.selected_request.FromTime is not None:
+                    ft = self.selected_request.FromTime
+                    if hasattr(ft, 'strftime'):
+                        from_time_str = ft.strftime('%H:%M')
+                    else:
+                        from_time_str = str(ft)[:5]
+                if self.selected_request.ToTime is not None:
+                    tt = self.selected_request.ToTime
+                    if hasattr(tt, 'strftime'):
+                        to_time_str = tt.strftime('%H:%M')
+                    else:
+                        to_time_str = str(tt)[:5]
+
+                hours_display = 'N/A'
+                if self.selected_request.NrHours is not None:
+                    h = float(self.selected_request.NrHours)
+                    hours_display = f"{h:.1f}" if h != int(h) else str(int(h))
+
+                info_text = f"""
+            Dipendente: {self.selected_request.Employee}
+            Tipo Richiesta: {self.selected_request.RequestType}
+            Data: {self.selected_request.DateStart.strftime('%d/%m/%Y')}
+            Interval orar: {from_time_str} - {to_time_str}
+            ore: {hours_display}
+            """
+            else:
+                info_text = f"""
             Dipendente: {self.selected_request.Employee}
             Tipo Richiesta: {self.selected_request.RequestType}
             Data Inizio: {self.selected_request.DateStart.strftime('%d/%m/%Y')}
@@ -1381,6 +1439,10 @@ giorni: {self.selected_request.NrDays if self.selected_request.NrDays else 'N/A'
         date_end = req.DateEnd.strftime('%d.%m.%Y') if req.DateEnd else ""
         manager_name = self.authorized_user_name or ""
 
+        # Determina se è assenza oraria
+        is_hourly = (hasattr(req, 'IsConsideredEntireDay')
+                     and req.IsConsideredEntireDay == 0)
+
         # Testo esito in rumeno
         if approved:
             subject = f"Cererea dvs. de absență a fost APROBATĂ"
@@ -1408,6 +1470,46 @@ giorni: {self.selected_request.NrDays if self.selected_request.NrDays else 'N/A'
                     f'<tr><td style="padding:6px 12px;color:#555;">Sold concediu disponibil ({current_year}):</td>'
                     f'<td style="padding:6px 12px;"><strong>{vacation_balance} zile</strong></td></tr>'
                 )
+
+        # Blocco date/ore: diverso per assenza oraria vs giornaliera
+        if is_hourly:
+            from_time_str = ''
+            to_time_str = ''
+            if req.FromTime is not None:
+                ft = req.FromTime
+                from_time_str = ft.strftime('%H:%M') if hasattr(ft, 'strftime') else str(ft)[:5]
+            if req.ToTime is not None:
+                tt = req.ToTime
+                to_time_str = tt.strftime('%H:%M') if hasattr(tt, 'strftime') else str(tt)[:5]
+
+            hours_display = ''
+            if req.NrHours is not None:
+                h = float(req.NrHours)
+                hours_display = f"{h:.1f}" if h != int(h) else str(int(h))
+
+            date_rows_html = f"""
+              <tr>
+                <td style="padding:6px 12px;color:#555;">Data:</td>
+                <td style="padding:6px 12px;"><strong>{date_start}</strong></td>
+              </tr>
+              <tr style="background:#f8f9fa;">
+                <td style="padding:6px 12px;color:#555;">Interval orar:</td>
+                <td style="padding:6px 12px;"><strong>{from_time_str} - {to_time_str}</strong></td>
+              </tr>
+              <tr>
+                <td style="padding:6px 12px;color:#555;">Ore:</td>
+                <td style="padding:6px 12px;"><strong>{hours_display}</strong></td>
+              </tr>"""
+        else:
+            date_rows_html = f"""
+              <tr>
+                <td style="padding:6px 12px;color:#555;">Data început:</td>
+                <td style="padding:6px 12px;"><strong>{date_start}</strong></td>
+              </tr>
+              <tr style="background:#f8f9fa;">
+                <td style="padding:6px 12px;color:#555;">Data sfârșit:</td>
+                <td style="padding:6px 12px;"><strong>{date_end}</strong></td>
+              </tr>"""
 
         # Path logo
         base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1464,14 +1566,7 @@ giorni: {self.selected_request.NrDays if self.selected_request.NrDays else 'N/A'
                 <td style="padding:6px 12px;color:#555;">Tip absență:</td>
                 <td style="padding:6px 12px;"><strong>{request_type}</strong></td>
               </tr>
-              <tr>
-                <td style="padding:6px 12px;color:#555;">Data început:</td>
-                <td style="padding:6px 12px;"><strong>{date_start}</strong></td>
-              </tr>
-              <tr style="background:#f8f9fa;">
-                <td style="padding:6px 12px;color:#555;">Data sfârșit:</td>
-                <td style="padding:6px 12px;"><strong>{date_end}</strong></td>
-              </tr>
+              {date_rows_html}
               {decision_block}
               {balance_block}
             </table>

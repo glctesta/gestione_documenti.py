@@ -1,0 +1,831 @@
+﻿File: T:\Planning\Production Schedule - 06.04.2026.xlsx
+Mod: 2026-04-06 16:37:20.955194
+Sheets: ['PlanningOrders', 'PlanningMachine', 'Last Phase', 'Logistic', 'PlanningFinishGood']
+
+Totale colonne: 675
+================================================================================
+  Col A (idx 0): Site
+  Col B (idx 1): Machine
+  Col C (idx 2): Machine (Qty/H)
+  Col D (idx 3): Setup (Min)
+  Col E (idx 4): Phase
+  Col F (idx 5): Phase No
+  Col G (idx 6): Client
+  Col H (idx 7): Product Family
+  Col I (idx 8): Product
+  Col J (idx 9): Product Name
+  Col K (idx 10): Order Number
+  Col L (idx 11): Order Qty
+  Col M (idx 12): Order QtyRemain
+  Col N (idx 13): Order Phase Start DayOfWeek
+  Col O (idx 14): Order Phase Plan Start
+  Col P (idx 15): Order Phase Stop DayOfWeek
+  Col Q (idx 16): Order Phase Plan Stop
+  Col R (idx 17): Order Requested
+  Col S (idx 18): Order Confirmed
+  Col T (idx 19): Order Type
+  Col U (idx 20): 2026-04-06 16:33:00
+  Col V (idx 21): 2026-04-07 16:33:00
+  Col W (idx 22): 2026-04-08 16:33:00
+  Col X (idx 23): 2026-04-09 16:33:00
+  Col Y (idx 24): 2026-04-10 16:33:00
+  Col Z (idx 25): 2026-04-11 16:33:00
+  Col AA (idx 26): 2026-04-12 16:33:00
+  Col AB (idx 27): 2026-04-13 16:33:00
+  Col AC (idx 28): 2026-04-14 16:33:00
+  Col AD (idx 29): 2026-04-15 16:33:00
+  Col AE (idx 30): 2026-04-16 16:33:00
+  Col AF (idx 31): 2026-04-17 16:33:00
+  Col AG (idx 32): 2026-04-18 16:33:00
+  Col AH (idx 33): 2026-04-19 16:33:00
+  Col AI (idx 34): 2026-04-20 16:33:00
+  Col AJ (idx 35): 2026-04-21 16:33:00
+  Col AK (idx 36): 2026-04-22 16:33:00
+  Col AL (idx 37): 2026-04-23 16:33:00
+  Col AM (idx 38): 2026-04-24 16:33:00
+  Col AN (idx 39): 2026-04-25 16:33:00
+  Col AO (idx 40): 2026-04-26 16:33:00
+  Col AP (idx 41): 2026-04-27 16:33:00
+  Col AQ (idx 42): 2026-04-28 16:33:00
+  Col AR (idx 43): 2026-04-29 16:33:00
+  Col AS (idx 44): 2026-04-30 16:33:00
+  Col AT (idx 45): 2026-05-01 16:33:00
+  Col AU (idx 46): 2026-05-02 16:33:00
+  Col AV (idx 47): 2026-05-03 16:33:00
+  Col AW (idx 48): 2026-05-04 16:33:00
+  Col AX (idx 49): 2026-05-05 16:33:00
+  Col AY (idx 50): 2026-05-06 16:33:00
+  Col AZ (idx 51): 2026-05-07 16:33:00
+  Col BA (idx 52): 2026-05-08 16:33:00
+  Col BB (idx 53): 2026-05-09 16:33:00
+  Col BC (idx 54): 2026-05-10 16:33:00
+  Col BD (idx 55): 2026-05-11 16:33:00
+  Col BE (idx 56): 2026-05-12 16:33:00
+  Col BF (idx 57): 2026-05-13 16:33:00
+  Col BG (idx 58): 2026-05-14 16:33:00
+  Col BH (idx 59): 2026-05-15 16:33:00
+  Col BI (idx 60): 2026-05-16 16:33:00
+  Col BJ (idx 61): 2026-05-17 16:33:00
+  Col BK (idx 62): 2026-05-18 16:33:00
+  Col BL (idx 63): 2026-05-19 16:33:00
+  Col BM (idx 64): 2026-05-20 16:33:00
+  Col BN (idx 65): 2026-05-21 16:33:00
+  Col BO (idx 66): 2026-05-22 16:33:00
+  Col BP (idx 67): 2026-05-23 16:33:00
+  Col BQ (idx 68): 2026-05-24 16:33:00
+  Col BR (idx 69): 2026-05-25 16:33:00
+  Col BS (idx 70): 2026-05-26 16:33:00
+  Col BT (idx 71): 2026-05-27 16:33:00
+  Col BU (idx 72): 2026-05-28 16:33:00
+  Col BV (idx 73): 2026-05-29 16:33:00
+  Col BW (idx 74): 2026-05-30 16:33:00
+  Col BX (idx 75): 2026-05-31 16:33:00
+  Col BY (idx 76): 2026-06-01 16:33:00
+  Col BZ (idx 77): 2026-06-02 16:33:00
+  Col CA (idx 78): 2026-06-03 16:33:00
+  Col CB (idx 79): 2026-06-04 16:33:00
+  Col CC (idx 80): 2026-06-05 16:33:00
+  Col CD (idx 81): 2026-06-06 16:33:00
+  Col CE (idx 82): 2026-06-07 16:33:00
+  Col CF (idx 83): 2026-06-08 16:33:00
+  Col CG (idx 84): 2026-06-09 16:33:00
+  Col CH (idx 85): 2026-06-10 16:33:00
+  Col CI (idx 86): 2026-06-11 16:33:00
+  Col CJ (idx 87): 2026-06-12 16:33:00
+  Col CK (idx 88): 2026-06-13 16:33:00
+  Col CL (idx 89): 2026-06-14 16:33:00
+  Col CM (idx 90): 2026-06-15 16:33:00
+  Col CN (idx 91): 2026-06-16 16:33:00
+  Col CO (idx 92): 2026-06-17 16:33:00
+  Col CP (idx 93): 2026-06-18 16:33:00
+  Col CQ (idx 94): 2026-06-19 16:33:00
+  Col CR (idx 95): 2026-06-20 16:33:00
+  Col CS (idx 96): 2026-06-21 16:33:00
+  Col CT (idx 97): 2026-06-22 16:33:00
+  Col CU (idx 98): 2026-06-23 16:33:00
+  Col CV (idx 99): 2026-06-24 16:33:00
+  Col CW (idx 100): 2026-06-25 16:33:00
+  Col CX (idx 101): 2026-06-26 16:33:00
+  Col CY (idx 102): 2026-06-27 16:33:00
+  Col CZ (idx 103): 2026-06-28 16:33:00
+  Col DA (idx 104): 2026-06-29 16:33:00
+  Col DB (idx 105): 2026-06-30 16:33:00
+  Col DC (idx 106): 2026-07-01 16:33:00
+  Col DD (idx 107): 2026-07-02 16:33:00
+  Col DE (idx 108): 2026-07-03 16:33:00
+  Col DF (idx 109): 2026-07-04 16:33:00
+  Col DG (idx 110): 2026-07-05 16:33:00
+  Col DH (idx 111): 2026-07-06 16:33:00
+  Col DI (idx 112): 2026-07-07 16:33:00
+  Col DJ (idx 113): 2026-07-08 16:33:00
+  Col DK (idx 114): 2026-07-09 16:33:00
+  Col DL (idx 115): 2026-07-10 16:33:00
+  Col DM (idx 116): 2026-07-11 16:33:00
+  Col DN (idx 117): 2026-07-12 16:33:00
+  Col DO (idx 118): 2026-07-13 16:33:00
+  Col DP (idx 119): 2026-07-14 16:33:00
+  Col DQ (idx 120): 2026-07-15 16:33:00
+  Col DR (idx 121): 2026-07-16 16:33:00
+  Col DS (idx 122): 2026-07-17 16:33:00
+  Col DT (idx 123): 2026-07-18 16:33:00
+  Col DU (idx 124): 2026-07-19 16:33:00
+  Col DV (idx 125): 2026-07-20 16:33:00
+  Col DW (idx 126): 2026-07-21 16:33:00
+  Col DX (idx 127): 2026-07-22 16:33:00
+  Col DY (idx 128): 2026-07-23 16:33:00
+  Col DZ (idx 129): 2026-07-24 16:33:00
+  Col EA (idx 130): 2026-07-25 16:33:00
+  Col EB (idx 131): 2026-07-26 16:33:00
+  Col EC (idx 132): 2026-07-27 16:33:00
+  Col ED (idx 133): 2026-07-28 16:33:00
+  Col EE (idx 134): 2026-07-29 16:33:00
+  Col EF (idx 135): 2026-07-30 16:33:00
+  Col EG (idx 136): 2026-07-31 16:33:00
+  Col EH (idx 137): 2026-08-01 16:33:00
+  Col EI (idx 138): 2026-08-02 16:33:00
+  Col EJ (idx 139): 2026-08-03 16:33:00
+  Col EK (idx 140): 2026-08-04 16:33:00
+  Col EL (idx 141): 2026-08-05 16:33:00
+  Col EM (idx 142): 2026-08-06 16:33:00
+  Col EN (idx 143): 2026-08-07 16:33:00
+  Col EO (idx 144): 2026-08-08 16:33:00
+  Col EP (idx 145): 2026-08-09 16:33:00
+  Col EQ (idx 146): 2026-08-10 16:33:00
+  Col ER (idx 147): 2026-08-11 16:33:00
+  Col ES (idx 148): 2026-08-12 16:33:00
+  Col ET (idx 149): 2026-08-13 16:33:00
+  Col EU (idx 150): 2026-08-14 16:33:00
+  Col EV (idx 151): 2026-08-15 16:33:00
+  Col EW (idx 152): 2026-08-16 16:33:00
+  Col EX (idx 153): 2026-08-17 16:33:00
+  Col EY (idx 154): 2026-08-18 16:33:00
+  Col EZ (idx 155): 2026-08-19 16:33:00
+  Col FA (idx 156): 2026-08-20 16:33:00
+  Col FB (idx 157): 2026-08-21 16:33:00
+  Col FC (idx 158): 2026-08-22 16:33:00
+  Col FD (idx 159): 2026-08-23 16:33:00
+  Col FE (idx 160): 2026-08-24 16:33:00
+  Col FF (idx 161): 2026-08-25 16:33:00
+  Col FG (idx 162): 2026-08-26 16:33:00
+  Col FH (idx 163): 2026-08-27 16:33:00
+  Col FI (idx 164): 2026-08-28 16:33:00
+  Col FJ (idx 165): 2026-08-29 16:33:00
+  Col FK (idx 166): 2026-08-30 16:33:00
+  Col FL (idx 167): 2026-08-31 16:33:00
+  Col FM (idx 168): 2026-09-01 16:33:00
+  Col FN (idx 169): 2026-09-02 16:33:00
+  Col FO (idx 170): 2026-09-03 16:33:00
+  Col FP (idx 171): None
+  Col FQ (idx 172): None
+  Col FR (idx 173): None
+  Col FS (idx 174): None
+  Col FT (idx 175): None
+  Col FU (idx 176): None
+  Col FV (idx 177): None
+  Col FW (idx 178): None
+  Col FX (idx 179): None
+  Col FY (idx 180): None
+  Col FZ (idx 181): None
+  Col GA (idx 182): None
+  Col GB (idx 183): None
+  Col GC (idx 184): None
+  Col GD (idx 185): None
+  Col GE (idx 186): None
+  Col GF (idx 187): None
+  Col GG (idx 188): None
+  Col GH (idx 189): None
+  Col GI (idx 190): None
+  Col GJ (idx 191): None
+  Col GK (idx 192): None
+  Col GL (idx 193): None
+  Col GM (idx 194): None
+  Col GN (idx 195): None
+  Col GO (idx 196): None
+  Col GP (idx 197): None
+  Col GQ (idx 198): None
+  Col GR (idx 199): None
+  Col GS (idx 200): None
+  Col GT (idx 201): None
+  Col GU (idx 202): None
+  Col GV (idx 203): None
+  Col GW (idx 204): None
+  Col GX (idx 205): None
+  Col GY (idx 206): None
+  Col GZ (idx 207): None
+  Col HA (idx 208): None
+  Col HB (idx 209): None
+  Col HC (idx 210): None
+  Col HD (idx 211): None
+  Col HE (idx 212): None
+  Col HF (idx 213): None
+  Col HG (idx 214): None
+  Col HH (idx 215): None
+  Col HI (idx 216): None
+  Col HJ (idx 217): None
+  Col HK (idx 218): None
+  Col HL (idx 219): None
+  Col HM (idx 220): None
+  Col HN (idx 221): None
+  Col HO (idx 222): None
+  Col HP (idx 223): None
+  Col HQ (idx 224): None
+  Col HR (idx 225): None
+  Col HS (idx 226): None
+  Col HT (idx 227): None
+  Col HU (idx 228): None
+  Col HV (idx 229): None
+  Col HW (idx 230): None
+  Col HX (idx 231): None
+  Col HY (idx 232): None
+  Col HZ (idx 233): None
+  Col IA (idx 234): None
+  Col IB (idx 235): None
+  Col IC (idx 236): None
+  Col ID (idx 237): None
+  Col IE (idx 238): None
+  Col IF (idx 239): None
+  Col IG (idx 240): None
+  Col IH (idx 241): None
+  Col II (idx 242): None
+  Col IJ (idx 243): None
+  Col IK (idx 244): None
+  Col IL (idx 245): None
+  Col IM (idx 246): None
+  Col IN (idx 247): None
+  Col IO (idx 248): None
+  Col IP (idx 249): None
+  Col IQ (idx 250): None
+  Col IR (idx 251): None
+  Col IS (idx 252): None
+  Col IT (idx 253): None
+  Col IU (idx 254): None
+  Col IV (idx 255): None
+  Col IW (idx 256): None
+  Col IX (idx 257): None
+  Col IY (idx 258): None
+  Col IZ (idx 259): None
+  Col JA (idx 260): None
+  Col JB (idx 261): None
+  Col JC (idx 262): None
+  Col JD (idx 263): None
+  Col JE (idx 264): None
+  Col JF (idx 265): None
+  Col JG (idx 266): None
+  Col JH (idx 267): None
+  Col JI (idx 268): None
+  Col JJ (idx 269): None
+  Col JK (idx 270): None
+  Col JL (idx 271): None
+  Col JM (idx 272): None
+  Col JN (idx 273): None
+  Col JO (idx 274): None
+  Col JP (idx 275): None
+  Col JQ (idx 276): None
+  Col JR (idx 277): None
+  Col JS (idx 278): None
+  Col JT (idx 279): None
+  Col JU (idx 280): None
+  Col JV (idx 281): None
+  Col JW (idx 282): None
+  Col JX (idx 283): None
+  Col JY (idx 284): None
+  Col JZ (idx 285): None
+  Col KA (idx 286): None
+  Col KB (idx 287): None
+  Col KC (idx 288): None
+  Col KD (idx 289): None
+  Col KE (idx 290): None
+  Col KF (idx 291): None
+  Col KG (idx 292): None
+  Col KH (idx 293): None
+  Col KI (idx 294): None
+  Col KJ (idx 295): None
+  Col KK (idx 296): None
+  Col KL (idx 297): None
+  Col KM (idx 298): None
+  Col KN (idx 299): None
+  Col KO (idx 300): None
+  Col KP (idx 301): None
+  Col KQ (idx 302): None
+  Col KR (idx 303): None
+  Col KS (idx 304): None
+  Col KT (idx 305): None
+  Col KU (idx 306): None
+  Col KV (idx 307): None
+  Col KW (idx 308): None
+  Col KX (idx 309): None
+  Col KY (idx 310): None
+  Col KZ (idx 311): None
+  Col LA (idx 312): None
+  Col LB (idx 313): None
+  Col LC (idx 314): None
+  Col LD (idx 315): None
+  Col LE (idx 316): None
+  Col LF (idx 317): None
+  Col LG (idx 318): None
+  Col LH (idx 319): None
+  Col LI (idx 320): None
+  Col LJ (idx 321): None
+  Col LK (idx 322): None
+  Col LL (idx 323): None
+  Col LM (idx 324): None
+  Col LN (idx 325): None
+  Col LO (idx 326): None
+  Col LP (idx 327): None
+  Col LQ (idx 328): None
+  Col LR (idx 329): None
+  Col LS (idx 330): None
+  Col LT (idx 331): None
+  Col LU (idx 332): None
+  Col LV (idx 333): None
+  Col LW (idx 334): None
+  Col LX (idx 335): None
+  Col LY (idx 336): None
+  Col LZ (idx 337): None
+  Col MA (idx 338): None
+  Col MB (idx 339): None
+  Col MC (idx 340): None
+  Col MD (idx 341): None
+  Col ME (idx 342): None
+  Col MF (idx 343): None
+  Col MG (idx 344): None
+  Col MH (idx 345): None
+  Col MI (idx 346): None
+  Col MJ (idx 347): None
+  Col MK (idx 348): None
+  Col ML (idx 349): None
+  Col MM (idx 350): None
+  Col MN (idx 351): None
+  Col MO (idx 352): None
+  Col MP (idx 353): None
+  Col MQ (idx 354): None
+  Col MR (idx 355): None
+  Col MS (idx 356): None
+  Col MT (idx 357): None
+  Col MU (idx 358): None
+  Col MV (idx 359): None
+  Col MW (idx 360): None
+  Col MX (idx 361): None
+  Col MY (idx 362): None
+  Col MZ (idx 363): None
+  Col NA (idx 364): None
+  Col NB (idx 365): None
+  Col NC (idx 366): None
+  Col ND (idx 367): None
+  Col NE (idx 368): None
+  Col NF (idx 369): None
+  Col NG (idx 370): None
+  Col NH (idx 371): None
+  Col NI (idx 372): None
+  Col NJ (idx 373): None
+  Col NK (idx 374): None
+  Col NL (idx 375): None
+  Col NM (idx 376): None
+  Col NN (idx 377): None
+  Col NO (idx 378): None
+  Col NP (idx 379): None
+  Col NQ (idx 380): None
+  Col NR (idx 381): None
+  Col NS (idx 382): None
+  Col NT (idx 383): None
+  Col NU (idx 384): None
+  Col NV (idx 385): None
+  Col NW (idx 386): None
+  Col NX (idx 387): None
+  Col NY (idx 388): None
+  Col NZ (idx 389): None
+  Col OA (idx 390): None
+  Col OB (idx 391): None
+  Col OC (idx 392): None
+  Col OD (idx 393): None
+  Col OE (idx 394): None
+  Col OF (idx 395): None
+  Col OG (idx 396): None
+  Col OH (idx 397): None
+  Col OI (idx 398): None
+  Col OJ (idx 399): None
+  Col OK (idx 400): None
+  Col OL (idx 401): None
+  Col OM (idx 402): None
+  Col ON (idx 403): None
+  Col OO (idx 404): None
+  Col OP (idx 405): None
+  Col OQ (idx 406): None
+  Col OR (idx 407): None
+  Col OS (idx 408): None
+  Col OT (idx 409): None
+  Col OU (idx 410): None
+  Col OV (idx 411): None
+  Col OW (idx 412): None
+  Col OX (idx 413): None
+  Col OY (idx 414): None
+  Col OZ (idx 415): None
+  Col PA (idx 416): None
+  Col PB (idx 417): None
+  Col PC (idx 418): None
+  Col PD (idx 419): None
+  Col PE (idx 420): None
+  Col PF (idx 421): None
+  Col PG (idx 422): None
+  Col PH (idx 423): None
+  Col PI (idx 424): None
+  Col PJ (idx 425): None
+  Col PK (idx 426): None
+  Col PL (idx 427): None
+  Col PM (idx 428): None
+  Col PN (idx 429): None
+  Col PO (idx 430): None
+  Col PP (idx 431): None
+  Col PQ (idx 432): None
+  Col PR (idx 433): None
+  Col PS (idx 434): None
+  Col PT (idx 435): None
+  Col PU (idx 436): None
+  Col PV (idx 437): None
+  Col PW (idx 438): None
+  Col PX (idx 439): None
+  Col PY (idx 440): None
+  Col PZ (idx 441): None
+  Col QA (idx 442): None
+  Col QB (idx 443): None
+  Col QC (idx 444): None
+  Col QD (idx 445): None
+  Col QE (idx 446): None
+  Col QF (idx 447): None
+  Col QG (idx 448): None
+  Col QH (idx 449): None
+  Col QI (idx 450): None
+  Col QJ (idx 451): None
+  Col QK (idx 452): None
+  Col QL (idx 453): None
+  Col QM (idx 454): None
+  Col QN (idx 455): None
+  Col QO (idx 456): None
+  Col QP (idx 457): None
+  Col QQ (idx 458): None
+  Col QR (idx 459): None
+  Col QS (idx 460): None
+  Col QT (idx 461): None
+  Col QU (idx 462): None
+  Col QV (idx 463): None
+  Col QW (idx 464): None
+  Col QX (idx 465): None
+  Col QY (idx 466): None
+  Col QZ (idx 467): None
+  Col RA (idx 468): None
+  Col RB (idx 469): None
+  Col RC (idx 470): None
+  Col RD (idx 471): None
+  Col RE (idx 472): None
+  Col RF (idx 473): None
+  Col RG (idx 474): None
+  Col RH (idx 475): None
+  Col RI (idx 476): None
+  Col RJ (idx 477): None
+  Col RK (idx 478): None
+  Col RL (idx 479): None
+  Col RM (idx 480): None
+  Col RN (idx 481): None
+  Col RO (idx 482): None
+  Col RP (idx 483): None
+  Col RQ (idx 484): None
+  Col RR (idx 485): None
+  Col RS (idx 486): None
+  Col RT (idx 487): None
+  Col RU (idx 488): None
+  Col RV (idx 489): None
+  Col RW (idx 490): None
+  Col RX (idx 491): None
+  Col RY (idx 492): None
+  Col RZ (idx 493): None
+  Col SA (idx 494): None
+  Col SB (idx 495): None
+  Col SC (idx 496): None
+  Col SD (idx 497): None
+  Col SE (idx 498): None
+  Col SF (idx 499): None
+  Col SG (idx 500): None
+  Col SH (idx 501): None
+  Col SI (idx 502): None
+  Col SJ (idx 503): None
+  Col SK (idx 504): None
+  Col SL (idx 505): None
+  Col SM (idx 506): None
+  Col SN (idx 507): None
+  Col SO (idx 508): None
+  Col SP (idx 509): None
+  Col SQ (idx 510): None
+  Col SR (idx 511): None
+  Col SS (idx 512): None
+  Col ST (idx 513): None
+  Col SU (idx 514): None
+  Col SV (idx 515): None
+  Col SW (idx 516): None
+  Col SX (idx 517): None
+  Col SY (idx 518): None
+  Col SZ (idx 519): None
+  Col TA (idx 520): None
+  Col TB (idx 521): None
+  Col TC (idx 522): None
+  Col TD (idx 523): None
+  Col TE (idx 524): None
+  Col TF (idx 525): None
+  Col TG (idx 526): None
+  Col TH (idx 527): None
+  Col TI (idx 528): None
+  Col TJ (idx 529): None
+  Col TK (idx 530): None
+  Col TL (idx 531): None
+  Col TM (idx 532): None
+  Col TN (idx 533): None
+  Col TO (idx 534): None
+  Col TP (idx 535): None
+  Col TQ (idx 536): None
+  Col TR (idx 537): None
+  Col TS (idx 538): None
+  Col TT (idx 539): None
+  Col TU (idx 540): None
+  Col TV (idx 541): None
+  Col TW (idx 542): None
+  Col TX (idx 543): None
+  Col TY (idx 544): None
+  Col TZ (idx 545): None
+  Col UA (idx 546): None
+  Col UB (idx 547): None
+  Col UC (idx 548): None
+  Col UD (idx 549): None
+  Col UE (idx 550): None
+  Col UF (idx 551): None
+  Col UG (idx 552): None
+  Col UH (idx 553): None
+  Col UI (idx 554): None
+  Col UJ (idx 555): None
+  Col UK (idx 556): None
+  Col UL (idx 557): None
+  Col UM (idx 558): None
+  Col UN (idx 559): None
+  Col UO (idx 560): None
+  Col UP (idx 561): None
+  Col UQ (idx 562): None
+  Col UR (idx 563): None
+  Col US (idx 564): None
+  Col UT (idx 565): None
+  Col UU (idx 566): None
+  Col UV (idx 567): None
+  Col UW (idx 568): None
+  Col UX (idx 569): None
+  Col UY (idx 570): None
+  Col UZ (idx 571): None
+  Col VA (idx 572): None
+  Col VB (idx 573): None
+  Col VC (idx 574): None
+  Col VD (idx 575): None
+  Col VE (idx 576): None
+  Col VF (idx 577): None
+  Col VG (idx 578): None
+  Col VH (idx 579): None
+  Col VI (idx 580): None
+  Col VJ (idx 581): None
+  Col VK (idx 582): None
+  Col VL (idx 583): None
+  Col VM (idx 584): None
+  Col VN (idx 585): None
+  Col VO (idx 586): None
+  Col VP (idx 587): None
+  Col VQ (idx 588): None
+  Col VR (idx 589): None
+  Col VS (idx 590): None
+  Col VT (idx 591): None
+  Col VU (idx 592): None
+  Col VV (idx 593): None
+  Col VW (idx 594): None
+  Col VX (idx 595): None
+  Col VY (idx 596): None
+  Col VZ (idx 597): None
+  Col WA (idx 598): None
+  Col WB (idx 599): None
+  Col WC (idx 600): None
+  Col WD (idx 601): None
+  Col WE (idx 602): None
+  Col WF (idx 603): None
+  Col WG (idx 604): None
+  Col WH (idx 605): None
+  Col WI (idx 606): None
+  Col WJ (idx 607): None
+  Col WK (idx 608): None
+  Col WL (idx 609): None
+  Col WM (idx 610): None
+  Col WN (idx 611): None
+  Col WO (idx 612): None
+  Col WP (idx 613): None
+  Col WQ (idx 614): None
+  Col WR (idx 615): None
+  Col WS (idx 616): None
+  Col WT (idx 617): None
+  Col WU (idx 618): None
+  Col WV (idx 619): None
+  Col WW (idx 620): None
+  Col WX (idx 621): None
+  Col WY (idx 622): None
+  Col WZ (idx 623): None
+  Col XA (idx 624): None
+  Col XB (idx 625): None
+  Col XC (idx 626): None
+  Col XD (idx 627): None
+  Col XE (idx 628): None
+  Col XF (idx 629): None
+  Col XG (idx 630): None
+  Col XH (idx 631): None
+  Col XI (idx 632): None
+  Col XJ (idx 633): None
+  Col XK (idx 634): None
+  Col XL (idx 635): None
+  Col XM (idx 636): None
+  Col XN (idx 637): None
+  Col XO (idx 638): None
+  Col XP (idx 639): None
+  Col XQ (idx 640): None
+  Col XR (idx 641): None
+  Col XS (idx 642): None
+  Col XT (idx 643): None
+  Col XU (idx 644): None
+  Col XV (idx 645): None
+  Col XW (idx 646): None
+  Col XX (idx 647): None
+  Col XY (idx 648): None
+  Col XZ (idx 649): None
+  Col YA (idx 650): None
+  Col YB (idx 651): None
+  Col YC (idx 652): None
+  Col YD (idx 653): None
+  Col YE (idx 654): None
+  Col YF (idx 655): None
+  Col YG (idx 656): None
+  Col YH (idx 657): None
+  Col YI (idx 658): None
+  Col YJ (idx 659): None
+  Col YK (idx 660): None
+  Col YL (idx 661): None
+  Col YM (idx 662): None
+  Col YN (idx 663): None
+  Col YO (idx 664): None
+  Col YP (idx 665): None
+  Col YQ (idx 666): None
+  Col YR (idx 667): None
+  Col YS (idx 668): None
+  Col YT (idx 669): None
+  Col YU (idx 670): None
+  Col YV (idx 671): None
+  Col YW (idx 672): None
+  Col YX (idx 673): None
+  Col YY (idx 674): None
+
+================================================================================
+Colonna PHASE (E, idx 4): Phase
+Colonna ORDER (K, idx 10): Order Number
+Colonna START (O, idx 14): Order Phase Plan Start
+
+================================================================================
+RIGHE CON PTHM (prime 20):
+
+  Row 66:
+    PHASE: 'PTHM' (type=str)
+    ORDER: 'PR0000344' (type=str)
+    START: '2026-04-06 16:33:00' (type=datetime)
+    PARSED: 2026-04-06 16:33:00 (in -1.7h)
+    IN WINDOW 4h: False (now=18:16, cutoff=4h)
+
+  Row 67:
+    PHASE: 'PTHM' (type=str)
+    ORDER: 'PR0000317' (type=str)
+    START: '2026-04-06 16:33:00' (type=datetime)
+    PARSED: 2026-04-06 16:33:00 (in -1.7h)
+    IN WINDOW 4h: False (now=18:16, cutoff=4h)
+
+  Row 68:
+    PHASE: 'PTHM' (type=str)
+    ORDER: 'PR0000251' (type=str)
+    START: '2026-04-06 16:33:00' (type=datetime)
+    PARSED: 2026-04-06 16:33:00 (in -1.7h)
+    IN WINDOW 4h: False (now=18:16, cutoff=4h)
+
+  Row 69:
+    PHASE: 'PTHM' (type=str)
+    ORDER: 'PR0000343' (type=str)
+    START: '2026-04-06 17:04:42' (type=datetime)
+    PARSED: 2026-04-06 17:04:42 (in -1.2h)
+    IN WINDOW 4h: False (now=18:16, cutoff=4h)
+
+  Row 70:
+    PHASE: 'PTHM' (type=str)
+    ORDER: 'PR0000311' (type=str)
+    START: '2026-04-06 17:19:00' (type=datetime)
+    PARSED: 2026-04-06 17:19:00 (in -1.0h)
+    IN WINDOW 4h: False (now=18:16, cutoff=4h)
+
+  Row 71:
+    PHASE: 'PTHM' (type=str)
+    ORDER: 'PR0000348' (type=str)
+    START: '2026-04-06 17:53:08' (type=datetime)
+    PARSED: 2026-04-06 17:53:08 (in -0.4h)
+    IN WINDOW 4h: False (now=18:16, cutoff=4h)
+
+  Row 72:
+    PHASE: 'PTHM' (type=str)
+    ORDER: 'PR0000345' (type=str)
+    START: '2026-04-07 07:30:00' (type=datetime)
+    PARSED: 2026-04-07 07:30:00 (in 13.2h)
+    IN WINDOW 4h: False (now=18:16, cutoff=4h)
+
+  Row 73:
+    PHASE: 'PTHM' (type=str)
+    ORDER: 'PR0000370' (type=str)
+    START: '2026-04-07 12:23:52' (type=datetime)
+    PARSED: 2026-04-07 12:23:52 (in 18.1h)
+    IN WINDOW 4h: False (now=18:16, cutoff=4h)
+
+  Row 74:
+    PHASE: 'PTHM' (type=str)
+    ORDER: 'PR0000340' (type=str)
+    START: '2026-04-07 16:33:05' (type=datetime)
+    PARSED: 2026-04-07 16:33:05 (in 22.3h)
+    IN WINDOW 4h: False (now=18:16, cutoff=4h)
+
+  Row 75:
+    PHASE: 'PTHM' (type=str)
+    ORDER: 'PR0000362' (type=str)
+    START: '2026-04-07 19:18:02' (type=datetime)
+    PARSED: 2026-04-07 19:18:02 (in 25.0h)
+    IN WINDOW 4h: False (now=18:16, cutoff=4h)
+
+  Row 76:
+    PHASE: 'PTHM' (type=str)
+    ORDER: 'PR0000222' (type=str)
+    START: '2026-04-08 07:03:05' (type=datetime)
+    PARSED: 2026-04-08 07:03:05 (in 36.8h)
+    IN WINDOW 4h: False (now=18:16, cutoff=4h)
+
+  Row 77:
+    PHASE: 'PTHM' (type=str)
+    ORDER: 'PR0000335' (type=str)
+    START: '2026-04-08 07:30:00' (type=datetime)
+    PARSED: 2026-04-08 07:30:00 (in 37.2h)
+    IN WINDOW 4h: False (now=18:16, cutoff=4h)
+
+  Row 78:
+    PHASE: 'PTHM' (type=str)
+    ORDER: 'PR0000292' (type=str)
+    START: '2026-04-08 08:45:05' (type=datetime)
+    PARSED: 2026-04-08 08:45:05 (in 38.5h)
+    IN WINDOW 4h: False (now=18:16, cutoff=4h)
+
+  Row 79:
+    PHASE: 'PTHM' (type=str)
+    ORDER: 'PR0000361' (type=str)
+    START: '2026-04-08 14:54:02' (type=datetime)
+    PARSED: 2026-04-08 14:54:02 (in 44.6h)
+    IN WINDOW 4h: False (now=18:16, cutoff=4h)
+
+  Row 80:
+    PHASE: 'PTHM' (type=str)
+    ORDER: 'PR0000252' (type=str)
+    START: '2026-04-09 09:32:34' (type=datetime)
+    PARSED: 2026-04-09 09:32:34 (in 63.3h)
+    IN WINDOW 4h: False (now=18:16, cutoff=4h)
+
+  Row 81:
+    PHASE: 'PTHM' (type=str)
+    ORDER: 'PR0000372' (type=str)
+    START: '2026-04-09 09:39:00' (type=datetime)
+    PARSED: 2026-04-09 09:39:00 (in 63.4h)
+    IN WINDOW 4h: False (now=18:16, cutoff=4h)
+
+  Row 82:
+    PHASE: 'PTHM' (type=str)
+    ORDER: 'PR0000346' (type=str)
+    START: '2026-04-09 12:59:34' (type=datetime)
+    PARSED: 2026-04-09 12:59:34 (in 66.7h)
+    IN WINDOW 4h: False (now=18:16, cutoff=4h)
+
+  Row 83:
+    PHASE: 'PTHM' (type=str)
+    ORDER: 'PR0000352' (type=str)
+    START: '2026-04-09 15:27:00' (type=datetime)
+    PARSED: 2026-04-09 15:27:00 (in 69.2h)
+    IN WINDOW 4h: False (now=18:16, cutoff=4h)
+
+  Row 84:
+    PHASE: 'PTHM' (type=str)
+    ORDER: 'PR0000342' (type=str)
+    START: '2026-04-09 18:36:22' (type=datetime)
+    PARSED: 2026-04-09 18:36:22 (in 72.3h)
+    IN WINDOW 4h: False (now=18:16, cutoff=4h)
+
+  Row 85:
+    PHASE: 'PTHM' (type=str)
+    ORDER: 'PR0000327' (type=str)
+    START: '2026-04-09 20:24:02' (type=datetime)
+    PARSED: 2026-04-09 20:24:02 (in 74.1h)
+    IN WINDOW 4h: False (now=18:16, cutoff=4h)
+
+Totale righe PTHM trovate: 20

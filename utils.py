@@ -318,47 +318,83 @@ def send_fai_fails_notification(conn, logo_path: str = "logo.png") -> bool:
         True se email inviata con successo, False altrimenti
     """
     try:
-        # 1. Recupera i fails non analizzati
+        # 1. Recupera i fails non analizzati (DISTINCT per LabelCode)
         query_fails = """
-        SELECT 
-            l.FaiLogId,
+        SELECT DISTINCT
             l.Operator,
             p.productcode,
-            l.DateIn,
-            l.IsOk
+            l.LabelCode
         FROM [Traceability_RS].[fai].[FaiLogs] l
         LEFT JOIN [Traceability_RS].[dbo].[orders] o ON l.OrderId = o.IDOrder
         LEFT JOIN [Traceability_RS].[dbo].[Products] p ON o.IDProduct = p.IDProduct
-        WHERE l.IsOk = 0 
+        WHERE l.IsOk = 0
             AND ISNULL(l.IsAnalized, 0) = 0
-        ORDER BY l.DateIn DESC
+            AND l.DateOut IS NULL
+        ORDER BY l.LabelCode
         """
-        
+
         with conn.cursor() as cursor:
             cursor.execute(query_fails)
             fails = cursor.fetchall()
-        
+
         if not fails:
             logger.info("Nessun FAI fail non analizzato trovato. Email non inviata.")
             return False
+
+        # Raccoglie i LabelCode unici per il successivo UPDATE
+        fail_labels = list(set(row.LabelCode for row in fails if row.LabelCode))
+        num_fails = len(fail_labels)
+
+        logger.info(f"Trovati {num_fails} FAI fails non analizzati ({len(fail_labels)} LabelCode unici)")
         
-        fail_ids = [row.FaiLogId for row in fails]
-        num_fails = len(fail_ids)
-        
-        logger.info(f"Trovati {num_fails} FAI fails non analizzati")
-        
-        # 2. Calcola statistiche per operatore
+        # 2. Calcola statistiche per operatore (UNION ALL)
         query_stats = """
-        SELECT 
-            l.Operator,
-            COUNT(DISTINCT l.FaiLogId) as TotalFAI,
-            SUM(CASE WHEN l.IsOk = 0 THEN 1 ELSE 0 END) as TotalFails,
-            CAST(SUM(CASE WHEN l.IsOk = 0 THEN 1 ELSE 0 END) * 100.0 / 
-                 NULLIF(COUNT(DISTINCT l.FaiLogId), 0) AS DECIMAL(5,2)) as FailureRate
-        FROM [Traceability_RS].[fai].[FaiLogs] l
-        WHERE ISNULL(l.IsAnalized, 0) = 0 AND l.IsOk = 0
-        GROUP BY l.Operator
-        ORDER BY FailureRate DESC
+        SELECT
+            UPPER(Operator) AS Operator,
+            SUM(FailFAI)        AS FailFai,
+            SUM(TotalCheckFai)  AS TotalCheckFai,
+            SUM(TotalFails)     AS TotalFails,
+            CAST(SUM(TotalFails) AS FLOAT) / NULLIF(SUM(TotalCheckFai), 0) * 100 AS ProcentFail
+        FROM (
+            -- Parte A: conta schede FAIL non analizzate per operatore
+            SELECT
+                l.Operator,
+                COUNT(DISTINCT ISNULL(l.LabelCode, '0')) AS FailFAI,
+                0 AS TotalCheckFai,
+                0 AS TotalFails
+            FROM [Traceability_RS].[fai].[FaiLogs] AS l
+            WHERE l.IsOk = 0
+                AND ISNULL(l.IsAnalized, 0) = 0
+                AND l.DateOut IS NULL
+            GROUP BY l.Operator
+
+            UNION ALL
+
+            -- Parte B: conta TUTTE le verifiche FAI attive per operatore
+            SELECT
+                Operator,
+                0 AS FailFai,
+                COUNT(DISTINCT LabelCode) AS TotalCheckFai,
+                0 AS TotalFails
+            FROM [Traceability_RS].[fai].[FaiLogs]
+            WHERE DateOut IS NULL
+            GROUP BY Operator
+
+            UNION ALL
+
+            -- Parte C: conta schede con almeno un FAIL attivo per operatore
+            SELECT
+                Operator,
+                0 AS FailFAI,
+                0 AS TotalCheckFai,
+                COUNT(DISTINCT LabelCode) AS TotalFails
+            FROM [Traceability_RS].[fai].[FaiLogs]
+            WHERE IsOk = 0
+                AND DateOut IS NULL
+            GROUP BY Operator
+        ) AS W
+        GROUP BY UPPER(Operator)
+        ORDER BY ProcentFail DESC
         """
         
         with conn.cursor() as cursor:
@@ -411,24 +447,26 @@ def send_fai_fails_notification(conn, logo_path: str = "logo.png") -> bool:
         table_rows = ""
         for stat in statistics:
             operator = stat.Operator or 'N/A'
-            total_fai = stat.TotalFAI or 0
+            fail_fai = stat.FailFai or 0
+            total_check = stat.TotalCheckFai or 0
             total_fails = stat.TotalFails or 0
-            failure_rate = stat.FailureRate or 0.0
-            
+            procent_fail = float(stat.ProcentFail or 0)
+
             # Colore riga in base al tasso di fallimento
-            if failure_rate < 5.0:
+            if procent_fail < 5.0:
                 row_color = "#d4edda"  # Verde chiaro
-            elif failure_rate < 15.0:
+            elif procent_fail < 15.0:
                 row_color = "#fff3cd"  # Giallo chiaro
             else:
                 row_color = "#f8d7da"  # Rosso chiaro
-            
+
             table_rows += f"""
             <tr style="background-color: {row_color};">
                 <td style="padding: 10px; border: 1px solid #ddd;">{operator}</td>
-                <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">{total_fai}</td>
+                <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">{fail_fai}</td>
+                <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">{total_check}</td>
                 <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">{total_fails}</td>
-                <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">{failure_rate:.2f}%</td>
+                <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">{procent_fail:.2f}%</td>
             </tr>
             """
         
@@ -455,7 +493,8 @@ def send_fai_fails_notification(conn, logo_path: str = "logo.png") -> bool:
                 <thead>
                     <tr style="background-color: #366092; color: white;">
                         <th style="padding: 10px; border: 1px solid #ddd;">Operator</th>
-                        <th style="padding: 10px; border: 1px solid #ddd;">Total FAI</th>
+                        <th style="padding: 10px; border: 1px solid #ddd;">Fail FAI (nevalidate)</th>
+                        <th style="padding: 10px; border: 1px solid #ddd;">Total Verifiche FAI</th>
                         <th style="padding: 10px; border: 1px solid #ddd;">Total Defecte</th>
                         <th style="padding: 10px; border: 1px solid #ddd;">Procent Defecte (%)</th>
                     </tr>
@@ -484,16 +523,16 @@ def send_fai_fails_notification(conn, logo_path: str = "logo.png") -> bool:
         </body>
         </html>
         """
-        
+
         # 7. Invia email
         sender = EmailSender()
         sender.save_credentials("Accounting@Eutron.it", "9jHgFhSs7Vf+")
-        
+
         # Prepara allegati con logo inline
         attachments = []
         if os.path.exists(logo_path):
             attachments.append(('inline', logo_path, 'company_logo'))
-        
+
         sender.send_email(
             to_email=', '.join(recipients_to),
             subject="Raport Automat - Defecte FAI Nevalidate",
@@ -502,25 +541,30 @@ def send_fai_fails_notification(conn, logo_path: str = "logo.png") -> bool:
             attachments=attachments,
             cc_emails=recipients_cc
         )
-        
+
         logger.info(f"Email FAI fails inviata con successo a {len(recipients_to)} destinatari")
-        
-        # 8. Aggiorna flag IsAnalized dopo invio successo
-        placeholders = ','.join(['?' for _ in fail_ids])
-        update_query = f"""
-        UPDATE [Traceability_RS].[fai].[FaiLogs]
-        SET IsAnalized = 1
-        WHERE FaiLogId IN ({placeholders})
-        """
-        
-        with conn.cursor() as cursor:
-            cursor.execute(update_query, fail_ids)
-            conn.commit()
-        
-        logger.info(f"Aggiornati {len(fail_ids)} record con IsAnalized = 1")
-        
+
+        # 8. Aggiorna flag IsAnalized tramite LabelCode dopo invio successo
+        if fail_labels:
+            placeholders = ','.join(['?' for _ in fail_labels])
+            update_query = f"""
+            UPDATE [Traceability_RS].[fai].[FaiLogs]
+            SET IsAnalized = 1
+            WHERE IsOk = 0
+                AND ISNULL(IsAnalized, 0) = 0
+                AND LabelCode IN ({placeholders})
+            """
+
+            with conn.cursor() as cursor:
+                cursor.execute(update_query, fail_labels)
+                conn.commit()
+
+            logger.info(f"Aggiornati record con IsAnalized = 1 per {len(fail_labels)} LabelCode")
+        else:
+            logger.warning("Nessun LabelCode valido trovato per aggiornare IsAnalized")
+
         return True
-        
+
     except Exception as e:
         logger.error(f"Errore nell'invio email FAI fails: {str(e)}", exc_info=True)
         return False

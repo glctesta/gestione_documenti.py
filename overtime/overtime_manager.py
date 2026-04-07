@@ -2925,7 +2925,7 @@ class OvertimeManager:
                     h.EmployeeHireHistoryId AS EmployeeHireId,
                     ee.EmployeeNID COLLATE DATABASE_DEFAULT AS UniqueID,
                     ISNULL(f.FunctionCode, 0) AS FunctionCode,
-                    ISNULL(f.FunctionName, 'N/A') AS FunctionName
+                    ISNULL(f.FunctionDescription, 'N/A') AS FunctionName
                 FROM employee.dbo.employees ee
                 INNER JOIN employee.dbo.employeehirehistory h
                     ON ee.EmployeeId = h.EmployeeId

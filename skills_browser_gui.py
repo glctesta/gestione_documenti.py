@@ -18,7 +18,8 @@ class ExternalIpsManagerWindow(tk.Toplevel):
     """Finestra CRUD per gestire IP/Programmi esterni (Employee.dbo.ExternalIps)."""
 
     QUERY_ACTIVE = """
-        SELECT [ExternalIpID], [ExternalIP], [Port], [ProgramName]
+        SELECT [ExternalIpID], [ExternalIP], [Port], [ProgramName],
+               ISNULL([ShowOnProductionMonitors], 0) AS ShowOnProductionMonitors
         FROM [Employee].[dbo].[ExternalIps]
         WHERE [DateOut] IS NULL
         ORDER BY [ProgramName]
@@ -61,7 +62,7 @@ class ExternalIpsManagerWindow(tk.Toplevel):
         vsb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL)
         self.tree = ttk.Treeview(
             tree_frame,
-            columns=('ID', 'IP', 'Port', 'Program'),
+            columns=('ID', 'IP', 'Port', 'Program', 'Monitor'),
             show='headings',
             yscrollcommand=vsb.set
         )
@@ -71,11 +72,13 @@ class ExternalIpsManagerWindow(tk.Toplevel):
         self.tree.heading('IP', text='IP')
         self.tree.heading('Port', text='Port')
         self.tree.heading('Program', text=self.lang.get('ext_program_name', 'Programma'))
+        self.tree.heading('Monitor', text=self.lang.get('ext_show_monitor', 'Prod. Monitor'))
 
         self.tree.column('ID', width=50, anchor=tk.CENTER)
         self.tree.column('IP', width=200)
         self.tree.column('Port', width=80, anchor=tk.CENTER)
         self.tree.column('Program', width=250)
+        self.tree.column('Monitor', width=90, anchor=tk.CENTER)
 
         self.tree.grid(row=0, column=0, sticky='nsew')
         vsb.grid(row=0, column=1, sticky='ns')
@@ -89,8 +92,10 @@ class ExternalIpsManagerWindow(tk.Toplevel):
         try:
             self.db.cursor.execute(self.QUERY_ACTIVE)
             for row in self.db.cursor.fetchall():
+                monitor_val = getattr(row, 'ShowOnProductionMonitors', 0) or 0
                 self.tree.insert('', tk.END, values=(
-                    row.ExternalIpID, row.ExternalIP, row.Port, row.ProgramName
+                    row.ExternalIpID, row.ExternalIP, row.Port, row.ProgramName,
+                    '✓' if monitor_val else ''
                 ))
         except Exception as e:
             logger.error(f"Errore caricamento ExternalIps: {e}", exc_info=True)
@@ -117,7 +122,10 @@ class ExternalIpsManagerWindow(tk.Toplevel):
             )
             return
         vals = self.tree.item(sel[0])['values']
-        data = {'ID': vals[0], 'IP': vals[1], 'Port': vals[2], 'Program': vals[3]}
+        data = {
+            'ID': vals[0], 'IP': vals[1], 'Port': vals[2], 'Program': vals[3],
+            'Monitor': 1 if vals[4] == '✓' else 0
+        }
         dialog = _ExternalIpDialog(self, self.db, self.lang, mode='edit', data=data)
         self.wait_window(dialog)
         if dialog.result:
@@ -184,7 +192,7 @@ class _ExternalIpDialog(tk.Toplevel):
                  if mode == 'add'
                  else self.lang.get('ext_edit_title', 'Modifica Programma Esterno'))
         self.title(title)
-        self.geometry('400x220')
+        self.geometry('400x280')
         self.resizable(False, False)
 
         self._create_widgets()
@@ -210,8 +218,14 @@ class _ExternalIpDialog(tk.Toplevel):
         self.prog_var = tk.StringVar()
         ttk.Entry(f, textvariable=self.prog_var, width=30).grid(row=2, column=1, sticky=tk.EW, padx=6, pady=4)
 
+        self.monitor_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            f, text=self.lang.get('ext_show_monitor', 'Show on Production Monitors'),
+            variable=self.monitor_var
+        ).grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=4)
+
         btn = ttk.Frame(f)
-        btn.grid(row=3, column=0, columnspan=2, pady=16)
+        btn.grid(row=4, column=0, columnspan=2, pady=16)
         ttk.Button(btn, text=self.lang.get('save', 'Salva'), command=self._save).pack(side=tk.LEFT, padx=6)
         ttk.Button(btn, text=self.lang.get('cancel', 'Annulla'), command=self.destroy).pack(side=tk.LEFT, padx=6)
 
@@ -221,11 +235,13 @@ class _ExternalIpDialog(tk.Toplevel):
         self.ip_var.set(self.data['IP'])
         self.port_var.set(self.data['Port'])
         self.prog_var.set(self.data['Program'])
+        self.monitor_var.set(bool(self.data.get('Monitor', 0)))
 
     def _save(self):
         ip = self.ip_var.get().strip()
         port = self.port_var.get().strip()
         prog = self.prog_var.get().strip()
+        monitor = 1 if self.monitor_var.get() else 0
 
         if not ip or not port or not prog:
             messagebox.showwarning(
@@ -238,13 +254,13 @@ class _ExternalIpDialog(tk.Toplevel):
         try:
             if self.mode == 'add':
                 self.db.cursor.execute(
-                    "INSERT INTO [Employee].[dbo].[ExternalIps] ([ExternalIP], [Port], [ProgramName]) VALUES (?, ?, ?)",
-                    (ip, port, prog)
+                    "INSERT INTO [Employee].[dbo].[ExternalIps] ([ExternalIP], [Port], [ProgramName], [ShowOnProductionMonitors]) VALUES (?, ?, ?, ?)",
+                    (ip, port, prog, monitor)
                 )
             else:
                 self.db.cursor.execute(
-                    "UPDATE [Employee].[dbo].[ExternalIps] SET [ExternalIP]=?, [Port]=?, [ProgramName]=? WHERE [ExternalIpID]=?",
-                    (ip, port, prog, self.data['ID'])
+                    "UPDATE [Employee].[dbo].[ExternalIps] SET [ExternalIP]=?, [Port]=?, [ProgramName]=?, [ShowOnProductionMonitors]=? WHERE [ExternalIpID]=?",
+                    (ip, port, prog, monitor, self.data['ID'])
                 )
             self.db.conn.commit()
             self.result = True

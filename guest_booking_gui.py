@@ -974,6 +974,50 @@ class GuestBookingWindow(tk.Toplevel):
             logger.error(f"Errore recupero email utente: {e}")
             return None
 
+    def _get_confirmation_emails(self):
+        """Recupera le email di conferma da VisitorPlanToCharges per i visitatori correnti.
+        
+        Cerca il campo ConfirmationEmails tramite la catena:
+        guests_data[].visitor_id → Visitors.VisitorDataId → VisitorData.VisitorPlanToChargeID
+        → VisitorPlanToCharges.ConfirmationEmails
+        
+        Returns:
+            Lista di indirizzi email unici, oppure lista vuota.
+        """
+        emails = set()
+        try:
+            visitor_ids = [g.get('visitor_id') for g in self.guests_data if g.get('visitor_id')]
+            if not visitor_ids:
+                return []
+
+            placeholders = ','.join(['?' for _ in visitor_ids])
+            query = f"""
+                SELECT DISTINCT vpc.ConfirmationEmails
+                FROM Employee.dbo.Visitors v
+                INNER JOIN Employee.dbo.VisitorData vd
+                    ON v.VisitorDataId = vd.VisitorDataID
+                INNER JOIN Employee.dbo.VisitorPlanToCharges vpc
+                    ON vd.VisitorPlanToChargeID = vpc.VisitorPlanToChargeID
+                WHERE v.VisitorId IN ({placeholders})
+                    AND vpc.ConfirmationEmails IS NOT NULL
+                    AND vpc.ConfirmationEmails != ''
+            """
+            cursor = self.db.conn.cursor()
+            cursor.execute(query, visitor_ids)
+            for row in cursor.fetchall():
+                if row.ConfirmationEmails:
+                    # Supporta email multiple separate da ; o ,
+                    for email in row.ConfirmationEmails.replace(',', ';').split(';'):
+                        email = email.strip()
+                        if email and '@' in email:
+                            emails.add(email)
+            cursor.close()
+            if emails:
+                logger.info(f"ConfirmationEmails trovate: {emails}")
+        except Exception as e:
+            logger.warning(f"Errore recupero ConfirmationEmails: {e}")
+        return list(emails)
+
     def _show_progress(self, text=''):
         """Mostra la barra di avanzamento."""
         self.progress_label.config(text=text)
@@ -1361,11 +1405,14 @@ class GuestBookingWindow(tk.Toplevel):
 
         cc = user_email if user_email else None
 
+        # Aggiungi ConfirmationEmails da VisitorPlanToCharges
+        confirmation_emails = self._get_confirmation_emails()
+
         # Supporta email multiple separate da ';' → una sola email
         email_addresses = [e.strip() for e in reservation_email.split(';') if e.strip()]
         to_addr = email_addresses[0]
         extra_cc = email_addresses[1:]
-        all_cc = extra_cc + ([cc] if cc else [])
+        all_cc = extra_cc + ([cc] if cc else []) + confirmation_emails
         logger.info(f"Shuttle email TO: {to_addr}, CC: {all_cc}")
         sender.send_email(
             to_email=to_addr,
@@ -1491,11 +1538,14 @@ class GuestBookingWindow(tk.Toplevel):
 
         cc = user_email if user_email else None
 
+        # Aggiungi ConfirmationEmails da VisitorPlanToCharges
+        confirmation_emails = self._get_confirmation_emails()
+
         # Supporta email multiple separate da ';' → una sola email
         email_addresses = [e.strip() for e in reservation_email.split(';') if e.strip()]
         to_addr = email_addresses[0]
         extra_cc = email_addresses[1:]
-        all_cc = extra_cc + ([cc] if cc else [])
+        all_cc = extra_cc + ([cc] if cc else []) + confirmation_emails
         logger.info(f"Hotel email TO: {to_addr}, CC: {all_cc}")
         sender.send_email(
             to_email=to_addr,

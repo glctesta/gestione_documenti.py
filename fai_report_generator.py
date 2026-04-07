@@ -102,9 +102,10 @@ class FAIReportGenerator:
         else:
             logo = Paragraph("<b>VANDEWIELE</b>", self.title_style)
         
-        # Intestazione tabella
+        # Intestazione tabella — usa il titolo dinamico dal template
+        fai_title = template_data.get('FaiTitle', '') or 'FAI (Inspecția primei plăci)'
         header_data = [
-            [logo, 'FORMULAR', 'FAI (Inspecția primei plăci) PTH', ''],
+            [logo, 'FORMULAR', fai_title, ''],
             ['', 'Nr. document', 'Revizia', 'Data ultim. rev.', 'Nr. pagini'],
             ['', template_data.get('NrDocument', ''), 
              template_data.get('Revision', ''), 
@@ -211,7 +212,8 @@ class FAIReportGenerator:
                 Paragraph('<b>Descriere verificare/instrucțiune de lucru</b>', text_style),
                 Paragraph('<b>Verificarea conform</b>', text_style),
                 Paragraph('<b>OK</b>', text_style),
-                Paragraph('<b>Not OK</b>', text_style)
+                Paragraph('<b>Not OK</b>', text_style),
+                Paragraph('<b>N/A</b>', text_style)
             ],
         ]
         
@@ -221,10 +223,18 @@ class FAIReportGenerator:
             description = step.get('Description', '')
             equipment = step.get('Equipment', '')
             is_ok = step.get('IsOk')
+            is_na = step.get('IsNA', False)
             
-            # Usa caratteri Unicode affidabili
-            ok_mark = '✓' if is_ok == 1 or is_ok == True else '☐'
-            not_ok_mark = '✓' if is_ok == 0 or is_ok == False else '☐'
+            if is_na:
+                # Step N/A: mostra solo il marker N/A
+                ok_mark = '—'
+                not_ok_mark = '—'
+                na_mark = '✓'
+            else:
+                # Usa caratteri Unicode affidabili
+                ok_mark = '✓' if is_ok == 1 or is_ok == True else '☐'
+                not_ok_mark = '✓' if is_ok == 0 or is_ok == False else '☐'
+                na_mark = '☐'
             
             # Usa Paragraph per word wrap automatico
             table_data.append([
@@ -232,11 +242,12 @@ class FAIReportGenerator:
                 Paragraph(description, text_style),
                 Paragraph(equipment, text_style),
                 Paragraph(f'<para align="center">{ok_mark}</para>', text_style),
-                Paragraph(f'<para align="center">{not_ok_mark}</para>', text_style)
+                Paragraph(f'<para align="center">{not_ok_mark}</para>', text_style),
+                Paragraph(f'<para align="center">{na_mark}</para>', text_style)
             ])
             
-            # Se NOT OK, aggiungi i 3 campi problema
-            if (is_ok == 0 or is_ok == False) and (step.get('Problem') or step.get('RootCause') or step.get('CorrectiveAction')):
+            # Se NOT OK (e non N/A), aggiungi i 3 campi problema
+            if not is_na and (is_ok == 0 or is_ok == False) and (step.get('Problem') or step.get('RootCause') or step.get('CorrectiveAction')):
                 problem_desc = step.get('Problem', '')
                 root_cause = step.get('RootCause', '')
                 corrective = step.get('CorrectiveAction', '')
@@ -247,12 +258,14 @@ class FAIReportGenerator:
                         Paragraph(f'<b>Problemă:</b> {problem_desc}', text_style),
                         Paragraph('', text_style),
                         Paragraph('', text_style),
+                        Paragraph('', text_style),
                         Paragraph('', text_style)
                     ])
                 if root_cause:
                     table_data.append([
                         Paragraph('', text_style),
                         Paragraph(f'<b>Cauză:</b> {root_cause}', text_style),
+                        Paragraph('', text_style),
                         Paragraph('', text_style),
                         Paragraph('', text_style),
                         Paragraph('', text_style)
@@ -263,27 +276,29 @@ class FAIReportGenerator:
                         Paragraph(f'<b>Acțiuni corective:</b> {corrective}', text_style),
                         Paragraph('', text_style),
                         Paragraph('', text_style),
+                        Paragraph('', text_style),
                         Paragraph('', text_style)
                     ])
             
-            # 🆕 Aggiungi riga note/codice stencil se esistono
+            # 🆕 Aggiungi riga note/codice stencil se esistono (e non è N/A)
             notes = step.get('Notes', '')
-            if notes:
+            if notes and not is_na:
                 table_data.append([
                     Paragraph('', text_style),
                     Paragraph(f'<b>Note/Codice Stencil:</b> {notes}', text_style),
                     Paragraph('', text_style),
                     Paragraph('', text_style),
+                    Paragraph('', text_style),
                     Paragraph('', text_style)
                 ])
         
-        steps_table = Table(table_data, colWidths=[25*mm, 68*mm, 34*mm, 16*mm, 17*mm])
+        steps_table = Table(table_data, colWidths=[25*mm, 60*mm, 34*mm, 14*mm, 15*mm, 12*mm])
         steps_table.setStyle(TableStyle([
             ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
             ('FONTNAME', (0, 0), (-1, -1), base_font),
             ('FONTSIZE', (0, 0), (-1, -1), 8),
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#CCCCCC')),
-            ('ALIGN', (3, 0), (4, -1), 'CENTER'),
+            ('ALIGN', (3, 0), (5, -1), 'CENTER'),
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('LEFTPADDING', (0, 0), (-1, -1), 1),
             ('RIGHTPADDING', (0, 0), (-1, -1), 1),
@@ -466,7 +481,8 @@ def generate_fai_report(fai_log_id, db, output_path):
             l.RoutCauseProblem,
             l.CorrectiveAction,
             l.Operator,
-            l.Dati
+            l.Dati,
+            ISNULL(l.IsNA, 0) as IsNA
         FROM Traceability_RS.fai.FaiLogs l
         INNER JOIN Traceability_RS.fai.FaiStepDetails d ON l.FaiStepDetailId = d.FaiStepDetailId
         INNER JOIN Traceability_RS.fai.FaiSteps s ON d.FatStepId = s.FatStepId
@@ -491,6 +507,7 @@ def generate_fai_report(fai_log_id, db, output_path):
                 'Description': row.StepDetail,
                 'Equipment': row.Equipment,
                 'IsOk': row.IsOk,
+                'IsNA': bool(row.IsNA) if hasattr(row, 'IsNA') else False,
                 'Problem': row.ProblemDescription if row.ProblemDescription else '',
                 'RootCause': row.RoutCauseProblem if hasattr(row, 'RoutCauseProblem') and row.RoutCauseProblem else '',
                 'CorrectiveAction': row.CorrectiveAction if hasattr(row, 'CorrectiveAction') and row.CorrectiveAction else '',

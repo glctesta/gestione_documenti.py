@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Generazione automatica di rapporti di attività per ospiti di società terze.
-Genera documenti Word (Richiesta, Accettazione, Rapporto) e li salva in DB.
+Genera documenti PDF (Richiesta, Accettazione) e Word (Rapporto) e li salva in DB.
 """
 
 import io
@@ -11,6 +11,13 @@ from datetime import datetime, timedelta, date
 from docx import Document
 from docx.shared import Pt, Cm, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import cm
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
 
 logger = logging.getLogger("TraceabilityRS")
 
@@ -371,6 +378,195 @@ class GuestActivityReportGenerator:
         doc.save(buffer)
         return buffer.getvalue()
 
+    def _get_pdf_styles(self):
+        """Restituisce gli stili ReportLab standardizzati per i documenti PDF."""
+        styles = getSampleStyleSheet()
+        styles.add(ParagraphStyle(
+            'DocDate', parent=styles['Normal'],
+            fontSize=10, alignment=TA_RIGHT, spaceAfter=6))
+        styles.add(ParagraphStyle(
+            'DocSignatory', parent=styles['Normal'],
+            fontSize=11, fontName='Helvetica-Bold', spaceAfter=2))
+        styles.add(ParagraphStyle(
+            'DocSignatoryTitle', parent=styles['Normal'],
+            fontSize=10, spaceAfter=8))
+        styles.add(ParagraphStyle(
+            'DocSubject', parent=styles['Normal'],
+            fontSize=11, spaceAfter=12))
+        styles.add(ParagraphStyle(
+            'DocBody', parent=styles['Normal'],
+            fontSize=11, leading=16, spaceAfter=8))
+        return styles
+
+    def _build_pdf_bytes(self, story):
+        """Costruisce un PDF in memoria da una lista di flowables e restituisce bytes."""
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buffer, pagesize=A4,
+            leftMargin=2 * cm, rightMargin=2 * cm,
+            topMargin=2 * cm, bottomMargin=2 * cm)
+        doc.build(story)
+        return buffer.getvalue()
+
+    # --------------------------------------------------------
+    # Doc A (PDF) - Lettera di Richiesta Intervento
+    # --------------------------------------------------------
+    def generate_request_letter_pdf(self, visitor_data, contract_info, doc_date):
+        """
+        Genera la Lettera di Richiesta Intervento in formato PDF.
+
+        Args:
+            visitor_data: dict con guest_name, company, start_visit, end_visit, purpose, sponsor
+            contract_info: dict con number, date, description
+            doc_date: data della lettera
+        Returns:
+            bytes del documento PDF
+        """
+        styles = self._get_pdf_styles()
+        story = []
+
+        # Logo
+        logo_path = os.path.join(os.path.dirname(__file__), 'Logo.png')
+        if os.path.exists(logo_path):
+            story.append(RLImage(logo_path, width=4 * cm, height=2 * cm))
+            story.append(Spacer(1, 0.5 * cm))
+
+        # Data
+        story.append(Paragraph(f"Data: {doc_date.strftime('%d/%m/%Y')}", styles['DocDate']))
+        story.append(Spacer(1, 0.5 * cm))
+
+        # Da / A
+        chi_richiede = self._get_setting('chi_richiede')
+        chi_richiede_titolo = self._get_setting('chi_richiede_titolo')
+        chi_invia = self._get_setting('chi_invia')
+        chi_invia_titolo = self._get_setting('chi_invia_titolo')
+
+        story.append(Paragraph(f"Da: <b>{chi_richiede}</b>", styles['DocSignatory']))
+        if chi_richiede_titolo:
+            story.append(Paragraph(chi_richiede_titolo, styles['DocSignatoryTitle']))
+        story.append(Spacer(1, 0.2 * cm))
+        story.append(Paragraph(f"A: <b>{chi_invia}</b>", styles['DocSignatory']))
+        if chi_invia_titolo:
+            story.append(Paragraph(chi_invia_titolo, styles['DocSignatoryTitle']))
+        story.append(Spacer(1, 0.5 * cm))
+
+        # Oggetto
+        story.append(Paragraph(
+            f"<b>Oggetto:</b> Richiesta di intervento — {visitor_data['purpose']}",
+            styles['DocSubject']))
+        story.append(Spacer(1, 0.5 * cm))
+
+        # Riferimento contratto
+        contract_ref = ''
+        if contract_info['number']:
+            contract_ref = f" come previsto dal contratto n. {contract_info['number']}"
+            if contract_info['date']:
+                contract_ref += f" del {contract_info['date'].strftime('%d/%m/%Y')}"
+
+        start_str = visitor_data['start_visit'].strftime('%d/%m/%Y')
+        end_str = visitor_data['end_visit'].strftime('%d/%m/%Y')
+
+        # Corpo lettera
+        paragraphs = [
+            f"Gentile {chi_invia},",
+            f"con la presente, Vi chiediamo cortesemente di mettere a disposizione "
+            f"il/la Sig./Sig.ra {visitor_data['guest_name']} "
+            f"della società {visitor_data['company']}{contract_ref}, "
+            f"per un intervento di supporto tecnico/formazione presso la nostra sede "
+            f"di Vandewiele Romania.",
+            f"Periodo richiesto: dal {start_str} al {end_str}",
+            f"Oggetto dell'intervento: {visitor_data['purpose']}",
+            f"La persona di riferimento presso la nostra sede sarà: "
+            f"{visitor_data.get('sponsor', 'N/A')}.",
+            "Restiamo a disposizione per qualsiasi chiarimento.",
+            "Cordiali saluti,",
+            "",
+            f"{chi_richiede}",
+            f"{chi_richiede_titolo}",
+            "Vandewiele Romania"
+        ]
+        for p in paragraphs:
+            story.append(Paragraph(p, styles['DocBody']))
+
+        return self._build_pdf_bytes(story)
+
+    # --------------------------------------------------------
+    # Doc B (PDF) - Lettera di Accettazione
+    # --------------------------------------------------------
+    def generate_acceptance_letter_pdf(self, visitor_data, contract_info, doc_date):
+        """
+        Genera la Lettera di Accettazione in formato PDF.
+        """
+        styles = self._get_pdf_styles()
+        story = []
+
+        # Logo
+        logo_path = os.path.join(os.path.dirname(__file__), 'Logo.png')
+        if os.path.exists(logo_path):
+            story.append(RLImage(logo_path, width=4 * cm, height=2 * cm))
+            story.append(Spacer(1, 0.5 * cm))
+
+        # Data
+        story.append(Paragraph(f"Data: {doc_date.strftime('%d/%m/%Y')}", styles['DocDate']))
+        story.append(Spacer(1, 0.5 * cm))
+
+        # Da / A (invertiti: da chi_invia a chi_richiede)
+        chi_richiede = self._get_setting('chi_richiede')
+        chi_richiede_titolo = self._get_setting('chi_richiede_titolo')
+        chi_invia = self._get_setting('chi_invia')
+        chi_invia_titolo = self._get_setting('chi_invia_titolo')
+
+        story.append(Paragraph(f"Da: <b>{chi_invia}</b>", styles['DocSignatory']))
+        if chi_invia_titolo:
+            story.append(Paragraph(chi_invia_titolo, styles['DocSignatoryTitle']))
+        story.append(Spacer(1, 0.2 * cm))
+        story.append(Paragraph(f"A: <b>{chi_richiede}</b>", styles['DocSignatory']))
+        if chi_richiede_titolo:
+            story.append(Paragraph(chi_richiede_titolo, styles['DocSignatoryTitle']))
+        story.append(Spacer(1, 0.5 * cm))
+
+        # Oggetto
+        story.append(Paragraph(
+            f"<b>Oggetto:</b> Accettazione richiesta di intervento — {visitor_data['purpose']}",
+            styles['DocSubject']))
+        story.append(Spacer(1, 0.5 * cm))
+
+        # Riferimento contratto
+        contract_ref = ''
+        if contract_info['number']:
+            contract_ref = f"in conformità al contratto n. {contract_info['number']}"
+            if contract_info['date']:
+                contract_ref += f" del {contract_info['date'].strftime('%d/%m/%Y')}"
+            contract_ref += ', '
+
+        start_str = visitor_data['start_visit'].strftime('%d/%m/%Y')
+        end_str = visitor_data['end_visit'].strftime('%d/%m/%Y')
+
+        # Corpo lettera
+        paragraphs = [
+            f"Gentile {chi_richiede},",
+            f"in riscontro alla Vostra richiesta, {contract_ref}"
+            f"Vi confermiamo la disponibilità del/della Sig./Sig.ra "
+            f"{visitor_data['guest_name']} della società {visitor_data['company']} "
+            f"per un intervento presso la Vostra sede.",
+            f"Dettagli dell'intervento:",
+            f"• Periodo: dal {start_str} al {end_str}",
+            f"• Oggetto: {visitor_data['purpose']}",
+            f"• Referente in sede: {visitor_data.get('sponsor', 'N/A')}",
+            f"Il/La Sig./Sig.ra {visitor_data['guest_name']} è a disposizione "
+            f"per il periodo indicato e si atterrà alle normative di sicurezza "
+            f"vigenti presso la Vostra sede.",
+            "Cordiali saluti,",
+            "",
+            f"{chi_invia}",
+            f"{chi_invia_titolo}",
+            f"{visitor_data['company']}"
+        ]
+        for p in paragraphs:
+            story.append(Paragraph(p, styles['DocBody']))
+
+        return self._build_pdf_bytes(story)
+
     # --------------------------------------------------------
     # Processo completo per un visitatore
     # --------------------------------------------------------
@@ -429,13 +625,13 @@ class GuestActivityReportGenerator:
             contract_info = self._get_contract_info(plan_to_charge_id)
 
             # 4. Calcola date documenti
-            request_date = _subtract_working_days(visitor_data['start_visit'], 5)
+            request_date = _subtract_working_days(visitor_data['start_visit'], 10)
             acceptance_date = _add_working_days(request_date, 2)
             report_date = _add_working_days(visitor_data['end_visit'], 1)
 
-            # 5. Genera documenti
-            doc_a = self.generate_request_letter(visitor_data, contract_info, request_date)
-            doc_b = self.generate_acceptance_letter(visitor_data, contract_info, acceptance_date)
+            # 5. Genera documenti (Richiesta e Accettazione in PDF, Rapporto in Word)
+            doc_a = self.generate_request_letter_pdf(visitor_data, contract_info, request_date)
+            doc_b = self.generate_acceptance_letter_pdf(visitor_data, contract_info, acceptance_date)
             doc_c = self.generate_activity_report(visitor_data, contract_info, report_date,
                                                    activity_description)
 
@@ -541,13 +737,14 @@ class GuestActivityReportGenerator:
             logo_path = os.path.join(os.path.dirname(__file__), 'Logo.png')
 
             for doc_name, doc_bytes in [
-                ('Richiesta_Intervento.docx', row.RequestLetterDoc),
-                ('Accettazione.docx', row.AcceptanceLetterDoc),
+                ('Richiesta_Intervento.pdf', row.RequestLetterDoc),
+                ('Accettazione.pdf', row.AcceptanceLetterDoc),
                 ('Rapporto_Attivita.docx', row.ActivityReportDoc)
             ]:
                 if doc_bytes:
+                    suffix = '.pdf' if doc_name.endswith('.pdf') else '.docx'
                     tmp = tempfile.NamedTemporaryFile(
-                        suffix='.docx', prefix=doc_name.replace('.docx', '_'),
+                        suffix=suffix, prefix=doc_name.replace(suffix, '_'),
                         delete=False)
                     tmp.write(doc_bytes)
                     tmp.close()

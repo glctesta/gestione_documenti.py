@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Genera i manuali PDF per le sezioni Operazioni mancanti in 5 lingue.
-Produce: manuals/{lang}/operazioni_gestione_reclami.pdf
-         manuals/{lang}/operazioni_ordini.pdf
+Produce: manuals/{lang}/operazioni_ordini.pdf
 """
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -98,37 +97,6 @@ TEXTS = {
     "it": {
         "app": "TraceabilityRS", "ver": "Versione 2.3.6",
         "field": "Campo", "description": "Descrizione", "button": "Pulsante",
-        # -- Gestione Reclami --
-        "reclami_title": "Gestione Reclami",
-        "reclami_subtitle": "Guida alla gestione dei reclami cliente",
-        "reclami_desc": "Questo modulo consente di registrare, tracciare e gestire i reclami provenienti dai clienti. "
-                        "Ogni reclamo viene associato a un prodotto, un cliente e una causa principale, permettendo "
-                        "l'analisi statistica e il miglioramento continuo del processo produttivo.",
-        "reclami_steps_title": "Procedura passo per passo",
-        "reclami_step1_t": "1. Nuovo Reclamo",
-        "reclami_step1": "Fare clic su 'Nuovo Reclamo' per aprire il modulo di inserimento. "
-                         "Compilare tutti i campi obbligatori: cliente, prodotto, data, descrizione del problema.",
-        "reclami_step2_t": "2. Assegnazione e Analisi",
-        "reclami_step2": "Il reclamo viene assegnato automaticamente al responsabile qualita'. "
-                         "E' possibile aggiungere note, allegare documenti e definire le azioni correttive.",
-        "reclami_step3_t": "3. Azioni Correttive",
-        "reclami_step3": "Definire le azioni correttive necessarie con scadenze e responsabili. "
-                         "Il sistema traccia automaticamente lo stato di avanzamento.",
-        "reclami_step4_t": "4. Chiusura Reclamo",
-        "reclami_step4": "Una volta completate tutte le azioni correttive, il reclamo puo' essere chiuso. "
-                         "La chiusura richiede la verifica dell'efficacia delle azioni intraprese.",
-        "reclami_fields_title": "Campi principali",
-        "fld_cliente": "Cliente *", "fld_cliente_d": "Nome del cliente che ha inoltrato il reclamo",
-        "fld_prodotto": "Prodotto *", "fld_prodotto_d": "Prodotto oggetto del reclamo",
-        "fld_data": "Data Reclamo *", "fld_data_d": "Data in cui il reclamo e' stato ricevuto",
-        "fld_desc": "Descrizione *", "fld_desc_d": "Descrizione dettagliata del problema riscontrato",
-        "fld_causa": "Causa Principale", "fld_causa_d": "Categoria della causa radice del difetto",
-        "fld_azione": "Azione Correttiva", "fld_azione_d": "Descrizione dell'azione correttiva pianificata",
-        "fld_stato": "Stato", "fld_stato_d": "Stato attuale del reclamo (Aperto, In Lavorazione, Chiuso)",
-        "reclami_note": "NOTA: I reclami sono visibili a tutti gli utenti, ma solo il responsabile qualita' "
-                        "puo' modificarne lo stato e chiuderli.",
-        "reclami_warn": "ATTENZIONE: Un reclamo chiuso non puo' essere riaperto. Assicurarsi che tutte le "
-                        "azioni correttive siano state completate prima della chiusura.",
         # -- Ordini --
         "ordini_title": "Gestione Ordini",
         "ordini_subtitle": "Guida alla gestione degli ordini di produzione",
@@ -160,29 +128,6 @@ TEXTS = {
     "ro": {
         "app": "TraceabilityRS", "ver": "Versiunea 2.3.6",
         "field": "Camp", "description": "Descriere", "button": "Buton",
-        "reclami_title": "Gestionare Reclamatii",
-        "reclami_subtitle": "Ghid pentru gestionarea reclamatiilor clientilor",
-        "reclami_desc": "Acest modul permite inregistrarea, urmarirea si gestionarea reclamatiilor de la clienti. "
-                        "Fiecare reclamatie este asociata unui produs, unui client si unei cauze principale.",
-        "reclami_steps_title": "Procedura pas cu pas",
-        "reclami_step1_t": "1. Reclamatie Noua",
-        "reclami_step1": "Faceti clic pe 'Reclamatie Noua' pentru a deschide formularul. Completati toate campurile obligatorii.",
-        "reclami_step2_t": "2. Atribuire si Analiza",
-        "reclami_step2": "Reclamatia este atribuita automat responsabilului de calitate. Puteti adauga note si documente.",
-        "reclami_step3_t": "3. Actiuni Corective",
-        "reclami_step3": "Definiti actiunile corective necesare cu termene si responsabili.",
-        "reclami_step4_t": "4. Inchidere Reclamatie",
-        "reclami_step4": "Dupa completarea actiunilor corective, reclamatia poate fi inchisa.",
-        "reclami_fields_title": "Campuri principale",
-        "fld_cliente": "Client *", "fld_cliente_d": "Numele clientului care a depus reclamatia",
-        "fld_prodotto": "Produs *", "fld_prodotto_d": "Produsul care face obiectul reclamatiei",
-        "fld_data": "Data Reclamatie *", "fld_data_d": "Data primirii reclamatiei",
-        "fld_desc": "Descriere *", "fld_desc_d": "Descrierea detaliata a problemei",
-        "fld_causa": "Cauza Principala", "fld_causa_d": "Categoria cauzei principale a defectului",
-        "fld_azione": "Actiune Corectiva", "fld_azione_d": "Descrierea actiunii corective planificate",
-        "fld_stato": "Stare", "fld_stato_d": "Starea actuala (Deschis, In Lucru, Inchis)",
-        "reclami_note": "NOTA: Reclamatiile sunt vizibile tuturor utilizatorilor, dar numai responsabilul de calitate le poate modifica.",
-        "reclami_warn": "ATENTIE: O reclamatie inchisa nu poate fi redeschisa.",
         "ordini_title": "Gestionare Comenzi",
         "ordini_subtitle": "Ghid pentru gestionarea comenzilor de productie",
         "ordini_desc": "Modulul Comenzi permite gestionarea comenzilor de productie, de la creare pana la finalizare.",
@@ -205,25 +150,6 @@ TEXTS = {
     "en": {
         "app": "TraceabilityRS", "ver": "Version 2.3.6",
         "field": "Field", "description": "Description", "button": "Button",
-        "reclami_title": "Complaints Management",
-        "reclami_subtitle": "Guide to customer complaints management",
-        "reclami_desc": "This module allows you to register, track and manage customer complaints. "
-                        "Each complaint is associated with a product, customer and root cause.",
-        "reclami_steps_title": "Step-by-step procedure",
-        "reclami_step1_t": "1. New Complaint", "reclami_step1": "Click 'New Complaint' to open the input form. Fill in all required fields.",
-        "reclami_step2_t": "2. Assignment and Analysis", "reclami_step2": "The complaint is automatically assigned to the quality manager.",
-        "reclami_step3_t": "3. Corrective Actions", "reclami_step3": "Define the necessary corrective actions with deadlines and responsible persons.",
-        "reclami_step4_t": "4. Close Complaint", "reclami_step4": "Once all corrective actions are completed, the complaint can be closed.",
-        "reclami_fields_title": "Main Fields",
-        "fld_cliente": "Customer *", "fld_cliente_d": "Name of the customer who filed the complaint",
-        "fld_prodotto": "Product *", "fld_prodotto_d": "Product subject to the complaint",
-        "fld_data": "Complaint Date *", "fld_data_d": "Date the complaint was received",
-        "fld_desc": "Description *", "fld_desc_d": "Detailed description of the problem",
-        "fld_causa": "Root Cause", "fld_causa_d": "Category of the root cause of the defect",
-        "fld_azione": "Corrective Action", "fld_azione_d": "Description of the planned corrective action",
-        "fld_stato": "Status", "fld_stato_d": "Current status (Open, In Progress, Closed)",
-        "reclami_note": "NOTE: Complaints are visible to all users, but only the quality manager can modify and close them.",
-        "reclami_warn": "WARNING: A closed complaint cannot be reopened.",
         "ordini_title": "Orders Management",
         "ordini_subtitle": "Guide to production orders management",
         "ordini_desc": "The Orders module allows you to manage production orders from creation to completion.",
@@ -246,24 +172,6 @@ TEXTS = {
     "de": {
         "app": "TraceabilityRS", "ver": "Version 2.3.6",
         "field": "Feld", "description": "Beschreibung", "button": "Schaltflaeche",
-        "reclami_title": "Reklamationsmanagement",
-        "reclami_subtitle": "Anleitung zur Verwaltung von Kundenreklamationen",
-        "reclami_desc": "Dieses Modul ermoeglicht die Registrierung, Verfolgung und Verwaltung von Kundenreklamationen.",
-        "reclami_steps_title": "Schritt-fuer-Schritt-Anleitung",
-        "reclami_step1_t": "1. Neue Reklamation", "reclami_step1": "Klicken Sie auf 'Neue Reklamation', um das Eingabeformular zu oeffnen.",
-        "reclami_step2_t": "2. Zuweisung und Analyse", "reclami_step2": "Die Reklamation wird automatisch dem Qualitaetsverantwortlichen zugewiesen.",
-        "reclami_step3_t": "3. Korrekturmassnahmen", "reclami_step3": "Definieren Sie die notwendigen Korrekturmassnahmen mit Fristen.",
-        "reclami_step4_t": "4. Reklamation schliessen", "reclami_step4": "Nach Abschluss aller Korrekturmassnahmen kann die Reklamation geschlossen werden.",
-        "reclami_fields_title": "Hauptfelder",
-        "fld_cliente": "Kunde *", "fld_cliente_d": "Name des Kunden",
-        "fld_prodotto": "Produkt *", "fld_prodotto_d": "Betroffenes Produkt",
-        "fld_data": "Reklamationsdatum *", "fld_data_d": "Eingangsdatum der Reklamation",
-        "fld_desc": "Beschreibung *", "fld_desc_d": "Detaillierte Beschreibung des Problems",
-        "fld_causa": "Hauptursache", "fld_causa_d": "Kategorie der Grundursache",
-        "fld_azione": "Korrekturmassnahme", "fld_azione_d": "Beschreibung der geplanten Korrekturmassnahme",
-        "fld_stato": "Status", "fld_stato_d": "Aktueller Status (Offen, In Bearbeitung, Geschlossen)",
-        "reclami_note": "HINWEIS: Reklamationen sind fuer alle Benutzer sichtbar.",
-        "reclami_warn": "ACHTUNG: Eine geschlossene Reklamation kann nicht wieder geoeffnet werden.",
         "ordini_title": "Auftragsverwaltung",
         "ordini_subtitle": "Anleitung zur Verwaltung von Produktionsauftraegen",
         "ordini_desc": "Das Auftragsmodul ermoeglicht die Verwaltung von Produktionsauftraegen.",
@@ -286,24 +194,6 @@ TEXTS = {
     "sv": {
         "app": "TraceabilityRS", "ver": "Version 2.3.6",
         "field": "Faelt", "description": "Beskrivning", "button": "Knapp",
-        "reclami_title": "Reklamationshantering",
-        "reclami_subtitle": "Guide foer hantering av kundreklamationer",
-        "reclami_desc": "Denna modul goer det moejligt att registrera, spoera och hantera kundreklamationer.",
-        "reclami_steps_title": "Steg-foer-steg-procedur",
-        "reclami_step1_t": "1. Ny reklamation", "reclami_step1": "Klicka poe 'Ny reklamation' foer att oeppna formulaeret.",
-        "reclami_step2_t": "2. Tilldelning och analys", "reclami_step2": "Reklamationen tilldelas automatiskt kvalitetsansvarig.",
-        "reclami_step3_t": "3. Korrigerande oetgaerder", "reclami_step3": "Definiera noedvaendiga korrigerande oetgaerder med tidsfrister.",
-        "reclami_step4_t": "4. Staeng reklamation", "reclami_step4": "Naer alla korrigerande oetgaerder aer klara kan reklamationen staengas.",
-        "reclami_fields_title": "Huvudfaelt",
-        "fld_cliente": "Kund *", "fld_cliente_d": "Kundens namn",
-        "fld_prodotto": "Produkt *", "fld_prodotto_d": "Beroerd produkt",
-        "fld_data": "Reklamationsdatum *", "fld_data_d": "Datum foer mottagande",
-        "fld_desc": "Beskrivning *", "fld_desc_d": "Detaljerad beskrivning av problemet",
-        "fld_causa": "Grundorsak", "fld_causa_d": "Kategori foer grundorsaken",
-        "fld_azione": "Korrigerande oetgaerd", "fld_azione_d": "Beskrivning av planerad oetgaerd",
-        "fld_stato": "Status", "fld_stato_d": "Aktuell status (Oeppen, Pagoer, Staengd)",
-        "reclami_note": "NOTERA: Reklamationer aer synliga foer alla anvaendare.",
-        "reclami_warn": "VARNING: En staengd reklamation kan inte oeppnas igen.",
         "ordini_title": "Orderhantering",
         "ordini_subtitle": "Guide foer hantering av produktionsordrar",
         "ordini_desc": "Ordermodulen goer det moejligt att hantera produktionsordrar froen skapande till slutfoerande.",
@@ -335,34 +225,6 @@ def _cover(story, T, W):
     story.append(Paragraph(T["ver"], sub_style))
 
 
-def build_reclami(lang, T):
-    out = os.path.join(BASE_DIR, lang, "operazioni_gestione_reclami.pdf")
-    doc = SimpleDocTemplate(out, pagesize=A4,
-        topMargin=18*mm, bottomMargin=20*mm, leftMargin=15*mm, rightMargin=15*mm)
-    W = A4[0] - 30*mm
-    story = []
-    _cover(story, T, W)
-    story.append(Paragraph(T["reclami_title"], title_style))
-    story.append(Paragraph(T["reclami_subtitle"], sub_style))
-    story.append(hr())
-    story.append(Paragraph(T["reclami_desc"], body))
-    story.append(sp(4))
-    story.append(Paragraph(T["reclami_steps_title"], h1))
-    for i in range(1, 5):
-        story.append(Paragraph(T[f"reclami_step{i}_t"], h2))
-        story.append(Paragraph(T[f"reclami_step{i}"], body))
-    story.append(hr())
-    story.append(Paragraph(T["reclami_fields_title"], h1))
-    rows = []
-    for k in ["fld_cliente", "fld_prodotto", "fld_data", "fld_desc", "fld_causa", "fld_azione", "fld_stato"]:
-        rows.append([Paragraph(T[k], body), Paragraph(T[k+"_d"], body)])
-    story.append(make_table([Paragraph(T["field"], body), Paragraph(T["description"], body)], rows, W))
-    story.append(sp(4))
-    story.append(Paragraph(T["reclami_note"], note))
-    story.append(Paragraph(T["reclami_warn"], warn))
-    doc.build(story, onFirstPage=lambda c,d: on_page(c,d,T["footer"]),
-              onLaterPages=lambda c,d: on_page(c,d,T["footer"]))
-    print(f"  -> {out}")
 
 
 def build_ordini(lang, T):
@@ -401,6 +263,5 @@ if __name__ == "__main__":
         os.makedirs(d, exist_ok=True)
         T = TEXTS[lang]
         print(f"[{lang}]")
-        build_reclami(lang, T)
         build_ordini(lang, T)
-    print("\nDone! 10 PDF generati.")
+    print("\nDone! 5 PDF generati.")
