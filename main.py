@@ -1,4 +1,4 @@
-﻿#import configparser
+#import configparser
 # --- StdIO safeguard + Faulthandler sicuro per exe windowed ---
 import shutil
 import sys, os, atexit
@@ -307,7 +307,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.0.1.3'  # Versione aggiornata
+APP_VERSION = '2.4.0.1.4'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -11242,8 +11242,36 @@ class App(tk.Tk):
         from business_days import should_send_notification
         from datetime import datetime, timedelta
         import time
+        import pyodbc
 
         logger.info("Worker Plan Alert Escalation avviato")
+
+        dedicated_conn = None
+
+        def _get_dedicated_conn():
+            """Crea o ripristina la connessione dedicata per questo worker."""
+            nonlocal dedicated_conn
+            try:
+                if dedicated_conn:
+                    # Test connessione
+                    dedicated_conn.cursor().execute("SELECT 1")
+                    return dedicated_conn
+            except Exception:
+                try:
+                    dedicated_conn.close()
+                except Exception:
+                    pass
+                dedicated_conn = None
+
+            try:
+                dedicated_conn = pyodbc.connect(
+                    DB_CONN_STR, autocommit=False)
+                logger.info("Plan Alert: connessione dedicata creata")
+                return dedicated_conn
+            except Exception as e:
+                logger.error(
+                    f"Plan Alert: impossibile creare connessione dedicata: {e}")
+                return None
 
         while not self._plan_alert_stop_event.is_set():
             try:
@@ -11251,9 +11279,21 @@ class App(tk.Tk):
                 current_date = now.date()
                 current_hour = now.hour
 
+                # Solo durante orario lavorativo (7-18)
+                if current_hour < 7 or current_hour > 18:
+                    time.sleep(300)  # 5 min fuori orario
+                    continue
+
+                # Ottieni connessione dedicata
+                conn = _get_dedicated_conn()
+                if not conn:
+                    logger.error("Plan Alert: connessione DB non disponibile")
+                    time.sleep(300)
+                    continue
+
                 # Rileggi modalità ad ogni ciclo (può cambiare a runtime)
                 try:
-                    mode = pae.get_plan_check_mode(self.db.conn)
+                    mode = pae.get_plan_check_mode(conn)
                 except Exception:
                     mode = 'False'
                 
@@ -11261,16 +11301,11 @@ class App(tk.Tk):
                     time.sleep(300)  # 5 min e ricontrolla
                     continue
 
-                # Solo durante orario lavorativo (7-18)
-                if current_hour < 7 or current_hour > 18:
-                    time.sleep(300)  # 5 min fuori orario
-                    continue
-
                 # --- 1) Escalation 60 min ---
                 if should_send_notification(country_code='RO'):
                     try:
                         sent = pae.check_and_escalate(
-                            self.db.conn, logo_path="logo.png", mode=mode)
+                            conn, logo_path="logo.png", mode=mode)
                         if sent > 0:
                             logger.info(f"Plan Alert: inviate {sent} email escalation")
                     except Exception as e:
@@ -11282,7 +11317,7 @@ class App(tk.Tk):
                         and self._plan_alert_monthly_sent != current_date):
                     try:
                         ok = pae.send_monthly_summary(
-                            self.db.conn, logo_path="logo.png", mode=mode)
+                            conn, logo_path="logo.png", mode=mode)
                         if ok:
                             logger.info("Report mensile piano produzione inviato")
                         self._plan_alert_monthly_sent = current_date
@@ -11295,7 +11330,7 @@ class App(tk.Tk):
                         and self._plan_alert_weekly_sent != current_date):
                     try:
                         ok = pae.send_weekly_pattern_check(
-                            self.db.conn, logo_path="logo.png", mode=mode)
+                            conn, logo_path="logo.png", mode=mode)
                         if ok:
                             logger.info("Report settimanale pattern piano inviato")
                         self._plan_alert_weekly_sent = current_date
@@ -11309,7 +11344,22 @@ class App(tk.Tk):
             except Exception as e:
                 logger.error(
                     f"Errore nel worker plan alert: {e}", exc_info=True)
+                # Forza riconnessione al prossimo ciclo
+                try:
+                    if dedicated_conn:
+                        dedicated_conn.close()
+                except Exception:
+                    pass
+                dedicated_conn = None
                 time.sleep(300)  # 5 min in caso di errore
+
+        # Pulizia alla chiusura
+        try:
+            if dedicated_conn:
+                dedicated_conn.close()
+                logger.info("Plan Alert: connessione dedicata chiusa")
+        except Exception:
+            pass
 
         logger.info("Background task plan alert escalation terminato")
 
@@ -15643,6 +15693,10 @@ class App(tk.Tk):
         fai_manual_menu.add_command(
             label=self.lang.get('fai_autocheck_manual', 'FAI Autocheck (Manual)'),
             command=self._open_fai_autocheck_manual)
+        # Discrepanțe Plan Producție
+        prod_manual_menu.add_command(
+            label=self.lang.get('manual_plan_discrepancy', 'Discrepanțe Plan Producție'),
+            command=lambda: self._open_manual('produzione_discrepanze_piano'))
         prod_manual_menu.add_command(
             label=self.lang.get('submenu_kanban', 'KanBan'),
             command=lambda: self._open_manual('produzione_kanban'))

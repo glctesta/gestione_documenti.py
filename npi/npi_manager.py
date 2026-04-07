@@ -2908,19 +2908,41 @@ class GestoreNPI:
 
         return total_sent, total_failed
 
-    def get_full_projects_report_data(self):
+    def get_full_projects_report_data(self, year_filter=None, client_filter=None,
+                                       project_ids=None):
         """
         Prepara i dati completi per il report PDF, includendo l'analisi dei ritardi
-        per ogni progetto attivo. Restituisce una lista di dizionari.
+        per ogni progetto. Restituisce una lista di dizionari.
+        
+        Args:
+            year_filter: Anno per filtrare i progetti (None = tutti)
+            client_filter: Nome cliente per filtrare (None = tutti)
+            project_ids: Lista di ProgettoId specifici (None = tutti, ha priorità sui filtri)
         """
         report_data = []
 
-        # 1. Recupera la lista dei progetti attivi dalla dashboard
-        active_projects = self.get_dashboard_projects()
-        if not active_projects:
+        # 1. Recupera la lista dei progetti
+        all_projects = self.get_dashboard_projects(
+            year_filter=year_filter, client_filter=client_filter)
+        if not all_projects:
             return []
 
-        for proj_summary in active_projects:
+        # Se ci sono project_ids specifici, filtra solo quelli
+        if project_ids:
+            all_projects = [p for p in all_projects if p.ProgettoId in project_ids]
+            if not all_projects:
+                return []
+
+        # Ordina per cliente e poi per nome progetto
+        all_projects = sorted(
+            all_projects,
+            key=lambda p: (
+                (getattr(p, 'Cliente', '') or '').upper(),
+                (getattr(p, 'NomeProgetto', '') or '').upper()
+            )
+        )
+
+        for proj_summary in all_projects:
             project_id = proj_summary.ProgettoId
 
             # 2. Per ogni progetto, esegui l'analisi dei ritardi
@@ -2932,13 +2954,66 @@ class GestoreNPI:
                 for owner, tasks in late_tasks_by_owner.items():
                     analysis_summary.append({'owner_name': owner.Nome, 'late_count': len(tasks)})
 
-            # 4. Aggrega tutti i dati per questo progetto
+            # 4. Recupera tutti i task del progetto ordinati per scadenza
+            tasks_list = self._get_project_tasks_for_report(project_id)
+
+            # 5. Aggrega tutti i dati per questo progetto
             report_data.append({
                 'info': proj_summary,
-                'analysis': analysis_summary
+                'analysis': analysis_summary,
+                'tasks': tasks_list
             })
 
         return report_data
+
+    def _get_project_tasks_for_report(self, project_id: int) -> list:
+        """Recupera tutti i task assegnati di un progetto, ordinati per scadenza.
+        
+        Returns:
+            Lista di dict con: task_name, owner_name, due_date, status, completed_date
+        """
+        session = self._get_session()
+        try:
+            today = datetime.now().date()
+            tasks = session.scalars(
+                select(TaskProdotto)
+                .join(WaveNPI, TaskProdotto.WaveID == WaveNPI.WaveID)
+                .options(
+                    joinedload(TaskProdotto.owner),
+                    joinedload(TaskProdotto.task_catalogo)
+                )
+                .where(WaveNPI.ProgettoID == project_id)
+                .where(TaskProdotto.OwnerID.isnot(None))
+                .order_by(TaskProdotto.DataScadenza.asc())
+            ).all()
+
+            result = []
+            for t in tasks:
+                task_name = t.task_catalogo.NomeTask if t.task_catalogo else f"Task {t.TaskProdottoID}"
+                owner_name = t.owner.Nome if t.owner else "N/A"
+                due_date = t.DataScadenza
+                status = t.Stato or "Non iniziato"
+                completed_date = t.DataCompletamento
+
+                is_late = False
+                if due_date and status != 'Completato':
+                    dd = due_date.date() if hasattr(due_date, 'date') else due_date
+                    is_late = dd < today
+
+                result.append({
+                    'task_name': task_name,
+                    'owner_name': owner_name,
+                    'due_date': due_date,
+                    'status': status,
+                    'completed_date': completed_date,
+                    'is_late': is_late
+                })
+            return result
+        except Exception as e:
+            logger.error(f"Errore recupero task per report progetto {project_id}: {e}")
+            return []
+        finally:
+            session.close()
 
     def get_all_npi_projects(self):
         """Recupera tutti i progetti NPI con le informazioni del prodotto associato."""
@@ -3450,13 +3525,15 @@ class GestoreNPI:
         wb.save(file_path)
         return file_path
 
-    def export_npi_to_excel_comprehensive(self, year_filter=None, client_filter=None):
+    def export_npi_to_excel_comprehensive(self, year_filter=None, client_filter=None,
+                                            project_ids=None):
         """
         Genera un file Excel professionale con statistiche NPI complete.
         
         Args:
             year_filter: Anno per filtrare i progetti (None = tutti gli anni)
             client_filter: Nome cliente per filtrare i progetti (None = tutti i clienti)
+            project_ids: Lista di ProgettoId specifici (None = tutti)
             
         Returns:
             Path del file Excel generato
@@ -3473,14 +3550,25 @@ class GestoreNPI:
             raise ImportError("La libreria 'openpyxl' è necessaria per l'export Excel. Installala con: pip install openpyxl")
         
         try:
-            # Crea directory C:\Temp se non esiste
+            # Crea directory C:\\Temp se non esiste
             temp_dir = "C:\\Temp"
             os.makedirs(temp_dir, exist_ok=True)
             
             # Recupera progetti
             progetti = self.get_dashboard_projects(year_filter=year_filter, client_filter=client_filter)
+            if project_ids:
+                progetti = [p for p in progetti if p.ProgettoId in project_ids]
             if not progetti:
                 raise ValueError("Nessun progetto da esportare.")
+            
+            # Ordina per cliente e poi per nome progetto
+            progetti = sorted(
+                progetti,
+                key=lambda p: (
+                    (getattr(p, 'Cliente', '') or '').upper(),
+                    (getattr(p, 'NomeProgetto', '') or '').upper()
+                )
+            )
             
             # Crea workbook
             wb = openpyxl.Workbook()

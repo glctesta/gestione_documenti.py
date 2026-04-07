@@ -138,6 +138,13 @@ def get_unresponded_alerts_summary(conn) -> list:
             WHERE pa2.AlertId IS NULL
               AND o2.ordernumber = o.ordernumber
               AND AL2.ProductName = AL.ProductName
+              AND NOT EXISTS (
+                  SELECT 1 FROM [Traceability_RS].[dbo].[PlanAlerts] AX2
+                  INNER JOIN [Traceability_RS].[dbo].[PlanAlertResponses] PX2 ON PX2.AlertId = AX2.AlertId
+                  WHERE AX2.idorder = AL2.idorder AND AX2.ProductName = AL2.ProductName
+                    AND AX2.PhaseName = AL2.PhaseName
+                    AND CAST(AX2.AlertDate AS DATE) = CAST(AL2.AlertDate AS DATE)
+              )
             FOR XML PATH(''), TYPE
         ).value('.', 'NVARCHAR(MAX)'), 1, 2, '') AS Phases,
         MIN(CAST(AL.AlertDate AS DATE)) AS FirstAlertDate,
@@ -146,6 +153,13 @@ def get_unresponded_alerts_summary(conn) -> list:
     INNER JOIN traceability_rs.dbo.orders o ON o.idorder = AL.idorder
     LEFT JOIN traceability_rs.dbo.PlanAlertResponses pa ON pa.AlertId = AL.AlertId
     WHERE pa.AlertId IS NULL
+      AND NOT EXISTS (
+          SELECT 1 FROM [Traceability_RS].[dbo].[PlanAlerts] AX
+          INNER JOIN [Traceability_RS].[dbo].[PlanAlertResponses] PX ON PX.AlertId = AX.AlertId
+          WHERE AX.idorder = AL.idorder AND AX.ProductName = AL.ProductName
+            AND AX.PhaseName = AL.PhaseName
+            AND CAST(AX.AlertDate AS DATE) = CAST(AL.AlertDate AS DATE)
+      )
     GROUP BY o.ordernumber, AL.ProductName
     ORDER BY o.ordernumber, AL.ProductName
     """
@@ -182,6 +196,13 @@ def get_alerts_for_order_product(conn, order_number: str, product_name: str) -> 
     WHERE pa.AlertId IS NULL
       AND o.ordernumber = ?
       AND AL.ProductName = ?
+      AND NOT EXISTS (
+          SELECT 1 FROM [Traceability_RS].[dbo].[PlanAlerts] AX
+          INNER JOIN [Traceability_RS].[dbo].[PlanAlertResponses] PX ON PX.AlertId = AX.AlertId
+          WHERE AX.idorder = AL.idorder AND AX.ProductName = AL.ProductName
+            AND AX.PhaseName = AL.PhaseName
+            AND CAST(AX.AlertDate AS DATE) = CAST(AL.AlertDate AS DATE)
+      )
     ORDER BY p.phaseorder, CAST(AL.AlertDate AS DATE)
     """
     try:
@@ -204,6 +225,13 @@ def get_all_alert_ids_for_order_product(conn, order_number: str,
     WHERE pa.AlertId IS NULL
       AND o.ordernumber = ?
       AND AL.ProductName = ?
+      AND NOT EXISTS (
+          SELECT 1 FROM [Traceability_RS].[dbo].[PlanAlerts] AX
+          INNER JOIN [Traceability_RS].[dbo].[PlanAlertResponses] PX ON PX.AlertId = AX.AlertId
+          WHERE AX.idorder = AL.idorder AND AX.ProductName = AL.ProductName
+            AND AX.PhaseName = AL.PhaseName
+            AND CAST(AX.AlertDate AS DATE) = CAST(AL.AlertDate AS DATE)
+      )
     """
     try:
         with conn.cursor() as cursor:
@@ -236,6 +264,13 @@ def get_unresponded_alerts(conn) -> list:
     INNER JOIN traceability_rs.dbo.Phases P ON p.phasename = AL.Phasename
     LEFT JOIN traceability_rs.dbo.PlanAlertResponses pa ON pa.AlertId = AL.AlertId
     WHERE pa.AlertId IS NULL
+      AND NOT EXISTS (
+          SELECT 1 FROM [Traceability_RS].[dbo].[PlanAlerts] AX
+          INNER JOIN [Traceability_RS].[dbo].[PlanAlertResponses] PX ON PX.AlertId = AX.AlertId
+          WHERE AX.idorder = AL.idorder AND AX.ProductName = AL.ProductName
+            AND AX.PhaseName = AL.PhaseName
+            AND CAST(AX.AlertDate AS DATE) = CAST(AL.AlertDate AS DATE)
+      )
     ORDER BY o.ordernumber, p.phaseorder, CAST(AL.AlertDate AS DATE)
     """
     try:
@@ -323,6 +358,32 @@ def get_phase_leaders(conn, phase_name: str) -> List[Dict]:
         Lista di dict con: Employee, FunctionDescription, PhaseName,
         LeaderEmail, ManagerEmail
     """
+    # Mapping fase -> CDC (equivalente al CASE SQL, spostato in Python
+    # per evitare DECLARE che causa 'Invalid cursor state' in pyodbc)
+    phase_upper = (phase_name or '').upper().strip()
+    phase_map = {
+        'ICT': 'PTHM',
+        'TOUC-UP': 'PTHM',
+        'TOUCH-UP': 'PTHM',
+        'FCT': 'PTHM',
+        'PTHM': 'PTHM',
+        'TESTE': 'PTHM',
+        'TEST': 'PTHM',
+        'PROGRAMARE': 'PTHM',
+        'FINAL ASSEMBLY': 'PTHM',
+        'AOI': 'SMT',
+        'SMT': 'SMT',
+    }
+    
+    # Cerca match esatto, poi match LIKE per COATING%
+    mapped_phase = phase_map.get(phase_upper)
+    if mapped_phase is None and phase_upper.startswith('COATING'):
+        mapped_phase = 'PTHM'
+    
+    if mapped_phase is None:
+        logger.warning(f"Fase '{phase_name}' non mappata a nessun CDC")
+        return []
+
     query = """
     WITH Manager (SubCdcId, FunctionCode, MainCdcId, WorkEmail)
     AS (
@@ -357,7 +418,7 @@ def get_phase_leaders(conn, phase_name: str) -> List[Dict]:
         ON a.employeeid = h.employeeid AND a.dateout IS NULL
     WHERE f.FunctionCode BETWEEN 40 AND 70
         AND s.SubCdcId = (
-            SELECT [SubCdcId]
+            SELECT TOP 1 [SubCdcId]
             FROM [Traceability_RS].[dbo].[Phases]
             WHERE PhaseName = ?
         )
@@ -366,13 +427,13 @@ def get_phase_leaders(conn, phase_name: str) -> List[Dict]:
     """
     try:
         with conn.cursor() as cursor:
-            cursor.execute(query, (phase_name,))
+            cursor.execute(query, (mapped_phase,))
             results = []
             for row in cursor.fetchall():
                 results.append({
                     'employee': row.Employee,
                     'function': row.FunctionDescription,
-                    'phase': row.PhaseName,
+                    'phase': f"{row.PhaseName} [{phase_name}]",
                     'leader_email': row.LeaderEmail,
                     'manager_email': row.ManagerEmail
                 })
@@ -718,7 +779,7 @@ def check_and_escalate(conn, logo_path: str = None, mode: str = 'True') -> int:
             
             emails_sent += 1
             logger.info(f"Escalation livello {next_level} inviata per fase '{phase}' "
-                        f"({len(alerts_list)} alert) a {to_addr}")
+                        f"({len(alerts_list)} alert) a {to_addr_list}")
             
         except Exception as e:
             logger.error(f"Errore invio escalation per fase '{phase}': {e}")

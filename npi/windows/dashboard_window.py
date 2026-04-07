@@ -13,7 +13,8 @@ try:
     from reportlab.lib.pagesizes import letter, A4
     from reportlab.lib.units import inch
     from reportlab.lib import colors
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+    from reportlab.lib.styles import ParagraphStyle
     REPORTLAB_AVAILABLE = True
 except ImportError:
     REPORTLAB_AVAILABLE = False
@@ -467,6 +468,35 @@ class NpiDashboardWindow(tk.Toplevel):
         """Il doppio click ora lancia la finestra di analisi."""
         self._launch_analysis_window()
 
+    def _get_selected_project_ids(self):
+        """Restituisce la lista di ProgettoId delle righe selezionate nel treeview.
+        Se nessuna riga è selezionata, restituisce None (= tutti i progetti)."""
+        selection = self.project_tree.selection()
+        if not selection:
+            return None
+        
+        project_ids = []
+        for item_iid in selection:
+            try:
+                pid = int(self.project_tree.item(item_iid, 'text'))
+                if pid > 0:  # Escludi righe di errore/placeholder
+                    project_ids.append(pid)
+            except (ValueError, TypeError):
+                pass
+        return project_ids if project_ids else None
+
+    def _get_current_filters(self):
+        """Restituisce i filtri correnti (year, client, project_ids selezionati)."""
+        year_str = self.year_filter_var.get()
+        year_filter = None if year_str == "Tutti gli anni" else int(year_str)
+        
+        client_str = self.client_filter_var.get()
+        client_filter = None if client_str == "Tutti i clienti" else client_str
+        
+        project_ids = self._get_selected_project_ids()
+        
+        return year_filter, client_filter, project_ids
+
     def _get_selected_project_info(self):
         """Helper per recuperare ID e nome del progetto selezionato."""
         selection = self.project_tree.selection()
@@ -611,17 +641,14 @@ class NpiDashboardWindow(tk.Toplevel):
         self.update_idletasks()
         
         try:
-            # Ottieni filtri correnti
-            year_str = self.year_filter_var.get()
-            year_filter = None if year_str == "Tutti gli anni" else int(year_str)
-            
-            client_str = self.client_filter_var.get()
-            client_filter = None if client_str == "Tutti i clienti" else client_str
+            # Ottieni filtri correnti + selezione righe
+            year_filter, client_filter, project_ids = self._get_current_filters()
             
             # Chiama il nuovo metodo di export completo
             file_path = self.npi_manager.export_npi_to_excel_comprehensive(
                 year_filter=year_filter,
-                client_filter=client_filter
+                client_filter=client_filter,
+                project_ids=project_ids
             )
             
             if messagebox.askyesno("Successo", 
@@ -809,16 +836,13 @@ class NpiDashboardWindow(tk.Toplevel):
         self.update_idletasks()
         
         try:
-            # Ottieni filtri correnti
-            year_str = self.year_filter_var.get()
-            year_filter = None if year_str == "Tutti gli anni" else int(year_str)
-            
-            client_str = self.client_filter_var.get()
-            client_filter = None if client_str == "Tutti i clienti" else client_str
+            # Ottieni filtri correnti + selezione righe
+            year_filter, client_filter, project_ids = self._get_current_filters()
             
             file_path = self.npi_manager.export_npi_overview_report(
                 year_filter=year_filter,
-                client_filter=client_filter
+                client_filter=client_filter,
+                project_ids=project_ids
             )
             
             if messagebox.askyesno("Successo",
@@ -847,86 +871,254 @@ class NpiDashboardWindow(tk.Toplevel):
         self.export_pdf_button.config(state=tk.DISABLED)
         self.update_idletasks()
         try:
-            full_report_data = self.npi_manager.get_full_projects_report_data()
+            # Ottieni filtri correnti + selezione righe
+            year_filter, client_filter, project_ids = self._get_current_filters()
+            
+            full_report_data = self.npi_manager.get_full_projects_report_data(
+                year_filter=year_filter,
+                client_filter=client_filter,
+                project_ids=project_ids
+            )
             if not full_report_data:
                 messagebox.showinfo("Info", "Nessun progetto da includere nel report.", parent=self)
                 return
             temp_dir = "C:\\Temp"
             os.makedirs(temp_dir, exist_ok=True)
             file_path = os.path.join(temp_dir, f"NPI_Projects_Summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
-            c = canvas.Canvas(file_path, pagesize=A4)
+            pdf = canvas.Canvas(file_path, pagesize=A4)
             width, height = A4
+            margin_bottom = 50
+
+            # Logo path
+            logo_path = os.path.join(os.path.dirname(__file__), "..", "..", "Logo.png")
+            logo_available = os.path.exists(logo_path)
+
+            def draw_logo():
+                """Disegna il logo in alto a destra della pagina."""
+                if logo_available:
+                    try:
+                        logo_w, logo_h = 100, 35
+                        pdf.drawImage(logo_path, width - inch - logo_w,
+                                      height - 10 - logo_h,
+                                      width=logo_w, height=logo_h,
+                                      preserveAspectRatio=True, mask='auto')
+                    except Exception as e:
+                        logger.warning(f"Impossibile disegnare logo nel PDF: {e}")
+
+            def new_page():
+                """Crea una nuova pagina con logo."""
+                pdf.showPage()
+                draw_logo()
+                return height - inch
+
+            def check_space(y, needed):
+                """Se non c'è spazio sufficiente, crea nuova pagina."""
+                if y < margin_bottom + needed:
+                    return new_page()
+                return y
 
             def draw_project_section(y_start, project_data):
                 y = y_start
-                c.setFont("Helvetica-Bold", 12)
-                is_overdue = project_data['info'].ScadenzaMilestoneFinale and project_data[
-                    'info'].ScadenzaMilestoneFinale.date() < datetime.now().date()
-                if is_overdue:
-                    c.setFillColor(colors.red)
-                c.drawString(inch, y, f"Project: {project_data['info'].NomeProgetto}")
-                c.setFillColor(colors.black)
-                y -= 20
-                c.setFont("Helvetica", 9)
-                c.drawString(inch, y,
-                             f"Product Code: {project_data['info'].CodiceProdotto or 'N/A'}  |  Customer: {project_data['info'].Cliente or 'N/A'}")
-                y -= 15
-                due_date_str = project_data['info'].ScadenzaMilestoneFinale.strftime('%Y-%m-%d') if project_data[
-                    'info'].ScadenzaMilestoneFinale else "Not Set"
-                c.drawString(inch, y, f"Final Milestone Due Date: {due_date_str}")
-                y -= 25
-                c.setFont("Helvetica-Bold", 10)
-                c.drawString(inch, y, "Overdue Task Analysis:")
-                y -= 20
-                analysis = project_data['analysis']
-                if not analysis:
-                    c.setFont("Helvetica-Oblique", 9)
-                    c.setFillColor(colors.green)
-                    c.drawString(inch, y, "No overdue tasks found.")
-                    c.setFillColor(colors.black)
-                    y -= 20
+
+                # --- Header progetto ---
+                y = check_space(y, 80)
+                pdf.setFont("Helvetica-Bold", 12)
+                milestone_date = getattr(project_data['info'], 'ScadenzaMilestoneFinale', None)
+                is_overdue = milestone_date and milestone_date.date() < datetime.now().date()
+                
+                # Nome progetto + cliente come header
+                cliente = project_data['info'].Cliente or 'N/A'
+                pdf.setFillColor(colors.HexColor('#0078D4'))
+                pdf.drawString(inch, y, f"▶ {project_data['info'].NomeProgetto}")
+                pdf.setFillColor(colors.black)
+                y -= 18
+                max_text_width = width - 2 * inch
+                info_style = ParagraphStyle('info', fontName='Helvetica', fontSize=9, leading=12)
+                info_text = f"Product Code: {project_data['info'].CodiceProdotto or 'N/A'}  |  Customer: {cliente}"
+                p = Paragraph(info_text, info_style)
+                pw, ph = p.wrap(max_text_width, 200)
+                y = check_space(y, ph + 5)
+                p.drawOn(pdf, inch, y - ph)
+                y -= (ph + 5)
+                
+                # Reset font dopo Paragraph
+                pdf.setFont("Helvetica", 9)
+                if milestone_date:
+                    due_date_str = milestone_date.strftime('%d/%m/%Y')
                 else:
+                    due_date_str = "NOT SET"
+                    pdf.setFillColor(colors.red)
+                pdf.drawString(inch, y, f"Final Milestone Due Date: {due_date_str}")
+                pdf.setFillColor(colors.black)
+                y -= 20
+
+                # --- Overdue Task Analysis ---
+                analysis = project_data['analysis']
+                if analysis:
+                    pdf.setFont("Helvetica-Bold", 9)
+                    pdf.setFillColor(colors.red)
+                    pdf.drawString(inch, y, "Overdue Task Analysis:")
+                    pdf.setFillColor(colors.black)
+                    y -= 15
+                    
                     table_data = [['Owner', '# Late Tasks']]
                     for item in analysis:
                         table_data.append([item['owner_name'], item['late_count']])
-                    table = Table(table_data, colWidths=[3 * inch, 1.5 * inch])
+                    table = Table(table_data, colWidths=[3 * inch, 1.2 * inch])
                     table.setStyle(TableStyle([
-                        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#C0392B')),
                         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-                        ('GRID', (0, 0), (-1, -1), 1, colors.black)
+                        ('FONTSIZE', (0, 0), (-1, -1), 8),
+                        ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+                        ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#FADBD8')),
+                        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
                     ]))
+                    _w, _h = table.wrapOn(pdf, width, height)
+                    y = check_space(y, _h + 10)
+                    table.drawOn(pdf, inch, y - _h)
+                    y -= (_h + 15)
+                else:
+                    pdf.setFont("Helvetica-Oblique", 9)
+                    pdf.setFillColor(colors.HexColor('#27AE60'))
+                    pdf.drawString(inch, y, "✓ No overdue tasks found.")
+                    pdf.setFillColor(colors.black)
+                    y -= 15
 
-                    # --- ** CORREZIONE QUI ** ---
-                    # Cattura l'altezza reale calcolata dal metodo wrapOn
-                    _w, _h = table.wrapOn(c, width, height)
+                # --- Task List (con split su più pagine) ---
+                tasks = project_data.get('tasks', [])
+                if tasks:
+                    y = check_space(y, 40)
+                    pdf.setFont("Helvetica-Bold", 9)
+                    pdf.drawString(inch, y, f"Task List ({len(tasks)} tasks):")
+                    y -= 12
 
-                    # Usa l'altezza catturata _h per il posizionamento e l'aggiornamento della coordinata y
-                    table.drawOn(c, inch, y - _h)
-                    y -= (_h + 20)
-                    # --- ** FINE CORREZIONE ** ---
+                    # Preparazione dati tabella
+                    header_row = ['Task', 'Owner', 'Due Date', 'Status']
+                    all_rows = []
+                    for t in tasks:
+                        due_str = t['due_date'].strftime('%d/%m/%Y') if t['due_date'] else "N/A"
+                        all_rows.append([
+                            t['task_name'][:40],
+                            t['owner_name'][:20],
+                            due_str,
+                            t['status']
+                        ])
 
-                c.line(inch, y, width - inch, y)
+                    col_widths = [2.8 * inch, 1.4 * inch, 0.9 * inch, 0.9 * inch]
+                    row_height_est = 14  # altezza stimata per riga
+
+                    # Funzione per costruire stile tabella con evidenziazione
+                    def build_task_style(task_subset_indices):
+                        style_cmds = [
+                            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#0078D4')),
+                            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                            ('ALIGN', (2, 0), (3, -1), 'CENTER'),
+                            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                            ('FONTSIZE', (0, 0), (-1, -1), 7),
+                            ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+                            ('TOPPADDING', (0, 1), (-1, -1), 3),
+                            ('BOTTOMPADDING', (0, 1), (-1, -1), 3),
+                            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#BDC3C7')),
+                            ('ROWBACKGROUNDS', (0, 1), (-1, -1),
+                             [colors.white, colors.HexColor('#F8F9FA')]),
+                        ]
+                        for table_row_idx, orig_idx in enumerate(task_subset_indices, start=1):
+                            t = tasks[orig_idx]
+                            if t['is_late']:
+                                style_cmds.append(('BACKGROUND', (0, table_row_idx), (-1, table_row_idx),
+                                                   colors.HexColor('#FADBD8')))
+                                style_cmds.append(('TEXTCOLOR', (0, table_row_idx), (-1, table_row_idx),
+                                                   colors.HexColor('#C0392B')))
+                            elif t['status'] == 'Completato':
+                                style_cmds.append(('TEXTCOLOR', (0, table_row_idx), (-1, table_row_idx),
+                                                   colors.HexColor('#27AE60')))
+                        return TableStyle(style_cmds)
+
+                    # Renderizza la tabella in chunk che entrano nella pagina
+                    row_idx = 0
+                    total_rows = len(all_rows)
+                    while row_idx < total_rows:
+                        # Quante righe entrano nello spazio rimanente?
+                        available_h = y - margin_bottom
+                        header_h = row_height_est + 6  # header più alto
+                        max_rows = max(1, int((available_h - header_h) / row_height_est))
+                        
+                        # Se non ci sta nemmeno 1 riga + header, nuova pagina
+                        if available_h < header_h + row_height_est:
+                            y = new_page()
+                            available_h = y - margin_bottom
+                            max_rows = max(1, int((available_h - header_h) / row_height_est))
+                        
+                        chunk_end = min(row_idx + max_rows, total_rows)
+                        chunk_rows = all_rows[row_idx:chunk_end]
+                        chunk_indices = list(range(row_idx, chunk_end))
+                        
+                        chunk_data = [header_row] + chunk_rows
+                        chunk_table = Table(chunk_data, colWidths=col_widths)
+                        chunk_table.setStyle(build_task_style(chunk_indices))
+                        
+                        _w, _h = chunk_table.wrapOn(pdf, width, height)
+                        chunk_table.drawOn(pdf, inch, y - _h)
+                        y -= (_h + 5)
+                        
+                        row_idx = chunk_end
+                        if row_idx < total_rows:
+                            y = new_page()
+                    
+                    y -= 5
+
+                # Separatore tra progetti
+                y -= 5
+                y = check_space(y, 10)
+                pdf.setStrokeColor(colors.HexColor('#BDC3C7'))
+                pdf.line(inch, y, width - inch, y)
+                pdf.setStrokeColor(colors.black)
                 y -= 15
                 return y
 
-            y_pos = height - inch
-            c.setFont("Helvetica-Bold", 18)
-            c.drawCentredString(width / 2.0, y_pos, "NPI Projects Summary Report")
+            # ========== PAGINA INIZIALE ==========
+            draw_logo()
+            y_pos = height - inch - 20
+            
+            pdf.setFont("Helvetica-Bold", 18)
+            pdf.setFillColor(colors.HexColor('#0078D4'))
+            pdf.drawCentredString(width / 2.0, y_pos, "NPI Projects Summary Report")
+            pdf.setFillColor(colors.black)
             y_pos -= 20
-            c.setFont("Helvetica", 10)
-            c.drawCentredString(width / 2.0, y_pos, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            y_pos -= 40
+            pdf.setFont("Helvetica", 10)
+            pdf.drawCentredString(width / 2.0, y_pos, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            y_pos -= 15
+            
+            # Info filtri applicati
+            filter_info = []
+            if client_filter:
+                filter_info.append(f"Client: {client_filter}")
+            if year_filter:
+                filter_info.append(f"Year: {year_filter}")
+            if project_ids:
+                filter_info.append(f"Selected projects: {len(project_ids)}")
+            if filter_info:
+                pdf.setFont("Helvetica-Oblique", 9)
+                pdf.drawCentredString(width / 2.0, y_pos, "Filters: " + " | ".join(filter_info))
+                y_pos -= 15
+            
+            pdf.setFont("Helvetica", 9)
+            pdf.drawCentredString(width / 2.0, y_pos, f"Total projects: {len(full_report_data)}")
+            y_pos -= 30
+
+            # ========== SEZIONI PROGETTO ==========
             for project in full_report_data:
-                estimated_height = 120 + (len(project['analysis']) * 20 if project['analysis'] else 0)
-                if y_pos < estimated_height:
-                    c.showPage()
-                    y_pos = height - inch
+                # Stima altezza necessaria
+                n_tasks = len(project.get('tasks', []))
+                estimated_height = 100 + (len(project['analysis']) * 18) + (n_tasks * 14)
+                if y_pos < min(estimated_height, 200):
+                    y_pos = new_page()
                 y_pos = draw_project_section(y_pos, project)
-            c.save()
+            
+            pdf.save()
             if messagebox.askyesno("Successo", f"Report PDF salvato con successo in:\n{file_path}\n\nVuoi aprirlo ora?",
                                    parent=self):
                 os.startfile(file_path)
