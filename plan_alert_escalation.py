@@ -243,7 +243,13 @@ def get_all_alert_ids_for_order_product(conn, order_number: str,
 
 
 def get_unresponded_alerts(conn) -> list:
-    """Recupera gli alert PlanAlerts senza risposta, DISTINCT per data (no ore)."""
+    """Recupera gli alert PlanAlerts senza risposta, DISTINCT per data (no ore).
+    
+    Esclude automaticamente ordini/prodotto/fase per i quali è stata inserita
+    una giustificazione oggi (CAST(ResponseDate AS DATE) = oggi),
+    indipendentemente dalla data dell'alert originale.
+    Se il problema si ripresenta il giorno dopo, il ciclo riparte.
+    """
     query = """
     SELECT DISTINCT
         AL.AlertId,
@@ -264,12 +270,22 @@ def get_unresponded_alerts(conn) -> list:
     INNER JOIN traceability_rs.dbo.Phases P ON p.phasename = AL.Phasename
     LEFT JOIN traceability_rs.dbo.PlanAlertResponses pa ON pa.AlertId = AL.AlertId
     WHERE pa.AlertId IS NULL
+      -- Escludi alert con risposta per stessa data alert
       AND NOT EXISTS (
           SELECT 1 FROM [Traceability_RS].[dbo].[PlanAlerts] AX
           INNER JOIN [Traceability_RS].[dbo].[PlanAlertResponses] PX ON PX.AlertId = AX.AlertId
           WHERE AX.idorder = AL.idorder AND AX.ProductName = AL.ProductName
             AND AX.PhaseName = AL.PhaseName
             AND CAST(AX.AlertDate AS DATE) = CAST(AL.AlertDate AS DATE)
+      )
+      -- Escludi ordini giustificati OGGI: se qualcuno ha risposto oggi
+      -- per lo stesso ordine/prodotto/fase, non rinviare fino a domani
+      AND NOT EXISTS (
+          SELECT 1 FROM [Traceability_RS].[dbo].[PlanAlerts] AY
+          INNER JOIN [Traceability_RS].[dbo].[PlanAlertResponses] PY ON PY.AlertId = AY.AlertId
+          WHERE AY.idorder = AL.idorder AND AY.ProductName = AL.ProductName
+            AND AY.PhaseName = AL.PhaseName
+            AND CAST(PY.ResponseDate AS DATE) = CAST(GETDATE() AS DATE)
       )
     ORDER BY o.ordernumber, p.phaseorder, CAST(AL.AlertDate AS DATE)
     """
@@ -648,8 +664,10 @@ def check_and_escalate(conn, logo_path: str = None, mode: str = 'True') -> int:
     
     Logica:
     - Trova alert senza risposta (PlanAlertResponses IS NULL)
-    - Per ogni alert, verifica:
-      a) Se sono passati >= 60 min dall'AlertDate (o dall'ultima escalation)
+    - Alert giustificati oggi (ResponseDate = oggi) vengono esclusi automaticamente
+    - Raggruppa TUTTI gli alert in UN'UNICA email ogni 3 ore
+    - Per ogni fase, verifica:
+      a) Se sono passate >= 3 ore dall'AlertDate (o dall'ultima escalation)
       b) Se le escalation inviate sono < 3 → invia a leader + manager fase
       c) Se >= 3 → invia a Sys_Alert_not_responce_plan (TO) + leader (CC)
     
@@ -657,9 +675,11 @@ def check_and_escalate(conn, logo_path: str = None, mode: str = 'True') -> int:
         mode: 'True' (produzione), 'Test' (email a gianluca.testa@vandewiele.com)
     
     Returns:
-        Numero di email inviate.
+        Numero di email inviate (0 o 1, poiché raggruppata).
     """
     from email_connector import EmailSender
+    
+    ESCALATION_INTERVAL_SECONDS = 10800  # 3 ore
     
     if logo_path is None:
         logo_path = os.path.join(os.path.dirname(__file__), 'Logo.png')
@@ -669,7 +689,6 @@ def check_and_escalate(conn, logo_path: str = None, mode: str = 'True') -> int:
         return 0
     
     now = datetime.now()
-    emails_sent = 0
     
     # Raggruppa alert per PhaseName
     phase_alerts = {}  # {phase: [{alert_data}, ...]}
@@ -692,99 +711,124 @@ def check_and_escalate(conn, logo_path: str = None, mode: str = 'True') -> int:
             phase_alerts[phase] = []
         phase_alerts[phase].append(alert_data)
     
-    # Per ogni fase, controlla se serve escalation
+    # Filtra solo le fasi per cui è scaduto il timer di 3 ore
+    phases_ready = {}  # fasi pronte per l'invio
+    max_level = 0
+    all_leader_emails = set()
+    all_manager_emails = set()
+    
     for phase, alerts_list in phase_alerts.items():
         # Usa il primo alert come riferimento per il timing
         first_alert_id = alerts_list[0]['alert_id']
         
-        # Conta escalation già inviate per questa fase (usa AlertId più vecchio)
+        # Conta escalation già inviate per questa fase
         current_level = get_escalation_count(conn, first_alert_id)
         last_sent = get_last_escalation_time(conn, first_alert_id)
         
-        # Se mai inviata → la prima escalation parte 60 min dopo AlertDate
+        # Se mai inviata → la prima escalation parte 3 ore dopo AlertDate
         if last_sent is None:
-            # Controlla se AlertDate è > 60 min fa
             alert_date_str = alerts_list[0]['alert_date']
             try:
                 alert_dt = datetime.strptime(alert_date_str, '%Y-%m-%d')
                 alert_dt = alert_dt.replace(hour=now.hour, minute=0)
             except ValueError:
-                alert_dt = now - timedelta(hours=2)  # fallback
+                alert_dt = now - timedelta(hours=4)  # fallback
             
-            if (now - alert_dt).total_seconds() < 3600:
-                continue  # Non è ancora passata 1 ora
+            if (now - alert_dt).total_seconds() < ESCALATION_INTERVAL_SECONDS:
+                continue  # Non sono ancora passate 3 ore
         else:
-            # È passata 1 ora dall'ultima escalation?
-            if (now - last_sent).total_seconds() < 3600:
+            # Sono passate 3 ore dall'ultima escalation?
+            if (now - last_sent).total_seconds() < ESCALATION_INTERVAL_SECONDS:
                 continue
         
         next_level = current_level + 1
+        if next_level > max_level:
+            max_level = next_level
         
-        # Determina destinatari
+        # Raccogli destinatari per questa fase
         leaders = get_phase_leaders(conn, phase)
-        leader_emails = list(set(
-            l['leader_email'] for l in leaders if l.get('leader_email')))
-        manager_emails = list(set(
-            l['manager_email'] for l in leaders if l.get('manager_email')))
+        leader_emails = set(
+            l['leader_email'] for l in leaders if l.get('leader_email'))
+        manager_emails = set(
+            l['manager_email'] for l in leaders if l.get('manager_email'))
         
-        if next_level <= 3:
-            # Livelli 1-3: TO ai leader, CC ai manager
-            to_emails = leader_emails
-            cc_emails = manager_emails
-        else:
-            # Livello 4+: TO al management, CC ai leader + manager
-            mgmt_emails = get_escalation_recipients(conn)
-            to_emails = mgmt_emails
-            cc_emails = list(set(leader_emails + manager_emails))
+        all_leader_emails.update(leader_emails)
+        all_manager_emails.update(manager_emails)
         
-        if not to_emails:
-            logger.warning(f"Nessun destinatario per escalation fase '{phase}'")
-            continue
-        
-        # Costruisci e invia email
-        body_html = _build_escalation_html({phase: alerts_list}, next_level)
-        
-        try:
-            sender = EmailSender()
-            attachments = []
-            if os.path.exists(logo_path):
-                attachments.append(('inline', logo_path, 'company_logo'))
-            
-            to_addr_list = to_emails
-            all_cc = to_emails[1:] + cc_emails if len(to_emails) > 1 else cc_emails
-            
-            level_label = (f"Solicitare {next_level}/3"
-                           if next_level <= 3 else "ESCALARE MANAGEMENT")
-            
-            subj = f"[{level_label}] Alerte plan producție — Faza {phase}"
-            
-            # Applica override in modalità Test
-            to_addr_list, all_cc, subj = _apply_test_mode_override(
-                mode, to_addr_list, all_cc, subj)
-            
-            sender.send_email(
-                to_email=to_addr_list[0],
-                subject=subj,
-                body=body_html,
-                is_html=True,
-                attachments=attachments if attachments else None,
-                cc_emails=all_cc if all_cc else None
-            )
-            
-            # Registra escalation per tutti gli alert della fase
-            recipients_log = '; '.join(to_emails + cc_emails)
-            for alert_data in alerts_list:
-                record_escalation(conn, alert_data['alert_id'],
-                                  next_level, recipients_log, phase)
-            
-            emails_sent += 1
-            logger.info(f"Escalation livello {next_level} inviata per fase '{phase}' "
-                        f"({len(alerts_list)} alert) a {to_addr_list}")
-            
-        except Exception as e:
-            logger.error(f"Errore invio escalation per fase '{phase}': {e}")
+        phases_ready[phase] = {
+            'alerts': alerts_list,
+            'next_level': next_level
+        }
     
-    return emails_sent
+    if not phases_ready:
+        return 0
+    
+    # Determina destinatari per l'email unica raggruppata
+    if max_level <= 3:
+        # Livelli 1-3: TO ai leader, CC ai manager
+        to_emails = list(all_leader_emails)
+        cc_emails = list(all_manager_emails)
+    else:
+        # Livello 4+: TO al management, CC ai leader + manager
+        mgmt_emails = get_escalation_recipients(conn)
+        to_emails = mgmt_emails
+        cc_emails = list(all_leader_emails | all_manager_emails)
+    
+    if not to_emails:
+        logger.warning("Nessun destinatario per escalation raggruppata")
+        return 0
+    
+    # Costruisci email unica con TUTTE le fasi raggruppate
+    all_phase_alerts = {}
+    for phase, info in phases_ready.items():
+        all_phase_alerts[phase] = info['alerts']
+    
+    body_html = _build_escalation_html(all_phase_alerts, max_level)
+    
+    try:
+        sender = EmailSender()
+        attachments = []
+        if os.path.exists(logo_path):
+            attachments.append(('inline', logo_path, 'company_logo'))
+        
+        to_addr_list = to_emails
+        all_cc = to_emails[1:] + cc_emails if len(to_emails) > 1 else cc_emails
+        
+        level_label = (f"Solicitare {max_level}/3"
+                       if max_level <= 3 else "ESCALARE MANAGEMENT")
+        
+        phases_str = ', '.join(phases_ready.keys())
+        total_alerts = sum(len(info['alerts']) for info in phases_ready.values())
+        subj = f"[{level_label}] Alerte plan producție — {total_alerts} alerte ({phases_str})"
+        
+        # Applica override in modalità Test
+        to_addr_list, all_cc, subj = _apply_test_mode_override(
+            mode, to_addr_list, all_cc, subj)
+        
+        sender.send_email(
+            to_email=to_addr_list[0],
+            subject=subj,
+            body=body_html,
+            is_html=True,
+            attachments=attachments if attachments else None,
+            cc_emails=all_cc if all_cc else None
+        )
+        
+        # Registra escalation per tutti gli alert di tutte le fasi
+        recipients_log = '; '.join(to_emails + cc_emails)
+        for phase, info in phases_ready.items():
+            for alert_data in info['alerts']:
+                record_escalation(conn, alert_data['alert_id'],
+                                  info['next_level'], recipients_log, phase)
+        
+        logger.info(f"Escalation raggruppata (livello max {max_level}) inviata: "
+                    f"{total_alerts} alert in {len(phases_ready)} fasi a {to_addr_list}")
+        
+        return 1
+        
+    except Exception as e:
+        logger.error(f"Errore invio escalation raggruppata: {e}")
+        return 0
 
 
 # ============================================================
