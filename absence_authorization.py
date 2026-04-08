@@ -218,7 +218,7 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
             subordinate_ids = []
 
             if not is_admin:
-                # Recupera subalterni con CTE gerarchica
+                # Recupera subalterni con CTE gerarchica (stesso CDC)
                 subordinate_query = """
                 WITH Manager (SubCdcId, FunctionCode, MainCdcId) AS
                 (
@@ -249,6 +249,41 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
                     sub_rows = self.db.cursor.fetchall()
 
                 subordinate_ids = [row[0] for row in sub_rows if row and row[0] is not None]
+
+                # FALLBACK: verifica anche tramite SP GetManagerForSingleEmployee
+                # per dipendenti con richieste pendenti che non appaiono nella CTE subordinati
+                try:
+                    pending_emp_query = """
+                        SELECT DISTINCT AR.EmployrrHireHistoryId
+                        FROM [Employee].[dbo].[AbsenceRequestes] AR
+                        WHERE AR.Approved = '1900-01-01 00:00:00.000'
+                          AND AR.EmployrrHireHistoryId NOT IN ({})
+                    """.format(', '.join(['?'] * len(subordinate_ids)) if subordinate_ids else '-1')
+                    
+                    with self.db._lock:
+                        self.db.cursor.execute(pending_emp_query, subordinate_ids if subordinate_ids else [])
+                        pending_rows = self.db.cursor.fetchall()
+
+                    for prow in pending_rows:
+                        emp_id = prow[0]
+                        try:
+                            with self.db._lock:
+                                self.db.cursor.execute(
+                                    "EXEC Employee.dbo.GetManagerForSingleEmployee @EmployeeHireHistoryId = ?",
+                                    emp_id
+                                )
+                                mgr_rows = self.db.cursor.fetchall()
+                            
+                            # Se il manager trovato dalla SP corrisponde al loggato, aggiungi
+                            for mr in mgr_rows:
+                                if mr[0] == employee_hire_history_id and emp_id not in subordinate_ids:
+                                    subordinate_ids.append(emp_id)
+                                    logger.info(f"Fallback SP: aggiunto subordinato {emp_id} via GetManagerForSingleEmployee")
+                        except Exception as sp_err:
+                            logger.debug(f"SP GetManagerForSingleEmployee non disponibile per {emp_id}: {sp_err}")
+                except Exception as fb_err:
+                    logger.warning(f"Fallback ricerca subordinati: {fb_err}")
+
                 logger.info(f"Subalterni trovati per {employee_hire_history_id}: {subordinate_ids}")
 
                 if not subordinate_ids:
