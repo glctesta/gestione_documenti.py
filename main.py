@@ -1,4 +1,4 @@
-﻿#import configparser
+#import configparser
 # --- StdIO safeguard + Faulthandler sicuro per exe windowed ---
 import shutil
 import sys, os, atexit
@@ -10527,6 +10527,12 @@ class App(tk.Tk):
         self._fai_autocheck_stop_event = threading.Event()
         self._start_fai_autocheck_background_task()
 
+        # Inizializza il thread per FAI Compliance Enforcement
+        self._fai_enforcement_thread = None
+        self._fai_enforcement_stop_event = threading.Event()
+        self._fai_enforcement_last_new_order_check = None  # Track ultima ora
+        self._start_fai_enforcement_background_task()
+
         # Batch generazione rapporti attività ospiti (da 1 gen a ieri)
         self.after(15000, self._start_activity_reports_batch)
 
@@ -11383,6 +11389,122 @@ class App(tk.Tk):
             pass
 
         logger.info("Background task plan alert escalation terminato")
+
+    # ────────────────────────────────────────────────────────────
+    # BACKGROUND TASK: FAI Compliance Enforcement
+    # ────────────────────────────────────────────────────────────
+
+    def _start_fai_enforcement_background_task(self):
+        """Avvia il thread per FAI Compliance Enforcement."""
+        try:
+            if self._fai_enforcement_thread is None or not self._fai_enforcement_thread.is_alive():
+                self._fai_enforcement_stop_event.clear()
+                self._fai_enforcement_thread = threading.Thread(
+                    target=self._fai_enforcement_worker,
+                    daemon=True,
+                    name="FaiEnforcementWorker"
+                )
+                self._fai_enforcement_thread.start()
+                logger.info("Background task FAI Enforcement avviato")
+        except Exception as e:
+            logger.error(f"Errore avvio background task FAI Enforcement: {e}", exc_info=True)
+
+    def _fai_enforcement_worker(self):
+        """
+        Worker thread per FAI Compliance Enforcement.
+        - Check turno: 60 min dopo inizio turno (08:30, 16:30, 00:30)
+        - Escalation: +30 min per ogni livello (09:00/09:30, 17:00/17:30, 01:00/01:30)
+        - Nuovi ordini: ogni ora
+        """
+        import fai_enforcement as fe
+        from datetime import datetime
+        import time
+        import pyodbc
+
+        logger.info("Worker FAI Enforcement avviato")
+
+        dedicated_conn = None
+
+        def _get_dedicated_conn():
+            """Crea o ripristina la connessione dedicata."""
+            nonlocal dedicated_conn
+            try:
+                if dedicated_conn:
+                    dedicated_conn.cursor().execute("SELECT 1")
+                    return dedicated_conn
+            except Exception:
+                try:
+                    dedicated_conn.close()
+                except Exception:
+                    pass
+                dedicated_conn = None
+
+            try:
+                dedicated_conn = pyodbc.connect(
+                    DB_CONN_STR, autocommit=False)
+                logger.info("FAI Enforcement: connessione dedicata creata")
+                return dedicated_conn
+            except Exception as e:
+                logger.error(
+                    f"FAI Enforcement: impossibile creare connessione: {e}")
+                return None
+
+        while not self._fai_enforcement_stop_event.is_set():
+            try:
+                now = datetime.now()
+                current_hour = now.hour
+
+                # Attivo 24/7 (turno notturno incluso)
+                conn = _get_dedicated_conn()
+                if not conn:
+                    logger.error("FAI Enforcement: connessione DB non disponibile")
+                    time.sleep(300)
+                    continue
+
+                # --- 1) SHIFT CHECK (60 min dopo inizio turno) ---
+                try:
+                    fe.run_shift_check(conn, logo_path="logo.png")
+                except Exception as e:
+                    logger.error(f"FAI Enforcement: errore shift check: {e}", exc_info=True)
+
+                # --- 2) ESCALATION RE-CHECK ---
+                try:
+                    fe.process_pending_escalations(conn, logo_path="logo.png")
+                except Exception as e:
+                    logger.error(f"FAI Enforcement: errore escalation: {e}", exc_info=True)
+
+                # --- 3) NEW ORDER CHECK (ogni ora) ---
+                if (self._fai_enforcement_last_new_order_check is None or
+                        self._fai_enforcement_last_new_order_check != current_hour):
+                    try:
+                        fe.run_new_order_check(conn, logo_path="logo.png")
+                        fe.process_new_order_escalations(conn, logo_path="logo.png")
+                        self._fai_enforcement_last_new_order_check = current_hour
+                    except Exception as e:
+                        logger.error(f"FAI Enforcement: errore new order check: {e}", exc_info=True)
+
+                # Attendi 60 secondi
+                time.sleep(60)
+
+            except Exception as e:
+                logger.error(f"FAI Enforcement: errore nel worker: {e}", exc_info=True)
+                try:
+                    if dedicated_conn:
+                        dedicated_conn.close()
+                except Exception:
+                    pass
+                dedicated_conn = None
+                time.sleep(300)
+
+        # Pulizia alla chiusura
+        try:
+            if dedicated_conn:
+                dedicated_conn.close()
+                logger.info("FAI Enforcement: connessione dedicata chiusa")
+        except Exception:
+            pass
+
+        logger.info("Background task FAI Enforcement terminato")
 
     # ────────────────────────────────────────────────────────────
     # BACKGROUND TASK: FAI Autocheck da PlanningMachine
