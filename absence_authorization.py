@@ -875,10 +875,10 @@ giorni: {self.selected_request.NrDays if self.selected_request.NrDays else 'N/A'
         
         # Poi recupera IDEmployee da Timeclocking
         id_employee_query = """
-            SELECT [IDEmployee], UniqueID  
+            SELECT TOP 1 [IDEmployee], UniqueID  
             FROM [Timeclocking].[dbo].[Employee] 
             WHERE UniqueID COLLATE database_default = (
-                SELECT EmployeeNID 
+                SELECT TOP 1 EmployeeNID 
                 FROM Employee.dbo.Employees e 
                 INNER JOIN employee.dbo.employeehirehistory h ON e.employeeid = h.employeeid AND h.employeerid = 2 
                 INNER JOIN employee.dbo.EmployeeBadgeHistory bh ON h.employeehirehistoryid = bh.EmployeeHireHistoryId AND bh.DateOut IS NULL 

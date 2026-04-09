@@ -85,6 +85,12 @@ class FaiReportsViewerWindow(tk.Toplevel):
         self.operator_entry = ttk.Entry(row1, textvariable=self.operator_var, width=20)
         self.operator_entry.pack(side=tk.LEFT, padx=5)
         
+        # LabelCode
+        ttk.Label(row1, text="LabelCode:").pack(side=tk.LEFT, padx=5)
+        self.labelcode_var = tk.StringVar()
+        self.labelcode_entry = ttk.Entry(row1, textvariable=self.labelcode_var, width=20)
+        self.labelcode_entry.pack(side=tk.LEFT, padx=5)
+        
         # Pulsante Cerca
         ttk.Button(row1, text="🔍 " + self.lang.get('search', "Cerca"), command=self._load_data).pack(side=tk.LEFT, padx=10)
         ttk.Button(row1, text="🔄 " + self.lang.get('reset', "Reset"), command=self._reset_filters).pack(side=tk.LEFT, padx=5)
@@ -98,13 +104,14 @@ class FaiReportsViewerWindow(tk.Toplevel):
         hsb = ttk.Scrollbar(tree_frame, orient="horizontal")
         
         # Treeview - FaiLogId is hidden but still stored
-        columns = ('FaiLogId', 'FAI_Document', 'Data', 'Ordine', 'Prodotto', 'Operatore', 'Risultato', 'HasPDF')
+        columns = ('FaiLogId', 'FAI_Document', 'LabelCode', 'Data', 'Ordine', 'Prodotto', 'Operatore', 'Risultato', 'HasPDF')
         self.tree = ttk.Treeview(tree_frame, columns=columns, show='headings',
-                                 yscrollcommand=vsb.set, xscrollcommand=hsb.set, displaycolumns=('FAI_Document', 'Data', 'Ordine', 'Prodotto', 'Operatore', 'Risultato', 'HasPDF'))
+                                 yscrollcommand=vsb.set, xscrollcommand=hsb.set, displaycolumns=('FAI_Document', 'LabelCode', 'Data', 'Ordine', 'Prodotto', 'Operatore', 'Risultato', 'HasPDF'))
         
         # Configura colonne
         self.tree.heading('FaiLogId', text='ID')  # Hidden
         self.tree.heading('FAI_Document', text='FAI Document')
+        self.tree.heading('LabelCode', text='LabelCode')
         self.tree.heading('Data', text='Data/Ora')
         self.tree.heading('Ordine', text='N. Ordine')
         self.tree.heading('Prodotto', text='Codice Prodotto')
@@ -113,13 +120,14 @@ class FaiReportsViewerWindow(tk.Toplevel):
         self.tree.heading('HasPDF', text='PDF')
         
         self.tree.column('FaiLogId', width=0, stretch=False)  # Hidden
-        self.tree.column('FAI_Document', width=300)
-        self.tree.column('Data', width=150, anchor='center')
-        self.tree.column('Ordine', width=120, anchor='center')
-        self.tree.column('Prodotto', width=200)
-        self.tree.column('Operatore', width=150)
-        self.tree.column('Risultato', width=100, anchor='center')
-        self.tree.column('HasPDF', width=60, anchor='center')
+        self.tree.column('FAI_Document', width=280)
+        self.tree.column('LabelCode', width=130)
+        self.tree.column('Data', width=140, anchor='center')
+        self.tree.column('Ordine', width=110, anchor='center')
+        self.tree.column('Prodotto', width=180)
+        self.tree.column('Operatore', width=140)
+        self.tree.column('Risultato', width=90, anchor='center')
+        self.tree.column('HasPDF', width=50, anchor='center')
         
         vsb.config(command=self.tree.yview)
         hsb.config(command=self.tree.xview)
@@ -159,6 +167,7 @@ class FaiReportsViewerWindow(tk.Toplevel):
         self.date_to_picker.set_date(datetime.now())
         self.product_var.set('')
         self.operator_var.set('')
+        self.labelcode_var.set('')
         self._load_data()
     
     def _load_data(self):
@@ -169,16 +178,18 @@ class FaiReportsViewerWindow(tk.Toplevel):
                 self.tree.delete(item)
             
             # Query
+            # Query raggruppata: una riga per sessione di validazione
             query = """
-            SELECT DISTINCT 
+            SELECT 
                 t.NrDocument + ' Rev.' + cast(t.Revision as nvarchar(4))+ ' issued on ' + format(t.RevisionDate,'d','it-it') as FAI_Document,
-                l.FaiLogId,
-                l.DateIn,
+                MIN(l.FaiLogId) as FaiLogId,
+                l.LabelCode,
+                MIN(l.DateIn) as DateIn,
                 o.Ordernumber as OrderId,
                 p.productcode,
                 l.Operator,
-                l.IsOk,
-                CASE WHEN l.DocVerification IS NOT NULL THEN 1 ELSE 0 END AS HasPDF
+                MIN(CAST(l.IsOk AS INT)) as IsOk,
+                MAX(CASE WHEN l.DocVerification IS NOT NULL THEN 1 ELSE 0 END) AS HasPDF
             FROM [Traceability_RS].[fai].[FaiLogs] l
             LEFT JOIN [Traceability_RS].[dbo].[orders] o ON l.OrderId = o.IDOrder
             LEFT JOIN [Traceability_RS].[dbo].[Products] p ON o.IDProduct = p.IDProduct
@@ -186,6 +197,7 @@ class FaiReportsViewerWindow(tk.Toplevel):
             INNER JOIN traceability_rs.fai.FaiSteps S on s.FatStepId=D.FatStepId
             INNER JOIN traceability_rs.fai.FaiTemplates t on t.FaiTemplateId=s.FaiTemplateId 
             WHERE l.DateIn >= ? AND l.DateIn <= ?
+                AND l.DateOut IS NULL
             """
             
             params = [
@@ -203,7 +215,14 @@ class FaiReportsViewerWindow(tk.Toplevel):
                 query += " AND l.Operator LIKE ?"
                 params.append(f"%{self.operator_var.get().strip()}%")
             
-            query += " ORDER BY l.DateIn DESC"
+            # Filtro LabelCode (ricerca parziale)
+            if self.labelcode_var.get().strip():
+                query += " AND l.LabelCode LIKE ?"
+                params.append(f"%{self.labelcode_var.get().strip()}%")
+            
+            query += """ GROUP BY t.NrDocument, t.Revision, t.RevisionDate,
+                l.LabelCode, o.Ordernumber, p.productcode, l.Operator
+            ORDER BY MIN(l.DateIn) DESC"""
             
             rows = self.db.fetch_all(query, tuple(params))
             
@@ -211,6 +230,7 @@ class FaiReportsViewerWindow(tk.Toplevel):
             for row in rows:
                 fai_document = row.FAI_Document or 'N/A'
                 fai_log_id = row.FaiLogId
+                label_code = row.LabelCode or ''
                 date_in = row.DateIn.strftime('%d/%m/%Y %H:%M') if row.DateIn else ''
                 order_id = row.OrderId or ''
                 product_code = row.productcode or 'N/A'
@@ -222,7 +242,7 @@ class FaiReportsViewerWindow(tk.Toplevel):
                 tag = 'ok' if row.IsOk else 'not_ok'
                 
                 self.tree.insert('', 'end', values=(
-                    fai_log_id, fai_document, date_in, order_id, product_code, 
+                    fai_log_id, fai_document, label_code, date_in, order_id, product_code, 
                     operator, result, has_pdf
                 ), tags=(tag,))
             
@@ -246,7 +266,7 @@ class FaiReportsViewerWindow(tk.Toplevel):
         item = self.tree.item(selection[0])
         values = item['values']
         fai_log_id = values[0]  # FaiLogId is first column
-        has_pdf = values[7]  # HasPDF is now at index 7
+        has_pdf = values[8]  # HasPDF is now at index 8
         
         if has_pdf != '✓':
             messagebox.showwarning("Attenzione", "Nessun PDF disponibile per questa validazione")
@@ -324,7 +344,7 @@ class FaiReportsViewerWindow(tk.Toplevel):
             messagebox.showerror("Errore", f"Impossibile eliminare la validazione:\n{e}")
     
     def _export_to_excel(self):
-        """Esporta i risultati della ricerca in Excel"""
+        """Esporta i risultati della ricerca in Excel con dettagli step"""
         try:
             # Verifica che ci siano dati
             if not self.tree.get_children():
@@ -339,13 +359,68 @@ class FaiReportsViewerWindow(tk.Toplevel):
                 messagebox.showerror("Errore", "Libreria openpyxl non installata.\nInstallare con: pip install openpyxl")
                 return
             
+            # Query dettagliata con risposte degli step
+            detail_query = """
+            SELECT 
+                t.NrDocument + ' Rev.' + cast(t.Revision as nvarchar(4)) + ' issued on ' + format(t.RevisionDate,'d','it-it') as FAI_Document,
+                l.LabelCode,
+                l.DateIn,
+                o.Ordernumber as OrderId,
+                p.productcode,
+                l.Operator,
+                s.StepName,
+                d.Step as StepDescription,
+                CASE WHEN l.IsNA = 1 THEN 'N/A'
+                     WHEN l.IsOk = 1 THEN 'OK' 
+                     ELSE 'NOT OK' END as Risultato,
+                l.Dati,
+                l.ProblemDescription,
+                l.RoutCauseProblem,
+                l.CorrectiveAction
+            FROM [Traceability_RS].[fai].[FaiLogs] l
+            LEFT JOIN [Traceability_RS].[dbo].[orders] o ON l.OrderId = o.IDOrder
+            LEFT JOIN [Traceability_RS].[dbo].[Products] p ON o.IDProduct = p.IDProduct
+            INNER JOIN traceability_rs.fai.FaiStepDetails D on l.FaiStepDetailId=d.FaiStepDetailId
+            INNER JOIN traceability_rs.fai.FaiSteps S on s.FatStepId=D.FatStepId
+            INNER JOIN traceability_rs.fai.FaiTemplates t on t.FaiTemplateId=s.FaiTemplateId 
+            WHERE l.DateIn >= ? AND l.DateIn <= ?
+                AND l.DateOut IS NULL
+            """
+            
+            params = [
+                self.date_from_picker.get_date().strftime('%Y-%m-%d') + ' 00:00:00',
+                self.date_to_picker.get_date().strftime('%Y-%m-%d') + ' 23:59:59'
+            ]
+            
+            if self.product_var.get().strip():
+                detail_query += " AND p.productcode LIKE ?"
+                params.append(f"%{self.product_var.get().strip()}%")
+            
+            if self.operator_var.get().strip():
+                detail_query += " AND l.Operator LIKE ?"
+                params.append(f"%{self.operator_var.get().strip()}%")
+            
+            if self.labelcode_var.get().strip():
+                detail_query += " AND l.LabelCode LIKE ?"
+                params.append(f"%{self.labelcode_var.get().strip()}%")
+            
+            detail_query += " ORDER BY l.LabelCode, l.DateIn, d.OrdineList"
+            
+            rows = self.db.fetch_all(detail_query, tuple(params))
+            
+            if not rows:
+                messagebox.showwarning("Attenzione", "Nessun dato dettagliato trovato")
+                return
+            
             # Crea workbook
             wb = Workbook()
             ws = wb.active
-            ws.title = "FAI Reports"
+            ws.title = "FAI Reports Dettaglio"
             
             # Headers
-            headers = ['FAI Document', 'Data/Ora', 'N. Ordine', 'Codice Prodotto', 'Operatore', 'Risultato', 'PDF']
+            headers = ['FAI Document', 'LabelCode', 'Data/Ora', 'N. Ordine', 'Codice Prodotto', 
+                       'Operatore', 'Step', 'Descrizione Step', 'Risultato', 'Dati/Note',
+                       'Descrizione Problema', 'Causa Radice', 'Azione Correttiva']
             ws.append(headers)
             
             # Formatta header
@@ -354,41 +429,55 @@ class FaiReportsViewerWindow(tk.Toplevel):
             for cell in ws[1]:
                 cell.fill = header_fill
                 cell.font = header_font
-                cell.alignment = Alignment(horizontal='center', vertical='center')
+                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             
-            # Aggiungi dati (skip FaiLogId che è nascosto)
-            for item in self.tree.get_children():
-                values = self.tree.item(item)['values']
-                # values[0] è FaiLogId (nascosto), quindi skippiamo
+            # Aggiungi dati dettagliati
+            for row in rows:
+                date_str = row.DateIn.strftime('%d/%m/%Y %H:%M') if row.DateIn else ''
                 row_data = [
-                    values[1],  # FAI_Document
-                    values[2],  # Data
-                    values[3],  # Ordine
-                    values[4],  # Prodotto
-                    values[5],  # Operatore
-                    values[6],  # Risultato
-                    values[7]   # HasPDF
+                    row.FAI_Document or '',
+                    row.LabelCode or '',
+                    date_str,
+                    row.OrderId or '',
+                    row.productcode or '',
+                    row.Operator or '',
+                    row.StepName or '',
+                    row.StepDescription or '',
+                    row.Risultato or '',
+                    row.Dati or '',
+                    row.ProblemDescription or '',
+                    row.RoutCauseProblem or '',
+                    row.CorrectiveAction or ''
                 ]
                 ws.append(row_data)
                 
                 # Colora riga in base al risultato
                 last_row = ws.max_row
-                if '✓ OK' in str(values[6]):
+                result = row.Risultato or ''
+                if result == 'OK':
                     fill_color = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-                else:
+                elif result == 'NOT OK':
                     fill_color = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+                else:  # N/A
+                    fill_color = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
                 
                 for cell in ws[last_row]:
                     cell.fill = fill_color
             
             # Adatta larghezza colonne
-            ws.column_dimensions['A'].width = 40  # FAI Document
-            ws.column_dimensions['B'].width = 18  # Data
-            ws.column_dimensions['C'].width = 15  # Ordine
-            ws.column_dimensions['D'].width = 25  # Prodotto
-            ws.column_dimensions['E'].width = 20  # Operatore
-            ws.column_dimensions['F'].width = 12  # Risultato
-            ws.column_dimensions['G'].width = 8   # PDF
+            ws.column_dimensions['A'].width = 38  # FAI Document
+            ws.column_dimensions['B'].width = 16  # LabelCode
+            ws.column_dimensions['C'].width = 16  # Data
+            ws.column_dimensions['D'].width = 14  # Ordine
+            ws.column_dimensions['E'].width = 22  # Prodotto
+            ws.column_dimensions['F'].width = 18  # Operatore
+            ws.column_dimensions['G'].width = 20  # Step
+            ws.column_dimensions['H'].width = 35  # Descrizione Step
+            ws.column_dimensions['I'].width = 10  # Risultato
+            ws.column_dimensions['J'].width = 25  # Dati/Note
+            ws.column_dimensions['K'].width = 25  # Problema
+            ws.column_dimensions['L'].width = 25  # Causa Radice
+            ws.column_dimensions['M'].width = 25  # Azione Correttiva
             
             # Salva file
             import os

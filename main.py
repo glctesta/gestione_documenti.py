@@ -1,4 +1,4 @@
-#import configparser
+﻿#import configparser
 # --- StdIO safeguard + Faulthandler sicuro per exe windowed ---
 import shutil
 import sys, os, atexit
@@ -307,7 +307,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.0.1.6'  # Versione aggiornata
+APP_VERSION = '2.4.0.1.9'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -3638,6 +3638,27 @@ class Database:
                 return None  # Login fallito
 
             return User(name=employee_name)        
+
+    def get_employee_hire_history_id(self, user_id):
+            """
+            Recupera l'EmployeeHireHistoryId dal NomeUser (login).
+            :param user_id: Username di login (es. 'sa', 'gtesta')
+            :return: EmployeeHireHistoryId (int) oppure None.
+            """
+            query = """
+                SELECT h.EmployeeHireHistoryId
+                FROM resetservices.dbo.tbuserkey AS u
+                INNER JOIN employee.dbo.employees AS e ON e.EmployeeId = u.idanga
+                INNER JOIN employee.dbo.EmployeeHireHistory AS h ON e.EmployeeId = h.EmployeeId
+                WHERE h.EndWorkDate IS NULL AND h.employeerid = 2 AND u.Nomeuser = ?
+            """
+            try:
+                self.cursor.execute(query, user_id)
+                row = self.cursor.fetchone()
+                return int(row.EmployeeHireHistoryId) if row else None
+            except Exception as e:
+                logger.warning(f"get_employee_hire_history_id error for user_id={user_id}: {e}")
+                return None
 
     def get_calibratable_equipment(self):
         """
@@ -11387,12 +11408,16 @@ class App(tk.Tk):
         Worker thread per FAI Autocheck.
         Ogni 30 minuti legge il planning Excel e invia email preventive
         per i controlli FAI obbligatori non ancora eseguiti.
+        Usa una connessione DB DEDICATA per non competere con il main thread.
         """
         import fai_autocheck
         from business_days import should_send_notification
         import time
 
         logger.info("Worker FAI Autocheck avviato")
+        
+        # Connessione dedicata per questo thread
+        _fai_conn = None
 
         while not self._fai_autocheck_stop_event.is_set():
             try:
@@ -11409,16 +11434,33 @@ class App(tk.Tk):
                     time.sleep(300)  # 5 min fuori orario
                     continue
 
-                # Verifica connessione DB
-                if not self.db._ensure_connection():
-                    logger.error("FAI Autocheck: connessione DB non disponibile")
-                    time.sleep(300)
-                    continue
+                # Crea/ricrea connessione dedicata se necessario
+                try:
+                    if _fai_conn is None:
+                        _fai_conn = pyodbc.connect(self.db.conn_str, autocommit=False)
+                        logger.info("FAI Autocheck: connessione dedicata creata")
+                    else:
+                        # Test connessione
+                        _fai_conn.execute("SELECT 1")
+                except Exception:
+                    try:
+                        if _fai_conn:
+                            _fai_conn.close()
+                    except Exception:
+                        pass
+                    try:
+                        _fai_conn = pyodbc.connect(self.db.conn_str, autocommit=False)
+                        logger.info("FAI Autocheck: connessione dedicata ricreata")
+                    except Exception as conn_err:
+                        logger.error(f"FAI Autocheck: connessione DB non disponibile: {conn_err}")
+                        _fai_conn = None
+                        time.sleep(300)
+                        continue
 
-                # Esegui ciclo autocheck
+                # Esegui ciclo autocheck con connessione DEDICATA
                 try:
                     sent = fai_autocheck.run_autocheck_cycle(
-                        self.db.conn, logo_path="Logo.png")
+                        _fai_conn, logo_path="Logo.png")
                     if sent > 0:
                         logger.info(f"FAI Autocheck: inviate {sent} email preventive")
                 except Exception as e:
@@ -11435,6 +11477,13 @@ class App(tk.Tk):
                 logger.error(
                     f"Errore nel worker FAI Autocheck: {e}", exc_info=True)
                 time.sleep(300)  # 5 min in caso di errore
+        
+        # Chiudi connessione dedicata
+        try:
+            if _fai_conn:
+                _fai_conn.close()
+        except Exception:
+            pass
 
         logger.info("Background task FAI Autocheck terminato")
 
@@ -12861,7 +12910,8 @@ class App(tk.Tk):
         self.birthday_flash_job_id = self.after(750, lambda: self._flash_birthday_message(message))
 
     def _check_for_birthdays(self):
-        """Controlla i compleanni e avvia l'avviso appropriato (fisso o scorrevole)."""
+        """Controlla i compleanni e avvia l'avviso appropriato (fisso o scorrevole).
+        Viene chiamato tramite self.after() dal main thread."""
         logger.debug("_check_for_birthdays: start")
         # Ferma sempre un eventuale avviso precedente
         self._stop_birthday_display()
@@ -12869,7 +12919,6 @@ class App(tk.Tk):
             self.birthday_label.config(text="")
 
         try:
-            # ... (la logica per leggere le impostazioni e trovare i compleanni rimane invariata)
             logger.debug("_check_for_birthdays: recupero impostazioni dal DB...")
             pre_alert_days = int(self.db.fetch_setting('Sys_BirthDay_Prealler'))
             post_alert_days = int(self.db.fetch_setting('Sys_BirthDay_PostAllert'))
@@ -12897,11 +12946,9 @@ class App(tk.Tk):
             elif timedelta(days=0) <= today - bday_this_year <= timedelta(days=post_alert_days):
                 celebrating.append(emp)
 
-        # --- LOGICA MODIFICATA ---
         if len(celebrating) == 1:
-            # Caso 1: Un solo festeggiato -> Testo lampeggiante
             employee = celebrating[0]
-            message = f"LA MULÈšI ANI {employee.EmployeeName.upper()} ({employee.EmployeeSurname.upper()}) !!!"
+            message = f"LA MUL\u021aI ANI {employee.EmployeeName.upper()} ({employee.EmployeeSurname.upper()}) !!!"
             self._display_special_image(image_path, message)
             self._flash_birthday_message(message)
             duration_ms = 2 * 60 * 1000
@@ -12909,13 +12956,10 @@ class App(tk.Tk):
             return True
 
         elif len(celebrating) > 1:
-            # Caso 2: PiÃ¹ festeggiati -> Testo scorrevole
-            messages = [f"LA MULÈšI ANI {emp.EmployeeName.upper()} ({emp.EmployeeSurname.upper()}) !!!" for emp in
+            messages = [f"LA MUL\u021aI ANI {emp.EmployeeName.upper()} ({emp.EmployeeSurname.upper()}) !!!" for emp in
                         celebrating]
-            # Unisce i messaggi con un separatore visivo
-            full_message = "    â€¢â€¢â€¢    ".join(messages)
-
-            self._display_special_image(image_path, "Compleanni di Oggi!")  # Un messaggio generico sull'immagine
+            full_message = "    \u2022\u2022\u2022    ".join(messages)
+            self._display_special_image(image_path, "Compleanni di Oggi!")
             self._start_scrolling_message(full_message)
             duration_ms = 2 * 60 * 1000
             self.birthday_stop_job_id = self.after(duration_ms, self._stop_birthday_display)
@@ -13274,11 +13318,92 @@ class App(tk.Tk):
         # âœ… Operazione 1: Orologio (immediato, non usa DB)
         self._update_clock()
         
-        # âœ… Operazione 2: Controllo compleanni (immediato, operazione veloce)
-        logger.info('Avviato controllo compleanni')
-        is_birthday = self._check_for_birthdays()
-        if not is_birthday:
-            self._setup_slideshow()
+        # ✅ Operazione 2: Controllo compleanni (thread con connessione DB dedicata)
+        logger.info('Avviato controllo compleanni (thread con DB dedicata)')
+        def _birthday_check_thread():
+            """Thread che usa una propria connessione DB per non bloccare la UI
+            né competere con il cursor principale."""
+            try:
+                import pyodbc as _pyodbc
+                _conn = _pyodbc.connect(self.db.conn_str, autocommit=True)
+                _cursor = _conn.cursor()
+                
+                # Query settings
+                def _fetch_setting(key):
+                    _cursor.execute("SELECT [value] FROM traceability_rs.dbo.Settings WHERE atribute = ?", key)
+                    row = _cursor.fetchone()
+                    return row[0] if row else None
+                
+                pre_alert_days = int(_fetch_setting('Sys_BirthDay_Prealler'))
+                post_alert_days = int(_fetch_setting('Sys_BirthDay_PostAllert'))
+                image_path = os.path.join(
+                    _fetch_setting('Sys_Pics_Directory'),
+                    _fetch_setting('Sys_BirthDay_Allert')
+                )
+                
+                if not image_path or not os.path.isfile(image_path):
+                    logger.debug(f"_birthday_check_thread: immagine non trovata ('{image_path}'), skip")
+                    _cursor.close()
+                    _conn.close()
+                    self.after(0, self._setup_slideshow)
+                    return
+                
+                # Query dipendenti
+                _cursor.execute("""
+                    SELECT e.EmployeeName, e.EmployeeSurname, e.EmployeeBirthDate
+                    FROM employee.dbo.Employees AS e
+                    INNER JOIN employee.dbo.EmployeeHireHistory AS h ON e.EmployeeId = h.EmployeeId
+                    WHERE h.EndWorkDate IS NULL AND h.EmployeerId = 2
+                      AND e.EmployeeBirthDate IS NOT NULL
+                """)
+                employees = _cursor.fetchall()
+                _cursor.close()
+                _conn.close()
+                
+                today = datetime.now().date()
+                celebrating = []
+                for emp in employees:
+                    bday = emp.EmployeeBirthDate
+                    if isinstance(bday, datetime):
+                        bday = bday.date()
+                    bday_this_year = bday.replace(year=today.year)
+                    if timedelta(days=0) <= bday_this_year - today <= timedelta(days=pre_alert_days):
+                        celebrating.append(emp)
+                    elif timedelta(days=0) <= today - bday_this_year <= timedelta(days=post_alert_days):
+                        celebrating.append(emp)
+                
+                # Schedule UI sul main thread
+                if len(celebrating) == 1:
+                    emp = celebrating[0]
+                    message = f"LA MUL\u021aI ANI {emp.EmployeeName.upper()} ({emp.EmployeeSurname.upper()}) !!!"
+                    def _show_single():
+                        self._stop_birthday_display()
+                        if hasattr(self, 'birthday_label'):
+                            self.birthday_label.config(text="")
+                        self._display_special_image(image_path, message)
+                        self._flash_birthday_message(message)
+                        self.birthday_stop_job_id = self.after(2*60*1000, self._stop_birthday_display)
+                    self.after(0, _show_single)
+                elif len(celebrating) > 1:
+                    messages = [f"LA MUL\u021aI ANI {e.EmployeeName.upper()} ({e.EmployeeSurname.upper()}) !!!" for e in celebrating]
+                    full_message = "    \u2022\u2022\u2022    ".join(messages)
+                    def _show_multi():
+                        self._stop_birthday_display()
+                        if hasattr(self, 'birthday_label'):
+                            self.birthday_label.config(text="")
+                        self._display_special_image(image_path, "Compleanni di Oggi!")
+                        self._start_scrolling_message(full_message)
+                        self.birthday_stop_job_id = self.after(2*60*1000, self._stop_birthday_display)
+                    self.after(0, _show_multi)
+                else:
+                    self.after(0, self._setup_slideshow)
+                    
+            except Exception as e:
+                logger.warning(f"Errore controllo compleanni in background: {e}")
+                self.after(0, self._setup_slideshow)
+        
+        import threading
+        threading.Thread(target=_birthday_check_thread, daemon=True, name="BirthdayCheck").start()
 
         # Avvia il banner news rolling
         self.after(2000, self._start_news_rolling)
@@ -14256,6 +14381,15 @@ class App(tk.Tk):
             logger.info(f"Utente {user_id} ha cambiato la password con successo.")
 
         self._save_simple_login_cache(user_id=user_id, user_name=user.name)
+
+        # 🆕 Controlla ticket chiusi non notificati per questo utente
+        try:
+            import ticket_gui
+            emp_id = self.db.get_employee_hire_history_id(user_id)
+            if emp_id:
+                ticket_gui.check_and_notify_closed_tickets(self, self.db, self.lang, emp_id, user.name)
+        except Exception as _tck_exc:
+            logger.warning(f"_execute_simple_login: controllo ticket chiusi fallito: {_tck_exc}")
 
         # Permessi commentati - login semplice senza controllo autorizzazioni
         # if required_permission and not user.has_permission(required_permission):
@@ -15706,10 +15840,24 @@ class App(tk.Tk):
             command=self._open_logs_viewer
         )
 
-        # Voce Tickets (penultima prima del separatore)
-        self.help_menu.add_command(
+        # Sottomenu Tickets (Apri / Visualizza / Chiudi)
+        self.ticket_menu = tk.Menu(self.help_menu, tearoff=0)
+        self.ticket_menu.add_command(
+            label=self.lang.get('menu_open_ticket', 'Apri Ticket'),
+            command=self._open_ticket_with_login
+        )
+        self.ticket_menu.add_command(
+            label=self.lang.get('menu_view_tickets', 'Visualizza Ticket'),
+            command=self._view_tickets_with_login
+        )
+        self.ticket_menu.add_separator()
+        self.ticket_menu.add_command(
+            label=self.lang.get('menu_manage_tickets', 'Chiudi Ticket'),
+            command=self._manage_tickets_with_auth
+        )
+        self.help_menu.add_cascade(
             label=self.lang.get('menu_tickets', 'Tickets'),
-            command=self._open_tickets
+            menu=self.ticket_menu
         )
 
         # Voce Reset Login
@@ -17412,11 +17560,14 @@ class App(tk.Tk):
             return None
 
     def _open_tickets(self, error_info=None):
-        """Apre la finestra di ticketing (Help → Tickets o da eccezione automatica)."""
+        """Apre la finestra di ticketing (da eccezione automatica - senza login).
+        Mantenuta per compatibilità con sys.excepthook."""
         try:
             import ticket_gui
             user = getattr(self, 'last_authenticated_user_name', None)
-            ticket_gui.open_ticket_window(self, self.db, self.lang, user, error_info)
+            emp_id = getattr(self, 'last_authorized_user_id', None)
+            ticket_gui.open_ticket_window(self, self.db, self.lang, user, error_info,
+                                          employee_id=emp_id)
         except Exception as e:
             logger.error(f"Errore apertura finestra ticket: {e}", exc_info=True)
             messagebox.showerror(
@@ -17424,6 +17575,77 @@ class App(tk.Tk):
                 str(e),
                 parent=self
             )
+
+    def _open_ticket_with_login(self):
+        """Apre un nuovo ticket dopo login semplice. 
+        Il nominativo e la WorkEmail vengono inseriti automaticamente."""
+        def action(user_id):
+            try:
+                import ticket_gui
+                user_name = getattr(self, 'last_authenticated_user_name', None) or str(user_id)
+                # Risolvi username stringa -> EmployeeHireHistoryId numerico
+                emp_id = self.db.get_employee_hire_history_id(user_id)
+                work_email = ticket_gui._get_employee_work_email(self.db, emp_id) if emp_id else None
+                ticket_gui.open_ticket_window(
+                    self, self.db, self.lang,
+                    user_name=user_name,
+                    employee_id=emp_id,
+                    work_email=work_email
+                )
+            except Exception as e:
+                logger.error(f"Errore apertura ticket con login: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire il ticket: {e}",
+                    parent=self
+                )
+
+        self._execute_simple_login(action_callback=action)
+
+    def _view_tickets_with_login(self):
+        """Visualizza lo storico dei ticket dell'utente dopo login semplice."""
+        def action(user_id):
+            try:
+                import ticket_gui
+                user_name = getattr(self, 'last_authenticated_user_name', None) or str(user_id)
+                # Risolvi username stringa -> EmployeeHireHistoryId numerico
+                emp_id = self.db.get_employee_hire_history_id(user_id)
+                ticket_gui.TicketHistoryWindow(self, self.db, self.lang, emp_id, user_name)
+            except Exception as e:
+                logger.error(f"Errore apertura storico ticket: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire lo storico ticket: {e}",
+                    parent=self
+                )
+
+        self._execute_simple_login(action_callback=action)
+
+    def _manage_tickets_with_auth(self):
+        """Apre la gestione ticket (chiusura) - protetta da autorizzazione."""
+        def action():
+            try:
+                import ticket_gui
+                admin_id = getattr(self, 'last_authorized_user_id', None)
+                admin_name = getattr(self, 'last_authenticated_user_name', None) or ''
+                ticket_gui.TicketManagementWindow(
+                    self, self.db, self.lang,
+                    admin_user_id=admin_id,
+                    admin_user_name=admin_name
+                )
+            except Exception as e:
+                logger.error(f"Errore apertura gestione ticket: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire la gestione ticket: {e}",
+                    parent=self
+                )
+
+        self._execute_authorized_action(
+            menu_translation_key='menu_manage_tickets',
+            action_callback=action
+        )
+
 
     def _reset_simple_login_cache(self):
         """Elimina entrambe le cache di autenticazione (simple login e authorized action),
