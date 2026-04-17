@@ -73,11 +73,19 @@ def get_autocheck_templates(conn) -> Dict[str, dict]:
 # ================================================================
 
 def _find_latest_excel(folder: str) -> Optional[str]:
-    """Trova il file Excel più recente nella cartella per data modifica."""
+    """Trova il file Excel più recente nella cartella per data modifica.
+
+    Esclude i file lock di Office (basename che inizia con '~$'): questi
+    vengono creati quando un utente apre il file in Excel e causano
+    PermissionError se aperti con openpyxl.
+    """
     patterns = [os.path.join(folder, '*.xlsx'), os.path.join(folder, '*.xls')]
     files = []
     for p in patterns:
         files.extend(glob.glob(p))
+
+    # Escludi file lock di Office (~$filename.xlsx)
+    files = [f for f in files if not os.path.basename(f).startswith('~$')]
 
     if not files:
         logger.warning(f"FAI Autocheck: nessun file Excel in {folder}")
@@ -160,6 +168,15 @@ def read_planning_excel(lookback_hours: int = 0) -> List[dict]:
 
         wb.close()
 
+    except PermissionError as e:
+        # Il file e' aperto in Excel da un utente (lock): log senza stacktrace
+        # e riprova al prossimo ciclo.
+        logger.warning(
+            f"FAI Autocheck: file Excel temporaneamente in lock "
+            f"(aperto da un utente): {os.path.basename(filepath)} — "
+            f"riprovo al prossimo ciclo. Dettaglio: {e}"
+        )
+        return []
     except Exception as e:
         logger.error(f"FAI Autocheck: errore lettura Excel: {e}", exc_info=True)
 
