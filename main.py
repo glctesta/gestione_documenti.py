@@ -307,7 +307,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.0.2.3'  # Versione aggiornata
+APP_VERSION = '2.4.0.2.5'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -11573,8 +11573,11 @@ class App(tk.Tk):
                 # Crea/ricrea connessione dedicata se necessario
                 try:
                     if _fai_conn is None:
-                        _fai_conn = pyodbc.connect(self.db.conn_str, autocommit=False)
-                        logger.info("FAI Autocheck: connessione dedicata creata")
+                        # autocommit=True: ogni statement si auto-commit, evitando
+                        # transazioni orfane accumulate tra un ciclo e l'altro
+                        # (causa dei lock LCK_M_X / LCK_M_S su FaiAutocheckNotifications).
+                        _fai_conn = pyodbc.connect(self.db.conn_str, autocommit=True)
+                        logger.info("FAI Autocheck: connessione dedicata creata (autocommit=True)")
                     else:
                         # Test connessione
                         _fai_conn.execute("SELECT 1")
@@ -11585,8 +11588,8 @@ class App(tk.Tk):
                     except Exception:
                         pass
                     try:
-                        _fai_conn = pyodbc.connect(self.db.conn_str, autocommit=False)
-                        logger.info("FAI Autocheck: connessione dedicata ricreata")
+                        _fai_conn = pyodbc.connect(self.db.conn_str, autocommit=True)
+                        logger.info("FAI Autocheck: connessione dedicata ricreata (autocommit=True)")
                     except Exception as conn_err:
                         logger.error(f"FAI Autocheck: connessione DB non disponibile: {conn_err}")
                         _fai_conn = None

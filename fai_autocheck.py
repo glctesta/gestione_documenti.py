@@ -355,24 +355,37 @@ SQL_INSERT_NOTIFICATION = """
 
 
 def record_notification(conn, data: dict):
-    """Registra l'evento nella tabella tracking."""
-    with conn.cursor() as cur:
-        cur.execute(SQL_INSERT_NOTIFICATION, (
-            data['order_number'],
-            data['id_phase'],
-            data['phase_name'],
-            data['template_id'],
-            data.get('fai_title'),
-            data.get('nr_document'),
-            data.get('revision'),
-            data['planned_start'],
-            data.get('email_sent_time'),      # NULL se non inviata
-            data.get('email_to', ''),
-            data.get('email_cc', ''),
-            data.get('production_qty', 0),
-            data['status']
-        ))
-    conn.commit()
+    """Registra l'evento nella tabella tracking.
+
+    Rollback difensivo se l'INSERT fallisce: evita che una transazione
+    residua tenga lock esclusivi sulla tabella FaiAutocheckNotifications.
+    Con autocommit=True il rollback e' un no-op ma serve da rete di sicurezza
+    qualora la connessione venga aperta con autocommit=False.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(SQL_INSERT_NOTIFICATION, (
+                data['order_number'],
+                data['id_phase'],
+                data['phase_name'],
+                data['template_id'],
+                data.get('fai_title'),
+                data.get('nr_document'),
+                data.get('revision'),
+                data['planned_start'],
+                data.get('email_sent_time'),      # NULL se non inviata
+                data.get('email_to', ''),
+                data.get('email_cc', ''),
+                data.get('production_qty', 0),
+                data['status']
+            ))
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
 
 
 # ================================================================
