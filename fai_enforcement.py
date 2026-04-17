@@ -21,7 +21,7 @@ logger = logging.getLogger("TraceabilityRS")
 
 def _execute_with_deadlock_retry(conn, query, params=None, max_retries=3):
     """Esegue una query con retry automatico in caso di deadlock (errore 40001).
-    
+
     SQL Server sceglie un processo come 'deadlock victim' — il retry è la
     soluzione standard raccomandata da Microsoft.
     """
@@ -36,6 +36,12 @@ def _execute_with_deadlock_retry(conn, query, params=None, max_retries=3):
         except Exception as e:
             error_code = getattr(e, 'args', [None])[0] if hasattr(e, 'args') else None
             if error_code == '40001' and attempt < max_retries:
+                # Dopo un deadlock SQL Server ha gia' rollbackato server-side:
+                # allineiamo lo stato client per permettere il retry pulito.
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
                 wait = attempt * 2  # 2s, 4s, 6s
                 logger.warning(
                     f"Deadlock detected (attempt {attempt}/{max_retries}), "
@@ -288,11 +294,12 @@ def check_order_fai_completed_by_number(conn, order_number: str, id_phase: int) 
 # ================================================================
 
 SQL_NEW_ORDERS = """
-    SELECT DISTINCT o.IDOrder, o.OrderNumber, op.IDPhase, 
+    SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+    SELECT DISTINCT o.IDOrder, o.OrderNumber, op.IDPhase,
            ft.FaiTemplateId, ft.FaiTitle
-    FROM Traceability_RS.dbo.Scannings S 
-    INNER JOIN Traceability_RS.dbo.Boards B ON s.IDBoard = b.IDBoard 
-    INNER JOIN Traceability_RS.dbo.Orders o ON o.IDOrder = b.IDOrder 
+    FROM Traceability_RS.dbo.Scannings S
+    INNER JOIN Traceability_RS.dbo.Boards B ON s.IDBoard = b.IDBoard
+    INNER JOIN Traceability_RS.dbo.Orders o ON o.IDOrder = b.IDOrder
     INNER JOIN Traceability_RS.dbo.OrderPhases op ON op.IDOrder = o.IDOrder
     INNER JOIN Traceability_RS.fai.FaiTemplates ft ON ft.IdPhase = op.IDPhase
     WHERE s.ScanTimeStart >= DATEADD(HOUR, -1, GETDATE())
@@ -303,7 +310,8 @@ SQL_NEW_ORDERS = """
           INNER JOIN Traceability_RS.dbo.Boards b2 ON s2.IDBoard = b2.IDBoard
           WHERE s2.ScanTimeStart >= DATEADD(HOUR, -2, GETDATE())
             AND s2.ScanTimeStart < DATEADD(HOUR, -1, GETDATE())
-      )
+      );
+    SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
 """
 
 
@@ -612,21 +620,40 @@ def check_already_escalated(conn, event_type: str, shift_time: str = None,
 
 def get_pending_escalations(conn, event_type: str, current_level: int,
                             shift_time: str = None) -> List[Dict]:
-    """Recupera eventi aperti per un livello che necessitano escalation."""
+    """Recupera eventi aperti per un livello che necessitano escalation.
+
+    Safety filter: per eventi legati a un ordine (OrderId non NULL) include
+    SOLO eventi il cui ordine ha almeno un template FAI con Autocheck=1.
+    Questo evita che eventi storici creati prima dell'introduzione del filtro
+    Autocheck (pre v2.4.0.2.3) continuino a escalare fino a L3.
+    Gli eventi SHIFT_CHECK (senza OrderId) passano inalterati: la loro
+    validità Autocheck=1 è gia' verificata in fase di generazione.
+    """
     query = """
-        SELECT EnforcementLogId, EmployeeHireHistoryId, EmployeeName,
-               OrderId, OrderNumber, ShiftTime, EscalationLevel
-        FROM [Traceability_RS].[fai].[FaiEnforcementLog]
-        WHERE EventType = ?
-          AND CheckDate = CAST(GETDATE() AS DATE)
-          AND EscalationLevel = ?
-          AND FaiCompleted = 0
-          AND DateOut IS NULL
+        SELECT l.EnforcementLogId, l.EmployeeHireHistoryId, l.EmployeeName,
+               l.OrderId, l.OrderNumber, l.ShiftTime, l.EscalationLevel
+        FROM [Traceability_RS].[fai].[FaiEnforcementLog] l
+        WHERE l.EventType = ?
+          AND l.CheckDate = CAST(GETDATE() AS DATE)
+          AND l.EscalationLevel = ?
+          AND l.FaiCompleted = 0
+          AND l.DateOut IS NULL
+          AND (
+              l.OrderId IS NULL
+              OR EXISTS (
+                  SELECT 1
+                  FROM [Traceability_RS].[dbo].[OrderPhases] op
+                  INNER JOIN [Traceability_RS].[fai].[FaiTemplates] ft
+                      ON ft.IdPhase = op.IDPhase
+                  WHERE op.IDOrder = l.OrderId
+                    AND ft.Autocheck = 1
+              )
+          )
     """
     params = [event_type, current_level]
-    
+
     if shift_time:
-        query += " AND ShiftTime = ?"
+        query += " AND l.ShiftTime = ?"
         params.append(shift_time)
     
     results = []
