@@ -197,55 +197,75 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
                 self._populate_tree([])
                 return
 
-            # STEP 2: determina se admin (FunctionCode massimo) o responsabile normale
-            admin_check_query = """
+            # STEP 2: Verifica autorizzazione e determina livello
+            # FunctionCode >= 70 → può autorizzare subordinati nello stesso CdcId
+            # FunctionCode = 100 → può autorizzare CHIUNQUE di qualunque CdcId
+            auth_check_query = """
                 SELECT TOP 1
-                    CASE WHEN f.FunctionCode = (SELECT MAX(FunctionCode) FROM Employee.dbo.Functions)
-                         THEN 1 ELSE 0 END AS IsAdmin
+                    f.FunctionCode,
+                    CASE WHEN f.FunctionCode = 100 THEN 1 ELSE 0 END AS IsGlobalAdmin,
+                    cs.SubCdcId,
+                    s.CdcId
                 FROM Employee.dbo.EmployeeCdcStories cs
                 INNER JOIN Employee.dbo.Functions f ON cs.FunctionId = f.FunctionId
+                INNER JOIN Employee.dbo.CdcSub s ON s.SubCdcId = cs.SubCdcId
                 WHERE cs.EmployeeHireHistoryId = ?
                   AND cs.DateOut IS NULL
+                ORDER BY f.FunctionCode DESC
             """
             with self.db._lock:
-                self.db.cursor.execute(admin_check_query, employee_hire_history_id)
-                admin_row = self.db.cursor.fetchone()
-            is_admin = bool(admin_row and admin_row[0] == 1)
-            logger.info(f"EmployeeHireHistoryId={employee_hire_history_id}, IsAdmin={is_admin}")
+                self.db.cursor.execute(auth_check_query, employee_hire_history_id)
+                auth_row = self.db.cursor.fetchone()
+
+            if not auth_row or auth_row.FunctionCode < 70:
+                logger.warning(
+                    f"Utente {employee_hire_history_id} ha FunctionCode="
+                    f"{auth_row.FunctionCode if auth_row else 'N/A'} "
+                    f"(< 70): non autorizzato ad approvare assenze")
+                messagebox.showwarning(
+                    self.lang.get('warning', 'Attenzione'),
+                    self.lang.get(
+                        'no_authorization_absence',
+                        'Non si dispone delle autorizzazioni necessarie '
+                        'per approvare richieste di assenza.\n\n'
+                        'È richiesto un FunctionCode ≥ 70.'),
+                    parent=self
+                )
+                self.pending_requests = []
+                self._populate_tree([])
+                return
+
+            is_admin = bool(auth_row.IsGlobalAdmin == 1)  # FunctionCode = 100
+            manager_function_code = auth_row.FunctionCode
+            manager_cdc_id = auth_row.CdcId
+            logger.info(
+                f"EmployeeHireHistoryId={employee_hire_history_id}, "
+                f"FunctionCode={manager_function_code}, "
+                f"CdcId={manager_cdc_id}, IsGlobalAdmin={is_admin}")
 
             # STEP 3: costruisce filtro gerarchia
             subordinate_filter = ""
             subordinate_ids = []
-
             if not is_admin:
-                # Recupera subalterni con CTE gerarchica (stesso CDC)
+                # FC 70-99: subordinati SOLO nel PROPRIO CdcId con FunctionCode inferiore
                 subordinate_query = """
-                WITH Manager (SubCdcId, FunctionCode, MainCdcId) AS
-                (
-                    SELECT cs.SubCdcId, f.FunctionCode, c.CdcId
-                    FROM employee.dbo.EmployeeCdcStories cs
-                    INNER JOIN employee.dbo.CdcSub c
-                        ON c.SubCdcId = cs.SubCdcId AND cs.DateOut IS NULL
-                    INNER JOIN Employee.dbo.Functions F ON cs.FunctionId = F.FunctionId
-                    WHERE cs.EmployeeHireHistoryId = ?
-                      AND cs.DateOut IS NULL
-                )
                 SELECT h.EmployeeHireHistoryId
                 FROM employee.dbo.EmployeeHireHistory h
                 INNER JOIN employee.dbo.EmployeeCdcStories css
                     ON h.EmployeeHireHistoryId = css.EmployeeHireHistoryId
                     AND css.DateOut IS NULL
                     AND h.EndWorkDate IS NULL
-                    AND h.employeerid = 2
-                INNER JOIN employee.dbo.Employees e ON h.EmployeeId = e.EmployeeId
+                    AND h.employerid = 2
                 INNER JOIN employee.dbo.CdcSub s ON s.SubCdcId = css.SubCdcId
                 INNER JOIN employee.dbo.Functions f ON f.FunctionId = css.FunctionId
-                INNER JOIN employee.dbo.CostCenters c ON c.CdcId = s.CdcId
-                INNER JOIN Manager m ON m.MainCdcId = s.CdcId AND m.FunctionCode > f.FunctionCode
-                WHERE f.FunctionCode < m.FunctionCode
+                WHERE s.CdcId = ?
+                  AND f.FunctionCode < ?
+                  AND h.EmployeeHireHistoryId != ?
                 """
                 with self.db._lock:
-                    self.db.cursor.execute(subordinate_query, employee_hire_history_id)
+                    self.db.cursor.execute(
+                        subordinate_query,
+                        (manager_cdc_id, manager_function_code, employee_hire_history_id))
                     sub_rows = self.db.cursor.fetchall()
 
                 subordinate_ids = [row[0] for row in sub_rows if row and row[0] is not None]

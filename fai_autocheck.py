@@ -88,17 +88,23 @@ def _find_latest_excel(folder: str) -> Optional[str]:
     return latest
 
 
-def read_planning_excel() -> List[dict]:
+def read_planning_excel(lookback_hours: int = 0) -> List[dict]:
     """
     Legge il tab PlanningMachine dal file Excel più recente.
-    Filtra righe con PlannedStart tra now e now+4h.
+    Filtra righe con PlannedStart tra (now - lookback_hours) e (now + LOOKAHEAD_HOURS).
     Restituisce lista di dict con phase, order_number, planned_start.
+    
+    Args:
+        lookback_hours: ore nel passato da includere (default 0 = solo futuro).
+                        Usato dall'enforcement per catturare ordini il cui 
+                        PlannedStart è appena passato (es. per L3 escalation).
     """
     filepath = _find_latest_excel(PLANNING_PATH)
     if not filepath:
         return []
 
     now = datetime.now()
+    earliest = now - timedelta(hours=lookback_hours)
     cutoff = now + timedelta(hours=LOOKAHEAD_HOURS)
 
     rows = []
@@ -141,8 +147,8 @@ def read_planning_excel() -> List[dict]:
             if not planned_start:
                 continue
 
-            # Filtra per finestra temporale: now ≤ PlannedStart ≤ now+4h
-            if not (now <= planned_start <= cutoff):
+            # Filtra per finestra temporale: earliest ≤ PlannedStart ≤ cutoff
+            if not (earliest <= planned_start <= cutoff):
                 continue
 
             rows.append({
@@ -157,7 +163,8 @@ def read_planning_excel() -> List[dict]:
     except Exception as e:
         logger.error(f"FAI Autocheck: errore lettura Excel: {e}", exc_info=True)
 
-    logger.info(f"FAI Autocheck: {len(rows)} righe valide in finestra {LOOKAHEAD_HOURS}h")
+    logger.info(f"FAI Autocheck: {len(rows)} righe valide in finestra "
+                f"[-{lookback_hours}h, +{LOOKAHEAD_HOURS}h]")
     return rows
 
 

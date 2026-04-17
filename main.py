@@ -1,4 +1,4 @@
-#import configparser
+﻿#import configparser
 # --- StdIO safeguard + Faulthandler sicuro per exe windowed ---
 import shutil
 import sys, os, atexit
@@ -307,7 +307,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.0.1.9'  # Versione aggiornata
+APP_VERSION = '2.4.0.2.3'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -11482,6 +11482,20 @@ class App(tk.Tk):
                         self._fai_enforcement_last_new_order_check = current_hour
                     except Exception as e:
                         logger.error(f"FAI Enforcement: errore new order check: {e}", exc_info=True)
+
+                # --- 4) PLANNING-BASED ENFORCEMENT (ogni 5 min) ---
+                # Verifica ordini Autocheck=1 dal PlanningMachine Excel
+                # con deadline FAI scaduta (PlannedStart - 3h)
+                if not hasattr(self, '_fai_enforcement_last_planning_check'):
+                    self._fai_enforcement_last_planning_check = None
+                planning_check_interval = 5  # minuti
+                if (self._fai_enforcement_last_planning_check is None or
+                        (now - self._fai_enforcement_last_planning_check).total_seconds() >= planning_check_interval * 60):
+                    try:
+                        fe.run_planning_based_enforcement(conn, logo_path="logo.png")
+                        self._fai_enforcement_last_planning_check = now
+                    except Exception as e:
+                        logger.error(f"FAI Enforcement: errore planning enforcement: {e}", exc_info=True)
 
                 # Attendi 60 secondi
                 time.sleep(60)
