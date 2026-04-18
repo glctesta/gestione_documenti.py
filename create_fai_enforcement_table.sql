@@ -35,6 +35,10 @@ BEGIN
     CREATE INDEX IX_FaiEnforcementLog_Order 
         ON [Traceability_RS].[fai].[FaiEnforcementLog] (OrderId, CheckDate);
 
+    CREATE INDEX IX_FaiEnforcementLog_OrderNumber
+        ON [Traceability_RS].[fai].[FaiEnforcementLog] (OrderNumber, CheckDate, EscalationLevel)
+        INCLUDE (EventType, DateIn, EmployeeHireHistoryId);
+
     PRINT 'Tabella fai.FaiEnforcementLog creata con successo';
 END
 ELSE

@@ -307,7 +307,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.0.2.5'  # Versione aggiornata
+APP_VERSION = '2.4.0.2.6'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -11441,8 +11441,8 @@ class App(tk.Tk):
 
             try:
                 dedicated_conn = pyodbc.connect(
-                    DB_CONN_STR, autocommit=False)
-                logger.info("FAI Enforcement: connessione dedicata creata")
+                    DB_CONN_STR, autocommit=True)
+                logger.info("FAI Enforcement: connessione dedicata creata (autocommit=True)")
                 return dedicated_conn
             except Exception as e:
                 logger.error(
@@ -11483,12 +11483,12 @@ class App(tk.Tk):
                     except Exception as e:
                         logger.error(f"FAI Enforcement: errore new order check: {e}", exc_info=True)
 
-                # --- 4) PLANNING-BASED ENFORCEMENT (ogni 5 min) ---
+                # --- 4) PLANNING-BASED ENFORCEMENT (ogni 30 min) ---
                 # Verifica ordini Autocheck=1 dal PlanningMachine Excel
                 # con deadline FAI scaduta (PlannedStart - 3h)
                 if not hasattr(self, '_fai_enforcement_last_planning_check'):
                     self._fai_enforcement_last_planning_check = None
-                planning_check_interval = 5  # minuti
+                planning_check_interval = 30  # minuti
                 if (self._fai_enforcement_last_planning_check is None or
                         (now - self._fai_enforcement_last_planning_check).total_seconds() >= planning_check_interval * 60):
                     try:
@@ -15174,7 +15174,7 @@ class App(tk.Tk):
         
         self.guests_submenu.add_command(
             label=self.lang.get('submenu_guest_report', 'Report Ospiti'),
-            command=self.generate_guests_pdf_report_with_login #open_guest_report_with_login
+            command=self._open_guest_report_window
         )
         
         # --- Sottomenu Settings Ospiti ---
@@ -17337,6 +17337,24 @@ class App(tk.Tk):
             action_callback=lambda: guest_rules_gui.GuestRulesWindow(
                 self, self.db, self.lang, self.last_authenticated_user_name
             )
+        )
+
+    def _open_guest_report_window(self):
+        """Apre la finestra filtri per generare report visitatori (Excel/PDF) — con login autorizzato."""
+        def action():
+            try:
+                from guest_report_window import GuestReportWindow
+                GuestReportWindow(self, self.db, self.lang)
+            except Exception as e:
+                logger.error(f"Errore apertura GuestReportWindow: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Errore apertura report visitatori: {str(e)}"
+                )
+
+        self._execute_authorized_action(
+            menu_translation_key='stampa_lista_ospiti',
+            action_callback=action
         )
 
     def generate_guests_pdf_report_with_login(self):

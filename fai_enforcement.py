@@ -587,8 +587,14 @@ def update_enforcement_event(conn, log_id: int, **kwargs):
 
 def check_already_escalated(conn, event_type: str, shift_time: str = None,
                             employee_hhid: int = None, order_id: int = None,
+                            order_number: str = None,
                             level: int = 0) -> bool:
-    """Verifica se un evento di escalation è già stato registrato oggi."""
+    """Verifica se un evento di escalation è già stato registrato oggi.
+
+    Quando order_id è None ma order_number è fornito, usa OrderNumber come
+    chiave di ricerca per evitare che ordini non ancora nel DB (solo nel
+    file Excel) sfuggano alla deduplicazione.
+    """
     query = """
         SELECT TOP 1 EnforcementLogId
         FROM [Traceability_RS].[fai].[FaiEnforcementLog]
@@ -608,6 +614,10 @@ def check_already_escalated(conn, event_type: str, shift_time: str = None,
     if order_id:
         query += " AND OrderId = ?"
         params.append(order_id)
+    elif order_number:
+        # Fallback: usa OrderNumber quando OrderId non è disponibile
+        query += " AND OrderNumber = ?"
+        params.append(order_number)
     
     try:
         with conn.cursor() as cur:
@@ -615,6 +625,118 @@ def check_already_escalated(conn, event_type: str, shift_time: str = None,
             return cur.fetchone() is not None
     except Exception as e:
         logger.error(f"FAI Enforcement: errore check_already_escalated: {e}", exc_info=True)
+        return False
+
+
+def check_escalation_timing(conn, event_type: str, order_id: int = None,
+                            order_number: str = None,
+                            employee_hhid: int = None,
+                            required_level: int = 1,
+                            min_minutes: int = 60) -> bool:
+    """Verifica che sia passato abbastanza tempo dal livello di escalation precedente.
+
+    Per escalare a required_level, deve esistere un evento al livello
+    (required_level - 1) creato almeno min_minutes fa.
+    Per L1 (required_level=1) ritorna sempre True (nessun livello precedente).
+
+    Args:
+        required_level: livello target (2 o 3).
+        min_minutes: minuti minimi dal livello precedente (default 60).
+    Returns:
+        True se il timing è rispettato e si può escalare.
+    """
+    if required_level <= 1:
+        return True  # L1 non richiede livello precedente
+
+    source_level = required_level - 1
+    query = """
+        SELECT TOP 1 DateIn
+        FROM [Traceability_RS].[fai].[FaiEnforcementLog]
+        WHERE EventType = ?
+          AND CheckDate = CAST(GETDATE() AS DATE)
+          AND EscalationLevel = ?
+          AND DateOut IS NULL
+    """
+    params = [event_type, source_level]
+
+    if order_id:
+        query += " AND OrderId = ?"
+        params.append(order_id)
+    elif order_number:
+        query += " AND OrderNumber = ?"
+        params.append(order_number)
+    if employee_hhid:
+        query += " AND EmployeeHireHistoryId = ?"
+        params.append(employee_hhid)
+
+    query += " ORDER BY DateIn DESC"
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, tuple(params))
+            row = cur.fetchone()
+        if not row:
+            # Nessun evento al livello precedente: non escalare
+            logger.debug(
+                f"FAI Enforcement: timing check — nessun evento L{source_level} "
+                f"trovato per {event_type}, ordine {order_number or order_id}")
+            return False
+        prev_time = row.DateIn
+        elapsed = (datetime.now() - prev_time).total_seconds() / 60.0
+        if elapsed < min_minutes:
+            logger.debug(
+                f"FAI Enforcement: timing check — L{source_level} creato "
+                f"{elapsed:.0f} min fa (richiesti {min_minutes}), "
+                f"escalation L{required_level} rinviata")
+            return False
+        return True
+    except Exception as e:
+        logger.error(
+            f"FAI Enforcement: errore check_escalation_timing: {e}",
+            exc_info=True)
+        return False
+
+
+def check_cross_pipeline_escalated(conn, order_id: int = None,
+                                   order_number: str = None,
+                                   employee_hhid: int = None,
+                                   level: int = 0) -> bool:
+    """Verifica se un evento di escalation per lo stesso ordine/dipendente
+    è già stato registrato oggi da QUALSIASI pipeline (EventType).
+
+    Serve ad evitare che SHIFT_CHECK, NEW_ORDER e PLANNING_CHECK generino
+    catene di escalation parallele per lo stesso target.
+    """
+    query = """
+        SELECT TOP 1 EnforcementLogId
+        FROM [Traceability_RS].[fai].[FaiEnforcementLog]
+        WHERE CheckDate = CAST(GETDATE() AS DATE)
+          AND EscalationLevel = ?
+          AND DateOut IS NULL
+    """
+    params = [level]
+
+    if order_id:
+        query += " AND OrderId = ?"
+        params.append(order_id)
+    elif order_number:
+        query += " AND OrderNumber = ?"
+        params.append(order_number)
+    elif employee_hhid:
+        query += " AND EmployeeHireHistoryId = ?"
+        params.append(employee_hhid)
+    else:
+        # Nessun criterio specifico: non possiamo deduplicare
+        return False
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, tuple(params))
+            return cur.fetchone() is not None
+    except Exception as e:
+        logger.error(
+            f"FAI Enforcement: errore check_cross_pipeline_escalated: {e}",
+            exc_info=True)
         return False
 
 
@@ -1268,10 +1390,19 @@ def process_pending_escalations(conn, logo_path: str = "logo.png"):
                                      DateOut=datetime.now())
             continue
         
-        # Anti-duplicazione
+        # Anti-duplicazione stessa pipeline
         if check_already_escalated(conn, 'SHIFT_CHECK', shift_label,
                                     event['EmployeeHireHistoryId'],
                                     level=target_level):
+            continue
+        
+        # Anti-duplicazione cross-pipeline
+        if check_cross_pipeline_escalated(
+                conn, employee_hhid=event['EmployeeHireHistoryId'],
+                level=target_level):
+            logger.info(
+                f"FAI Enforcement: skip SHIFT_CHECK L{target_level} per "
+                f"{event['EmployeeName']} — già escalato da altra pipeline")
             continue
         
         # Escalation!
@@ -1355,6 +1486,16 @@ def run_new_order_check(conn, logo_path: str = "logo.png"):
         if check_already_escalated(conn, 'NEW_ORDER', order_id=order_id, level=1):
             continue
         
+        # Anti-duplicazione cross-pipeline
+        if check_cross_pipeline_escalated(
+                conn, order_id=order_id,
+                order_number=order_number,
+                level=1):
+            logger.debug(
+                f"FAI Enforcement: skip NEW_ORDER L1 per ordine "
+                f"{order_number} — già escalato da altra pipeline")
+            continue
+        
         logger.warning(f"FAI Enforcement: ⚠️ Nuovo ordine {order_number} "
                         f"({order['FaiTitle']}) senza FAI!")
         
@@ -1383,12 +1524,18 @@ def run_new_order_check(conn, logo_path: str = "logo.png"):
 
 
 def process_new_order_escalations(conn, logo_path: str = "logo.png"):
-    """Processa escalation per nuovi ordini senza FAI."""
+    """Processa escalation per nuovi ordini senza FAI.
+
+    Gate temporale: l'escalation al livello successivo avviene solo se
+    il livello precedente è stato registrato almeno 60 minuti fa.
+    Deduplicazione cross-pipeline: se un'altra pipeline (SHIFT_CHECK o
+    PLANNING_CHECK) ha già generato un'escalation per lo stesso ordine
+    allo stesso livello, si salta.
+    """
     now = datetime.now()
     employees = get_responsible_employees(conn)
     admin_info = get_administrator_info(conn)
     
-    # Check L1→L2 (eventi di 30+ min fa)
     for target_level in [2, 3]:
         source_level = target_level - 1
         pending = get_pending_escalations(conn, 'NEW_ORDER', source_level)
@@ -1405,10 +1552,31 @@ def process_new_order_escalations(conn, logo_path: str = "logo.png"):
                                          DateOut=datetime.now())
                 continue
             
-            # Anti-duplicazione
+            # Anti-duplicazione stessa pipeline
             if check_already_escalated(conn, 'NEW_ORDER',
                                         order_id=event['OrderId'],
+                                        order_number=event.get('OrderNumber'),
                                         level=target_level):
+                continue
+            
+            # Anti-duplicazione cross-pipeline
+            if check_cross_pipeline_escalated(
+                    conn, order_id=event['OrderId'],
+                    order_number=event.get('OrderNumber'),
+                    level=target_level):
+                logger.info(
+                    f"FAI Enforcement: skip escalation NEW_ORDER L{target_level} "
+                    f"per ordine {event.get('OrderNumber')} — già escalato "
+                    f"da altra pipeline")
+                continue
+            
+            # Gate temporale: almeno 60 min dal livello precedente
+            if not check_escalation_timing(
+                    conn, 'NEW_ORDER',
+                    order_id=event['OrderId'],
+                    order_number=event.get('OrderNumber'),
+                    required_level=target_level,
+                    min_minutes=60):
                 continue
             
             recipients = get_escalation_recipients(conn, target_level, employees,
@@ -1611,67 +1779,122 @@ def get_planning_violations(conn) -> List[Dict]:
 
 def run_planning_based_enforcement(conn, logo_path: str = "logo.png"):
     """Orchestratore principale per enforcement basato sul piano di produzione.
-    
+
     Logica temporale per ogni ordine Autocheck=1 nel PlanningMachine:
       - Deadline FAI = PlannedStart - 3h (il FAI deve essere compilato entro qui)
       - L1 a PlannedStart - 2h → email Capo Reparto
-      - L2 a PlannedStart - 1h → email Capo Produzione  
+      - L2 a PlannedStart - 1h → email Capo Produzione
       - L3 a PlannedStart → email Qualità + Amministratore + REFERAT
-    
+
+    Escalation progressiva: il sistema invia SOLO il livello appropriato
+    e non salta direttamente a L3. Per passare da L(n) a L(n+1) devono
+    essere trascorsi almeno 60 minuti dalla registrazione di L(n).
+
+    Deduplicazione cross-pipeline: se un'altra pipeline (SHIFT_CHECK o
+    NEW_ORDER) ha già generato un'escalation per lo stesso ordine allo
+    stesso livello, l'email non viene re-inviata.
+
     Esempio: produzione programmata alle 15:00
       → FAI deve essere compilato entro le 12:00
-      → L1 alle 13:00, L2 alle 14:00, L3 alle 15:01
+      → L1 alle 13:00, L2 alle 14:00 (se L1 registrata da 60+ min), L3 alle 15:01
     """
     logger.info("FAI Enforcement: ===== PLANNING-BASED ENFORCEMENT CHECK =====")
-    
+
     # 1. Trova violazioni dal planning
     violations = get_planning_violations(conn)
     if not violations:
         logger.info("FAI Enforcement: nessuna violazione planning rilevata")
         return
-    
+
     # 2. Recupera dati necessari per le notifiche
     employees = get_responsible_employees(conn)
     admin_info = get_administrator_info(conn)
-    
+
     for v in violations:
         order_number = v['order_number']
-        level = v['current_level']
+        max_level = v['current_level']  # livello massimo raggiungibile per timing
         template = v['template']
         planned_start = v['planned_start']
         planned_str = planned_start.strftime('%d/%m/%Y %H:%M')
-        
+
         # Risolvi IDOrder per il tracking
         order_id = _resolve_order_id(conn, order_number)
-        
-        # Anti-duplicazione: controlla se già inviata escalation per questo livello
-        if check_already_escalated(conn, 'PLANNING_CHECK',
-                                    order_id=order_id, level=level):
-            logger.debug(
-                f"FAI Enforcement: escalation L{level} già registrata per "
-                f"ordine {order_number}")
-            continue
-        
+
+        # Determina il livello effettivo da inviare (progressivo, non diretto)
+        # Cerca il livello più alto già registrato per questo ordine
+        effective_level = None
+        for candidate in range(1, max_level + 1):
+            # Anti-duplicazione stessa pipeline
+            if check_already_escalated(conn, 'PLANNING_CHECK',
+                                        order_id=order_id,
+                                        order_number=order_number,
+                                        level=candidate):
+                continue  # Già inviato a questo livello
+
+            # Anti-duplicazione cross-pipeline
+            if check_cross_pipeline_escalated(
+                    conn, order_id=order_id,
+                    order_number=order_number,
+                    level=candidate):
+                logger.debug(
+                    f"FAI Enforcement: skip PLANNING_CHECK L{candidate} "
+                    f"per ordine {order_number} — già escalato da altra pipeline")
+                continue
+
+            # Gate temporale: per L2+ serve che L(n-1) sia stato registrato
+            # almeno 60 min fa (in qualsiasi pipeline)
+            if candidate >= 2:
+                # Cerca il timing dalla stessa pipeline
+                timing_ok = check_escalation_timing(
+                    conn, 'PLANNING_CHECK',
+                    order_id=order_id,
+                    order_number=order_number,
+                    required_level=candidate,
+                    min_minutes=60)
+                if not timing_ok:
+                    # Prova anche nelle altre pipeline (il livello precedente
+                    # potrebbe essere stato registrato da NEW_ORDER o SHIFT_CHECK)
+                    for alt_type in ('NEW_ORDER', 'SHIFT_CHECK'):
+                        timing_ok = check_escalation_timing(
+                            conn, alt_type,
+                            order_id=order_id,
+                            order_number=order_number,
+                            required_level=candidate,
+                            min_minutes=60)
+                        if timing_ok:
+                            break
+                if not timing_ok:
+                    logger.debug(
+                        f"FAI Enforcement: timing non rispettato per "
+                        f"L{candidate} ordine {order_number}")
+                    break  # Non possiamo saltare livelli
+
+            effective_level = candidate
+            break  # Invia solo il primo livello non ancora coperto
+
+        if effective_level is None:
+            continue  # Tutti i livelli raggiungibili sono già coperti
+
         logger.warning(
-            f"FAI Enforcement: ⚠️ PLANNING VIOLATION L{level} — "
+            f"FAI Enforcement: ⚠️ PLANNING VIOLATION L{effective_level} — "
             f"Ordine {order_number} ({template['FaiTitle']}), "
             f"PlannedStart={planned_str}, "
             f"Deadline FAI={v['deadline'].strftime('%H:%M')}")
-        
+
         # 3. Determina destinatari per il livello
-        recipients = get_escalation_recipients(conn, level, employees)
-        
+        recipients = get_escalation_recipients(conn, effective_level, employees)
+
         shift_key = get_current_shift()
         shift_label = SHIFT_TIMES.get(shift_key, {}).get('label', '??:??')
-        
+
         order_info = (
             f"{order_number} ({template['FaiTitle']}) — "
             f"Produzione programmata: {planned_str}"
         )
-        
+
         # 4. L3: genera REFERAT automatico
         referat_pdf = None
-        if level == 3 and admin_info:
+        if effective_level == 3 and admin_info:
             # Per violazioni planning, il referat è generico (non su dipendente specifico)
             referat_pdf = create_automatic_referat(
                 conn,
@@ -1683,33 +1906,33 @@ def run_planning_based_enforcement(conn, logo_path: str = "logo.png"):
             )
             if referat_pdf:
                 logger.info(f"FAI Enforcement: REFERAT generato: {referat_pdf}")
-        
+
         # 5. Invia email escalation
         send_escalation_email(
-            level=level,
-            employee_name=f"(Responsabile linea)",
+            level=effective_level,
+            employee_name="(Responsabile linea)",
             shift_label=shift_label,
             recipients=recipients,
             order_info=order_info,
             logo_path=logo_path,
             referat_pdf_path=referat_pdf
         )
-        
+
         # 6. Log evento
         log_enforcement_event(
             conn, 'PLANNING_CHECK',
             order_id=order_id,
             order_number=order_number,
             shift_time=shift_label,
-            escalation_level=level,
+            escalation_level=effective_level,
             notes=(
-                f"Planning-based enforcement L{level} — "
+                f"Planning-based enforcement L{effective_level} — "
                 f"Template: {template['FaiTitle']}, "
                 f"PlannedStart: {planned_str}, "
                 f"Deadline FAI: {v['deadline'].strftime('%H:%M')}"
             )
         )
-    
+
     logger.info(
         f"FAI Enforcement: planning enforcement completato — "
         f"{len(violations)} violazioni processate")
