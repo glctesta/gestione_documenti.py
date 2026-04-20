@@ -11,13 +11,63 @@ Funzionalità:
 """
 
 import logging
-from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Tuple
+from datetime import datetime, timedelta, time as dtime, date as ddate
+from typing import List, Dict, Optional, Tuple, Set
 import os
 
 logger = logging.getLogger("TraceabilityRS")
 
 TEST_EMAIL = 'gianluca.testa@vandewiele.com'
+
+# ============================================================
+# SCHEDULING ESCALATION — 30 min prima della fine di ogni turno
+# ============================================================
+# Turni produzione (fine turno):
+#   Turno 1: finisce 15:30 → finestra invio 15:00 - 15:30
+#   Turno 2: finisce 23:30 → finestra invio 23:00 - 23:30
+# Queste due finestre di 30 min sono gli UNICI momenti in cui invio
+# l'escalation, e solo una volta per turno per giorno lavorativo.
+SHIFT_END_WINDOWS = {
+    1: (dtime(15, 0), dtime(15, 30)),
+    2: (dtime(23, 0), dtime(23, 30)),
+}
+
+# Numero massimo di righe per fase nella tabella email (il resto viene
+# riassunto come "... + N altri alerts per questa fase").
+MAX_ROWS_PER_PHASE = 10
+
+# Stato in-memory: tiene traccia dei turni (1 o 2) per cui una email e'
+# gia' stata inviata oggi. Si resetta al cambio di data.
+_SENT_SHIFTS_STATE: Dict[str, object] = {
+    "date": None,      # data corrente (ddate) del tracking
+    "shifts": set(),   # set di int (1/2) dei turni gia' notificati
+}
+
+
+def _current_shift_window(now: datetime) -> Optional[int]:
+    """Ritorna il numero del turno (1 o 2) se ora siamo nella finestra dei
+    30 minuti prima della fine turno, altrimenti None."""
+    t = now.time()
+    for shift_num, (win_start, win_end) in SHIFT_END_WINDOWS.items():
+        if win_start <= t <= win_end:
+            return shift_num
+    return None
+
+
+def _reset_shift_state_if_new_day(today: ddate) -> None:
+    """Se e' cambiato il giorno, azzera il tracking dei turni inviati."""
+    if _SENT_SHIFTS_STATE["date"] != today:
+        _SENT_SHIFTS_STATE["date"] = today
+        _SENT_SHIFTS_STATE["shifts"] = set()
+
+
+def _mark_shift_sent(shift: int) -> None:
+    """Registra che il turno <shift> e' stato gia' notificato oggi."""
+    _SENT_SHIFTS_STATE["shifts"].add(shift)
+
+
+def _shift_already_sent(shift: int) -> bool:
+    return shift in _SENT_SHIFTS_STATE["shifts"]
 
 
 def get_plan_check_mode(conn) -> str:
@@ -578,11 +628,36 @@ def _build_escalation_html(alerts_by_phase: Dict[str, list], level: int,
         </div>
         """
     
-    # Costruisci tabella per fase
+    # ── SUMMARY compatto in testa: conteggio totale e per fase ────────
+    total_alerts = sum(len(a) for a in alerts_by_phase.values())
+    summary_items = "".join(
+        f'<li><strong>{phase}</strong>: {len(alerts)} alerte</li>'
+        for phase, alerts in alerts_by_phase.items()
+    )
+    summary_html = f"""
+    <div style="background-color: #FFF3E0; border-left: 4px solid #F57C00;
+         padding: 10px 14px; margin: 12px 0; font-size: 12px;">
+        <p style="margin: 0 0 6px 0; font-weight: bold; color: #E65100;">
+            Sumar: {total_alerts} alerte totale pe {len(alerts_by_phase)} faze
+        </p>
+        <ul style="margin: 4px 0 0 18px; padding: 0;">{summary_items}</ul>
+    </div>
+    """
+
+    # Costruisci tabella per fase (limitata a Top N ordinata per deficit)
     tables_html = ""
     for phase, alerts in alerts_by_phase.items():
+        # Ordina per deficit decrescente, mostra solo i primi MAX_ROWS_PER_PHASE
+        sorted_alerts = sorted(
+            alerts,
+            key=lambda a: (a.get('deficit') or 0),
+            reverse=True,
+        )
+        shown = sorted_alerts[:MAX_ROWS_PER_PHASE]
+        hidden = len(sorted_alerts) - len(shown)
+
         rows = ""
-        for a in alerts:
+        for a in shown:
             color_badge = ('#F44336' if a.get('status_color') == 'red'
                            else '#FF9800')
             status_label = ('🔴 Întârziere' if a.get('status_color') == 'red'
@@ -595,20 +670,32 @@ def _build_escalation_html(alerts_by_phase: Dict[str, list], level: int,
                     {a.get('qty_expected', 0)}</td>
                 <td style="padding: 6px 10px; text-align: center;">
                     {a.get('qty_produced', 0)}</td>
-                <td style="padding: 6px 10px; text-align: center; font-weight: bold; 
+                <td style="padding: 6px 10px; text-align: center; font-weight: bold;
                     color: #B71C1C;">{a.get('deficit', 0)}</td>
                 <td style="padding: 6px 10px; text-align: center;">
-                    <span style="background-color: {color_badge}; color: white; 
+                    <span style="background-color: {color_badge}; color: white;
                         padding: 2px 8px; border-radius: 4px; font-size: 11px;">
                         {status_label}</span></td>
                 <td style="padding: 6px 10px; text-align: center;">
                     {a.get('alert_date', '')}</td>
             </tr>
             """
-        
+
+        more_row = ""
+        if hidden > 0:
+            more_row = f"""
+            <tr>
+                <td colspan="7" style="padding: 6px 10px; text-align: center;
+                    font-style: italic; color: #666; background-color: #FAFAFA;">
+                    ... și alte {hidden} alerte pentru această fază
+                </td>
+            </tr>
+            """
+
         tables_html += f"""
-        <h4 style="color: #1565C0; margin-top: 20px;">📋 Faza: {phase}</h4>
-        <table style="border-collapse: collapse; width: 100%; font-size: 12px; 
+        <h4 style="color: #1565C0; margin-top: 20px;">📋 Faza: {phase}
+            ({len(sorted_alerts)} alerte, top {len(shown)} după deficit)</h4>
+        <table style="border-collapse: collapse; width: 100%; font-size: 12px;
                border: 1px solid #ddd;">
             <tr style="background-color: #1565C0; color: white;">
                 <th style="padding: 8px 10px; text-align: left;">Comandă</th>
@@ -620,6 +707,7 @@ def _build_escalation_html(alerts_by_phase: Dict[str, list], level: int,
                 <th style="padding: 8px 10px; text-align: center;">Data Alertă</th>
             </tr>
             {rows}
+            {more_row}
         </table>
         """
     
@@ -638,6 +726,7 @@ def _build_escalation_html(alerts_by_phase: Dict[str, list], level: int,
            prevăzut de 60 de minute:</p>
         
         {urgency_html}
+        {summary_html}
         {tables_html}
         
         <div style="background-color: #E3F2FD; border-left: 4px solid #1565C0; 
@@ -661,28 +750,50 @@ def _build_escalation_html(alerts_by_phase: Dict[str, list], level: int,
 
 def check_and_escalate(conn, logo_path: str = None, mode: str = 'True') -> int:
     """Controlla alert non giustificati e invia escalation se necessario.
-    
-    Logica:
+
+    POLITICA DI INVIO (aggiornata):
+      - Al massimo 1 email per TURNO produzione, inviata negli ULTIMI 30
+        MINUTI del turno:
+            Turno 1: finestra 15:00 - 15:30 (fine turno 15:30)
+            Turno 2: finestra 23:00 - 23:30 (fine turno 23:30)
+      - Niente invio se fuori finestra o se il turno e' gia' stato notificato
+        oggi (tracking in memoria, si resetta a mezzanotte).
+      - Niente invio nei giorni non lavorativi (gate esterno nel worker via
+        should_send_notification).
+
+    Logica alert:
     - Trova alert senza risposta (PlanAlertResponses IS NULL)
-    - Alert giustificati oggi (ResponseDate = oggi) vengono esclusi automaticamente
-    - Raggruppa TUTTI gli alert in UN'UNICA email ogni 3 ore
+    - Alert giustificati oggi (ResponseDate = oggi) vengono esclusi
+    - Raggruppa TUTTI gli alert in UN'UNICA email compatta
     - Per ogni fase, verifica:
       a) Se sono passate >= 3 ore dall'AlertDate (o dall'ultima escalation)
       b) Se le escalation inviate sono < 3 → invia a leader + manager fase
       c) Se >= 3 → invia a Sys_Alert_not_responce_plan (TO) + leader (CC)
-    
+
     Args:
         mode: 'True' (produzione), 'Test' (email a gianluca.testa@vandewiele.com)
-    
+
     Returns:
         Numero di email inviate (0 o 1, poiché raggruppata).
     """
     from email_connector import EmailSender
-    
+
     ESCALATION_INTERVAL_SECONDS = 10800  # 3 ore
-    
+
     if logo_path is None:
         logo_path = os.path.join(os.path.dirname(__file__), 'Logo.png')
+
+    # ── Gate temporale: invio solo nella finestra di fine turno ──────────
+    now_dt = datetime.now()
+    _reset_shift_state_if_new_day(now_dt.date())
+    shift_now = _current_shift_window(now_dt)
+    if shift_now is None:
+        # Fuori finestra: silenzioso, nessun lavoro.
+        return 0
+    if _shift_already_sent(shift_now):
+        logger.info(
+            f"Plan Alert: turno {shift_now} gia' notificato oggi, skip.")
+        return 0
     
     alerts = get_unresponded_alerts(conn)
     if not alerts:
@@ -820,10 +931,15 @@ def check_and_escalate(conn, logo_path: str = None, mode: str = 'True') -> int:
             for alert_data in info['alerts']:
                 record_escalation(conn, alert_data['alert_id'],
                                   info['next_level'], recipients_log, phase)
-        
-        logger.info(f"Escalation raggruppata (livello max {max_level}) inviata: "
-                    f"{total_alerts} alert in {len(phases_ready)} fasi a {to_addr_list}")
-        
+
+        # Segna il turno come gia' notificato per evitare doppi invii nella
+        # stessa finestra di 30 minuti prima della fine turno.
+        _mark_shift_sent(shift_now)
+
+        logger.info(f"Escalation turno {shift_now} inviata (livello max "
+                    f"{max_level}): {total_alerts} alert in "
+                    f"{len(phases_ready)} fasi a {to_addr_list}")
+
         return 1
         
     except Exception as e:

@@ -11306,8 +11306,14 @@ class App(tk.Tk):
                 current_date = now.date()
                 current_hour = now.hour
 
-                # Solo durante orario lavorativo (7-18)
-                if current_hour < 7 or current_hour > 18:
+                # Finestre operative del worker (escalation + report):
+                #  - 07:00-18:00: copertura report mensile (08:00) e settimanale
+                #    (09:00) e finestra di fine turno 1 (15:00-15:30).
+                #  - 22:00-23:59: copertura finestra di fine turno 2
+                #    (23:00-23:30).
+                # Fuori da queste finestre il worker dorme a lungo.
+                in_work_window = (7 <= current_hour <= 18) or (22 <= current_hour <= 23)
+                if not in_work_window:
                     time.sleep(300)  # 5 min fuori orario
                     continue
 
