@@ -102,23 +102,58 @@ def generate_request_pdf(db, richiesta_id):
 
     # Tabella materiale
     y -= 1.5 * cm
+
+    # Stile per la cella Descriere con word-wrap dinamico
+    desc_style = ParagraphStyle(
+        'DescCell',
+        fontName=font_name,
+        fontSize=11,
+        leading=14,          # interlinea
+        wordWrap='CJK',      # word-wrap su qualsiasi punto
+        spaceAfter=0,
+        spaceBefore=0,
+    )
+    # Header style (bianco su sfondo scuro)
+    hdr_style = ParagraphStyle(
+        'HdrCell',
+        fontName=font_name,
+        fontSize=10,
+        leading=12,
+        textColor=colors.white,
+        wordWrap='CJK',
+    )
+
+    desc_paragraph = Paragraph(descrizione, desc_style)
+    hdr_desc_paragraph = Paragraph('Descriere', hdr_style)
+
+    col_widths = [3.5 * cm, 7 * cm, 3.5 * cm, 4 * cm]
+
     table_data = [
-        ['Cod Material', 'Descriere', 'Cantitate solicitată', 'Stoc la momentul cererii'],
-        [codice, descrizione, f"{qty:.2f}", f"{stock:.2f}" if stock else '-']
+        [
+            Paragraph('Cod Material', hdr_style),
+            hdr_desc_paragraph,
+            Paragraph('Cantitate solicitată', hdr_style),
+            Paragraph('Stoc la momentul cererii', hdr_style),
+        ],
+        [codice, desc_paragraph, f"{qty:.2f}", f"{stock:.2f}" if stock else '-']
     ]
 
-    t = Table(table_data, colWidths=[3.5 * cm, 7 * cm, 3.5 * cm, 4 * cm])
+    t = Table(table_data, colWidths=col_widths)
     t.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2c3e50')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
         ('FONTNAME', (0, 0), (-1, -1), font_name),
         ('FONTSIZE', (0, 0), (-1, 0), 10),
         ('FONTSIZE', (0, 1), (-1, -1), 11),
-        ('ALIGN', (2, 0), (3, -1), 'CENTER'),
+        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),   # header centrato
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('ALIGN', (2, 1), (3, -1), 'CENTER'),   # qty e stock centrati
         ('BOX', (0, 0), (-1, -1), 1, colors.black),
         ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.grey),
         ('TOPPADDING', (0, 0), (-1, -1), 8),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
     ]))
 
     t_width, t_height = t.wrap(width, height)

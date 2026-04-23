@@ -307,7 +307,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.0.2.6'  # Versione aggiornata
+APP_VERSION = '2.4.0.3.6'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -10530,7 +10530,6 @@ class App(tk.Tk):
         # Inizializza il thread per FAI Compliance Enforcement
         self._fai_enforcement_thread = None
         self._fai_enforcement_stop_event = threading.Event()
-        self._fai_enforcement_last_new_order_check = None  # Track ultima ora
         self._start_fai_enforcement_background_task()
 
         # Batch generazione rapporti attività ospiti (da 1 gen a ieri)
@@ -10970,11 +10969,23 @@ class App(tk.Tk):
                                 report_data = self.npi_manager.get_npi_overview_report_data()
                                 report_path = self.npi_manager.export_npi_overview_report()
                                 chart_path = self._create_npi_overview_pie_chart(report_data, prefix="NPI_Overview_Pie")
+                                # Genera Excel task scaduti per allegarlo
+                                overdue_path = None
+                                overdue_count = 0
+                                try:
+                                    overdue_tasks = self.npi_manager.get_all_overdue_tasks()
+                                    overdue_count = len(overdue_tasks)
+                                    if overdue_tasks:
+                                        overdue_path = self.npi_manager.export_overdue_tasks_to_excel(overdue_tasks)
+                                except Exception as oe:
+                                    logger.warning(f"Impossibile generare Excel task scaduti per email settimanale: {oe}")
                                 send_npi_weekly_overview_email(
                                     recipients,
                                     report_path,
                                     summary=(report_data or {}).get('summary'),
-                                    chart_path=chart_path
+                                    chart_path=chart_path,
+                                    overdue_attachment_path=overdue_path,
+                                    overdue_count=overdue_count
                                 )
                                 self.db.log_weekly_npi_email_sent(week_start, attribute)
                                 logger.info("Email settimanale NPI inviata (prima esecuzione)")
@@ -11020,11 +11031,23 @@ class App(tk.Tk):
                 report_data = self.npi_manager.get_npi_overview_report_data()
                 report_path = self.npi_manager.export_npi_overview_report()
                 chart_path = self._create_npi_overview_pie_chart(report_data, prefix="NPI_Overview_Pie")
+                # Genera Excel task scaduti per allegarlo
+                overdue_path = None
+                overdue_count = 0
+                try:
+                    overdue_tasks = self.npi_manager.get_all_overdue_tasks()
+                    overdue_count = len(overdue_tasks)
+                    if overdue_tasks:
+                        overdue_path = self.npi_manager.export_overdue_tasks_to_excel(overdue_tasks)
+                except Exception as oe:
+                    logger.warning(f"Impossibile generare Excel task scaduti per email settimanale: {oe}")
                 send_npi_weekly_overview_email(
                     recipients,
                     report_path,
                     summary=(report_data or {}).get('summary'),
-                    chart_path=chart_path
+                    chart_path=chart_path,
+                    overdue_attachment_path=overdue_path,
+                    overdue_count=overdue_count
                 )
                 self.db.log_weekly_npi_email_sent(week_start, attribute)
                 logger.info("Email NPI settimanale inviata con successo")
@@ -11473,17 +11496,7 @@ class App(tk.Tk):
                 except Exception as e:
                     logger.error(f"FAI Enforcement: errore escalation: {e}", exc_info=True)
 
-                # --- 3) NEW ORDER CHECK (ogni ora) ---
-                if (self._fai_enforcement_last_new_order_check is None or
-                        self._fai_enforcement_last_new_order_check != current_hour):
-                    try:
-                        fe.run_new_order_check(conn, logo_path="logo.png")
-                        fe.process_new_order_escalations(conn, logo_path="logo.png")
-                        self._fai_enforcement_last_new_order_check = current_hour
-                    except Exception as e:
-                        logger.error(f"FAI Enforcement: errore new order check: {e}", exc_info=True)
-
-                # --- 4) PLANNING-BASED ENFORCEMENT (ogni 30 min) ---
+                # --- 3) PLANNING-BASED ENFORCEMENT (ogni 30 min) ---
                 # Verifica ordini Autocheck=1 dal PlanningMachine Excel
                 # con deadline FAI scaduta (PlannedStart - 3h)
                 if not hasattr(self, '_fai_enforcement_last_planning_check'):
@@ -13430,6 +13443,22 @@ class App(tk.Tk):
             )
         )
 
+    def _open_shipping_pdf(self):
+        """Apre la finestra Shipping PDF dopo login semplice."""
+        logger.info("Shipping PDF: avvio")
+
+        def action(user_name):
+            from shipping_pdf_gui import ShippingPdfWindow
+            try:
+                win = ShippingPdfWindow(self, self.db, self.lang,
+                                        logged_user_name=user_name)
+                self.wait_window(win)
+            except Exception as e:
+                logger.error(f"Shipping PDF: errore apertura: {e}", exc_info=True)
+                messagebox.showerror("Error", f"Cannot open Shipping PDF:\n{e}")
+
+        self._execute_simple_login(action_callback=action)
+
     def _open_label_config_placeholder(self):
         """Apre la finestra di configurazione etichetta."""
         def action():
@@ -13610,21 +13639,32 @@ class App(tk.Tk):
                 week_key = today.strftime('%Y-%m-%d')
                 setting_key = f'SentWeeklyVisitorEmail_{week_key}'
 
-                # Verifica se già inviata questa settimana
+                # ── Dedup atomica cross-istanza ──
+                # Tenta di reclamare l'invio con INSERT atomico.
+                # Se un'altra istanza ha già inserito il record, l'INSERT
+                # non inserisce nulla (WHERE NOT EXISTS) e rowcount = 0.
                 try:
                     cursor = conn.cursor()
                     cursor.execute("""
-                        SELECT COUNT(*) AS cnt 
-                        FROM traceability_rs.dbo.settings 
-                        WHERE atribute = ?
-                    """, setting_key)
-                    row = cursor.fetchone()
+                        INSERT INTO traceability_rs.dbo.settings (atribute, [value])
+                        SELECT ?, ?
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM traceability_rs.dbo.settings
+                            WHERE atribute = ?
+                        )
+                    """, (setting_key,
+                          datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                          setting_key))
+                    claimed = cursor.rowcount > 0
+                    conn.commit()
                     cursor.close()
-                    if row and row.cnt > 0:
-                        logger.info(f"Weekly visitor email già inviata per settimana {week_key}")
+                    if not claimed:
+                        logger.info(f"Weekly visitor email già inviata per {week_key} "
+                                    f"(altra istanza), skip")
                         return
+                    logger.info(f"Weekly visitor email: claim '{setting_key}' acquisito")
                 except Exception as e:
-                    logger.error(f"Errore check weekly email sent: {e}")
+                    logger.error(f"Errore claim weekly visitor email: {e}")
                     return
 
                 # Recupera destinatari
@@ -13681,8 +13721,7 @@ class App(tk.Tk):
 
                 if not visitors:
                     logger.info("Weekly visitor email: nessun visitatore per questa settimana")
-                    # Registra comunque per non ritentare
-                    self._mark_weekly_email_sent(conn, setting_key)
+                    # Claim già registrato nel DB, non serve altro
                     return
 
                 # Costruisci tabella raggruppata per giorno
@@ -13768,8 +13807,6 @@ class App(tk.Tk):
                 )
                 logger.info(f"Weekly visitor email inviata a {recipients}, {len(visitors)} visitatori")
 
-                # Registra invio
-                self._mark_weekly_email_sent(conn, setting_key)
 
             except Exception as e:
                 logger.error(f"Errore _check_weekly_visitor_email: {e}", exc_info=True)
@@ -15438,6 +15475,12 @@ class App(tk.Tk):
             command=self.open_stock_value_with_login
         )
 
+        # --- Shipping PDF ---
+        materials_menu.add_command(
+            label=self.lang.get('menu_shipping_pdf', 'Shipping PDF'),
+            command=self._open_shipping_pdf
+        )
+
     def _update_production_submenu(self):
         """Aggiorna il sottomenu Produzione con tutte le sezioni"""
         self.production_submenu.delete(0, 'end')
@@ -15739,11 +15782,36 @@ class App(tk.Tk):
             label=self.lang.get('submenu_verify_products', "Verifiche"),
             command=lambda: self.open_product_verification_with_login()
         )
+        self.product_checks_submenu.add_command(
+            label=self.lang.get('submenu_manage_wrong_checks', "Gestione Check errati"),
+            command=lambda: self._open_manage_wrong_checks()
+        )
 
         self.product_checks_submenu.add_separator()
         self.product_checks_submenu.add_command(
             label=self.lang.get('submenu_verification_reports', "Rapporti"),
             command=lambda: self._open_verification_reports()
+        )
+
+    def _open_manage_wrong_checks(self):
+        """Apre la finestra Gestione Check Errati con autorizzazione."""
+        def authorized_action():
+            try:
+                import manage_wrong_checks
+                user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
+                manage_wrong_checks.open_manage_wrong_checks(
+                    self, self.db, self.lang, user_name
+                )
+            except Exception as e:
+                logger.error(f"Errore apertura Gestione Check Errati: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire Gestione Check Errati:\n{e}",
+                    parent=self
+                )
+        self._execute_authorized_action(
+            'cancella_verifica_scheda_errata',
+            authorized_action
         )
 
     def _open_verification_reports(self):
@@ -16229,16 +16297,18 @@ class App(tk.Tk):
             label=self.lang.get('menu_submissions_management', 'Gestione'),
             command=lambda: self._open_manual('segnalazioni_gestione'))
 
-        # ── 6. Strumenti ───────────────────────────────────────────
+        # ── 6. Materiali ───────────────────────────────────────────
+        self.manuals_menu.add_command(
+            label=self.lang.get('menu_indirect_materials_manual', 'Materiale Indirecte (Manual)'),
+            command=self._open_indirect_materials_manual)
+
+        # ── 7. Strumenti ───────────────────────────────────────────
         tools_manual_menu = tk.Menu(self.manuals_menu, tearoff=0)
         self.manuals_menu.add_cascade(
             label=self.lang.get('menu_tools', 'Strumenti'), menu=tools_manual_menu)
         tools_manual_menu.add_command(
             label=self.lang.get('submenu_permissions', 'Autorizzazioni'),
             command=lambda: self._open_manual('strumenti_autorizzazioni'))
-        tools_manual_menu.add_command(
-            label=self.lang.get('menu_materials', 'Materiali'),
-            command=lambda: self._open_manual('strumenti_materiali'))
         tools_manual_menu.add_command(
             label=self.lang.get('menu_room_booking', 'Room Booking'),
             command=lambda: self._open_manual('strumenti_room_booking'))
@@ -16375,6 +16445,30 @@ class App(tk.Tk):
                 self.lang.get('fai_autocheck_manual_not_found',
                              "Manualul FAI Autocheck nu a fost gasit.\n\n"
                              f"Cale asteptata: {os.path.join(app_dir, 'docs', 'FAI_Autocheck_Manual_RO.pdf')}"),
+                parent=self)
+
+    def _open_indirect_materials_manual(self):
+        """Apre il manuale Materiale Indirecte (PDF) dal folder docs."""
+        manual_path = self._get_resource_path('docs', 'Manual_Materiale_Indirecte_RO.pdf')
+
+        if manual_path:
+            try:
+                os.startfile(manual_path)
+                logger.info(f"Aperto manuale Materiale Indirecte: {manual_path}")
+            except Exception as e:
+                logger.error(f"Errore apertura manuale Materiale Indirecte: {e}")
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire il manuale: {e}",
+                    parent=self)
+        else:
+            app_dir = os.path.dirname(os.path.abspath(
+                sys.executable if getattr(sys, 'frozen', False) else __file__))
+            messagebox.showinfo(
+                self.lang.get('menu_manuals', 'Manuali'),
+                self.lang.get('indirect_materials_manual_not_found',
+                             "Manualul Materiale Indirecte nu a fost gasit.\n\n"
+                             f"Cale asteptata: {os.path.join(app_dir, 'docs', 'Manual_Materiale_Indirecte_RO.pdf')}"),
                 parent=self)
 
     def _open_logs_viewer(self):
@@ -17009,6 +17103,7 @@ class App(tk.Tk):
                 logger.info(f"Lancio della finestra Gantt per il progetto ID: {progetto_selezionato_id}")
 
                 # 5. Apri la finestra Gantt, passando l'ID del progetto richiesto.
+                from npi.windows.gantt_window import NpiGanttWindow
                 NpiGanttWindow(
                     master=self,
                     npi_manager=self.npi_manager,
