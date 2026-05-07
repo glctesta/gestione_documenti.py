@@ -179,7 +179,17 @@ class FaiReportsViewerWindow(tk.Toplevel):
             
             # Query
             # Query raggruppata: una riga per sessione di validazione
+            # Pre-compute the SMT-phase flag (PhaseOrder <= 20) as a derived column
+            # to avoid SQL Server error 130 (aggregate over subquery).
             query = """
+            WITH OrderSMTPhase AS (
+                -- Flag = 1 if the order has at least one phase with PhaseOrder <= 20
+                SELECT DISTINCT op.IDOrder, 1 AS IsSMTPhase
+                FROM [Traceability_RS].[dbo].[OrderPhases] op
+                INNER JOIN [Traceability_RS].[dbo].[Phases] ph
+                    ON ph.IDPhase = op.IDPhase
+                WHERE ph.PhaseOrder <= 20
+            )
             SELECT 
                 t.NrDocument + ' Rev.' + cast(t.Revision as nvarchar(4))+ ' issued on ' + format(t.RevisionDate,'d','it-it') as FAI_Document,
                 MIN(l.FaiLogId) as FaiLogId,
@@ -188,17 +198,38 @@ class FaiReportsViewerWindow(tk.Toplevel):
                 o.Ordernumber as OrderId,
                 p.productcode,
                 l.Operator,
-                MIN(CAST(l.IsOk AS INT)) as IsOk,
+                -- IsOk logic:
+                --   N/A steps -> treated as ok (1)
+                --   SMT template (IdPhase=2) + IsOk=0 -> fail only if order IS in SMT phase
+                --   all other templates -> use IsOk directly
+                CASE 
+                    WHEN MIN(
+                        CASE 
+                            WHEN ISNULL(l.IsNA, 0) = 1
+                                THEN 1
+                            WHEN t.IdPhase = 2 AND l.IsOk = 0
+                                 AND ISNULL(smt.IsSMTPhase, 0) = 1
+                                THEN 0  -- valid fail on SMT phase
+                            WHEN t.IdPhase = 2 AND l.IsOk = 0
+                                THEN 1  -- fail on non-SMT phase: ignored
+                            ELSE CAST(l.IsOk AS INT)
+                        END
+                    ) = 1
+                    THEN 1 ELSE 0
+                END as IsOk,
                 MAX(CASE WHEN l.DocVerification IS NOT NULL THEN 1 ELSE 0 END) AS HasPDF
             FROM [Traceability_RS].[fai].[FaiLogs] l
             LEFT JOIN [Traceability_RS].[dbo].[orders] o ON l.OrderId = o.IDOrder
             LEFT JOIN [Traceability_RS].[dbo].[Products] p ON o.IDProduct = p.IDProduct
+            LEFT JOIN OrderSMTPhase smt ON smt.IDOrder = l.OrderId
             INNER JOIN traceability_rs.fai.FaiStepDetails D on l.FaiStepDetailId=d.FaiStepDetailId
             INNER JOIN traceability_rs.fai.FaiSteps S on s.FatStepId=D.FatStepId
             INNER JOIN traceability_rs.fai.FaiTemplates t on t.FaiTemplateId=s.FaiTemplateId 
             WHERE l.DateIn >= ? AND l.DateIn <= ?
                 AND l.DateOut IS NULL
+
             """
+
             
             params = [
                 self.date_from_picker.get_date().strftime('%Y-%m-%d') + ' 00:00:00',
