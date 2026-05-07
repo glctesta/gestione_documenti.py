@@ -121,18 +121,55 @@ class ImportIndirectMaterialsWindow(tk.Toplevel):
             wb = openpyxl.load_workbook(file_path, data_only=True)
             ws = wb.active
 
-            # Layout fisso DynamicsExport: A=Codice, B=Descrizione, H=Stock, Q=Tipo
-            COL_CODE = 0   # Colonna A
-            COL_DESC = 1   # Colonna B
-            COL_STOCK = 7  # Colonna H
-            COL_TIPO = 16  # Colonna Q
+            # --- Auto-detect colonne dall'intestazione (riga 1) ---
+            # Mapping nome intestazione → chiave colonna
+            HEADER_MAP = {
+                'item number': 'code',
+                'product name': 'desc',
+                'name': 'desc',
+                'description': 'desc',
+                'physical inventory': 'stock',
+                'physical on-hand inventory': 'stock',
+                'warehouse': 'tipo',
+            }
+            # Default fisso (fallback se auto-detect non trova)
+            COL_CODE = 0    # Colonna A
+            COL_DESC = 1    # Colonna B
+            COL_STOCK = 9   # Colonna J (Physical inventory)
+            COL_TIPO = 16   # Colonna Q
 
-            logger.info(f"Layout fisso: Codice=A, Descrizione=B, Stock=H, Tipo=Q")
+            # Leggi intestazioni e tenta auto-detect
+            header_row = list(ws.iter_rows(min_row=1, max_row=1, values_only=True))
+            if header_row:
+                headers = header_row[0]
+                for idx, h in enumerate(headers or []):
+                    if h is None:
+                        continue
+                    h_lower = str(h).strip().lower()
+                    if h_lower in HEADER_MAP:
+                        key = HEADER_MAP[h_lower]
+                        if key == 'code':
+                            COL_CODE = idx
+                        elif key == 'desc':
+                            COL_DESC = idx
+                        elif key == 'stock':
+                            COL_STOCK = idx
+                        elif key == 'tipo':
+                            COL_TIPO = idx
+                logger.info(
+                    f"Colonne rilevate: Code=[{chr(65+COL_CODE)}]({COL_CODE}), "
+                    f"Desc=[{chr(65+COL_DESC)}]({COL_DESC}), "
+                    f"Stock=[{chr(65+COL_STOCK)}]({COL_STOCK}), "
+                    f"Tipo=[{chr(65+COL_TIPO)}]({COL_TIPO})"
+                )
+            else:
+                logger.warning("Nessuna intestazione trovata, uso layout fisso di fallback")
 
             # Pre-carica i tipi materiale dal DB per lookup
             tipo_lookup = self._load_tipo_materiali_lookup()
 
             # Leggi righe (dalla riga 2, salta intestazione)
+            first_row_logged = False
             for row in ws.iter_rows(min_row=2, values_only=True):
                 codice = row[COL_CODE] if len(row) > COL_CODE else None
                 if not codice:
@@ -140,8 +177,18 @@ class ImportIndirectMaterialsWindow(tk.Toplevel):
 
                 codice = str(codice).strip()
                 descrizione = str(row[COL_DESC]).strip() if len(row) > COL_DESC and row[COL_DESC] else ''
-                qta = self._safe_decimal(row[COL_STOCK] if len(row) > COL_STOCK else 0)
+                raw_stock = row[COL_STOCK] if len(row) > COL_STOCK else 0
+                qta = self._safe_decimal(raw_stock)
                 tipo_raw = str(row[COL_TIPO]).strip() if len(row) > COL_TIPO and row[COL_TIPO] else ''
+
+                # Log diagnostico sulla prima riga per verifica colonne
+                if not first_row_logged:
+                    logger.info(
+                        f"Prima riga Excel: codice={codice!r}, desc={descrizione[:30]!r}, "
+                        f"raw_stock={raw_stock!r} (type={type(raw_stock).__name__}), "
+                        f"qta_parsed={qta}, tipo={tipo_raw!r}"
+                    )
+                    first_row_logged = True
 
                 # Lookup del tipo: se trovato usa l'ID, altrimenti 'Generico'
                 tipo_id = tipo_lookup.get(tipo_raw.upper()) if tipo_raw else None
@@ -221,98 +268,116 @@ class ImportIndirectMaterialsWindow(tk.Toplevel):
             errors = 0
             processed = 0
 
-            # 0. Recupera ID del tipo 'Generico' (default)
-            generico_tipo = self.db.fetch_one(
-                "SELECT TipoMaterialeId FROM ind.TipoMateriali WHERE UPPER(Tipo) = 'GENERICO'"
-            )
-            if generico_tipo:
-                generico_tipo_id = generico_tipo[0]
-            else:
-                generico_tipo_id = self.db.execute_query_with_id(
-                    "INSERT INTO ind.TipoMateriali (Tipo, IsFrazionabile, QtaConfezione) VALUES ('Generico', 0, 1)"
-                )
-                logger.info(f"Tipo default 'Generico' creato con ID {generico_tipo_id}")
+            # ── Transazione atomica ──────────────────────────────────────
+            self.db._ensure_connection()
+            with self.db._lock:
+                cursor = self.db.cursor
 
-            # 1. Upsert anagrafica ind.Materiali
-            for item in self.import_data:
                 try:
-                    # Determina il TipoMaterialeId da usare
-                    tipo_id = item.get('tipo_id') or generico_tipo_id
-
-                    # Controlla se il codice esiste già
-                    existing = self.db.fetch_one(
-                        "SELECT MaterialeId, DescrizioneMateriale FROM ind.Materiali WHERE CodiceMateriale = ?",
-                        (item['codice'],)
+                    # 0. Recupera ID del tipo 'Generico' (default)
+                    cursor.execute(
+                        "SELECT TipoMaterialeId FROM ind.TipoMateriali WHERE UPPER(Tipo) = 'GENERICO'"
                     )
-
-                    if existing:
-                        materiale_id = existing[0]
-                        old_desc = existing[1] or ''
-                        # Aggiorna descrizione e tipo se diversi
-                        self.db.execute_query(
-                            "UPDATE ind.Materiali SET DescrizioneMateriale = ?, TipoMaterialeId = ?, IsActive = 1 WHERE MaterialeId = ?",
-                            (item['descrizione'], tipo_id, materiale_id)
-                        )
-                        updated_codes += 1
+                    generico_row = cursor.fetchone()
+                    if generico_row:
+                        generico_tipo_id = generico_row[0]
                     else:
-                        # Nuovo codice → INSERT con TipoMaterialeId dal file
-                        materiale_id = self.db.execute_query_with_id(
-                            "INSERT INTO ind.Materiali (CodiceMateriale, DescrizioneMateriale, TipoMaterialeId, IsActive) "
-                            "VALUES (?, ?, ?, 1)",
-                            (item['codice'], item['descrizione'], tipo_id)
+                        cursor.execute(
+                            "INSERT INTO ind.TipoMateriali (Tipo, IsFrazionabile, QtaConfezione) VALUES ('Generico', 0, 1)"
                         )
-                        new_codes += 1
+                        cursor.execute("SELECT SCOPE_IDENTITY() as id")
+                        generico_tipo_id = cursor.fetchone()[0]
+                        logger.info(f"Tipo default 'Generico' creato con ID {generico_tipo_id}")
 
-                    # Salva l'ID per il passo successivo
-                    item['materiale_id'] = materiale_id
+                    # 1. Upsert anagrafica ind.Materiali
+                    for item in self.import_data:
+                        try:
+                            tipo_id = item.get('tipo_id') or generico_tipo_id
+
+                            cursor.execute(
+                                "SELECT MaterialeId, DescrizioneMateriale FROM ind.Materiali WHERE CodiceMateriale = ?",
+                                (item['codice'],)
+                            )
+                            existing = cursor.fetchone()
+
+                            if existing:
+                                materiale_id = existing[0]
+                                cursor.execute(
+                                    "UPDATE ind.Materiali SET DescrizioneMateriale = ?, TipoMaterialeId = ?, IsActive = 1 WHERE MaterialeId = ?",
+                                    (item['descrizione'], tipo_id, materiale_id)
+                                )
+                                updated_codes += 1
+                            else:
+                                cursor.execute(
+                                    "INSERT INTO ind.Materiali (CodiceMateriale, DescrizioneMateriale, TipoMaterialeId, IsActive) "
+                                    "VALUES (?, ?, ?, 1)",
+                                    (item['codice'], item['descrizione'], tipo_id)
+                                )
+                                cursor.execute("SELECT SCOPE_IDENTITY() as id")
+                                materiale_id = cursor.fetchone()[0]
+                                new_codes += 1
+
+                            item['materiale_id'] = materiale_id
+
+                        except Exception as e:
+                            errors += 1
+                            logger.error(f"Errore upsert codice {item['codice']}: {e}")
+                            item['materiale_id'] = None
+
+                        processed += 1
+                        self.progress['value'] = processed
+                        self.status_var.set(
+                            f"Anagrafica: {processed}/{total_items} — "
+                            f"{new_codes} nuovi, {updated_codes} aggiornati"
+                        )
+                        self.update_idletasks()
+
+                    # 2. Soft-close giacenze attive SOLO per i materiali importati
+                    valid_ids = [item['materiale_id'] for item in self.import_data if item.get('materiale_id') is not None]
+                    if valid_ids:
+                        placeholders = ','.join('?' * len(valid_ids))
+                        cursor.execute(
+                            f"UPDATE ind.MaterialiStock SET DateOut = GETDATE() "
+                            f"WHERE DateOut IS NULL AND MaterialeId IN ({placeholders})",
+                            valid_ids
+                        )
+                        logger.info(f"Soft-close giacenze attive per {len(valid_ids)} materiali importati")
+
+                    # 3. Insert nuove giacenze in ind.MaterialiStock
+                    for item in self.import_data:
+                        if item.get('materiale_id') is None:
+                            processed += 1
+                            self.progress['value'] = processed
+                            self.update_idletasks()
+                            continue
+                        try:
+                            cursor.execute(
+                                "INSERT INTO ind.MaterialiStock (MaterialeId, Qty, DateIn, DateOut, CaricatoDa) "
+                                "VALUES (?, ?, GETDATE(), NULL, ?)",
+                                (item['materiale_id'], item['qta_stock'], self.user_name)
+                            )
+                            stock_inserted += 1
+                        except Exception as e:
+                            errors += 1
+                            logger.error(f"Errore insert stock per {item['codice']}: {e}")
+
+                        processed += 1
+                        self.progress['value'] = processed
+                        self.status_var.set(
+                            f"Giacenze: {processed - total_items}/{total_items} — "
+                            f"{stock_inserted} caricate"
+                        )
+                        self.update_idletasks()
+
+                    # ── COMMIT unico a fine transazione ──────────────────
+                    self.db.conn.commit()
+                    logger.info("Transazione import materiali committata con successo")
 
                 except Exception as e:
-                    errors += 1
-                    logger.error(f"Errore upsert codice {item['codice']}: {e}")
-                    item['materiale_id'] = None
-
-                processed += 1
-                self.progress['value'] = processed
-                self.status_var.set(
-                    f"Anagrafica: {processed}/{total_items} — "
-                    f"{new_codes} nuovi, {updated_codes} aggiornati"
-                )
-                self.update_idletasks()
-
-            # 2. Soft-close tutte le giacenze attive
-            self.db.execute_query(
-                "UPDATE ind.MaterialiStock SET DateOut = GETDATE() WHERE DateOut IS NULL"
-            )
-            logger.info("Soft-close giacenze attive completato")
-
-            # 3. Insert nuove giacenze in ind.MaterialiStock
-            for item in self.import_data:
-                if item.get('materiale_id') is None:
-                    processed += 1
-                    self.progress['value'] = processed
-                    self.update_idletasks()
-                    continue
-                try:
-                    success = self.db.execute_query(
-                        "INSERT INTO ind.MaterialiStock (MaterialeId, Qty, DateIn, DateOut, CaricatoDa) "
-                        "VALUES (?, ?, GETDATE(), NULL, ?)",
-                        (item['materiale_id'], item['qta_stock'], self.user_name)
-                    )
-                    if success:
-                        stock_inserted += 1
-                    else:
-                        errors += 1
-                except Exception as e:
-                    errors += 1
-                    logger.error(f"Errore insert stock per {item['codice']}: {e}")
-
-                processed += 1
-                self.progress['value'] = processed
-                self.status_var.set(
-                    f"Giacenze: {processed - total_items}/{total_items} — "
-                    f"{stock_inserted} caricate"
-                )
-                self.update_idletasks()
+                    self.db.conn.rollback()
+                    logger.error(f"Rollback transazione import: {e}", exc_info=True)
+                    raise
+            # ── Fine transazione atomica ─────────────────────────────────
 
             # Risultato
             msg = self.lang.get('ind_import_completed', 'Importazione completata') + ":\n\n"

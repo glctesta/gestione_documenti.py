@@ -1091,6 +1091,26 @@ def send_weekly_pattern_check(conn, logo_path: str = None, mode: str = 'True') -
     four_weeks_ago = now - timedelta(weeks=4)
     
     try:
+        # ── Dedup atomica cross-istanza ──
+        # INSERT atomico: solo la prima istanza riesce a inserire il claim
+        week_key = now.strftime('%Y-%m-%d')
+        setting_key = f'SentWeeklyPatternEmail_{week_key}'
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO traceability_rs.dbo.settings (atribute, [value])
+                SELECT ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM traceability_rs.dbo.settings
+                    WHERE atribute = ?
+                )
+            """, (setting_key, now.strftime('%Y-%m-%d %H:%M:%S'), setting_key))
+            claimed = cursor.rowcount > 0
+            conn.commit()
+            if not claimed:
+                logger.info(f"Report settimanale pattern: già inviato per {week_key} "
+                            f"(altra istanza), skip")
+                return False
+            logger.info(f"Report settimanale pattern: claim '{setting_key}' acquisito")
         # Trova pattern ricorrenti
         with conn.cursor() as cursor:
             cursor.execute("""
@@ -1252,6 +1272,7 @@ def send_weekly_pattern_check(conn, logo_path: str = None, mode: str = 'True') -
         )
         logger.info(f"Report settimanale pattern ricorrenti inviato "
                      f"({len(patterns)} pattern trovati)")
+
         return True
         
     except Exception as e:

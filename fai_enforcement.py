@@ -19,6 +19,15 @@ from typing import List, Dict, Optional, Tuple
 logger = logging.getLogger("TraceabilityRS")
 
 
+def _get_app_version() -> str:
+    """Restituisce la versione dell'applicazione per il footer delle email."""
+    try:
+        import main
+        return getattr(main, 'APP_VERSION', 'unknown')
+    except Exception:
+        return 'unknown'
+
+
 def _execute_with_deadlock_retry(conn, query, params=None, max_retries=3):
     """Esegue una query con retry automatico in caso di deadlock (errore 40001).
 
@@ -470,9 +479,13 @@ def get_quality_department_emails(conn) -> List[str]:
             ON cc.CdcId = cs.CdcId
         INNER JOIN Employee.dbo.EmployeeAddress a
             ON a.EmployeeId = e.EmployeeId AND a.DateOut IS NULL
-        WHERE cc.CdcId = 2  -- QUALITY
-            AND f.FunctionCode >= 40
-            AND a.WorkEmail IS NOT NULL
+        WHERE (cc.CdcId = 2  -- QUALITY
+            AND f.FunctionCode >= 60
+            AND len(isnull(a.WorkEmail,'')) > 0)
+            or (
+            cc.cdcid = 1 --Production
+            and f.functioncode >=61
+            AND len(isnull(a.WorkEmail,'')) > 0)
     """
     emails = []
     try:
@@ -761,15 +774,27 @@ def get_pending_escalations(conn, event_type: str, current_level: int,
           AND l.FaiCompleted = 0
           AND l.DateOut IS NULL
           AND (
-              l.OrderId IS NULL
-              OR EXISTS (
+              -- Per eventi con OrderId: verifica Autocheck=1 per l'ordine specifico
+              (l.OrderId IS NOT NULL AND EXISTS (
                   SELECT 1
                   FROM [Traceability_RS].[dbo].[OrderPhases] op
                   INNER JOIN [Traceability_RS].[fai].[FaiTemplates] ft
                       ON ft.IdPhase = op.IDPhase
                   WHERE op.IDOrder = l.OrderId
                     AND ft.Autocheck = 1
-              )
+              ))
+              OR
+              -- Per SHIFT_CHECK (OrderId NULL): verifica che esistano ordini
+              -- attivi con Autocheck=1 nelle ultime 8 ore
+              (l.OrderId IS NULL AND EXISTS (
+                  SELECT 1
+                  FROM [Traceability_RS].[dbo].[Scannings] sc
+                  INNER JOIN [Traceability_RS].[dbo].[Boards] bd ON sc.IDBoard = bd.IDBoard
+                  INNER JOIN [Traceability_RS].[dbo].[OrderPhases] op2 ON op2.IDOrder = bd.IDOrder
+                  INNER JOIN [Traceability_RS].[fai].[FaiTemplates] ft2
+                      ON ft2.IdPhase = op2.IDPhase AND ft2.Autocheck = 1
+                  WHERE sc.ScanTimeStart >= DATEADD(HOUR, -8, GETDATE())
+              ))
           )
     """
     params = [event_type, current_level]
@@ -885,7 +910,8 @@ def send_escalation_email(level: int, employee_name: str, shift_label: str,
             
             <p style="color: #888; font-size: 11px; margin-top: 30px;">
                 Questa è una notifica automatica del sistema FAI Compliance Enforcement.<br>
-                TraceabilityRS — Vandewiele Romania
+                TraceabilityRS — Vandewiele Romania<br>
+                <em>Program version: {_get_app_version()}</em>
             </p>
         </div>
     </body>
@@ -1295,6 +1321,33 @@ def run_shift_check(conn, logo_path: str = "logo.png"):
     if not employees:
         logger.warning("FAI Enforcement: nessun responsabile trovato")
         return
+
+    # ── Gate Autocheck=1: verifico che ci siano ordini attivi con template ──
+    # Se nessun ordine in produzione ha un template Autocheck=1,
+    # non c'è nulla da compilare → skip enforcement
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+                SELECT TOP 1 1
+                FROM Traceability_RS.dbo.Scannings s
+                INNER JOIN Traceability_RS.dbo.Boards b ON s.IDBoard = b.IDBoard
+                INNER JOIN Traceability_RS.dbo.Orders o ON o.IDOrder = b.IDOrder
+                INNER JOIN Traceability_RS.dbo.OrderPhases op ON op.IDOrder = o.IDOrder
+                INNER JOIN Traceability_RS.fai.FaiTemplates ft
+                    ON ft.IdPhase = op.IDPhase AND ft.Autocheck = 1
+                WHERE s.ScanTimeStart >= DATEADD(HOUR, -8, GETDATE());
+                SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+            """)
+            has_autocheck_orders = cur.fetchone() is not None
+    except Exception as e:
+        logger.error(f"FAI Enforcement: errore check ordini Autocheck=1: {e}")
+        has_autocheck_orders = False
+
+    if not has_autocheck_orders:
+        logger.info("FAI Enforcement: nessun ordine attivo con Autocheck=1, "
+                     "skip shift check")
+        return
     
     shift_start_dt = get_shift_start_datetime(shift_key, now)
     violations = []
@@ -1456,9 +1509,12 @@ def process_pending_escalations(conn, logo_path: str = "logo.png"):
 
 def run_new_order_check(conn, logo_path: str = "logo.png"):
     """
-    Orchestratore per il monitoraggio di nuovi ordini.
-    Rileva nuovi ordini con template FAI e avvia il ciclo di enforcement.
+    DEPRECATED (v2.4.0.3.2) — Sostituito da run_planning_based_enforcement.
+    Mantenuto per riferimento storico. Non più chiamato dal worker.
     """
+    logger.warning("FAI Enforcement: run_new_order_check è DEPRECATED. Usare run_planning_based_enforcement.")
+    return
+    # --- Codice originale sotto (non eseguito) ---
     now = datetime.now()
     shift_key = get_current_shift(now)
     shift_label = SHIFT_TIMES.get(shift_key, {}).get('label', '??:??')
@@ -1524,19 +1580,17 @@ def run_new_order_check(conn, logo_path: str = "logo.png"):
 
 
 def process_new_order_escalations(conn, logo_path: str = "logo.png"):
-    """Processa escalation per nuovi ordini senza FAI.
-
-    Gate temporale: l'escalation al livello successivo avviene solo se
-    il livello precedente è stato registrato almeno 60 minuti fa.
-    Deduplicazione cross-pipeline: se un'altra pipeline (SHIFT_CHECK o
-    PLANNING_CHECK) ha già generato un'escalation per lo stesso ordine
-    allo stesso livello, si salta.
+    """DEPRECATED (v2.4.0.3.2) — Sostituito da run_planning_based_enforcement.
+    Mantenuto per riferimento storico. Non più chiamato dal worker.
     """
+    logger.warning("FAI Enforcement: process_new_order_escalations è DEPRECATED. Usare run_planning_based_enforcement.")
+    return
+    # --- Codice originale sotto (non eseguito) ---
     now = datetime.now()
     employees = get_responsible_employees(conn)
     admin_info = get_administrator_info(conn)
     
-    for target_level in [2, 3]:
+    for target_level in [2]:  # NEW_ORDER: max L2 (nessun dipendente specifico → no L3/referat)
         source_level = target_level - 1
         pending = get_pending_escalations(conn, 'NEW_ORDER', source_level)
         
@@ -1588,16 +1642,16 @@ def process_new_order_escalations(conn, logo_path: str = "logo.png"):
                 referat_pdf = create_automatic_referat(
                     conn,
                     employee_hhid=event.get('EmployeeHireHistoryId'),
-                    employee_name=event.get('EmployeeName', 'Responsabile linea'),
-                    shift_label=event.get('ShiftTime', ''),
+                    employee_name=event.get('EmployeeName') or '(Responsabile linea)',
+                    shift_label=event.get('ShiftTime') or '',
                     admin_info=admin_info,
                     order_info=event.get('OrderNumber')
                 )
             
             send_escalation_email(
                 level=target_level,
-                employee_name=event.get('EmployeeName', 'Responsabile linea'),
-                shift_label=event.get('ShiftTime', ''),
+                employee_name=event.get('EmployeeName') or '(Responsabile linea)',
+                shift_label=event.get('ShiftTime') or '',
                 recipients=recipients,
                 order_info=event.get('OrderNumber'),
                 logo_path=logo_path,

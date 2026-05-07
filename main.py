@@ -307,7 +307,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.0.3.6'  # Versione aggiornata
+APP_VERSION = '2.4.0.4.0'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -10780,23 +10780,20 @@ class App(tk.Tk):
                     logger.info("Prima esecuzione worker report mensile - controllo immediato")
                     
                     # Verifica se esiste già un record in database
-                    query = """
-                    SELECT IDSettings 
-                    FROM traceability_rs.dbo.settings 
-                    WHERE atribute = 'Sys_Verify_check_fail' 
-                    AND lastcheck IS  NULL
-                    """
-                    
+                    # Usa fetch_one() per rispettare il _lock e _clear_cursor_state()
+                    # (cursore diretto su self.db.conn causa HY007 se cursore condiviso è occupato)
                     try:
-                        cursor = self.db.conn.cursor()
-                        cursor.execute(query)
-                        row = cursor.fetchone()
-                        cursor.close()
-                        
+                        row = self.db.fetch_one("""
+                            SELECT IDSettings
+                            FROM traceability_rs.dbo.settings
+                            WHERE atribute = 'Sys_Verify_check_fail'
+                            AND lastcheck IS NULL
+                        """)
+
                         if row is None:
                             # Nessun record trovato - prima esecuzione mai fatta
                             logger.info("Nessun record trovato - eseguo invio immediato del report mensile")
-                            
+
                             # Verifica se è giorno lavorativo
                             if should_send_notification(country_code='IT'):
                                 # Verifica se è il primo giorno lavorativo del mese
@@ -10809,7 +10806,7 @@ class App(tk.Tk):
                                 logger.info("Oggi non è un giorno lavorativo")
                         else:
                             logger.info("Record trovato in database - skip invio immediato")
-                    
+
                     except Exception as e:
                         logger.error(f"Errore nel controllo prima esecuzione: {e}")
                 
@@ -13636,8 +13633,8 @@ class App(tk.Tk):
                     return
 
                 conn = self.db.conn
-                week_key = today.strftime('%Y-%m-%d')
-                setting_key = f'SentWeeklyVisitorEmail_{week_key}'
+                week_key = today.strftime('%Y%m%d')  # formato compresso YYYYMMDD
+                setting_key = f'SentWkVisEmail_{week_key}'  # 23 car. — colonna atribute VARCHAR(30)
 
                 # ── Dedup atomica cross-istanza ──
                 # Tenta di reclamare l'invio con INSERT atomico.

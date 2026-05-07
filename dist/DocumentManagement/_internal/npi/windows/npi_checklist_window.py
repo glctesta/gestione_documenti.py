@@ -132,11 +132,12 @@ class NpiChecklistWindow(tk.Toplevel):
         self.resp_produzione_var = tk.StringVar()
         self.resp_ingegneria_var = tk.StringVar()
 
-        for i, (label, var) in enumerate([
-            ('Responsabil Calitate Proces', self.resp_qualita_var),
-            ('Responsabil Producție', self.resp_produzione_var),
-            ('Responsabil Inginer Process', self.resp_ingegneria_var),
+        for i, (lang_key, fallback, var) in enumerate([
+            ('cl_resp_quality', 'Process Quality Responsible', self.resp_qualita_var),
+            ('cl_resp_production', 'Production Responsible', self.resp_produzione_var),
+            ('cl_resp_engineering', 'Process Engineer Responsible', self.resp_ingegneria_var),
         ]):
+            label = self.lang.get(lang_key, fallback)
             ttk.Label(resp_frm, text=f"{label}:").grid(row=i, column=0, sticky="w", padx=10, pady=3)
             ttk.Entry(resp_frm, textvariable=var, width=40).grid(row=i, column=1, sticky="w", padx=5, pady=3)
 
@@ -151,8 +152,9 @@ class NpiChecklistWindow(tk.Toplevel):
             warn_frm = ttk.Frame(tab)
             warn_frm.pack(fill="x", padx=15, pady=10)
             ttk.Label(warn_frm,
-                      text="⚠️ Nessuna famiglia con ChecklistSection configurata per questo progetto.\n"
-                           "Configurare le famiglie NPI nella sezione Configurazione.",
+                      text=self.lang.get('cl_no_family_sections',
+                           "⚠️ No family with ChecklistSection configured for this project.\n"
+                           "Configure NPI families in the Configuration section."),
                       foreground="#e74c3c", font=("Segoe UI", 10)).pack(padx=10, pady=5)
 
         self._load_orders()
@@ -376,14 +378,14 @@ class NpiChecklistWindow(tk.Toplevel):
         self.notebook.add(tab, text=self.lang.get('cl_tab_actions', '📝 Azioni/Rework'))
 
         # Actions
-        act_frm = ttk.LabelFrame(tab, text='Comentarii / Acțiuni')
+        act_frm = ttk.LabelFrame(tab, text=self.lang.get('cl_actions_comments', 'Comments / Actions'))
         act_frm.pack(fill="both", expand=True, padx=10, pady=5)
 
         act_cols = ('comment', 'responsible', 'close_date', 'status')
         self.actions_tree = ttk.Treeview(act_frm, columns=act_cols, show='headings', height=6)
-        self.actions_tree.heading('comment', text='Comentarii / Acțiuni')
-        self.actions_tree.heading('responsible', text='Responsabil')
-        self.actions_tree.heading('close_date', text='Data închidere')
+        self.actions_tree.heading('comment', text=self.lang.get('cl_actions_comments', 'Comments / Actions'))
+        self.actions_tree.heading('responsible', text=self.lang.get('cl_resp_heading', 'Responsible'))
+        self.actions_tree.heading('close_date', text=self.lang.get('cl_close_date', 'Close Date'))
         self.actions_tree.heading('status', text='Status')
         self.actions_tree.column('comment', width=350)
         self.actions_tree.column('responsible', width=150)
@@ -408,8 +410,8 @@ class NpiChecklistWindow(tk.Toplevel):
         self.rework_tree.heading('serial', text='Serial nr.')
         self.rework_tree.heading('fail_ict', text='FAIL ICT')
         self.rework_tree.heading('fail_fct', text='FAIL FCT')
-        self.rework_tree.heading('diagnosis', text='Diagnoză')
-        self.rework_tree.heading('reference', text='Referință')
+        self.rework_tree.heading('diagnosis', text=self.lang.get('cl_diagnosis', 'Diagnosis'))
+        self.rework_tree.heading('reference', text=self.lang.get('cl_reference', 'Reference'))
         self.rework_tree.heading('rework_resp', text='Rework resp.')
         for c in rw_cols:
             self.rework_tree.column(c, width=120)
@@ -439,7 +441,7 @@ class NpiChecklistWindow(tk.Toplevel):
         vals = tree.item(sel[0], 'values')
 
         dlg = tk.Toplevel(self)
-        dlg.title('Modifica')
+        dlg.title(self.lang.get('cl_edit', 'Edit'))
         dlg.geometry("450x" + str(50 + len(columns) * 35))
         dlg.transient(self)
         dlg.grab_set()
@@ -456,7 +458,7 @@ class NpiChecklistWindow(tk.Toplevel):
             tree.item(sel[0], values=tuple(vars_[c].get() for c in columns))
             dlg.destroy()
 
-        ttk.Button(dlg, text='Salva', command=save).grid(
+        ttk.Button(dlg, text=self.lang.get('cl_btn_save', 'Save'), command=save).grid(
             row=len(columns), column=1, pady=10, sticky="w")
 
     # ================================================================ #
@@ -516,7 +518,7 @@ class NpiChecklistWindow(tk.Toplevel):
             tree.insert('', 'end', values=tuple(vars_[f[1]].get() for f in fields))
             dlg.destroy()
 
-        ttk.Button(dlg, text='Salva', command=save).grid(
+        ttk.Button(dlg, text=self.lang.get('cl_btn_save', 'Save'), command=save).grid(
             row=len(fields), column=1, pady=10, sticky="w")
 
     # ================================================================ #
@@ -765,7 +767,7 @@ class NpiChecklistWindow(tk.Toplevel):
     def _save_session(self):
         if not self._current_session_id:
             messagebox.showwarning(self.lang.get('warning', 'Attenzione'),
-                                   'Selezionare o creare una sessione.', parent=self)
+                                   self.lang.get('cl_select_session', 'Select or create a session.'), parent=self)
             return
         try:
             data = self._collect_data()
@@ -781,7 +783,7 @@ class NpiChecklistWindow(tk.Toplevel):
         if not self._current_session_id:
             return
         if not messagebox.askyesno(self.lang.get('confirm', 'Conferma'),
-                                    'Eliminare questa sessione?', parent=self):
+                                    self.lang.get('cl_confirm_delete', 'Delete this session?'), parent=self):
             return
         try:
             self.npi_manager.delete_checklist_session(
@@ -795,7 +797,7 @@ class NpiChecklistWindow(tk.Toplevel):
         if not self._current_session_id:
             return
         if not messagebox.askyesno(self.lang.get('confirm', 'Conferma'),
-                                    'Approvare questa checklist? Non sarà più modificabile.', parent=self):
+                                    self.lang.get('cl_confirm_approve', 'Approve this checklist? It will no longer be editable.'), parent=self):
             return
         try:
             data = self._collect_data()

@@ -145,7 +145,7 @@ SELECT DISTINCT
 FROM Employee.dbo.EmployeeHireHistory h
 LEFT JOIN Employee.dbo.Employees e
     ON e.EmployeeId = h.EmployeeId
-   AND h.EmployerId = 2
+   AND h.EmployeerId = 2
    AND h.EndWorkDate IS NULL
 INNER JOIN Employee.dbo.EmployeeCdcStories ec
     ON h.EmployeeHireHistoryId = ec.EmployeeHireHistoryId
@@ -181,7 +181,7 @@ SELECT
 FROM Employee.dbo.EmployeeHireHistory h
 LEFT JOIN Employee.dbo.Employees e
     ON e.EmployeeId = h.EmployeeId
-   AND h.EmployerId = 2
+   AND h.EmployeerId = 2
    AND h.EndWorkDate IS NULL
 INNER JOIN Employee.dbo.EmployeeCdcStories ec
     ON h.EmployeeHireHistoryId = ec.EmployeeHireHistoryId

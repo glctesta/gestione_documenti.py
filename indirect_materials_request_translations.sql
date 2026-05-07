@@ -396,4 +396,271 @@ IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind
 IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_history_header' AND LanguageCode = 'sv')
     INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'ind_req_history_header', N'Förfrågningshistorik');
 
-PRINT 'Traduzioni Richiesta Materiali Indiretti inserite con successo.';
+-- ind_req_btn_add_cart
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_btn_add_cart' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'ind_req_btn_add_cart', N'➕ Aggiungi alla lista');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_btn_add_cart' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'ind_req_btn_add_cart', N'➕ Add to list');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_btn_add_cart' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'ind_req_btn_add_cart', N'➕ Adaugă în listă');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_btn_add_cart' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'ind_req_btn_add_cart', N'➕ Zur Liste hinzufügen');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_btn_add_cart' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'ind_req_btn_add_cart', N'➕ Lägg till i listan');
+
+-- ind_req_cart_title
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_cart_title' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'ind_req_cart_title', 'Lista Richieste da Inviare');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_cart_title' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'ind_req_cart_title', 'Requests to Send');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_cart_title' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'ind_req_cart_title', N'Lista Cereri de Trimis');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_cart_title' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'ind_req_cart_title', 'Anfragen zum Senden');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_cart_title' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'ind_req_cart_title', N'Förfrågningar att skicka');
+
+-- ind_req_btn_remove
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_btn_remove' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'ind_req_btn_remove', N'🗑️ Rimuovi selezionati');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_btn_remove' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'ind_req_btn_remove', N'🗑️ Remove selected');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_btn_remove' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'ind_req_btn_remove', N'🗑️ Elimină selectate');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_btn_remove' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'ind_req_btn_remove', N'🗑️ Ausgewählte entfernen');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_btn_remove' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'ind_req_btn_remove', N'🗑️ Ta bort valda');
+
+-- ind_req_btn_clear_cart
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_btn_clear_cart' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'ind_req_btn_clear_cart', N'❌ Svuota lista');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_btn_clear_cart' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'ind_req_btn_clear_cart', N'❌ Clear list');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_btn_clear_cart' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'ind_req_btn_clear_cart', N'❌ Golește lista');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_btn_clear_cart' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'ind_req_btn_clear_cart', N'❌ Liste leeren');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_btn_clear_cart' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'ind_req_btn_clear_cart', N'❌ Rensa listan');
+
+-- ind_req_btn_send_all
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_btn_send_all' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'ind_req_btn_send_all', N'📤 Invia tutte le richieste');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_btn_send_all' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'ind_req_btn_send_all', N'📤 Send all requests');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_btn_send_all' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'ind_req_btn_send_all', N'📤 Trimite toate cererile');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_btn_send_all' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'ind_req_btn_send_all', N'📤 Alle Anfragen senden');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_btn_send_all' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'ind_req_btn_send_all', N'📤 Skicka alla förfrågningar');
+
+-- ind_req_cart_count
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_cart_count' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'ind_req_cart_count', '{0} materiali in lista');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_cart_count' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'ind_req_cart_count', '{0} materials in list');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_cart_count' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'ind_req_cart_count', N'{0} materiale în listă');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_cart_count' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'ind_req_cart_count', '{0} Materialien in der Liste');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_cart_count' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'ind_req_cart_count', N'{0} material i listan');
+
+-- ind_req_select_to_remove
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_select_to_remove' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'ind_req_select_to_remove', 'Selezionare almeno un elemento da rimuovere.');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_select_to_remove' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'ind_req_select_to_remove', 'Select at least one item to remove.');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_select_to_remove' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'ind_req_select_to_remove', N'Selectați cel puțin un element de eliminat.');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_select_to_remove' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'ind_req_select_to_remove', N'Wählen Sie mindestens ein Element zum Entfernen aus.');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_select_to_remove' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'ind_req_select_to_remove', N'Välj minst ett objekt att ta bort.');
+
+-- ind_req_confirm_clear
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_confirm_clear' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'ind_req_confirm_clear', 'Svuotare la lista delle richieste?');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_confirm_clear' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'ind_req_confirm_clear', 'Clear the request list?');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_confirm_clear' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'ind_req_confirm_clear', N'Goliți lista de cereri?');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_confirm_clear' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'ind_req_confirm_clear', 'Anfragenliste leeren?');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_confirm_clear' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'ind_req_confirm_clear', N'Rensa förfrågningslistan?');
+
+-- ind_req_confirm_send_all
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_confirm_send_all' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'ind_req_confirm_send_all', 'Inviare {0} richieste?
+
+{1}');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_confirm_send_all' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'ind_req_confirm_send_all', 'Send {0} requests?
+
+{1}');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_confirm_send_all' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'ind_req_confirm_send_all', N'Trimiteți {0} cereri?
+
+{1}');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_confirm_send_all' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'ind_req_confirm_send_all', N'{0} Anfragen senden?
+
+{1}');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_confirm_send_all' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'ind_req_confirm_send_all', N'Skicka {0} förfrågningar?
+
+{1}');
+
+-- ind_req_sent_all_ok
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_sent_all_ok' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'ind_req_sent_all_ok', '{0} richieste inviate con successo!
+Il magazzino verrà notificato.');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_sent_all_ok' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'ind_req_sent_all_ok', '{0} requests sent successfully!
+The warehouse will be notified.');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_sent_all_ok' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'ind_req_sent_all_ok', N'{0} cereri trimise cu succes!
+Depozitul va fi notificat.');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_sent_all_ok' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'ind_req_sent_all_ok', '{0} Anfragen erfolgreich gesendet!
+Das Lager wird benachrichtigt.');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_req_sent_all_ok' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'ind_req_sent_all_ok', N'{0} förfrågningar skickade!
+Lagret kommer att meddelas.');
+
+-- menu_materials_general (Help menu)
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'menu_materials_general' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'menu_materials_general', 'Materiali (Generale)');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'menu_materials_general' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'menu_materials_general', 'Materials (General)');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'menu_materials_general' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'menu_materials_general', N'Materiale (General)');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'menu_materials_general' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'menu_materials_general', 'Materialien (Allgemein)');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'menu_materials_general' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'menu_materials_general', 'Material (Allmänt)');
+
+-- menu_indirect_materials_manual (Help menu)
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'menu_indirect_materials_manual' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'menu_indirect_materials_manual', 'Materiali Indiretti (Manuale)');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'menu_indirect_materials_manual' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'menu_indirect_materials_manual', 'Indirect Materials (Manual)');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'menu_indirect_materials_manual' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'menu_indirect_materials_manual', N'Materiale Indirecte (Manual)');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'menu_indirect_materials_manual' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'menu_indirect_materials_manual', 'Indirekte Materialien (Handbuch)');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'menu_indirect_materials_manual' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'menu_indirect_materials_manual', N'Indirekta Material (Handbok)');
+
+-- ═══════════════════════════════════════════════════════════════
+-- Traduzioni: Gestione Check Errati
+-- ═══════════════════════════════════════════════════════════════
+
+-- submenu_manage_wrong_checks
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'submenu_manage_wrong_checks' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'submenu_manage_wrong_checks', 'Gestione Check errati');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'submenu_manage_wrong_checks' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'submenu_manage_wrong_checks', 'Manage Wrong Checks');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'submenu_manage_wrong_checks' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'submenu_manage_wrong_checks', N'Gestionare Verificări Eronate');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'submenu_manage_wrong_checks' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'submenu_manage_wrong_checks', N'Fehlerhafte Prüfungen verwalten');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'submenu_manage_wrong_checks' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'submenu_manage_wrong_checks', N'Hantera felaktiga kontroller');
+
+-- wrong_checks_title
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_title' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'wrong_checks_title', 'Gestione Check Errati');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_title' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'wrong_checks_title', 'Manage Wrong Checks');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_title' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'wrong_checks_title', N'Gestionare Verificări Eronate');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_title' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'wrong_checks_title', N'Fehlerhafte Prüfungen verwalten');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_title' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'wrong_checks_title', N'Hantera felaktiga kontroller');
+
+-- wrong_checks_header
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_header' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'wrong_checks_header', N'Verifiche in attesa — selezionare e cancellare quelle errate');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_header' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'wrong_checks_header', N'Pending checks — select and delete wrong ones');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_header' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'wrong_checks_header', N'Verificări în așteptare — selectați și ștergeți cele eronate');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_header' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'wrong_checks_header', N'Ausstehende Prüfungen — fehlerhafte auswählen und löschen');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_header' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'wrong_checks_header', N'Väntande kontroller — välj och ta bort felaktiga');
+
+-- wrong_checks_btn_delete
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_btn_delete' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'wrong_checks_btn_delete', N'🗑️ Cancella selezionati');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_btn_delete' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'wrong_checks_btn_delete', N'🗑️ Delete selected');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_btn_delete' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'wrong_checks_btn_delete', N'🗑️ Șterge selectate');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_btn_delete' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'wrong_checks_btn_delete', N'🗑️ Ausgewählte löschen');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_btn_delete' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'wrong_checks_btn_delete', N'🗑️ Ta bort valda');
+
+-- wrong_checks_pending
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_pending' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'wrong_checks_pending', 'verifiche in attesa');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_pending' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'wrong_checks_pending', 'pending checks');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_pending' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'wrong_checks_pending', N'verificări în așteptare');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_pending' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'wrong_checks_pending', N'ausstehende Prüfungen');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_pending' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'wrong_checks_pending', N'väntande kontroller');
+
+-- wrong_checks_confirm_delete
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_confirm_delete' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'wrong_checks_confirm_delete', N'Cancellare {0} verifiche selezionate?
+
+{1}
+
+Questa operazione è irreversibile.');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_confirm_delete' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'wrong_checks_confirm_delete', N'Delete {0} selected checks?
+
+{1}
+
+This operation is irreversible.');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_confirm_delete' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'wrong_checks_confirm_delete', N'Ștergeți {0} verificări selectate?
+
+{1}
+
+Această operațiune este ireversibilă.');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_confirm_delete' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'wrong_checks_confirm_delete', N'{0} ausgewählte Prüfungen löschen?
+
+{1}
+
+Dieser Vorgang ist unwiderruflich.');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_confirm_delete' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'wrong_checks_confirm_delete', N'Ta bort {0} valda kontroller?
+
+{1}
+
+Denna åtgärd är oåterkallelig.');
+
+-- wrong_checks_deleted_ok
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_deleted_ok' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'wrong_checks_deleted_ok', '{0} verifiche cancellate con successo.');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_deleted_ok' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'wrong_checks_deleted_ok', '{0} checks deleted successfully.');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_deleted_ok' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'wrong_checks_deleted_ok', N'{0} verificări șterse cu succes.');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_deleted_ok' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'wrong_checks_deleted_ok', N'{0} Prüfungen erfolgreich gelöscht.');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'wrong_checks_deleted_ok' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'wrong_checks_deleted_ok', N'{0} kontroller har tagits bort.');
+
+PRINT 'Traduzioni Richiesta Materiali Indiretti e Gestione Check Errati inserite con successo.';

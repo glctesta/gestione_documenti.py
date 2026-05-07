@@ -27,12 +27,13 @@ class RequestIndirectMaterialsWindow(tk.Toplevel):
         self.hostname = socket.gethostname()
 
         self.title(lang.get('ind_req_title', 'Richiesta Materiali Indiretti'))
-        self.geometry("900x600")
+        self.geometry("950x750")
         self.resizable(True, True)
         self.transient(master)
         self.grab_set()
 
         self._selected_material = None
+        self._cart = []  # lista di dict: {material, qty}
 
         self._build_ui()
         self._load_materials()
@@ -100,36 +101,89 @@ class RequestIndirectMaterialsWindow(tk.Toplevel):
         scrollbar.pack(side="right", fill="y")
         self.tree.bind('<<TreeviewSelect>>', self._on_material_selected)
 
-        # --- Quantità e invio ---
+        # --- Quantità e aggiunta al carrello ---
         req_frame = ttk.LabelFrame(main, text=self.lang.get('ind_req_request', 'Richiesta'), padding=10)
         req_frame.pack(fill="x")
 
         self.selected_label_var = tk.StringVar(value=self.lang.get('ind_req_no_selection', 'Seleziona un materiale dalla lista'))
-        ttk.Label(req_frame, textvariable=self.selected_label_var, font=("Segoe UI", 10)).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 5))
+        ttk.Label(req_frame, textvariable=self.selected_label_var, font=("Segoe UI", 10)).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 5))
 
         ttk.Label(req_frame, text=self.lang.get('ind_req_qty', 'Quantità:')).grid(row=1, column=0, padx=5, sticky="w")
         self.qty_var = tk.StringVar(value="1")
         self.qty_entry = ttk.Entry(req_frame, textvariable=self.qty_var, width=10)
         self.qty_entry.grid(row=1, column=1, padx=5)
 
-        self.btn_send = ttk.Button(
+        self.btn_add = ttk.Button(
             req_frame,
-            text=self.lang.get('ind_req_btn_send', 'Invia Richiesta'),
-            command=self._send_request,
+            text=self.lang.get('ind_req_btn_add_cart', '➕ Aggiungi alla lista'),
+            command=self._add_to_cart,
             state="disabled"
         )
-        self.btn_send.grid(row=1, column=2, padx=20)
+        self.btn_add.grid(row=1, column=2, padx=10)
 
-        # Storico
         ttk.Button(
             req_frame,
             text=self.lang.get('ind_req_btn_history', 'Storico Richieste'),
             command=self._open_history
         ).grid(row=1, column=3, padx=5)
 
-        # Info validazione
         self.validation_var = tk.StringVar(value="")
         ttk.Label(req_frame, textvariable=self.validation_var, foreground="gray").grid(row=2, column=0, columnspan=4, sticky="w", pady=(5, 0))
+
+        # --- Carrello richieste multiple ---
+        cart_frame = ttk.LabelFrame(
+            main,
+            text=self.lang.get('ind_req_cart_title', 'Lista Richieste da Inviare'),
+            padding=10
+        )
+        cart_frame.pack(fill="both", expand=True, pady=(10, 0))
+
+        cart_tree_frame = ttk.Frame(cart_frame)
+        cart_tree_frame.pack(fill="both", expand=True)
+
+        cart_cols = ('codice', 'descrizione', 'qty', 'tipo')
+        self.cart_tree = ttk.Treeview(cart_tree_frame, columns=cart_cols, show='headings',
+                                      selectmode='extended', height=5)
+        self.cart_tree.heading('codice', text=self.lang.get('ind_import_col_code', 'Codice'))
+        self.cart_tree.heading('descrizione', text=self.lang.get('ind_import_col_desc', 'Descrizione'))
+        self.cart_tree.heading('qty', text=self.lang.get('ind_req_qty', 'Quantità'))
+        self.cart_tree.heading('tipo', text=self.lang.get('ind_req_col_type', 'Tipo'))
+        self.cart_tree.column('codice', width=120)
+        self.cart_tree.column('descrizione', width=350)
+        self.cart_tree.column('qty', width=80, anchor='e')
+        self.cart_tree.column('tipo', width=100)
+
+        cart_sb = ttk.Scrollbar(cart_tree_frame, orient='vertical', command=self.cart_tree.yview)
+        self.cart_tree.configure(yscrollcommand=cart_sb.set)
+        self.cart_tree.pack(side='left', fill='both', expand=True)
+        cart_sb.pack(side='right', fill='y')
+
+        cart_btn_frame = ttk.Frame(cart_frame)
+        cart_btn_frame.pack(fill='x', pady=(8, 0))
+
+        ttk.Button(
+            cart_btn_frame,
+            text=self.lang.get('ind_req_btn_remove', '🗑️ Rimuovi selezionati'),
+            command=self._remove_from_cart
+        ).pack(side='left', padx=(0, 5))
+
+        ttk.Button(
+            cart_btn_frame,
+            text=self.lang.get('ind_req_btn_clear_cart', '❌ Svuota lista'),
+            command=self._clear_cart
+        ).pack(side='left', padx=5)
+
+        self.cart_count_var = tk.StringVar(value="")
+        ttk.Label(cart_btn_frame, textvariable=self.cart_count_var,
+                  font=('Segoe UI', 9)).pack(side='left', padx=15)
+
+        self.btn_send_all = ttk.Button(
+            cart_btn_frame,
+            text=self.lang.get('ind_req_btn_send_all', '📤 Invia tutte le richieste'),
+            command=self._send_all_requests,
+            state='disabled'
+        )
+        self.btn_send_all.pack(side='right', padx=(5, 0))
 
     # ------------------------------------------------------------------ #
     #  Caricamento e filtro materiali                                       #
@@ -229,7 +283,7 @@ class RequestIndirectMaterialsWindow(tk.Toplevel):
         selection = self.tree.selection()
         if not selection:
             self._selected_material = None
-            self.btn_send.state(["disabled"])
+            self.btn_add.state(["disabled"])
             self.qty_entry.config(state='normal')
             return
 
@@ -238,7 +292,7 @@ class RequestIndirectMaterialsWindow(tk.Toplevel):
 
         if self._selected_material:
             m = self._selected_material
-            self.selected_label_var.set(f"📦 {m['codice']} - {m['descrizione']}  |  Stock: {m['stock']:.2f}")
+            self.selected_label_var.set(f"\U0001f4e6 {m['codice']} - {m['descrizione']}  |  Stock: {m['stock']:.2f}")
 
             qty_std = m['confezione']
 
@@ -262,7 +316,7 @@ class RequestIndirectMaterialsWindow(tk.Toplevel):
                                   'Quantità deve essere multiplo di {0}. Massimo: {1} (stock disponibile).').format(int(qty_std), int(max_qty))
                 )
 
-            self.btn_send.state(["!disabled"])
+            self.btn_add.state(["!disabled"])
 
     def _validate_qty(self):
         """Valida la quantità rispetto a MaterialConfigurations.
@@ -287,12 +341,14 @@ class RequestIndirectMaterialsWindow(tk.Toplevel):
         qty_standard = m['confezione']
         stock = m['stock']
 
-        # Stock deve essere >= quantità richiesta
-        if stock < qty:
+        # Stock deve essere >= quantità richiesta (considerando anche qty già nel carrello per stesso materiale)
+        cart_qty_same = sum(c['qty'] for c in self._cart if c['material']['id'] == m['id'])
+        available = stock - cart_qty_same
+        if available < qty:
             return False, self.lang.get(
                 'ind_req_stock_insufficient',
                 'Stock insufficiente. Disponibile: {0}, richiesto: {1}.'
-            ).format(f"{stock:.2f}", f"{qty:.2f}")
+            ).format(f"{available:.2f}", f"{qty:.2f}")
 
         if not m['frazionabile']:
             # Non frazionabile: qty deve essere multiplo della confezione
@@ -305,9 +361,10 @@ class RequestIndirectMaterialsWindow(tk.Toplevel):
         return True, qty
 
     # ------------------------------------------------------------------ #
-    #  Invio richiesta                                                      #
+    #  Carrello multi-richiesta                                             #
     # ------------------------------------------------------------------ #
-    def _send_request(self):
+    def _add_to_cart(self):
+        """Aggiunge il materiale selezionato al carrello."""
         valid, result = self._validate_qty()
         if not valid:
             messagebox.showerror(self.lang.get('error', 'Errore'), result, parent=self)
@@ -316,39 +373,120 @@ class RequestIndirectMaterialsWindow(tk.Toplevel):
         qty = result
         m = self._selected_material
 
-        # Conferma
+        self._cart.append({'material': m.copy(), 'qty': qty})
+        self._refresh_cart()
+        logger.info(f"Aggiunto al carrello: {m['codice']} x {qty}")
+
+    def _refresh_cart(self):
+        """Aggiorna la treeview del carrello e i contatori."""
+        self.cart_tree.delete(*self.cart_tree.get_children())
+        for i, item in enumerate(self._cart):
+            m = item['material']
+            self.cart_tree.insert('', 'end', iid=str(i), values=(
+                m['codice'], m['descrizione'], f"{item['qty']:.2f}", m['tipo']
+            ))
+
+        count = len(self._cart)
+        if count > 0:
+            self.cart_count_var.set(
+                self.lang.get('ind_req_cart_count', '{0} materiali in lista').format(count)
+            )
+            self.btn_send_all.state(["!disabled"])
+        else:
+            self.cart_count_var.set("")
+            self.btn_send_all.state(["disabled"])
+
+    def _remove_from_cart(self):
+        """Rimuove gli elementi selezionati dal carrello."""
+        selection = self.cart_tree.selection()
+        if not selection:
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('ind_req_select_to_remove', 'Selezionare almeno un elemento da rimuovere.'),
+                parent=self
+            )
+            return
+
+        # Rimuovi in ordine inverso per non spostare gli indici
+        indices = sorted([int(s) for s in selection], reverse=True)
+        for idx in indices:
+            if 0 <= idx < len(self._cart):
+                removed = self._cart.pop(idx)
+                logger.info(f"Rimosso dal carrello: {removed['material']['codice']}")
+
+        self._refresh_cart()
+
+    def _clear_cart(self):
+        """Svuota il carrello."""
+        if not self._cart:
+            return
+        if messagebox.askyesno(
+            self.lang.get('confirm', 'Conferma'),
+            self.lang.get('ind_req_confirm_clear', 'Svuotare la lista delle richieste?'),
+            parent=self
+        ):
+            self._cart.clear()
+            self._refresh_cart()
+
+    def _send_all_requests(self):
+        """Invia tutte le richieste nel carrello in una transazione atomica."""
+        if not self._cart:
+            return
+
+        count = len(self._cart)
+        # Riepilogo
+        summary_lines = []
+        for item in self._cart:
+            m = item['material']
+            summary_lines.append(f"  \u2022 {m['codice']} - {m['descrizione']}  x {item['qty']:.2f}")
+        summary = "\n".join(summary_lines)
+
         confirm_msg = self.lang.get(
-            'ind_req_confirm_send',
-            'Inviare richiesta per:\n\n{0} - {1}\nQuantità: {2}'
-        ).format(m['codice'], m['descrizione'], qty)
+            'ind_req_confirm_send_all',
+            'Inviare {0} richieste?\n\n{1}'
+        ).format(count, summary)
 
         if not messagebox.askyesno(self.lang.get('confirm', 'Conferma'), confirm_msg, parent=self):
             return
 
         try:
-            # INSERT richiesta
-            query = """
-                INSERT INTO ind.MaterialiRichieste
-                    (MaterialeId, QtaRichiesta, QtaStockAlMomento, Stato,
-                     DataRichiesta, RichiestoDa, ComputerRichiedente)
-                VALUES (?, ?, ?, 'RICHIESTA', GETDATE(), ?, ?)
-            """
-            success = self.db.execute_query(query, (
-                m['id'], qty, m['stock'], self.user_name, self.hostname
-            ))
+            self.db._ensure_connection()
+            with self.db._lock:
+                cursor = self.db.cursor
+                try:
+                    for item in self._cart:
+                        m = item['material']
+                        cursor.execute(
+                            "INSERT INTO ind.MaterialiRichieste "
+                            "(MaterialeId, QtaRichiesta, QtaStockAlMomento, Stato, "
+                            " DataRichiesta, RichiestoDa, ComputerRichiedente) "
+                            "VALUES (?, ?, ?, 'RICHIESTA', GETDATE(), ?, ?)",
+                            (m['id'], item['qty'], m['stock'], self.user_name, self.hostname)
+                        )
 
-            if success:
-                messagebox.showinfo(
-                    self.lang.get('info', 'Info'),
-                    self.lang.get('ind_req_sent_ok', 'Richiesta inviata con successo!\nIl magazzino verrà notificato.'),
-                    parent=self
-                )
-                logger.info(f"Richiesta materiale inviata: {m['codice']} x {qty} da {self.user_name}@{self.hostname}")
-            else:
-                raise Exception(self.db.last_error_details)
+                    self.db.conn.commit()
+                    logger.info(f"Inviate {count} richieste materiali da {self.user_name}@{self.hostname}")
+
+                except Exception as e:
+                    self.db.conn.rollback()
+                    logger.error(f"Rollback invio richieste: {e}", exc_info=True)
+                    raise
+
+            messagebox.showinfo(
+                self.lang.get('info', 'Info'),
+                self.lang.get(
+                    'ind_req_sent_all_ok',
+                    '{0} richieste inviate con successo!\nIl magazzino verrà notificato.'
+                ).format(count),
+                parent=self
+            )
+
+            self._cart.clear()
+            self._refresh_cart()
+            self._load_materials()  # ricarica stock aggiornati
 
         except Exception as e:
-            logger.error(f"Errore invio richiesta: {e}", exc_info=True)
+            logger.error(f"Errore invio richieste: {e}", exc_info=True)
             messagebox.showerror(
                 self.lang.get('error', 'Errore'),
                 f"{self.lang.get('ind_req_send_error', 'Errore invio richiesta')}:\n{e}",

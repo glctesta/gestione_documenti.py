@@ -407,7 +407,7 @@ class DisciplinaryClaimWindow(tk.Toplevel):
                      date_ref.year,
                      date_ref.strftime('%Y-%m-%d'),
                      self.author_name,
-                     self.selected_employee_id)
+                     2)  # EmployeerId = 2 (Vandewiele Romania) — FK su dbo.Employeers, NON l'id del dipendente
 
                 # 2. Recupera RegistroId e DocName
                 self.db.cursor.execute("""
@@ -658,7 +658,7 @@ class DisciplinaryClaimWindow(tk.Toplevel):
                 with self.db._lock:
                     self.db.cursor.execute("""
                         SELECT [VALUE] FROM Traceability_RS.dbo.Settings
-                        WHERE Atribute = 'Sys_email_referat' AND DateOut IS NULL
+                        WHERE Atribute = 'Sys_email_referat'
                     """)
                     row = self.db.cursor.fetchone()
                     if row and row[0]:

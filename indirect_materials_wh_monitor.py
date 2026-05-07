@@ -58,11 +58,14 @@ class WHMonitor:
                 self.master.after(POLL_INTERVAL_MS, self._poll)
 
     def _check_new_requests(self):
-        """Controlla richieste con stato RICHIESTA da notificare."""
+        """Controlla richieste con stato RICHIESTA da notificare.
+        Raccoglie TUTTE le richieste pendenti in un batch e mostra un unico popup
+        con un unico PDF — evita N documenti separati per N materiali.
+        """
         if self._popup_open:
             return
 
-        # Trova richieste mai notificate o da ri-notificare (> 5 min fa)
+        # Recupera TUTTE le richieste pendenti (non solo una)
         query = """
             SELECT r.RichiestaId, m.CodiceMateriale, m.DescrizioneMateriale,
                    r.QtaRichiesta, r.RichiestoDa, r.DataRichiesta,
@@ -74,34 +77,43 @@ class WHMonitor:
                    OR DATEDIFF(MINUTE, r.DataUltimaNotificaWH, GETDATE()) >= ?)
             ORDER BY r.DataRichiesta ASC
         """
-        row = self.db.fetch_one(query, (RE_NOTIFY_MINUTES,))
+        if hasattr(self.db, 'fetch_all'):
+            rows = self.db.fetch_all(query, (RE_NOTIFY_MINUTES,))
+        else:
+            self.db._ensure_connection()
+            with self.db._lock:
+                self.db.cursor.execute(query, (RE_NOTIFY_MINUTES,))
+                rows = self.db.cursor.fetchall()
 
-        if row:
-            # Aggiorna timestamp notifica
-            self.db.execute_query(
-                "UPDATE ind.MaterialiRichieste SET DataUltimaNotificaWH = GETDATE() WHERE RichiestaId = ?",
-                (row[0],)
-            )
-            self._show_request_popup(row)
+        if rows:
+            # Aggiorna timestamp notifica per tutti i record del batch
+            for row in rows:
+                self.db.execute_query(
+                    "UPDATE ind.MaterialiRichieste SET DataUltimaNotificaWH = GETDATE() WHERE RichiestaId = ?",
+                    (row[0],)
+                )
+            # Mostra un unico popup per l'intero batch
+            self._show_request_popup(rows)
 
-    def _show_request_popup(self, request_data):
-        """Mostra popup con richiesta materiale + beep."""
+    def _show_request_popup(self, requests):
+        """Mostra popup con TUTTE le richieste del batch + beep.
+
+        Args:
+            requests: list of rows — tutti i materiali in attesa.
+        """
         self._popup_open = True
-        rid = request_data[0]
-        codice = request_data[1] or ''
-        descrizione = request_data[2] or ''
-        qty = request_data[3]
-        richiedente = request_data[4] or ''
-        data_richiesta = request_data[5]
-        computer_rich = request_data[6] or ''
+        rids = [r[0] for r in requests]
+        richiedente = requests[0][4] or ''
+        data_richiesta = requests[0][5]
+        computer_rich = requests[0][6] or ''
 
         # Beep di avviso (3 volte suono di sistema Windows)
         self._play_alert_sound()
 
         # Popup
         popup = tk.Toplevel(self.master)
-        popup.title("⚠️ CERERE DE MATERIAL")
-        popup.geometry("500x350")
+        popup.title(f"\u26a0\ufe0f CERERE DE MATERIAL ({len(rids)} materiale)")
+        popup.geometry("560x420")
         popup.attributes('-topmost', True)
         popup.configure(bg='#e74c3c')
         popup.grab_set()
@@ -109,30 +121,38 @@ class WHMonitor:
         main = ttk.Frame(popup, padding=15)
         main.pack(expand=True, fill="both")
 
+        data_str = data_richiesta.strftime('%d/%m/%Y %H:%M') if data_richiesta else ''
         ttk.Label(
             main,
-            text="⚠️ NOUĂ CERERE DE MATERIAL!",
-            font=("Segoe UI", 14, "bold"),
+            text=f"\u26a0\ufe0f NOU\u0102 CERERE DE MATERIAL! ({len(rids)} materiale)",
+            font=("Segoe UI", 13, "bold"),
             foreground="#e74c3c"
-        ).pack(pady=(0, 10))
+        ).pack(pady=(0, 5))
 
-        data_str = data_richiesta.strftime('%d/%m/%Y %H:%M') if data_richiesta else ''
+        ttk.Label(
+            main,
+            text=f"Solicitant: {richiedente}   |   Data: {data_str}   |   PC: {computer_rich}",
+            font=("Segoe UI", 9)
+        ).pack(pady=(0, 8))
 
-        info_text = (
-            f"Cod: {codice}\n"
-            f"Descriere: {descrizione}\n"
-            f"Cantitate: {qty:.2f}\n"
-            f"Solicitant: {richiedente}\n"
-            f"Data: {data_str}\n"
-            f"Computer: {computer_rich}"
-        )
-        ttk.Label(main, text=info_text, font=("Segoe UI", 11), justify="left").pack(pady=10)
+        # Lista materiali
+        cols = ('codice', 'descrizione', 'qty')
+        tree = ttk.Treeview(main, columns=cols, show='headings', height=min(len(requests), 8))
+        tree.heading('codice', text='Cod')
+        tree.heading('descrizione', text='Descriere')
+        tree.heading('qty', text='Cantitate')
+        tree.column('codice', width=100)
+        tree.column('descrizione', width=280)
+        tree.column('qty', width=80, anchor='e')
+        for r in requests:
+            tree.insert('', 'end', values=(r[1] or '', r[2] or '', f"{r[3]:.2f}" if r[3] else '-'))
+        tree.pack(fill='both', expand=True, pady=(0, 10))
 
         btn_frame = ttk.Frame(main)
-        btn_frame.pack(fill="x", pady=10)
+        btn_frame.pack(fill="x", pady=5)
 
         def on_prepare():
-            self._prepare_request(rid, popup)
+            self._prepare_request(rids, popup)
 
         def on_dismiss():
             self._popup_open = False
@@ -140,56 +160,69 @@ class WHMonitor:
 
         ttk.Button(
             btn_frame,
-            text=self.lang.get('ind_wh_btn_prepare', '✅ Pregătește și Confirmă'),
+            text=self.lang.get('ind_wh_btn_prepare', '\u2705 Preg\u0103te\u0219te \u0219i Confirm\u0103'),
             command=on_prepare
         ).pack(side="left", expand=True, fill="x", padx=(0, 5))
 
         ttk.Button(
             btn_frame,
-            text=self.lang.get('ind_wh_btn_print_only', '🖨️ Stampează'),
-            command=lambda: self._print_request(rid)
+            text=self.lang.get('ind_wh_btn_print_only', '\U0001f5a8\ufe0f Stampea\u017b\u0103'),
+            command=lambda: self._print_request(rids)
         ).pack(side="left", expand=True, fill="x", padx=5)
 
         ttk.Button(
             btn_frame,
-            text=self.lang.get('ind_wh_btn_dismiss', 'Închide'),
+            text=self.lang.get('ind_wh_btn_dismiss', '\xcenchide'),
             command=on_dismiss
         ).pack(side="left", expand=True, fill="x", padx=(5, 0))
 
         popup.protocol("WM_DELETE_WINDOW", on_dismiss)
 
-    def _prepare_request(self, richiesta_id, popup):
-        """Conferma preparazione, stampa PDF, aggiorna stato."""
-        try:
-            # Aggiorna stato a PRONTA
-            success = self.db.execute_query(
-                """UPDATE ind.MaterialiRichieste
-                   SET Stato = 'PRONTA',
-                       DataPreparazione = GETDATE(),
-                       PreparatoDa = ?,
-                       ComputerPreparatore = ?
-                   WHERE RichiestaId = ? AND Stato = 'RICHIESTA'""",
-                (self.lang.get('current_user', 'WH'), self.hostname, richiesta_id)
-            )
+    def _prepare_request(self, richiesta_ids, popup):
+        """Conferma preparazione per tutti gli ID del batch, stampa un unico PDF.
 
-            if success:
-                # Genera e stampa PDF
-                self._print_request(richiesta_id)
-                logger.info(f"Richiesta {richiesta_id} confermata e stampata")
+        Args:
+            richiesta_ids: list[int] — tutti gli ID del batch da confermare
+        """
+        try:
+            prepared = []
+            for rid in richiesta_ids:
+                success = self.db.execute_query(
+                    """UPDATE ind.MaterialiRichieste
+                       SET Stato = 'PRONTA',
+                           DataPreparazione = GETDATE(),
+                           PreparatoDa = ?,
+                           ComputerPreparatore = ?
+                       WHERE RichiestaId = ? AND Stato = 'RICHIESTA'""",
+                    (self.lang.get('current_user', 'WH'), self.hostname, rid)
+                )
+                if success:
+                    prepared.append(rid)
+
+            if prepared:
+                # Genera e stampa un UNICO PDF per tutti i materiali confermati
+                self._print_request(prepared)
+                logger.info(f"Batch {prepared} confermato e stampato in un unico PDF")
 
         except Exception as e:
-            logger.error(f"Errore conferma richiesta {richiesta_id}: {e}", exc_info=True)
+            logger.error(f"Errore conferma batch richieste: {e}", exc_info=True)
 
         self._popup_open = False
         popup.destroy()
 
-    def _print_request(self, richiesta_id):
-        """Stampa il PDF della richiesta."""
+    def _print_request(self, richiesta_ids):
+        """Stampa un UNICO PDF per tutti gli ID del batch.
+
+        Args:
+            richiesta_ids: int o list[int]
+        """
         try:
-            from indirect_materials_pdf import generate_and_print_request_pdf
-            generate_and_print_request_pdf(self.db, richiesta_id, print_now=True)
+            from indirect_materials_pdf import generate_and_print_batch_pdf
+            if isinstance(richiesta_ids, int):
+                richiesta_ids = [richiesta_ids]
+            generate_and_print_batch_pdf(self.db, richiesta_ids, print_now=True)
         except Exception as e:
-            logger.error(f"Errore stampa richiesta {richiesta_id}: {e}", exc_info=True)
+            logger.error(f"Errore stampa batch richieste {richiesta_ids}: {e}", exc_info=True)
 
     @staticmethod
     def _play_alert_sound():

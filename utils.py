@@ -175,6 +175,8 @@ def send_npi_weekly_overview_email(
     attachment_path: str,
     summary: Optional[dict] = None,
     chart_path: Optional[str] = None,
+    overdue_attachment_path: Optional[str] = None,
+    overdue_count: int = 0,
     smtp_host: str = "vandewiele-com.mail.protection.outlook.com",
     smtp_port: int = 25
 ) -> None:
@@ -223,6 +225,7 @@ def send_npi_weekly_overview_email(
                 <li>Completed: {completed}</li>
                 <li>Overdue: {overdue}</li>
             </ul>
+            {f'<p style="color:#C0392B"><strong>⚠️ {overdue_count} overdue tasks</strong> — see attached Excel for details.</p>' if overdue_count > 0 else ''}
             {chart_block}
             <p>This email is generated automatically by the NPI Project Management System.</p>
             <br/>
@@ -236,6 +239,8 @@ def send_npi_weekly_overview_email(
         """
 
         attachments = [attachment_path]
+        if overdue_attachment_path and os.path.exists(overdue_attachment_path):
+            attachments.append(overdue_attachment_path)
         if chart_path and os.path.exists(chart_path):
             attachments = [('inline', chart_path, 'npi_overview_pie')] + attachments
 

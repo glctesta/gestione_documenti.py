@@ -327,7 +327,7 @@ class NewsEditDialog(tk.Toplevel):
         main_frame = ttk.Frame(self, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
         
-        # EmployerID
+        # EmployeerID
         ttk.Label(main_frame, text=self.lang.get('employer_id', 'ID Azienda:')).grid(row=0, column=0, sticky=tk.W, pady=5)
         self.employer_id = ttk.Spinbox(main_frame, from_=1, to=10, width=10)
         self.employer_id.set(2)  # Default

@@ -255,7 +255,7 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
                     ON h.EmployeeHireHistoryId = css.EmployeeHireHistoryId
                     AND css.DateOut IS NULL
                     AND h.EndWorkDate IS NULL
-                    AND h.employerid = 2
+                    AND h.employeerid = 2
                 INNER JOIN employee.dbo.CdcSub s ON s.SubCdcId = css.SubCdcId
                 INNER JOIN employee.dbo.Functions f ON f.FunctionId = css.FunctionId
                 WHERE s.CdcId = ?
@@ -316,6 +316,16 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
                 subordinate_filter = f"AND H.EmployeeHireHistoryId IN ({placeholders})"
 
             # STEP 4: Query principale con filtro gerarchia
+            # L'admin (FC=100) vede tutti MA non se stesso.
+            # Il non-admin è già escluso dalla lista subordinate_ids (AND EmployeeHireHistoryId != ?).
+            # Per l'admin aggiungiamo il filtro esplicito di auto-esclusione.
+            if is_admin:
+                self_exclude_filter = "AND H.EmployeeHireHistoryId != ?"
+                query_params = [employee_hire_history_id]  # primo param: esclusione self
+            else:
+                self_exclude_filter = ""
+                query_params = list(subordinate_ids)
+
             query = f"""
                 SELECT
                     AR.[AbsenceRequestId],
@@ -349,13 +359,14 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
                 WHERE
                     AR.Approved = '1900-01-01 00:00:00.000'
                     {subordinate_filter}
+                    {self_exclude_filter}
                 ORDER BY
                     AR.[DateStart],
                     E.EmployeeSurname + ' ' + E.EmployeeName
             """
 
             with self.db._lock:
-                self.db.cursor.execute(query, subordinate_ids)
+                self.db.cursor.execute(query, query_params)
                 all_requests = self.db.cursor.fetchall()
 
             logger.info(f"Trovate {len(all_requests) if all_requests else 0} richieste pendenti per EmployeeHireHistoryId={employee_hire_history_id}")

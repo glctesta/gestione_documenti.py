@@ -6,6 +6,7 @@ import os
 from .project_window import ProjectWindow
 from .gantt_window import NpiGanttWindow
 from .analysis_window import ProjectAnalysisWindow
+from .overdue_tasks_window import NpiOverdueTasksWindow
 
 # Import per PDF
 try:
@@ -230,6 +231,13 @@ class NpiDashboardWindow(tk.Toplevel):
             command=self._export_overview_report
         )
         self.export_overview_button.pack(side=tk.LEFT, padx=5)
+        
+        ttk.Separator(button_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=5)
+        ttk.Button(
+            button_frame,
+            text=self.lang.get('btn_overdue_tasks', '⚠️ Task Scaduti'),
+            command=self._launch_overdue_tasks
+        ).pack(side=tk.LEFT, padx=5)
         
         ttk.Button(button_frame, text=self.lang.get('btn_close', 'Chiudi'), command=self.destroy).pack(side=tk.RIGHT)
 
@@ -634,6 +642,14 @@ class NpiDashboardWindow(tk.Toplevel):
         if project_id is None: return
 
         NpiGanttWindow(self, self.npi_manager, self.lang, project_id)
+
+    def _launch_overdue_tasks(self):
+        """Apre la finestra con tutti i task NPI scaduti."""
+        try:
+            NpiOverdueTasksWindow(self, self.npi_manager, self.lang)
+        except Exception as e:
+            logger.error(f"Errore apertura finestra task scaduti: {e}", exc_info=True)
+            messagebox.showerror("Errore", f"Impossibile aprire la finestra:\n{e}", parent=self)
 
     def _export_to_excel_new(self):
         """Esporta i progetti NPI in un file Excel completo con statistiche task e tab per cliente."""
