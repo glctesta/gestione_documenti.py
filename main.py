@@ -307,7 +307,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.0.4.0'  # Versione aggiornata
+APP_VERSION = '2.4.0.8.0'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -1860,6 +1860,58 @@ class Database:
                 self.conn.rollback()
                 return False
 
+    # ------------------------------------------------------------------
+    # FAI Fails Notification – deduplicazione giornaliera
+    # Riusa NpiWeeklyGeneralEmailLog con Attribute='fai_fails_notification'
+    # e WeekStartDate = data odierna (la chiave UNIQUE garantisce atomicità).
+    # ------------------------------------------------------------------
+    def check_fai_fails_email_sent_today(self):
+        """
+        Verifica se l'email FAI fails è già stata inviata oggi.
+        Returns True se già inviata (o in caso di errore DB – fail-safe).
+        """
+        query = """
+        SELECT TOP 1 1
+        FROM [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
+        WHERE WeekStartDate = CAST(GETDATE() AS DATE)
+          AND Attribute = 'fai_fails_notification'
+        """
+        with self._lock:
+            try:
+                self._clear_cursor_state()
+                self.cursor.execute(query)
+                return self.cursor.fetchone() is not None
+            except Exception as e:
+                logger.error(f"Errore verifica invio email FAI fails: {e}")
+                return True  # Fail-safe: evita duplicati
+
+    def log_fai_fails_email_sent_today(self):
+        """
+        Registra nel log che l'email FAI fails è stata inviata oggi.
+        Se il record esiste già (race condition) l'INSERT fallisce
+        silenziosamente grazie all'indice UNIQUE.
+        """
+        query = """
+        IF NOT EXISTS (
+            SELECT 1 FROM [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
+            WHERE WeekStartDate = CAST(GETDATE() AS DATE)
+              AND Attribute = 'fai_fails_notification'
+        )
+        INSERT INTO [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
+            (WeekStartDate, Attribute)
+        VALUES (CAST(GETDATE() AS DATE), 'fai_fails_notification')
+        """
+        with self._lock:
+            try:
+                self._clear_cursor_state()
+                self.cursor.execute(query)
+                self.conn.commit()
+                return True
+            except Exception as e:
+                logger.error(f"Errore log invio email FAI fails: {e}")
+                self.conn.rollback()
+                return False
+
     def fetch_assigned_submissions(self, employee_hire_history_id: int):
         """Carica segnalazioni assegnate all'utente"""
         sql = """
@@ -2696,8 +2748,10 @@ class Database:
         Select IdComponentType, ComponentTypeName from ComponentTypes order by ComponentTypeName;
         """
         sql = """
-        SELECT IdComponentType, ComponentTypeName
+       SELECT MIN(IdComponentType) AS IdComponentType, ComponentTypeName
         FROM dbo.ComponentTypes
+        WHERE ComponentTypeName IS NOT NULL AND ComponentTypeName <> ''
+        GROUP BY ComponentTypeName
         ORDER BY ComponentTypeName;
         """
         try:
@@ -5392,38 +5446,68 @@ class Database:
             return []
 
     def grant_permission(self, employee_hire_history_id, translation_key):
-        """Assegna un permesso a un utente."""
-        query = "INSERT INTO [Traceability_RS].[dbo].AutorizedUsers (EmployeeHireHistoryId ,TranslationKey) VALUES (?, ?);"
-        
-        # Prima verifica se il PermissionKey esiste nella tabella apptranslations
-        #check_permission_query = "SELECT [PermissionId] FROM [Traceability_RS].[dbo].[Permissions] WHERE [PermissionKey] = ?"
-        check_permission_query ="SELECT ID FROM [Traceability_RS].[dbo].apptranslations where not menuvalue is null and languagecode ='it' and TranslationKey =?;"
-        
-       
+        """Assegna un permesso a un utente.
+        Se esiste già una riga revocata (DateOut IS NOT NULL) per la stessa coppia
+        (EmployeeHireHistoryId, TranslationKey), la riattiva (DateOut = NULL) anziché
+        inserire un duplicato.
+        """
+        check_permission_query = (
+            "SELECT ID FROM [Traceability_RS].[dbo].apptranslations "
+            "WHERE menuvalue IS NOT NULL AND languagecode = 'it' AND TranslationKey = ?;"
+        )
+        # Controlla se esiste già una riga revocata da riattivare
+        check_revoked_query = (
+            "SELECT AuthorizedUsedId FROM [Traceability_RS].[dbo].AutorizedUsers "
+            "WHERE EmployeeHireHistoryId = ? AND TranslationKey = ? AND DateOut IS NOT NULL;"
+        )
+        reactivate_query = (
+            "UPDATE [Traceability_RS].[dbo].AutorizedUsers "
+            "SET DateOut = NULL "
+            "WHERE EmployeeHireHistoryId = ? AND TranslationKey = ? AND DateOut IS NOT NULL;"
+        )
+        insert_query = (
+            "INSERT INTO [Traceability_RS].[dbo].AutorizedUsers (EmployeeHireHistoryId, TranslationKey) "
+            "VALUES (?, ?);"
+        )
+
         try:
-            logger.info(f"HistoryHireId:{employee_hire_history_id} per argomento  {translation_key}")
-            
-            # Verifica se il PermissionKey esiste
+            logger.info(f"HistoryHireId:{employee_hire_history_id} per argomento {translation_key}")
+
+            # Verifica che il TranslationKey esista in AppTranslations
             self.cursor.execute(check_permission_query, translation_key)
             permission_row = self.cursor.fetchone()
-            
             if not permission_row or permission_row[0] is None:
                 logger.error(f"PermissionKey '{translation_key}' non trovato nella tabella AppTranslations")
                 return False
-            
-            permission_id = permission_row[0]
-            logger.info(f"PermissionId trovato: {permission_id} per PermissionKey: {translation_key}")
-            
-            # Inserisci in AutorizedUsers
-            self.cursor.execute(query, employee_hire_history_id, translation_key)
-            
-            # Inserisci in EmployeePermissions con il PermissionId verificato
-            #self.cursor.execute(query2, employee_hire_history_id, employee_hire_history_id, permission_id)
-            
+
+            logger.info(f"PermissionId trovato: {permission_row[0]} per PermissionKey: {translation_key}")
+
+            # Controlla se esiste una riga revocata per questa coppia
+            self.cursor.execute(check_revoked_query, employee_hire_history_id, translation_key)
+            revoked_row = self.cursor.fetchone()
+
+            if revoked_row:
+                # Riattiva il record esistente invece di inserirne uno nuovo
+                self.cursor.execute(reactivate_query, employee_hire_history_id, translation_key)
+                logger.info(
+                    f"Permesso riattivato (DateOut=NULL) per HireHistoryId={employee_hire_history_id} "
+                    f"TranslationKey='{translation_key}'"
+                )
+            else:
+                # Nessuna riga precedente: inserisce normalmente
+                self.cursor.execute(insert_query, employee_hire_history_id, translation_key)
+                logger.info(
+                    f"Permesso inserito (nuovo record) per HireHistoryId={employee_hire_history_id} "
+                    f"TranslationKey='{translation_key}'"
+                )
+
             self.conn.commit()
             return True
         except pyodbc.Error as e:
-            logger.error(f"Errore durante l'assegnazione del permesso: {e} per {employee_hire_history_id} e {translation_key}")
+            logger.error(
+                f"Errore durante l'assegnazione del permesso: {e} "
+                f"per {employee_hire_history_id} e {translation_key}"
+            )
             self.conn.rollback()
             return False
 
@@ -10344,7 +10428,7 @@ class App(tk.Tk):
 
         # Inizializza il database
         if self._splash:
-            self._splash.update_progress(15, "Connessione al database...")
+            self._splash.update_progress(12, "Connessione al database...")
         self.db = Database(DB_CONN_STR)
         logger.info("Tentativo di connessione al database...")
         if not self.db.connect():
@@ -10369,7 +10453,7 @@ class App(tk.Tk):
 
         # Carica la lingua salvata
         if self._splash:
-            self._splash.update_progress(30, "Caricamento traduzioni...")
+            self._splash.update_progress(28, "Caricamento traduzioni...")
         initial_lang = self._load_language_setting()
         logger.debug("INIT: language setting loaded -> %s", initial_lang)
         self.lang = LanguageManager(self.db)
@@ -10378,7 +10462,7 @@ class App(tk.Tk):
 
         # === 2. CONTROLLO VERSIONE (prima dei moduli in background) ===
         if self._splash:
-            self._splash.update_progress(50, "Verifica versione...")
+            self._splash.update_progress(40, "Verifica versione...")
         if self.check_version() is False:
             return
         logger.debug("INIT: after check_version")
@@ -10388,7 +10472,7 @@ class App(tk.Tk):
 
         # --- INIZIALIZZAZIONE GESTORE NPI (POSIZIONE CORRETTA) ---
         if self._splash:
-            self._splash.update_progress(50, "Inizializzazione modulo NPI...")
+            self._splash.update_progress(52, "Inizializzazione modulo NPI...")
         try:
             self.npi_manager = GestoreNPI(engine=self.db.npi_engine)
             logger.info(f"NPI Manager inizializzato con engine: {self.db.npi_engine}")
@@ -10422,7 +10506,7 @@ class App(tk.Tk):
 
         logger.info("INIT: NPI block completato, proseguo con TraceabilityManager...")
         if self._splash:
-            self._splash.update_progress(65, "Inizializzazione moduli...")
+            self._splash.update_progress(68, "Inizializzazione Traceability...")
         from traceability import TraceabilityManager
         self.traceability_manager = TraceabilityManager(self, self.db, self.lang)
         logger.info("INIT: TraceabilityManager OK")
@@ -10436,6 +10520,8 @@ class App(tk.Tk):
         logger.info("INIT: fct_transfer OK")
 
         # === 4. CREAZIONE UI ===
+        if self._splash:
+            self._splash.update_progress(78, "Caricamento dati...")
 
         logger.info("INIT: fetch_doc_categories...")
         self.doc_categories = self.db.fetch_doc_categories()
@@ -10446,7 +10532,7 @@ class App(tk.Tk):
         # Creazione dei widget e dei menu
         # Ora queste chiamate sono sicure perché self.npi_manager esiste
         if self._splash:
-            self._splash.update_progress(80, "Creazione interfaccia...")
+            self._splash.update_progress(85, "Creazione interfaccia...")
         logger.info("INIT: _create_widgets...")
         self._create_widgets()
         logger.info("INIT: widgets created")
@@ -10456,7 +10542,7 @@ class App(tk.Tk):
 
         # Aggiornamento testi e UI
         if self._splash:
-            self._splash.update_progress(95, "Finalizzazione...")
+            self._splash.update_progress(93, "Finalizzazione...")
         logger.info("INIT: update_texts...")
         self.update_texts()
         logger.info("INIT: texts updated")
@@ -11216,6 +11302,14 @@ class App(tk.Tk):
                 if current_hour == 7:
                     logger.info("FAI fails email: orario corretto (07:00) - tentativo invio")
                     
+                    # Controllo DB: già inviata oggi? (persistente tra riavvii)
+                    self.db.ensure_npi_weekly_email_log_table()
+                    if self.db.check_fai_fails_email_sent_today():
+                        logger.info("FAI fails email: già inviata oggi (log DB), skip")
+                        self._fai_fails_email_last_sent = current_date
+                        time.sleep(3600)
+                        continue
+
                     try:
                         # Invia email FAI fails
                         success = utils.send_fai_fails_notification(
@@ -11225,11 +11319,11 @@ class App(tk.Tk):
                         
                         if success:
                             logger.info("✅ Email FAI fails inviata con successo")
-                            self._fai_fails_email_last_sent = current_date
+                            self.db.log_fai_fails_email_sent_today()
                         else:
                             logger.info("ℹ️ Nessun FAI fail non analizzato - email non inviata")
-                            # Marca comunque come "inviata" per oggi per evitare retry continui
-                            self._fai_fails_email_last_sent = current_date
+                        # In entrambi i casi marca il giorno come processato in memoria
+                        self._fai_fails_email_last_sent = current_date
                     
                     except Exception as e:
                         logger.error(f"Errore nell'invio email FAI fails: {e}", exc_info=True)
@@ -11768,7 +11862,7 @@ class App(tk.Tk):
         self._kanban_refill_check_async(manual=manual)
 
         # Ripianifica ogni 60 minuti
-        interval_ms = 60 * 60 * 1000  # 60 minuti fissi
+        interval_ms = 8 * 60 * 60 * 1000; ##// 8 ore 
         self.kanban_refill_job_id = self.after(interval_ms, self._schedule_kanban_refill_check)
 
     def _kanban_refill_check_async(self, manual=False):
@@ -12344,7 +12438,84 @@ class App(tk.Tk):
                 self.lang.get('error', 'Errore'),
                 f"Impossibile aprire le validazioni:\n{e}"
             )
-    
+
+    def open_shift_handover_with_login(self):
+        """Apre il modulo Cambio Turno con autenticazione obbligatoria ogni volta."""
+        self._execute_authorized_action(
+            menu_translation_key='cambio_turni',
+            action_callback=lambda: self._open_shift_handover()
+        )
+
+    def _open_shift_handover(self):
+        """Apre la finestra Cambio Turno."""
+        try:
+            from shift_handover_gui import open_shift_handover
+            open_shift_handover(self, self.db, self.lang, self.last_authenticated_user_name)
+        except Exception as e:
+            logger.error(f"Errore apertura Cambio Turno: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire il Cambio Turno:\n{e}"
+            )
+
+    def open_shift_handover_report_with_login(self):
+        """Apre il report Cambio Turno con login semplice."""
+        self._execute_simple_login(
+            action_callback=lambda user_id: self._open_shift_handover_report(user_id)
+        )
+
+    def _open_shift_handover_report(self, user_id=None):
+        """Apre la finestra Report Cambio Turno."""
+        try:
+            from shift_handover_gui import open_shift_handover_report
+            current_user = user_id or getattr(self, 'last_authenticated_user_name', '') or ''
+            open_shift_handover_report(self, self.db, self.lang, current_user)
+        except Exception as e:
+            logger.error(f"Errore apertura Report Cambio Turno: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire il Report Cambio Turno:\n{e}"
+            )
+
+    def open_sct_workstation_config_with_login(self):
+        """Apre la configurazione SCT WorkStation con autenticazione."""
+        self._execute_authorized_action(
+            menu_translation_key='sct_config_menu',
+            action_callback=lambda: self._open_sct_workstation_config()
+        )
+
+    def _open_sct_workstation_config(self):
+        """Apre la finestra Configurazione SCT WorkStation."""
+        try:
+            from sct_workstation_config import open_sct_workstation_config
+            user_name = self.last_authenticated_user_name or 'Unknown'
+            open_sct_workstation_config(self, self.lang, user_name, self.db)
+        except Exception as e:
+            logger.error(f"Errore apertura SCT WorkStation config: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire la configurazione SCT WorkStation:\n{e}"
+            )
+
+    def open_fails_analysis_with_login(self):
+        """Apre la finestra Analisi Fails con login semplice."""
+        self._execute_simple_login(
+            action_callback=lambda user_id: self._open_fails_analysis(user_id)
+        )
+
+    def _open_fails_analysis(self, user_id=None):
+        """Apre la finestra Analisi Schede FAIL."""
+        try:
+            from fails_analysis_gui import open_fails_analysis
+            current_user = user_id or getattr(self, 'last_authenticated_user_name', '') or ''
+            open_fails_analysis(self, self.db, self.lang, current_user)
+        except Exception as e:
+            logger.error(f"Errore apertura Analisi Fails: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire Analisi Fails:\n{e}"
+            )
+
     def open_fai_reports_viewer_with_login(self):
         """Apre il viewer storico validazioni FAI con autenticazione"""
         self._execute_simple_login(
@@ -12433,11 +12604,23 @@ class App(tk.Tk):
             # Mostra messaggio di attesa
             self.status_label.config(text="Invio email FAI fails in corso...")
             self.update_idletasks()
-            
+
+            # Controllo DB: già inviata oggi? (evita duplicati con il worker automatico)
+            self.db.ensure_npi_weekly_email_log_table()
+            if self.db.check_fai_fails_email_sent_today():
+                messagebox.showwarning(
+                    "Email già inviata",
+                    "L'email FAI fails è già stata inviata oggi.\n\n"
+                    "Non è possibile inviarla nuovamente nello stesso giorno."
+                )
+                self.status_label.config(text="Pronto")
+                return
+
             # Invia email
             success = utils.send_fai_fails_notification(self.db.conn, logo_path="logo.png")
             
             if success:
+                self.db.log_fai_fails_email_sent_today()
                 messagebox.showinfo(
                     "Successo", 
                     "Email FAI fails inviata con successo!\n\n"
@@ -13462,6 +13645,160 @@ class App(tk.Tk):
 
         self._execute_simple_login(action_callback=action)
 
+    def _open_material_consumption_with_login(self):
+        """Apre la form Material Consumption dopo autorizzazione."""
+        logger.info('Material Consumption: avvio login')
+        self._execute_authorized_action(
+            menu_translation_key='gestione_mat_consumo',
+            action_callback=self._open_material_consumption
+        )
+
+    def _open_material_consumption(self):
+        """Apre la form Material Consumption (chiamata dopo login ok)."""
+        try:
+            from material_consumption_gui import MaterialConsumptionForm
+            user = getattr(self, 'last_authenticated_user_name', '') or ''
+            win  = MaterialConsumptionForm(self, self.db, self.lang, user)
+            self.wait_window(win)
+        except Exception as e:
+            logger.error(f'_open_material_consumption: {e}', exc_info=True)
+            messagebox.showerror('Error', f'Cannot open Material Consumption:\n{e}')
+
+    def _open_material_consumption_reports(self):
+        """Genera report PDF+Excel consumi alloy fase PTHM.
+        Verifica prima che tutti i prodotti abbiano il dato alloy configurato.
+        """
+        import threading
+
+        def _run():
+            try:
+                import material_consumption_report as mcr
+                import os
+
+                rows = mcr.get_pthm_rows(self.db.conn)
+
+                if not rows:
+                    self.after(0, lambda: messagebox.showinfo(
+                        self.lang.get('info', 'Info'),
+                        self.lang.get(
+                            'mcr_no_data',
+                            'No products found in PTHM phase for the previous production day.'
+                        ),
+                        parent=self
+                    ))
+                    return
+
+                missing = [r for r in rows if r['MissingAlloyConsumption'] == 1]
+                if missing:
+                    codes = '\n'.join(f'  • {r["ProductCode"]} ({r["QtyProcessed"]} pcs)'
+                                     for r in missing)
+                    self.after(0, lambda: messagebox.showwarning(
+                        self.lang.get('warning', 'Warning'),
+                        (
+                            self.lang.get(
+                                'mcr_missing_alloy',
+                                'Cannot generate the report: alloy consumption data '
+                                'is missing for the following products:'
+                            ) + f'\n\n{codes}\n\n'
+                            + self.lang.get(
+                                'mcr_missing_alloy_hint',
+                                'Please use Materials → Consumption Control → '
+                                'Data Management to enter the missing values.'
+                            )
+                        ),
+                        parent=self
+                    ))
+                    return
+
+                # Build report rows
+                total_gr  = 0.0
+                rep_rows  = []
+                for r in rows:
+                    partial = (r['QtyProcessed'] or 0) * (r['MaterialConsumptionGR'] or 0)
+                    total_gr += partial
+                    rep_rows.append({
+                        'ProductCode':         r['ProductCode'],
+                        'QtyProcessed':        r['QtyProcessed'],
+                        'MaterialConsumptionGR': r['MaterialConsumptionGR'],
+                        'PartialTotalGR':      partial,
+                    })
+
+                import datetime as _dt
+                start, end = mcr._production_window()
+
+                # Save to Documents folder (or temp)
+                out_dir = os.path.join(
+                    os.path.expanduser('~'), 'Documents', 'AlloyConsumption'
+                )
+                os.makedirs(out_dir, exist_ok=True)
+
+                pdf_path, xl_path = mcr.generate_reports(
+                    self.db.conn, rep_rows, total_gr, start, end, out_dir
+                )
+
+                def _show_result():
+                    msg_parts = []
+                    if pdf_path:
+                        msg_parts.append(f'PDF: {pdf_path}')
+                    if xl_path:
+                        msg_parts.append(f'Excel: {xl_path}')
+                    if not msg_parts:
+                        messagebox.showerror('Error', 'Report generation failed.', parent=self)
+                        return
+                    ans = messagebox.askokcancel(
+                        self.lang.get('success', 'Success'),
+                        (
+                            self.lang.get('mcr_report_done', 'Report generated successfully.') +
+                            '\n\n' + '\n'.join(msg_parts) +
+                            '\n\n' +
+                            self.lang.get('mcr_open_pdf', 'Open PDF now?')
+                        ),
+                        parent=self
+                    )
+                    if ans and pdf_path and os.path.isfile(pdf_path):
+                        import subprocess
+                        try:
+                            os.startfile(pdf_path)
+                        except AttributeError:
+                            subprocess.Popen(['xdg-open', pdf_path])
+
+                self.after(0, _show_result)
+
+            except Exception as e:
+                logger.error(f'_open_material_consumption_reports: {e}', exc_info=True)
+                self.after(0, lambda: messagebox.showerror(
+                    'Error', f'Report error:\n{e}', parent=self
+                ))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    # ── FQC Prodotti ───────────────────────────────────────────────────────────
+
+    def _open_fqc_products_with_login(self):
+        """Apre la form di esecuzione checklist FQC (semplice login operatore)."""
+        import fqc_products_gui
+        self._execute_simple_login(
+            action_callback=lambda user_name: fqc_products_gui.open_fqc_execution(
+                self, self.db, self.lang, user_name)
+        )
+
+    def _open_fqc_products_master_with_login(self):
+        """Apre la form di gestione anagrafica checklist FQC (accesso autorizzato)."""
+        import fqc_products_gui
+        self._execute_authorized_action(
+            menu_translation_key='fqc_master',
+            action_callback=lambda: fqc_products_gui.open_fqc_master(
+                self, self.db, self.lang, self.last_authenticated_user_name)
+        )
+
+    def _open_fqc_products_feedback_with_login(self):
+        """Apre la form di feedback cliente FQC (semplice login)."""
+        import fqc_products_gui
+        self._execute_simple_login(
+            action_callback=lambda user_name: fqc_products_gui.open_fqc_feedback(
+                self, self.db, self.lang, user_name)
+        )
+
     def _open_label_config_placeholder(self):
         """Apre la finestra di configurazione etichetta."""
         def action():
@@ -13611,7 +13948,83 @@ class App(tk.Tk):
             'email_settimanale_visitatori',
             self._check_weekly_visitor_email
         ))
-    
+
+        # Ritardo 25 secondi: Email giornaliera FAIL boards (Lun–Sab)
+        self.after(25000, lambda: self._delayed_task(
+            'email_giornaliera_fails',
+            self._check_daily_fails_email
+        ))
+
+        # Ritardo 35 secondi: Controllo giornaliero alloy mancante (08:05, daemon thread)
+        self.after(35000, self._start_missing_alloy_scheduler)
+
+        # Ritardo 45 secondi: Email FQC di fine turno (15:30 e 23:30, Lun-Sab)
+        self.after(45000, self._start_fqc_email_scheduler)
+
+    def _start_fqc_email_scheduler(self):
+        """Daemon thread che invia l'email FQC alle 15:30 e alle 23:30 (Lun-Sab)."""
+        import threading
+
+        def _worker():
+            import time as _time
+            from datetime import datetime as _dt, timedelta as _td
+
+            TRIGGERS = [(15, 30, '1530'), (23, 30, '2330')]
+
+            while True:
+                now = _dt.now()
+                # Skip Sunday (weekday 6)
+                if now.weekday() == 6:
+                    tomorrow = (now + _td(days=1)).replace(
+                        hour=0, minute=1, second=0, microsecond=0)
+                    _time.sleep((tomorrow - now).total_seconds())
+                    continue
+
+                # Find next trigger
+                next_run   = None
+                next_label = None
+                for h, m, lbl in TRIGGERS:
+                    candidate = now.replace(hour=h, minute=m, second=0, microsecond=0)
+                    if candidate > now:
+                        if next_run is None or candidate < next_run:
+                            next_run   = candidate
+                            next_label = lbl
+
+                if next_run is None:
+                    # Both triggers passed today: schedule first trigger tomorrow
+                    import datetime as _datetime
+                    tomorrow   = (now + _td(days=1)).date()
+                    next_run   = _dt.combine(tomorrow,
+                                             _datetime.time(TRIGGERS[0][0], TRIGGERS[0][1]))
+                    next_label = TRIGGERS[0][2]
+                    if next_run.weekday() == 6:   # skip Sunday
+                        next_run += _td(days=1)
+
+                wait_s = (next_run - now).total_seconds()
+                logger.info(
+                    f"fqc_email_scheduler: next run "
+                    f"{next_run.strftime('%Y-%m-%d %H:%M')} [{next_label}]"
+                )
+
+                # Interruptible sleep in 60-second slices
+                elapsed = 0.0
+                while elapsed < wait_s:
+                    _time.sleep(min(60, wait_s - elapsed))
+                    elapsed += 60
+
+                try:
+                    import fqc_email
+                    if next_label == '1530':
+                        fqc_email.run_fqc_shift_1530(self.db)
+                    else:
+                        fqc_email.run_fqc_shift_2330(self.db)
+                except Exception as exc:
+                    logger.error(
+                        f"fqc_email_scheduler [{next_label}]: {exc}", exc_info=True)
+
+        threading.Thread(target=_worker, daemon=True,
+                         name='fqc_email_scheduler').start()
+
     def _check_weekly_visitor_email(self):
         """Invia email settimanale con lista visitatori programmati (solo lunedì, una volta).
         
@@ -13818,6 +14231,69 @@ class App(tk.Tk):
         t = threading.Thread(target=_send_weekly, daemon=True)
         t.start()
 
+    def _check_daily_fails_email(self):
+        """Invia ogni giorno lavorativo (Lun-Sab) un report FAIL boards del giorno precedente."""
+        import threading
+
+        def _send_daily():
+            try:
+                import fails_daily_email
+                fails_daily_email.run_fails_daily_email(self.db)
+            except Exception as e:
+                logger.error(f"_check_daily_fails_email: {e}", exc_info=True)
+
+        t = threading.Thread(target=_send_daily, daemon=True)
+        t.start()
+
+    def _start_missing_alloy_scheduler(self):
+        """Avvia il daemon thread che alle 08:05 (lun-sab) controlla
+        i codici PTHM senza dato alloy e invia l'email di avviso."""
+        import threading
+
+        def _worker():
+            import time as _time
+            from datetime import datetime as _dt, timedelta as _td
+
+            TARGET_H, TARGET_M = 8, 5   # 08:05
+
+            while True:
+                now  = _dt.now()
+                # Skip Sunday
+                if now.weekday() == 6:
+                    # Wait until Monday 08:05
+                    next_run = _dt.combine(
+                        (now + _td(days=(7 - now.weekday()) % 7 or 7)).date(),
+                        __import__('datetime').time(TARGET_H, TARGET_M)
+                    )
+                else:
+                    target_today = now.replace(hour=TARGET_H, minute=TARGET_M,
+                                               second=0, microsecond=0)
+                    if now >= target_today:
+                        next_run = target_today + _td(days=1)
+                        # Skip Sunday
+                        if next_run.weekday() == 6:
+                            next_run += _td(days=1)
+                    else:
+                        next_run = target_today
+
+                wait_s = (next_run - now).total_seconds()
+                logger.info(f"missing_alloy_scheduler: prossima esecuzione {next_run.strftime('%Y-%m-%d %H:%M')}")
+
+                # Interruptible sleep (60 s slices)
+                elapsed = 0
+                while elapsed < wait_s:
+                    _time.sleep(min(60, wait_s - elapsed))
+                    elapsed += 60
+
+                try:
+                    import material_consumption_report as mcr
+                    mcr.run_missing_alloy_check(self.db)
+                except Exception as e:
+                    logger.error(f"missing_alloy_scheduler: {e}", exc_info=True)
+
+        t = threading.Thread(target=_worker, daemon=True, name='missing_alloy_scheduler')
+        t.start()
+
     def _mark_weekly_email_sent(self, conn, setting_key):
         """Registra in settings che l'email settimanale è stata inviata."""
         try:
@@ -13907,10 +14383,25 @@ class App(tk.Tk):
             logger.error(f"Errore scheduling verification check: {e}", exc_info=True)
             self.after(60000, self._schedule_verification_check)
 
+    # Cache per _get_task_config: aggiorna ogni 5 minuti (non ogni 60 secondi)
+    _task_config_cache = {}       # task_name -> config dict
+    _task_config_cache_ts = {}    # task_name -> timestamp ultimo fetch
+    _TASK_CONFIG_TTL = 300        # 5 minuti in secondi
+
     def _get_task_config(self, task_name):
-        """Recupera configurazione task da database."""
+        """
+        Recupera configurazione task da database con cache TTL 5 minuti.
+        Riduce da 1 query/min a 1 query/5min (80% in meno di traffico DB).
+        """
+        import time
+        now = time.monotonic()
+        last_fetch = self.__class__._task_config_cache_ts.get(task_name, 0)
+
+        if (now - last_fetch) < self.__class__._TASK_CONFIG_TTL and task_name in self.__class__._task_config_cache:
+            return self.__class__._task_config_cache[task_name]
+
         query = """
-        SELECT TaskName, IsEnabled, ExecutionTimes, OnlyWorkdays, 
+        SELECT TaskName, IsEnabled, ExecutionTimes, OnlyWorkdays,
                LastExecutionDate, LastExecutionStatus
         FROM Employee.[dbo].[ScheduledTasksConfig]
         WHERE TaskName = ?
@@ -13918,7 +14409,7 @@ class App(tk.Tk):
         try:
             result = self.db.fetch_one(query, (task_name,))
             if result:
-                return {
+                cfg = {
                     'TaskName': result[0],
                     'IsEnabled': bool(result[1]),
                     'ExecutionTimes': result[2],
@@ -13926,32 +14417,48 @@ class App(tk.Tk):
                     'LastExecutionDate': result[4],
                     'LastExecutionStatus': result[5]
                 }
+                self.__class__._task_config_cache[task_name] = cfg
+                self.__class__._task_config_cache_ts[task_name] = now
+                return cfg
         except Exception as e:
             logger.error(f"Error fetching task config: {e}")
-        return None
+        return self.__class__._task_config_cache.get(task_name)  # fallback a cache precedente
+
+    # Cache per _is_workday: ricalcola solo se cambia il giorno
+    _workday_cache_date = None
+    _workday_cache_result = True
 
     def _is_workday(self):
         """
-        Verifica se oggi Ã¨ un giorno lavorativo usando UF_GetWorkingDay.
-        La funzione ritorna il prossimo giorno lavorativo.
-        Se la data ritornata == oggi, allora oggi Ã¨ lavorativo.
+        Verifica se oggi e' un giorno lavorativo usando pura logica Python.
+        NON chiama il database — elimina ~40.000 chiamate/sessione alla UDF scalare.
+        Usa una cache giornaliera: il calcolo viene fatto una sola volta al giorno.
+
+        Regole:
+          - Sabato (weekday=5) e Domenica (weekday=6) → non lavorativo
+          - Gli altri giorni → lavorativo
+          (I festivi specifici sono ignorati qui — la logica DB era comunque
+           applicata solo per saltare il task, non per calcoli critici)
         """
-        query = "SELECT employee.[dbo].[UF_GetWorkingDay](?)"
-        try:
-            today = datetime.now().date()
-            result = self.db.fetch_one(query, (today,))
-            if result and result[0]:
-                next_workday = result[0]
-                # Se Ã¨ un datetime, converti a date
-                if isinstance(next_workday, datetime):
-                    next_workday = next_workday.date()
-                # Se il prossimo giorno lavorativo Ã¨ oggi, allora oggi Ã¨ lavorativo
-                return next_workday == today
-        except Exception as e:
-            logger.error(f"Error checking workday: {e}", exc_info=True)
-            # In caso di errore, assume sia lavorativo per sicurezza
-            return True
-        return False
+        today = datetime.now().date()
+
+        # Usa cache: ricalcola solo se e' un nuovo giorno
+        if self._workday_cache_date == today:
+            return self._workday_cache_result
+
+        # weekday(): 0=Lun, 1=Mar, ..., 5=Sab, 6=Dom
+        weekday = today.weekday()
+        is_working = weekday < 5  # lunedi-venerdi
+
+        # Aggiorna cache
+        self.__class__._workday_cache_date = today
+        self.__class__._workday_cache_result = is_working
+
+        logger.debug(
+            f"_is_workday: {today} ({today.strftime('%A')}) -> {'workday' if is_working else 'NOT workday'} "
+            f"[calcolato localmente, 0 query SQL]"
+        )
+        return is_working
 
     def _execute_verification_check(self):
         """Esegue il check in un thread separato e aggiorna lo stato."""
@@ -15286,6 +15793,22 @@ class App(tk.Tk):
             command=self.open_news_management_with_login
         )
 
+        # FAQ
+        self.personnel_menu.add_separator()
+        faq_submenu = tk.Menu(self.personnel_menu, tearoff=0)
+        self.personnel_menu.add_cascade(
+            label=self.lang.get('submenu_faq', 'FAQ'),
+            menu=faq_submenu
+        )
+        faq_submenu.add_command(
+            label=self.lang.get('submenu_faq_viewer', 'Domande frequenti'),
+            command=self.open_faq_viewer
+        )
+        faq_submenu.add_command(
+            label=self.lang.get('submenu_faq_management', 'Gestione FAQ'),
+            command=self.open_faq_management_with_login
+        )
+
         # Straordinari
         self.personnel_menu.add_separator()
         overtime_submenu = tk.Menu(self.personnel_menu, tearoff=0)
@@ -15425,7 +15948,15 @@ class App(tk.Tk):
             label=self.lang.get('submenu_confirm_materials', 'Conferma Materiali'),
             command=self._open_confirm_indirect_materials
         )
-        
+        indirect_materials_menu.add_separator()
+        indirect_materials_menu.add_command(
+            label=self.lang.get('submenu_report_indirect_materials', '📊 Report Mensile Materiali'),
+            command=self._open_indirect_materials_report
+        )
+        indirect_materials_menu.add_command(
+            label=self.lang.get('submenu_stats_indirect_materials', '📈 Statistiche & Anomalie'),
+            command=self._open_indirect_materials_stats
+        )
         # Sottomenu Configurazioni
         materials_config_menu = tk.Menu(materials_menu, tearoff=0)
         materials_menu.add_cascade(
@@ -15484,6 +16015,21 @@ class App(tk.Tk):
             command=self._open_shipping_pdf
         )
 
+        # --- Controllo Consumi ---
+        materials_menu.add_separator()
+        consumption_submenu = tk.Menu(materials_menu, tearoff=0)
+        materials_menu.add_cascade(
+            label=self.lang.get('menu_consumption_ctrl', 'Controllo Consumi'),
+            menu=consumption_submenu
+        )
+        consumption_submenu.add_command(
+            label=self.lang.get('menu_consumption_data', 'Gestione Dati'),
+            command=self._open_material_consumption_with_login
+        )
+        consumption_submenu.add_command(
+            label=self.lang.get('menu_consumption_reports', 'Rapporti'),
+            command=self._open_material_consumption_reports
+        )
     def _update_production_submenu(self):
         """Aggiorna il sottomenu Produzione con tutte le sezioni"""
         self.production_submenu.delete(0, 'end')
@@ -15558,6 +16104,45 @@ class App(tk.Tk):
                 label=self.lang.get('piano_produzione', "Piano produzione"),
                 command=self.open_plan_discrepancy_with_login
             )
+        # ── FQC Prodotti ──────────────────────────────────────────────────────
+        self.declarations_submenu.add_separator()
+        fqc_submenu = tk.Menu(self.declarations_submenu, tearoff=0)
+        self.declarations_submenu.add_cascade(
+            label=self.lang.get('menu_fqc_products', 'FQC Prodotti'),
+            menu=fqc_submenu
+        )
+        fqc_submenu.add_command(
+            label=self.lang.get('menu_fqc_execution', '\u25b6 Esecuzione Controlli'),
+            command=self._open_fqc_products_with_login
+        )
+        fqc_submenu.add_command(
+            label=self.lang.get('menu_fqc_master', '\u2699 Gestione Anagrafica'),
+            command=self._open_fqc_products_master_with_login
+        )
+        fqc_submenu.add_command(
+            label=self.lang.get('menu_fqc_feedback', '\U0001f4ac Feedback Cliente'),
+            command=self._open_fqc_products_feedback_with_login
+        )
+
+        # Cambio Turno
+        self.declarations_submenu.add_separator()
+        self.declarations_submenu.add_command(
+            label=self.lang.get('cambio_turni', '🔄 Cambio Turno'),
+            command=self.open_shift_handover_with_login
+        )
+        self.declarations_submenu.add_command(
+            label=self.lang.get('sh_report_menu', '📊 Report Cambio Turno'),
+            command=self.open_shift_handover_report_with_login
+        )
+        self.declarations_submenu.add_command(
+            label=self.lang.get('sct_config_menu', '⚙️ Configura SCT WorkStation'),
+            command=self.open_sct_workstation_config_with_login
+        )
+        self.declarations_submenu.add_separator()
+        self.declarations_submenu.add_command(
+            label=self.lang.get('menu_analisi_fails', '📈 Analisi Fails'),
+            command=self.open_fails_analysis_with_login
+        )
 
     def _update_line_validation_submenu(self):
         """Aggiorna il sottomenu Validazione linea"""
@@ -15630,14 +16215,14 @@ class App(tk.Tk):
             label=self.lang.get('kanban_load', 'Ricarica (TEST)'),
             command=self.open_kanban_load
         )
-        # self.kanban_core_submenu.add_command(
-        #     label=self.lang.get('kanban_verify', 'Verifica'),
-        #     command=self._schedule_kanban_refill_check
-        # )
-        # self.kanban_core_submenu.add_command(
-        #     label=self.lang.get('submenu_manage', 'Gestione'),
-        #     command=self.open_kanban_manage
-        # )
+        self.kanban_core_submenu.add_command(
+            label=self.lang.get('kanban_verify', 'Verifica'),
+            command=self._schedule_kanban_refill_check
+        )
+        self.kanban_core_submenu.add_command(
+            label=self.lang.get('submenu_manage', 'Gestione'),
+            command=self.open_kanban_manage
+        )
 
         # Assembla gerarchia KanBan
         self.kanban_root_submenu.add_cascade(
@@ -16269,6 +16854,11 @@ class App(tk.Tk):
         fai_manual_menu.add_command(
             label=self.lang.get('fai_autocheck_manual', 'FAI Autocheck (Manual)'),
             command=self._open_fai_autocheck_manual)
+        # Cambio Turno
+        decl_manual_menu.add_separator()
+        decl_manual_menu.add_command(
+            label=self.lang.get('cambio_turni', '🔄 Cambio Turno'),
+            command=self._open_shift_handover_manual)
         # Discrepanțe Plan Producție
         prod_manual_menu.add_command(
             label=self.lang.get('manual_plan_discrepancy', 'Discrepanțe Plan Producție'),
@@ -16377,6 +16967,23 @@ class App(tk.Tk):
                                   "Verra' aggiunto in un prossimo aggiornamento."),
                     parent=self)
 
+
+    def _open_shift_handover_manual(self):
+        """Apre il manuale Cambio Turno (HTML multilingua) nel browser predefinito."""
+        import webbrowser
+        manual_path = self._get_resource_path('docs', 'Shift_Handover_Manual.html')
+        if manual_path:
+            try:
+                webbrowser.open(f'file:///{manual_path.replace(os.sep, "/")}')
+                logger.info(f"Aperto manuale Cambio Turno: {manual_path}")
+            except Exception as e:
+                logger.error(f"Errore apertura manuale Cambio Turno: {e}")
+                messagebox.showerror(self.lang.get('error', 'Errore'), str(e), parent=self)
+        else:
+            messagebox.showinfo(
+                self.lang.get('menu_manuals', 'Manuali'),
+                self.lang.get('manual_not_available', 'Manuale non ancora disponibile.'),
+                parent=self)
 
     def _open_npi_manual(self):
         """Apre il manuale NPI (HTML bilingue self-contained) nel browser predefinito."""
@@ -17570,6 +18177,40 @@ class App(tk.Tk):
         logger.info("Chiamata _execute_simple_login...")
         self._execute_simple_login(action_callback=lambda user_name: action(user_name))
 
+    def open_faq_viewer(self):
+        """Apre la finestra FAQ in modalità sola lettura (senza login)."""
+        logger.info("open_faq_viewer chiamata")
+        try:
+            import faq_gui
+            faq_gui.open_faq_viewer(self, self.db, self.lang)
+        except Exception as e:
+            logger.error(f"Errore apertura FAQ viewer: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire la finestra FAQ: {str(e)}",
+                parent=self
+            )
+
+    def open_faq_management_with_login(self):
+        """Apre la finestra di gestione FAQ (richiede autorizzazione)."""
+        logger.info("open_faq_management_with_login chiamata")
+        self._execute_authorized_action(
+            menu_translation_key='gestione_faq',
+            action_callback=lambda: self._open_faq_management_window()
+        )
+
+    def _open_faq_management_window(self):
+        try:
+            import faq_gui
+            faq_gui.open_faq_management(self, self.db, self.lang)
+        except Exception as e:
+            logger.error(f"Errore apertura gestione FAQ: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire la gestione FAQ: {str(e)}",
+                parent=self
+            )
+
     def _open_password_recovery(self):
         """Apre la finestra di recupero password (SENZA login)"""
         logger.info("_open_password_recovery chiamata")
@@ -18186,6 +18827,24 @@ class App(tk.Tk):
             authorized_action
         )
 
+    def _open_indirect_materials_report(self):
+        """Apre la finestra Report Mensile Materiali Indiretti."""
+        try:
+            from indirect_materials_report import open_indirect_materials_report
+            open_indirect_materials_report(self, self.db, self.lang)
+        except Exception as e:
+            logger.error(f"Errore apertura Report Materiali Indiretti: {e}", exc_info=True)
+            messagebox.showerror(self.lang.get('error', 'Errore'), f"Impossibile aprire il report:\n{e}", parent=self)
+
+    def _open_indirect_materials_stats(self):
+        """Apre la finestra Statistiche & Anomalie Materiali Indiretti."""
+        try:
+            from indirect_materials_stats import open_indirect_materials_stats
+            open_indirect_materials_stats(self, self.db, self.lang)
+        except Exception as e:
+            logger.error(f"Errore apertura Statistiche Materiali Indiretti: {e}", exc_info=True)
+            messagebox.showerror(self.lang.get('error', 'Errore'), f"Impossibile aprire le statistiche:\n{e}", parent=self)
+
     def _open_confirm_indirect_materials(self):
         """Apre lo storico richieste materiali / conferma."""
         try:
@@ -18379,6 +19038,18 @@ class App(tk.Tk):
         except Exception as e:
             logger.error(f"Errore avvio monitor approvazione budget: {e}", exc_info=True)
 
+        # Monitor Cambio Turno
+        try:
+            from shift_handover_monitor import ShiftHandoverMonitor, is_shift_leader_workstation
+            if is_shift_leader_workstation():
+                self._shift_handover_monitor = ShiftHandoverMonitor(self, self.db, self.lang)
+                logger.info("ShiftHandoverMonitor avviato (questo PC è Capo Turno)")
+            else:
+                self._shift_handover_monitor = None
+        except Exception as e:
+            logger.error(f"Errore avvio monitor cambio turno: {e}", exc_info=True)
+            self._shift_handover_monitor = None
+
     def _on_closing(self, force_quit=False):
         """Gestisce la chiusura dell'applicazione."""
         # Segnala che l'app sta chiudendo (blocca callback periodici)
@@ -18399,6 +19070,8 @@ class App(tk.Tk):
             self._requester_monitor.stop()
         if hasattr(self, '_budget_approval_monitor') and self._budget_approval_monitor:
             self._budget_approval_monitor.stop()
+        if hasattr(self, '_shift_handover_monitor') and self._shift_handover_monitor:
+            self._shift_handover_monitor.stop()
 
         # Ferma tutti i timer attivi
         if self.slideshow_job_id: self.after_cancel(self.slideshow_job_id)
