@@ -922,8 +922,9 @@ class GestoreNPI:
                 INNER JOIN Prodotti p ON p.ProdottoID = n.ProdottoID
                 INNER JOIN WaveNPI w ON w.ProgettoID = n.ProgettoID
                 LEFT JOIN [Traceability_RS].[dbo].[TaskProdotto] t ON w.WaveID = t.WaveID AND t.[stato] IS NOT NULL
-                WHERE StatoProgetto = 'Attivo'
-              AND n.DateOut IS NULL
+                WHERE n.DateOut IS NULL
+                -- Tutti gli stati (Attivo, Chiuso, In Pausa) inclusi per version_map/owner_map corretti
+
                 GROUP BY n.[ProgettoID], 
                          p.Cliente + ' -> ' + p.CodiceProdotto + ' (Version: ' + ISNULL(n.[version],'#N/D') + ') ' + p.NomeProdotto,
                          p.Cliente,
@@ -1046,7 +1047,10 @@ class GestoreNPI:
             session.close()
 
     def get_progetto_by_prodotto(self, prodotto_id):
-        """Recupera il progetto NPI attivo (non cancellato) associato a un prodotto."""
+        """Recupera il progetto NPI più recente (non cancellato) associato a un prodotto.
+        In caso di più progetti sullo stesso prodotto (versioni diverse) restituisce
+        sempre il più recente (DataInizio DESC, ProgettoId DESC come tiebreaker).
+        """
         session = self._get_session()
         try:
             progetto = session.scalars(
@@ -1056,10 +1060,32 @@ class GestoreNPI:
                     ProgettoNPI.ProdottoID == prodotto_id,
                     ProgettoNPI.DateOut.is_(None)  # Escludi i soft-deleted
                 )
+                .order_by(ProgettoNPI.DataInizio.desc(), ProgettoNPI.ProgettoId.desc())
             ).first()
             return self._detach_object(session, progetto) if progetto else None
         finally:
             session.close()
+
+    def get_tutti_progetti_by_prodotto(self, prodotto_id):
+        """Recupera TUTTI i progetti NPI (non cancellati) associati a un prodotto,
+        ordinati dal più recente al più vecchio.
+        Utile per prodotti con più versioni di progetto.
+        """
+        session = self._get_session()
+        try:
+            progetti = session.scalars(
+                select(ProgettoNPI)
+                .options(joinedload(ProgettoNPI.prodotto))
+                .where(
+                    ProgettoNPI.ProdottoID == prodotto_id,
+                    ProgettoNPI.DateOut.is_(None)
+                )
+                .order_by(ProgettoNPI.DataInizio.desc(), ProgettoNPI.ProgettoId.desc())
+            ).all()
+            return self._detach_list(session, progetti)
+        finally:
+            session.close()
+
 
     def update_progetto_npi(self, progetto_id, data):
         """Aggiorna i dati di un progetto NPI."""
@@ -2094,9 +2120,306 @@ class GestoreNPI:
         
         return html
     
+
+    # ===========================================================================
+    # WELCOME EMAIL — Nuovo progetto NPI (inviata 1 sola volta alla chiusura form)
+    # ===========================================================================
+
+    def _was_project_welcome_sent(self, progetto_id: int) -> bool:
+        """
+        Controlla se la welcome email è già stata inviata per il progetto.
+        Usa la tabella NotificationLog con NotificationReason='PROJECT_WELCOME'
+        e RecipientTeamsId='PROJECT_ID:{progetto_id}' come chiave univoca progetto.
+        """
+        session = self._get_session()
+        try:
+            from sqlalchemy import text as sa_text
+            result = session.execute(
+                sa_text("""
+                    SELECT TOP 1 NotificationLogId
+                    FROM dbo.NotificationLog
+                    WHERE NotificationReason = 'PROJECT_WELCOME'
+                      AND RecipientTeamsId = :key
+                      AND DeliveryStatus = 'SENT'
+                """),
+                {"key": f"PROJECT_ID:{progetto_id}"}
+            ).fetchone()
+            return result is not None
+        except Exception as e:
+            logger.error(f"_was_project_welcome_sent({progetto_id}): {e}")
+            return False
+        finally:
+            session.close()
+
+    def send_project_welcome_email(self, progetto_id: int) -> tuple:
+        """
+        Invia UNA SOLA VOLTA la email di benvenuto/avviso per un nuovo progetto NPI.
+        Trigger: alla chiusura della ProjectWindow.
+
+        Destinatari:
+          - TO: tutti i partecipanti (OwnerID assegnato) al momento dell'invio
+          - CC: indirizzi da Settings[Attribute='Sys_Email_late_npi_cc']
+          - CC: Project Owner (se non già in TO)
+
+        Tracking: NotificationLog con NotificationReason='PROJECT_WELCOME'
+                  RecipientTeamsId='PROJECT_ID:{progetto_id}'
+
+        Returns:
+            tuple (success: bool, message: str)
+        """
+        # Guard: invia solo se non ancora inviata
+        if self._was_project_welcome_sent(progetto_id):
+            logger.info(f"Welcome email progetto {progetto_id}: già inviata in precedenza, skip.")
+            return True, "Already sent"
+
+        session = self._get_session()
+        try:
+            # 1. Carica progetto con relazioni
+            progetto = session.scalars(
+                select(ProgettoNPI)
+                .options(
+                    joinedload(ProgettoNPI.prodotto),
+                    joinedload(ProgettoNPI.owner),
+                    subqueryload(ProgettoNPI.waves).subqueryload(WaveNPI.tasks).options(
+                        joinedload(TaskProdotto.owner),
+                        joinedload(TaskProdotto.task_catalogo).joinedload(TaskCatalogo.categoria),
+                    )
+                )
+                .where(ProgettoNPI.ProgettoId == progetto_id)
+            ).first()
+
+            if not progetto:
+                return False, f"Progetto {progetto_id} non trovato"
+
+            wave = progetto.waves[0] if progetto.waves else None
+            if not wave:
+                return False, "Nessuna wave trovata per il progetto"
+
+            # 2. Raccogli partecipanti assegnati al momento dell'invio
+            participants: dict[str, str] = {}  # email -> nome
+            tasks_summary = []
+
+            for task in wave.tasks:
+                nome_task = task.task_catalogo.NomeTask if task.task_catalogo else "N/A"
+                cat_task = (task.task_catalogo.categoria.Category
+                            if task.task_catalogo and task.task_catalogo.categoria else "N/A")
+                owner_nome = "—"
+                owner_email = None
+
+                if task.owner and task.owner.Email and task.OwnerID:
+                    owner_nome = task.owner.Nome
+                    owner_email = task.owner.Email
+                    participants[owner_email] = owner_nome
+
+                tasks_summary.append({
+                    'cat': cat_task,
+                    'name': nome_task,
+                    'owner': owner_nome,
+                    'due': task.DataScadenza.strftime('%d/%m/%Y') if task.DataScadenza else "—",
+                    'stato': task.Stato or "Not assigned",
+                })
+
+            if not participants:
+                logger.warning(f"Welcome email progetto {progetto_id}: nessun partecipante assegnato, skip.")
+                return False, "Nessun partecipante con task assegnato"
+
+            # 3. Project info
+            product_name = progetto.prodotto.NomeProdotto if progetto.prodotto else "N/A"
+            product_code = progetto.prodotto.CodiceProdotto if progetto.prodotto else "N/A"
+            client = progetto.prodotto.Cliente if progetto.prodotto else "N/A"
+            version = progetto.Version or "N/A"
+            owner_nome = progetto.owner.Nome if progetto.owner else "N/A"
+            owner_email = progetto.owner.Email if progetto.owner else None
+            start_date = progetto.DataInizio.strftime('%d/%m/%Y') if progetto.DataInizio else "N/A"
+            due_date = progetto.ScadenzaProgetto.strftime('%d/%m/%Y') if progetto.ScadenzaProgetto else "N/A"
+
+            # 4. CC: Settings + Project Owner
+            cc_emails: list[str] = []
+            try:
+                from sqlalchemy import text as sa_text
+                cc_row = session.execute(sa_text("""
+                    SELECT [Value]
+                    FROM [Traceability_RS].[dbo].[Settings]
+                    WHERE [Attribute] IN ('Sys_Email_late_npi_cc', ' Sys_Email_late_npi_cc')
+                """)).fetchone()
+                if cc_row and cc_row[0]:
+                    cc_emails = [e.strip() for e in cc_row[0].split(';') if e.strip()]
+            except Exception as cc_err:
+                logger.warning(f"Errore lettura Sys_Email_late_npi_cc: {cc_err}")
+
+            if owner_email and owner_email not in participants and owner_email not in cc_emails:
+                cc_emails.append(owner_email)
+
+            # 5. Genera HTML email (in English as requested)
+            import base64
+            logo_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Logo.png')
+            logo_b64 = ""
+            try:
+                if os.path.exists(logo_path):
+                    with open(logo_path, 'rb') as f:
+                        logo_b64 = base64.b64encode(f.read()).decode('utf-8')
+            except Exception:
+                pass
+
+            # Build tasks table rows
+            task_rows_html = ""
+            for t in tasks_summary:
+                row_color = "#fff3cd" if t['stato'] in ("Not assigned", "") else "#ffffff"
+                task_rows_html += f"""
+                <tr style="background:{row_color};">
+                    <td style="padding:6px 10px; border-bottom:1px solid #dee2e6;">{t['cat']}</td>
+                    <td style="padding:6px 10px; border-bottom:1px solid #dee2e6;">{t['name']}</td>
+                    <td style="padding:6px 10px; border-bottom:1px solid #dee2e6;">{t['owner']}</td>
+                    <td style="padding:6px 10px; border-bottom:1px solid #dee2e6; text-align:center;">{t['due']}</td>
+                    <td style="padding:6px 10px; border-bottom:1px solid #dee2e6; text-align:center;">{t['stato']}</td>
+                </tr>"""
+
+            logo_tag = (f'<img src="data:image/png;base64,{logo_b64}" '
+                        f'style="max-height:60px;margin-bottom:10px;" alt="Logo">') if logo_b64 else ""
+
+            now_str = datetime.now().strftime('%d/%m/%Y %H:%M')
+            recipient_list = list(participants.keys())
+
+            email_html = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8">
+<style>
+  body{{font-family:Arial,sans-serif;line-height:1.6;color:#333;margin:0;padding:0;}}
+  .wrap{{max-width:900px;margin:0 auto;padding:20px;}}
+  .hdr{{background:linear-gradient(135deg,#0066cc 0%,#004499 100%);
+         color:white;padding:30px 25px;border-radius:10px 10px 0 0;text-align:center;}}
+  .hdr h1{{margin:10px 0 5px;font-size:22px;}}
+  .hdr p{{margin:0;opacity:.85;font-size:14px;}}
+  .body{{background:#f4f6f8;padding:25px;}}
+  .card{{background:white;border-radius:8px;padding:20px;margin-bottom:18px;
+          box-shadow:0 2px 6px rgba(0,0,0,.08);}}
+  h2{{color:#0066cc;margin-top:0;font-size:16px;border-bottom:2px solid #0066cc;
+      padding-bottom:8px;}}
+  table{{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px;}}
+  th{{background:#0066cc;color:white;padding:9px 10px;text-align:left;}}
+  .warn{{background:#fff3cd;border-left:4px solid #ffc107;padding:12px 16px;
+          border-radius:4px;font-size:13px;}}
+  .ftr{{text-align:center;font-size:11px;color:#888;padding:15px;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hdr">
+    {logo_tag}
+    <h1>🚀 New NPI Project — Kick-off Notification</h1>
+    <p>NPI Project Management System &nbsp;|&nbsp; {now_str}</p>
+  </div>
+  <div class="body">
+
+    <!-- PROJECT DETAILS -->
+    <div class="card">
+      <h2>📋 Project Details</h2>
+      <table>
+        <tr><td style="width:35%;padding:5px 0;"><strong>Project Name:</strong></td>
+            <td style="padding:5px 0;">{product_name}</td></tr>
+        <tr><td style="padding:5px 0;"><strong>Product Code:</strong></td>
+            <td style="padding:5px 0;">{product_code}</td></tr>
+        <tr><td style="padding:5px 0;"><strong>Client:</strong></td>
+            <td style="padding:5px 0;">{client}</td></tr>
+        <tr><td style="padding:5px 0;"><strong>Version:</strong></td>
+            <td style="padding:5px 0;">{version}</td></tr>
+        <tr><td style="padding:5px 0;"><strong>Project Manager:</strong></td>
+            <td style="padding:5px 0;">{owner_nome}</td></tr>
+        <tr><td style="padding:5px 0;"><strong>Start Date:</strong></td>
+            <td style="padding:5px 0;">{start_date}</td></tr>
+        <tr><td style="padding:5px 0;"><strong>Planned End Date:</strong></td>
+            <td style="padding:5px 0;">{due_date}</td></tr>
+        <tr><td style="padding:5px 0;"><strong>Participants:</strong></td>
+            <td style="padding:5px 0;">{len(participants)} assigned</td></tr>
+      </table>
+    </div>
+
+    <!-- TASK LIST -->
+    <div class="card">
+      <h2>📌 Task Overview</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Category</th><th>Task</th><th>Assigned To</th>
+            <th style="text-align:center;">Due Date</th>
+            <th style="text-align:center;">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {task_rows_html}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- WARNING -->
+    <div class="warn">
+      ⚠️ <strong>Please note:</strong> This notification was generated at the time the project
+      configuration form was closed. Some tasks may not yet have a fully assigned owner or
+      defined deadline. <strong>Please verify the project in the TraceabilityRS system</strong>
+      to ensure all tasks are correctly assigned before work begins.
+    </div>
+
+  </div>
+  <div class="ftr">
+    This is an automatic notification from the NPI Project Management System.<br>
+    Please do not reply to this email. &nbsp;|&nbsp; Generated: {now_str}
+  </div>
+</div>
+</body>
+</html>"""
+
+            # 6. Invia
+            from utils import send_email
+            subject = f"🚀 New NPI Project: {product_name} ({product_code}) — Kick-off Notification"
+
+            send_email(
+                recipients=recipient_list,
+                subject=subject,
+                body=email_html,
+                is_html=True,
+                cc=cc_emails if cc_emails else None
+            )
+
+            # 7. Logga in NotificationLog (una riga per progetto con reason=PROJECT_WELCOME)
+            from .data_models import NotificationLog
+            log_entry = NotificationLog(
+                TaskProdottoId=None,
+                EmployeeHireHistoryId=None,
+                NotificationType='EMAIL',
+                NotificationReason='PROJECT_WELCOME',
+                RecipientEmail=','.join(recipient_list),
+                RecipientName=f"{len(participants)} participants",
+                RecipientTeamsId=f"PROJECT_ID:{progetto_id}",
+                Subject=subject,
+                MessageBody=None,  # Non salviamo HTML completo per risparmiare spazio
+                SentDate=datetime.now(),
+                DeliveryStatus='SENT',
+                ErrorMessage=None
+            )
+            session.add(log_entry)
+            session.commit()
+
+            logger.info(
+                f"📬 Welcome email progetto {progetto_id} '{product_name}' "
+                f"inviata a {len(recipient_list)} partecipanti"
+                + (f" (CC: {', '.join(cc_emails)})" if cc_emails else "")
+            )
+            return True, f"Email inviata a {len(recipient_list)} partecipanti"
+
+        except Exception as e:
+            logger.error(f"Errore send_project_welcome_email({progetto_id}): {e}", exc_info=True)
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            return False, str(e)
+        finally:
+            session.close()
+
     def send_project_completion_email(self, project_id: int, lang: dict = None):
         """
         Invia email di completamento progetto a tutti i partecipanti con statistiche complete.
+
         
         Args:
             project_id: ID del progetto completato

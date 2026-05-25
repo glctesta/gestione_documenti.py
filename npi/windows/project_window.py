@@ -110,11 +110,40 @@ class ProjectWindow(tk.Toplevel):
         self.default_sort_config = []  # Configurazione ordinamento di default
         self._load_sort_config()  # Carica configurazione salvata
         self._create_widgets()
+        # Registra il gestore di chiusura finestra
+        self.protocol("WM_DELETE_WINDOW", self._on_window_close)
+
+    def _on_window_close(self):
+        """
+        Chiamato alla chiusura della ProjectWindow (X o Alt+F4).
+        Invia la welcome email ai partecipanti in background (una sola volta per progetto).
+        """
+        import threading
+
+        def _send_welcome_async():
+            try:
+                success, msg = self.npi_manager.send_project_welcome_email(self.project_id)
+                if success and msg != "Already sent":
+                    logger.info(f"[WelcomeEmail] Progetto {self.project_id}: {msg}")
+                elif msg == "Already sent":
+                    logger.debug(f"[WelcomeEmail] Progetto {self.project_id}: già inviata, skip.")
+                else:
+                    logger.warning(f"[WelcomeEmail] Progetto {self.project_id}: {msg}")
+            except Exception as e:
+                logger.error(f"[WelcomeEmail] Errore per progetto {self.project_id}: {e}", exc_info=True)
+
+        # Avvia in background per non bloccare la chiusura della UI
+        threading.Thread(target=_send_welcome_async, daemon=True, name="npi_welcome_email").start()
+
+        # Chiudi normalmente
+        self.destroy()
+
 
     def _create_widgets(self):
         # Main Layout
         main_frame = ttk.Frame(self)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
 
 
         # Header
@@ -616,7 +645,47 @@ class ProjectWindow(tk.Toplevel):
                         logger.info(f"❌ User '{self.logged_in_user}' (ID={logged_user_id}) NOT in full access list")
                 except Exception as e:
                     logger.error(f"Error checking full access users: {e}", exc_info=True)
-            
+
+            # 🆕 CONTROLLO ACCESSO GLOBALE: FunctionCode = 100 (Amministratore)
+            # Utenti con FunctionCode = 100 in Employee.dbo.Functions (via EmployeeCdcStories)
+            # hanno accesso illimitato a TUTTI i progetti NPI, anche senza task assegnati.
+            if not self.is_project_owner:
+                try:
+                    from sqlalchemy import text as sa_text
+                    _sess = self.npi_manager._get_session()
+                    try:
+                        fc_row = _sess.execute(sa_text("""
+                            SELECT TOP 1 f.FunctionCode
+                            FROM Employee.dbo.EmployeeCdcStories cs
+                            INNER JOIN Employee.dbo.Functions f ON cs.FunctionId = f.FunctionId
+                            INNER JOIN Employee.dbo.EmployeeHireHistory hh
+                                ON cs.EmployeeHireHistoryId = hh.EmployeeHireHistoryId
+                            INNER JOIN Employee.dbo.Employees e ON e.EmployeeId = hh.EmployeeId
+                            WHERE (
+                                e.EmployeeName + ' ' + e.EmployeeSurname = :username
+                                OR e.EmployeeSurname + ' ' + e.EmployeeName = :username
+                            )
+                            AND hh.DateOut IS NULL
+                            ORDER BY f.FunctionCode DESC
+                        """), {"username": self.logged_in_user}).fetchone()
+                    finally:
+                        _sess.close()
+
+                    if fc_row and fc_row[0] == 100:
+                        self.is_project_owner = True
+                        logger.info(
+                            f"✅ Global Admin access (FunctionCode=100) granted to '{self.logged_in_user}'"
+                        )
+                    else:
+                        fc_val = fc_row[0] if fc_row else "N/A"
+                        logger.info(
+                            f"🔍 FunctionCode check for '{self.logged_in_user}': {fc_val} "
+                            f"(access granted only if = 100)"
+                        )
+                except Exception as e:
+                    logger.error(f"Errore controllo FunctionCode per '{self.logged_in_user}': {e}", exc_info=True)
+
+
             # Raccoglie tutte le persone che hanno task assegnati
             assigned_owners = set()
             if self.progetto and self.progetto.waves:

@@ -12,6 +12,7 @@ from tkcalendar import DateEntry
 import logging
 import os
 import tempfile
+from datetime import datetime
 
 logger = logging.getLogger("TraceabilityRS")
 
@@ -26,7 +27,9 @@ class GuestRulesWindow(tk.Toplevel):
         self.user_name = user_name
 
         self.title(self.lang.get('guest_rules_title', 'Regole Ospiti — Rapporti Attività'))
-        self.geometry('1050x650')
+        self.geometry('1100x780')
+        self.minsize(900, 650)
+        self.resizable(True, True)
         self.transient(parent)
         self.grab_set()
 
@@ -57,8 +60,29 @@ class GuestRulesWindow(tk.Toplevel):
     # TAB 1 — CONFIGURAZIONE
     # ----------------------------------------------------------------
     def _build_config_tab(self, notebook):
-        tab = ttk.Frame(notebook, padding=10)
-        notebook.add(tab, text=self.lang.get('tab_config', '⚙ Configurazione'))
+        outer = ttk.Frame(notebook)
+        notebook.add(outer, text=self.lang.get('tab_config', '\u2699 Configurazione'))
+
+        canvas = tk.Canvas(outer, borderwidth=0, highlightthickness=0)
+        vsb = ttk.Scrollbar(outer, orient='vertical', command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side='right', fill='y')
+        canvas.pack(side='left', fill='both', expand=True)
+
+        tab = ttk.Frame(canvas, padding=10)
+        _win_id = canvas.create_window((0, 0), window=tab, anchor='nw')
+
+        def _on_tab_configure(event):
+            canvas.configure(scrollregion=canvas.bbox('all'))
+        tab.bind('<Configure>', _on_tab_configure)
+
+        def _on_canvas_configure(event):
+            canvas.itemconfig(_win_id, width=event.width)
+        canvas.bind('<Configure>', _on_canvas_configure)
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
+        canvas.bind('<MouseWheel>', _on_mousewheel)
 
         # --- Firmatari VR ---
         vr_frame = ttk.LabelFrame(tab,
@@ -156,8 +180,26 @@ class GuestRulesWindow(tk.Toplevel):
         ttk.Entry(cf, textvariable=self.contract_desc_var, width=60).grid(
             row=1, column=1, columnspan=5, padx=3, pady=3, sticky='ew')
 
+        ttk.Label(cf, text=self.lang.get('col_contact_name', 'Referente:')).grid(
+            row=2, column=0, sticky='w', padx=3, pady=3)
+        self.contract_contact_name_var = tk.StringVar()
+        ttk.Entry(cf, textvariable=self.contract_contact_name_var, width=22).grid(
+            row=2, column=1, padx=3, pady=3, sticky='ew')
+
+        ttk.Label(cf, text=self.lang.get('col_contact_title', 'Titolo:')).grid(
+            row=2, column=2, sticky='w', padx=3)
+        self.contract_contact_title_var = tk.StringVar()
+        ttk.Entry(cf, textvariable=self.contract_contact_title_var, width=18).grid(
+            row=2, column=3, columnspan=2, padx=3, sticky='ew')
+
+        ttk.Label(cf, text=self.lang.get('col_contact_email', 'Email:')).grid(
+            row=2, column=5, sticky='w', padx=3)
+        self.contract_contact_email_var = tk.StringVar()
+        ttk.Entry(cf, textvariable=self.contract_contact_email_var, width=30).grid(
+            row=2, column=6, padx=3, pady=3, sticky='ew')
+
         btn_cf = ttk.Frame(cf)
-        btn_cf.grid(row=2, column=0, columnspan=6, sticky='w', pady=5)
+        btn_cf.grid(row=3, column=0, columnspan=7, sticky='w', pady=5)
         ttk.Button(btn_cf, text=self.lang.get('btn_new', '➕ Nuovo'),
                    command=self._new_contract).pack(side='left', padx=3)
         ttk.Button(btn_cf, text=self.lang.get('btn_save', '💾 Salva'),
@@ -272,11 +314,36 @@ class GuestRulesWindow(tk.Toplevel):
             logger.error(f"Errore caricamento società chi_invia: {e}")
 
     def _on_chi_invia_company_changed(self, event=None):
-        """Quando l'utente seleziona una società, logga la selezione.
-        I campi nome/titolo/email restano editabili manualmente."""
+        """Carica automaticamente il referente dalla VisitorContractInfo per la società selezionata.
+        Azzera sempre i campi prima di ricaricare, così se la società non ha dati
+        i campi risultano vuoti anziché mostrare i valori della società precedente."""
         company = self.chi_invia_company_var.get()
-        if company:
-            logger.info(f"Società 'Chi Invia' selezionata: {company}")
+        # Azzera sempre i campi prima
+        self._settings_vars['chi_invia'].set('')
+        self._settings_vars['chi_invia_titolo'].set('')
+        self._settings_vars['chi_invia_email'].set('')
+        if not company:
+            return
+        try:
+            cursor = self.db.conn.cursor()
+            cursor.execute("""
+                SELECT vci.ContactName, vci.ContactTitle, vci.ContactEmail
+                FROM Employee.dbo.VisitorContractInfo vci
+                INNER JOIN Employee.dbo.VisitorPlanToCharges vpc
+                    ON vci.VisitorPlanToChargeID = vpc.VisitorPlanToChargeID
+                WHERE vpc.CompanyName = ?
+            """, (company,))
+            row = cursor.fetchone()
+            cursor.close()
+            if row:
+                self._settings_vars['chi_invia'].set(row.ContactName or '')
+                self._settings_vars['chi_invia_titolo'].set(row.ContactTitle or '')
+                self._settings_vars['chi_invia_email'].set(row.ContactEmail or '')
+                logger.info(f"Dati referente caricati per società '{company}'")
+            else:
+                logger.info(f"Nessun contratto trovato per società '{company}': campi azzerati")
+        except Exception as e:
+            logger.error(f"Errore caricamento dati chi_invia per {company}: {e}")
 
     def _load_contracts(self):
         """Carica i contratti delle società fatturanti."""
@@ -300,9 +367,11 @@ class GuestRulesWindow(tk.Toplevel):
             self.contract_company_combo['values'] = companies
 
             # Carica contratti esistenti
+            self._contract_extra = {}
             cursor.execute("""
                 SELECT vci.VisitorContractInfoId, vpc.CompanyName,
-                       vci.ContractNumber, vci.ContractDate, vci.ContractDescription
+                       vci.ContractNumber, vci.ContractDate, vci.ContractDescription,
+                       vci.ContactName, vci.ContactTitle, vci.ContactEmail
                 FROM Employee.dbo.VisitorContractInfo vci
                 INNER JOIN Employee.dbo.VisitorPlanToCharges vpc
                     ON vci.VisitorPlanToChargeID = vpc.VisitorPlanToChargeID
@@ -318,6 +387,11 @@ class GuestRulesWindow(tk.Toplevel):
                     row.ContractDescription or ''
                 ))
                 self._contract_data[iid] = row.VisitorContractInfoId
+                self._contract_extra[iid] = {
+                    'name': row.ContactName or '',
+                    'title': row.ContactTitle or '',
+                    'email': row.ContactEmail or '',
+                }
             cursor.close()
         except Exception as e:
             logger.error(f"Errore caricamento contratti: {e}")
@@ -409,6 +483,10 @@ class GuestRulesWindow(tk.Toplevel):
         if values[3]:
             self.contract_date_entry.insert(0, values[3])
         self.contract_desc_var.set(values[4])
+        extra = self._contract_extra.get(sel[0], {})
+        self.contract_contact_name_var.set(extra.get('name', ''))
+        self.contract_contact_title_var.set(extra.get('title', ''))
+        self.contract_contact_email_var.set(extra.get('email', ''))
 
     def _new_contract(self):
         self.contract_tree.selection_remove(*self.contract_tree.selection())
@@ -416,11 +494,17 @@ class GuestRulesWindow(tk.Toplevel):
         self.contract_no_var.set('')
         self.contract_date_entry.delete(0, 'end')
         self.contract_desc_var.set('')
+        self.contract_contact_name_var.set('')
+        self.contract_contact_title_var.set('')
+        self.contract_contact_email_var.set('')
 
     def _save_contract(self):
         company = self.contract_company_var.get().strip()
         contract_no = self.contract_no_var.get().strip()
         desc = self.contract_desc_var.get().strip()
+        contact_name = self.contract_contact_name_var.get().strip()
+        contact_title = self.contract_contact_title_var.get().strip()
+        contact_email = self.contract_contact_email_var.get().strip()
 
         if not company:
             messagebox.showwarning(self.lang.get('warning', 'Attenzione'),
@@ -453,18 +537,22 @@ class GuestRulesWindow(tk.Toplevel):
                 cursor.execute("""
                     UPDATE Employee.dbo.VisitorContractInfo
                     SET ContractNumber = ?, ContractDate = ?, ContractDescription = ?,
-                        VisitorPlanToChargeID = ?
+                        VisitorPlanToChargeID = ?,
+                        ContactName = ?, ContactTitle = ?, ContactEmail = ?
                     WHERE VisitorContractInfoId = ?
-                """, (contract_no or None, contract_date, desc or None,
-                      charge_id, contract_id))
+                """, (contract_no or None, contract_date, desc or None, charge_id,
+                      contact_name or None, contact_title or None, contact_email or None,
+                      contract_id))
                 logger.info(f"Aggiornato contratto ID={contract_id}")
             else:
                 # INSERT
                 cursor.execute("""
                     INSERT INTO Employee.dbo.VisitorContractInfo
-                        (VisitorPlanToChargeID, ContractNumber, ContractDate, ContractDescription)
-                    VALUES (?, ?, ?, ?)
-                """, (charge_id, contract_no or None, contract_date, desc or None))
+                        (VisitorPlanToChargeID, ContractNumber, ContractDate, ContractDescription,
+                         ContactName, ContactTitle, ContactEmail)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (charge_id, contract_no or None, contract_date, desc or None,
+                      contact_name or None, contact_title or None, contact_email or None))
                 logger.info(f"Nuovo contratto per {company}")
 
             self.db.conn.commit()
@@ -565,20 +653,21 @@ class GuestRulesWindow(tk.Toplevel):
             messagebox.showerror(self.lang.get('error', 'Errore'), f"Errore: {e}")
 
     def _download_documents(self):
-        """Scarica i documenti Word del report selezionato."""
+        """Scarica i documenti del report selezionato in C:\\tmp\\.
+
+        - Richiesta_Intervento e Accettazione → PDF
+        - Rapporto_Attivita → DOCX
+        Nomi file: <tipo>_<NomeCognomeOspite>_<yymmdd>.<ext>
+        """
         report_id = self._get_selected_report_id()
         if not report_id:
             return
 
         try:
-            folder = filedialog.askdirectory(
-                title=self.lang.get('select_folder', 'Seleziona cartella'))
-            if not folder:
-                return
-
             cursor = self.db.conn.cursor()
             cursor.execute("""
                 SELECT var.RequestLetterDoc, var.AcceptanceLetterDoc, var.ActivityReportDoc,
+                       var.RequestLetterDate, var.AcceptanceLetterDate, var.ActivityReportDate,
                        v.GuestName
                 FROM Employee.dbo.VisitorActivityReports var
                 INNER JOIN Employee.dbo.Visitors v ON var.VisitorId = v.VisitorId
@@ -591,22 +680,44 @@ class GuestRulesWindow(tk.Toplevel):
                 return
 
             guest_name = (row.GuestName or 'guest').replace(' ', '_')
-            saved = 0
+            today = datetime.now().strftime('%y%m%d')
 
-            for doc_name, doc_bytes in [
-                (f'Richiesta_Intervento_{guest_name}.docx', row.RequestLetterDoc),
-                (f'Accettazione_{guest_name}.docx', row.AcceptanceLetterDoc),
-                (f'Rapporto_Attivita_{guest_name}.docx', row.ActivityReportDoc)
-            ]:
+            def _fmt_date(d):
+                return d.strftime('%y%m%d') if d else today
+
+            # Crea la cartella destinazione
+            target_dir = r'C:\tmp'
+            os.makedirs(target_dir, exist_ok=True)
+
+            # (nome_file, bytes, data_doc)
+            files_to_save = [
+                (f'Richiesta_Intervento_{guest_name}_{_fmt_date(row.RequestLetterDate)}.pdf',
+                 row.RequestLetterDoc),
+                (f'Accettazione_{guest_name}_{_fmt_date(row.AcceptanceLetterDate)}.pdf',
+                 row.AcceptanceLetterDoc),
+                (f'Rapporto_Attivita_{guest_name}_{_fmt_date(row.ActivityReportDate)}.docx',
+                 row.ActivityReportDoc),
+            ]
+
+            saved_paths = []
+            for doc_name, doc_bytes in files_to_save:
                 if doc_bytes:
-                    filepath = os.path.join(folder, doc_name)
+                    filepath = os.path.join(target_dir, doc_name)
                     with open(filepath, 'wb') as f:
                         f.write(doc_bytes)
-                    saved += 1
+                    saved_paths.append(os.path.basename(filepath))
 
-            messagebox.showinfo(self.lang.get('success', 'Successo'),
-                f"{saved} {self.lang.get('docs_downloaded', 'documenti scaricati in')} {folder}")
-            logger.info(f"Scaricati {saved} documenti per report {report_id}")
+            if saved_paths:
+                file_list = '\n'.join(f'  • {n}' for n in saved_paths)
+                messagebox.showinfo(
+                    self.lang.get('success', 'Successo'),
+                    f"{len(saved_paths)} {self.lang.get('docs_downloaded', 'documenti scaricati in')}\n"
+                    f"{target_dir}\n\n{file_list}")
+                logger.info(f"Scaricati {len(saved_paths)} documenti per report {report_id} in {target_dir}")
+            else:
+                messagebox.showwarning(
+                    self.lang.get('warning', 'Attenzione'),
+                    self.lang.get('no_docs', 'Nessun documento disponibile per questo report.'))
 
         except Exception as e:
             logger.error(f"Errore download documenti: {e}")

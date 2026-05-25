@@ -307,7 +307,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.0.8.0'  # Versione aggiornata
+APP_VERSION = '2.4.0.9.0'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -15546,6 +15546,7 @@ class App(tk.Tk):
         
         # Menu Ordini
         self.orders_menu = tk.Menu(self.operations_menu, tearoff=0)
+        self.shipments_submenu = tk.Menu(self.orders_menu, tearoff=0)
 
     def _init_production_submenus(self):
         """Inizializza la gerarchia completa del menu Produzione"""
@@ -15876,6 +15877,22 @@ class App(tk.Tk):
         self.orders_menu.add_command(
             label=self.lang.get('submenu_orders_reports', 'Urgenze'),
             command=self._orders_reports_placeholder
+        )
+
+        # Sottomenu Spedizioni
+        self.shipments_submenu.delete(0, 'end')
+
+        self.orders_menu.add_cascade(
+            label=self.lang.get('submenu_shipments', 'Spedizioni'),
+            menu=self.shipments_submenu
+        )
+        self.shipments_submenu.add_command(
+            label=self.lang.get('submenu_shipment_ws_config', '🖥️ Imposta Computer Spedizioni'),
+            command=self._open_shipment_workstation_config
+        )
+        self.shipments_submenu.add_command(
+            label=self.lang.get('submenu_shipment_confirm', '✅ Conferma Shipping'),
+            command=self._open_shipment_confirmation
         )
 
         # Comandi del menu NPI
@@ -18779,6 +18796,42 @@ class App(tk.Tk):
             action_callback=authorized_action
         )
 
+    def _open_shipment_workstation_config(self):
+        """Apre la finestra di configurazione postazione spedizioni urgenti (con autorizzazione)."""
+        def authorized_action():
+            try:
+                from orders.shipment_workstation_config import ShipmentWorkstationConfigWindow
+                user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
+                ShipmentWorkstationConfigWindow(self, self.lang, user_name)
+            except Exception as e:
+                logger.error(f"Errore apertura configurazione postazione spedizioni: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire la finestra:\n{e}",
+                    parent=self
+                )
+
+        self._execute_authorized_action(
+            menu_translation_key='spedizioni_urgenti',
+            action_callback=authorized_action
+        )
+
+    def _open_shipment_confirmation(self):
+        """Apre la finestra di conferma spedizioni urgenti (login semplice)."""
+        def action(user_name):
+            try:
+                from orders.shipment_confirmation_window import open_shipment_confirmation_window
+                open_shipment_confirmation_window(self, self.db, self.lang, user_name)
+            except Exception as e:
+                logger.error(f"Errore apertura conferma spedizioni: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire la finestra:\n{e}",
+                    parent=self
+                )
+
+        self._execute_simple_login(action_callback=action)
+
     def open_equipment_types_manager_with_login(self):
         """Apre la finestra di gestione tipi macchine con autorizzazione"""
         def authorized_action():
@@ -19049,6 +19102,19 @@ class App(tk.Tk):
         except Exception as e:
             logger.error(f"Errore avvio monitor cambio turno: {e}", exc_info=True)
             self._shift_handover_monitor = None
+
+        # Monitor Spedizioni Urgenti
+        try:
+            from orders.shipment_workstation_config import is_shipment_workstation
+            from orders.shipment_monitor import ShipmentMonitor
+            if is_shipment_workstation():
+                self._shipment_monitor = ShipmentMonitor(self, self.db, self.lang)
+                logger.info("ShipmentMonitor avviato (questo PC è postazione spedizioni)")
+            else:
+                self._shipment_monitor = None
+        except Exception as e:
+            logger.error(f"Errore avvio monitor spedizioni urgenti: {e}", exc_info=True)
+            self._shipment_monitor = None
 
     def _on_closing(self, force_quit=False):
         """Gestisce la chiusura dell'applicazione."""

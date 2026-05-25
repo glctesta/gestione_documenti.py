@@ -34,7 +34,7 @@ SELECT DISTINCT
     Orders.OrderNumber,
     Products.ProductCode,
     Phases.PhaseName,
-    A.ScanTimeFinish AS ScanTime
+    LastScan.ScanTimeFinish AS ScanTime
 FROM (
     SELECT Scannings.*
     FROM Scannings
@@ -165,13 +165,34 @@ def _fail_stats(rows: list) -> dict:
     Summarise a list of FAIL rows.
     row layout: 0=IDBoard,1=Labels,2=OrderNumber,3=ProductCode,
                 4=PhaseName,5=ScanTime
+    Deduplicates by IDBoard so totals match the card values.
     """
-    phases   = Counter(r[4] for r in rows if r[4])
-    products = Counter(r[3] for r in rows if r[3])
+    # One entry per board — eliminates duplicates caused by multiple
+    # scannings per board in the query period.
+    seen: dict = {}
+    for r in rows:
+        if r[0] not in seen:
+            seen[r[0]] = r
+    unique_rows = list(seen.values())
+
+    phases   = Counter(r[4] for r in unique_rows if r[4])
+    products = Counter(r[3] for r in unique_rows if r[3])
+
+    # Top-3 fail phases per product
+    prod_phase: dict = {}
+    for r in unique_rows:
+        prod, phase = r[3], r[4]
+        if prod and phase:
+            if prod not in prod_phase:
+                prod_phase[prod] = Counter()
+            prod_phase[prod][phase] += 1
+    product_top_phases = {p: c.most_common(3) for p, c in prod_phase.items()}
+
     return {
-        'total':    len({r[0] for r in rows}),
+        'total':    len(unique_rows),
         'phases':   phases.most_common(10),
         'products': products.most_common(15),
+        'product_top_phases': product_top_phases,
     }
 
 
@@ -206,6 +227,38 @@ def _top_table(items: list, col1: str, col2: str) -> str:
         f'<th style="padding:5px 10px;text-align:left">{col1}</th>'
         f'<th style="padding:5px 10px;text-align:center">{col2}</th>'
         f'</tr>{rows}</table>'
+    )
+
+
+def _product_phase_table(items: list, product_top_phases: dict) -> str:
+    """Products table with top-3 fail phases inline per product row."""
+    if not items:
+        return '<p style="color:#777;font-size:12px">No data</p>'
+    rows_html = ''
+    for i, (name, cnt) in enumerate(items):
+        phases = product_top_phases.get(name, [])
+        phase_parts = [
+            f'<span style="color:#666">{ph}</span>:<b>{c}</b>'
+            for ph, c in phases
+        ]
+        phase_text = ' &nbsp;·&nbsp; '.join(phase_parts) if phase_parts else '—'
+        bg = '#f9f9f9' if i % 2 == 0 else '#ffffff'
+        rows_html += (
+            f'<tr style="background:{bg}">'
+            f'<td style="padding:4px 10px;border:1px solid #e0e0e0">{name}</td>'
+            f'<td style="padding:4px 10px;border:1px solid #e0e0e0;'
+            f'text-align:center;font-weight:bold">{cnt}</td>'
+            f'<td style="padding:4px 10px;border:1px solid #e0e0e0;'
+            f'font-size:10px;white-space:nowrap">{phase_text}</td>'
+            f'</tr>'
+        )
+    return (
+        f'<table style="border-collapse:collapse;font-size:11px;width:100%">'
+        f'<tr style="background:#1f3864;color:#fff">'
+        f'<th style="padding:5px 10px;text-align:left">Product</th>'
+        f'<th style="padding:5px 10px;text-align:center">FAILs</th>'
+        f'<th style="padding:5px 10px;text-align:left">Top Phases (3)</th>'
+        f'</tr>{rows_html}</table>'
     )
 
 
@@ -312,7 +365,6 @@ def _build_html(
     produced_yesterday: int = 0,
     produced_month:     int = 0,
     produced_ytd:       int = 0,
-    fail_breakdown_ytd: list | None = None,
 ) -> str:
     logo_uri = _logo_base64()
     logo_html = (
@@ -343,22 +395,28 @@ def _build_html(
 
     def top_section(title: str, stats: dict, show_repairs: bool) -> str:
         phase_col = 'Repairs' if show_repairs else 'FAILs'
+        if not show_repairs and stats.get('product_top_phases'):
+            prod_table = _product_phase_table(
+                stats['products'], stats['product_top_phases']
+            )
+        else:
+            prod_table = _top_table(stats['products'], 'Product', phase_col)
         return f"""
         <tr><td colspan="2" style="padding:12px 0 4px">
           <b style="font-size:13px;color:#1f3864">{title}</b>
         </td></tr>
         <tr>
-          <td style="padding:4px 8px 4px 0;vertical-align:top;width:50%">
+          <td style="padding:4px 8px 4px 0;vertical-align:top;width:40%">
             <div style="font-size:11px;color:#555;margin-bottom:4px">
               Top Phases — {phase_col}
             </div>
             {_top_table(stats['phases'], 'Phase', phase_col)}
           </td>
-          <td style="padding:4px 0 4px 8px;vertical-align:top;width:50%">
+          <td style="padding:4px 0 4px 8px;vertical-align:top;width:60%">
             <div style="font-size:11px;color:#555;margin-bottom:4px">
               Top Products — {phase_col}
             </div>
-            {_top_table(stats['products'], 'Product', phase_col)}
+            {prod_table}
           </td>
         </tr>"""
 
@@ -395,7 +453,8 @@ def _build_html(
       {top_section(f'Yesterday — Repairs &amp; Scraps ({yesterday.strftime("%d/%m/%Y")})',
                    repair_yesterday, True)}
       {top_section(f'Month to Date ({month_label})', repair_month, True)}
-      {top_section(f'Year to Date ({year_label})',   repair_ytd,   True)}      {_fail_breakdown_section(fail_breakdown_ytd or [], f'FAILs by Product \u00d7 Phase \u2014 YTD ({year_label})')}    </table>
+      {top_section(f'Year to Date ({year_label})',   repair_ytd,   True)}
+    </table>
   </div>
 
   <!-- Footer -->
@@ -551,6 +610,47 @@ def _build_excel(
         ws_bd.freeze_panes = 'B2'
         _autofit(ws_bd)
 
+    # ── Sheet 6: Top FAILs by Product × Phase (yesterday) ────────────────────
+    if fail_rows:
+        seen_fp: dict = {}
+        for r in fail_rows:
+            if r[0] not in seen_fp:
+                seen_fp[r[0]] = r
+        fail_rows_uniq = list(seen_fp.values())
+        fail_by_prod: dict = {}
+        for r in fail_rows_uniq:
+            prod, phase = r[3], r[4]
+            if prod and phase:
+                if prod not in fail_by_prod:
+                    fail_by_prod[prod] = {'total': 0, 'phases': Counter()}
+                fail_by_prod[prod]['total'] += 1
+                fail_by_prod[prod]['phases'][phase] += 1
+        prod_sorted_pp = sorted(
+            fail_by_prod.items(), key=lambda x: -x[1]['total']
+        )
+        ws_pp = wb.create_sheet(
+            f'Top FAILs by Product {yesterday.strftime("%d-%m")}'
+        )
+        hdrs_pp = [
+            'Product', 'Total FAILs',
+            'Phase 1', 'Count 1', 'Phase 2', 'Count 2', 'Phase 3', 'Count 3',
+        ]
+        _header(ws_pp, hdrs_pp)
+        for ri_pp, (prod, data) in enumerate(prod_sorted_pp, 2):
+            top3 = data['phases'].most_common(3)
+            row_vals: list = [prod, data['total']]
+            for ph, c in top3:
+                row_vals.extend([ph, c])
+            while len(row_vals) < len(hdrs_pp):
+                row_vals.append(None)
+            for ci_pp, v in enumerate(row_vals, 1):
+                cell = ws_pp.cell(ri_pp, ci_pp, v)
+                cell.border = THIN
+                if ci_pp == 2:
+                    cell.font = Font(bold=True)
+        ws_pp.freeze_panes = 'A2'
+        _autofit(ws_pp)
+
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -569,7 +669,8 @@ def _claim_send_slot(conn, setting_key: str) -> bool:
             INSERT INTO traceability_rs.dbo.settings (atribute, [value])
             SELECT ?, ?
             WHERE NOT EXISTS (
-                SELECT 1 FROM traceability_rs.dbo.settings WHERE atribute = ?
+                SELECT 1 FROM traceability_rs.dbo.settings
+                WITH (UPDLOCK, HOLDLOCK) WHERE atribute = ?
             )
         """, (setting_key,
               datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -676,7 +777,6 @@ def run_fails_daily_email(db: Any) -> None:
             produced_yesterday=produced_yesterday,
             produced_month=produced_month,
             produced_ytd=produced_ytd,
-            fail_breakdown_ytd=fail_breakdown_ytd,
         )
 
         # ── Build Excel ───────────────────────────────────────────────────────

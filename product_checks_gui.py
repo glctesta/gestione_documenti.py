@@ -2168,6 +2168,36 @@ def check_and_notify_verification_discrepancies(db_handler):
             logger.info('Background check: No discrepancies found.')
             return
 
+        # ── Dedup atomica cross-istanza ──────────────────────────────────────
+        # Solo la prima istanza (tra tutti i PC che girano il programma)
+        # riesce a inserire il claim nel DB e procede con l'invio.
+        # Le altre trovano la riga già esistente e saltano.
+        today_key = datetime.now().strftime('%Y-%m-%d')
+        setting_key = f'SentVerifDiscrepEmail_{today_key}'
+        try:
+            cursor_claim = db_handler.conn.cursor()
+            cursor_claim.execute("""
+                INSERT INTO traceability_rs.dbo.settings (atribute, [value])
+                SELECT ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM traceability_rs.dbo.settings
+                    WHERE atribute = ?
+                )
+            """, (setting_key, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), setting_key))
+            claimed = cursor_claim.rowcount > 0
+            db_handler.conn.commit()
+            cursor_claim.close()
+        except Exception as claim_err:
+            logger.warning(f'Background check: Errore acquisizione claim dedup: {claim_err}. Procedo comunque.')
+            claimed = True  # fallback: procedi se il DB claim non è disponibile
+
+        if not claimed:
+            logger.info(f"Background check: email verifiche già inviata oggi ({today_key}) da altra istanza, skip.")
+            return
+        logger.info(f"Background check: claim '{setting_key}' acquisito, procedo con invio email.")
+        # ─────────────────────────────────────────────────────────────────────
+
+
         # Se ci sono risultati, prepara l'email
         logger.info(f'Background check: Found {len(results)} discrepancies. Sending notification...')
         

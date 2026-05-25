@@ -212,6 +212,9 @@ def check_shift_fai_completed(conn, operator_name: str, shift_start_dt: datetime
     
     Filtra solo FaiLogs collegati a template con Autocheck=1 tramite la catena:
     FaiLogs → FaiStepDetails → FaiSteps → FaiTemplates.
+    
+    NOTA: NON si filtra su DateOut IS NULL — un FAI già chiuso (DateOut impostato)
+    è comunque un FAI COMPILATO e non deve generare escalation.
     """
     query = """
         SELECT TOP 1 l.FaiLogId 
@@ -224,7 +227,6 @@ def check_shift_fai_completed(conn, operator_name: str, shift_start_dt: datetime
             ON s.FaiTemplateId = t.FaiTemplateId
         WHERE l.Operator = ? 
           AND l.DateIn >= ?
-          AND l.DateOut IS NULL
           AND t.Autocheck = 1
     """
     try:
@@ -242,6 +244,9 @@ def check_order_fai_completed(conn, order_id: int) -> bool:
     
     Filtra solo FaiLogs collegati a template con Autocheck=1 tramite la catena:
     FaiLogs → FaiStepDetails → FaiSteps → FaiTemplates.
+    
+    NOTA: NON si filtra su DateOut IS NULL — un FAI già chiuso (DateOut impostato)
+    è comunque un FAI COMPILATO e non deve generare escalation.
     """
     query = """
         SELECT TOP 1 l.FaiLogId 
@@ -253,7 +258,6 @@ def check_order_fai_completed(conn, order_id: int) -> bool:
         INNER JOIN [Traceability_RS].[fai].[FaiTemplates] t
             ON s.FaiTemplateId = t.FaiTemplateId
         WHERE l.OrderId = ?
-          AND l.DateOut IS NULL
           AND t.Autocheck = 1
     """
     try:
@@ -270,6 +274,9 @@ def check_order_fai_completed_by_number(conn, order_number: str, id_phase: int) 
     """Verifica se esiste un FAI Autocheck compilato per ordine (per OrderNumber + IdPhase).
     
     Usato dal planning-based enforcement dove abbiamo OrderNumber dal file Excel.
+    
+    NOTA: NON si filtra su DateOut IS NULL — un FAI già chiuso (DateOut impostato)
+    è comunque un FAI COMPILATO e non deve generare escalation.
     """
     query = """
         SELECT TOP 1 l.FaiLogId 
@@ -284,7 +291,6 @@ def check_order_fai_completed_by_number(conn, order_number: str, id_phase: int) 
             ON l.OrderId = o.IDOrder
         WHERE o.OrderNumber = ?
           AND t.IdPhase = ?
-          AND l.DateOut IS NULL
           AND t.Autocheck = 1
     """
     try:

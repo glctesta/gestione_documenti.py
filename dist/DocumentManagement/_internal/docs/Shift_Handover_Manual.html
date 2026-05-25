@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cambio Turno — Shift Handover Manual</title>
+<style>
+  :root{--accent:#1F497D;--light:#e8f0fb;--ok:#27ae60;--warn:#e67e22;--err:#c0392b;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:'Segoe UI',Arial,sans-serif;font-size:15px;color:#222;background:#f5f7fa;}
+  header{background:var(--accent);color:#fff;padding:18px 32px;display:flex;align-items:center;gap:18px;}
+  header h1{font-size:1.5rem;}
+  nav{display:flex;gap:8px;padding:12px 32px;background:#fff;border-bottom:2px solid var(--accent);flex-wrap:wrap;}
+  nav button{padding:6px 18px;border:2px solid var(--accent);border-radius:20px;background:#fff;color:var(--accent);cursor:pointer;font-size:13px;font-weight:600;transition:.2s;}
+  nav button.active,nav button:hover{background:var(--accent);color:#fff;}
+  .lang-section{display:none;max-width:960px;margin:24px auto;padding:0 24px 40px;}
+  .lang-section.active{display:block;}
+  h2{color:var(--accent);border-bottom:2px solid var(--light);padding-bottom:6px;margin:28px 0 10px;}
+  h3{color:#2c5f9e;margin:20px 0 6px;}
+  p{line-height:1.7;margin-bottom:10px;}
+  ul,ol{padding-left:22px;margin-bottom:10px;}
+  li{line-height:1.7;margin-bottom:3px;}
+  .box{background:var(--light);border-left:4px solid var(--accent);padding:12px 16px;border-radius:4px;margin:12px 0;}
+  .warn-box{background:#fff8e1;border-left:4px solid var(--warn);padding:12px 16px;border-radius:4px;margin:12px 0;}
+  .ok-box{background:#e8f8f0;border-left:4px solid var(--ok);padding:12px 16px;border-radius:4px;margin:12px 0;}
+  table{width:100%;border-collapse:collapse;margin:12px 0;}
+  th{background:var(--accent);color:#fff;padding:8px 12px;text-align:left;}
+  td{padding:8px 12px;border-bottom:1px solid #dde;}
+  tr:nth-child(even) td{background:#f0f4fb;}
+  .badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:700;}
+  .badge-ok{background:#d5f5e3;color:var(--ok);}
+  .badge-warn{background:#fef9e7;color:var(--warn);}
+  .badge-err{background:#fde8e8;color:var(--err);}
+  footer{text-align:center;color:#888;font-size:12px;padding:16px;border-top:1px solid #dde;}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>🔄 Cambio Turno / Shift Handover</h1>
+    <div style="font-size:12px;opacity:.8;">TraceabilityRS v2.4 — Modulo Cambio Turno</div>
+  </div>
+</header>
+<nav>
+  <button class="active" onclick="setLang('it')">🇮🇹 Italiano</button>
+  <button onclick="setLang('en')">🇬🇧 English</button>
+  <button onclick="setLang('ro')">🇷🇴 Română</button>
+  <button onclick="setLang('de')">🇩🇪 Deutsch</button>
+  <button onclick="setLang('sv')">🇸🇪 Svenska</button>
+</nav>
+
+<!-- ════════════════════════════════════════════════════════ ITALIANO -->
+<div id="it" class="lang-section active">
+  <h2>Panoramica</h2>
+  <p>Il modulo <strong>Cambio Turno</strong> gestisce il passaggio di consegne strutturato tra il capo turno uscente e quello entrante. Garantisce tracciabilità completa delle informazioni critiche di produzione e richiede una conferma esplicita di lettura.</p>
+  <div class="box">📍 Posizione nel menu: <strong>Dichiarazioni → 🔄 Cambio Turno</strong></div>
+
+  <h2>Accesso e autenticazione</h2>
+  <p>Tutte le voci del modulo richiedono autenticazione. Inserire le proprie credenziali (username / password) al momento dell'apertura.</p>
+
+  <h2>Scheda "Compila Consegna"</h2>
+  <h3>Intestazione</h3>
+  <ul>
+    <li><strong>Data</strong>: impostata automaticamente alla data odierna (sola lettura).</li>
+    <li><strong>Turno</strong>: selezionare il turno corrente (T1 fine 15:30 · T2 fine 23:30 · T3 fine 07:30).</li>
+    <li><strong>Reparto</strong>: scegliere tra SMT, PTHH, WAREHOUSE.</li>
+    <li><strong>Compilato da</strong>: nome dell'utente autenticato (automatico).</li>
+  </ul>
+  <h3>Sezioni da compilare</h3>
+  <table>
+    <tr><th>Campo</th><th>Descrizione</th></tr>
+    <tr><td>Stare producție</td><td>Stato produzione: aderenza al piano, eventuali deviazioni.</td></tr>
+    <tr><td>Linii / echipamente</td><td>Stato di ogni linea/attrezzatura (funzionale, ferma, motivo).</td></tr>
+    <tr><td>Cantitate — Pianificato / Realizzato</td><td>Quantità pianificate e quantità effettivamente prodotte.</td></tr>
+    <tr><td>Calitate</td><td>Problemi di qualità riscontrati e azioni intraprese.</td></tr>
+    <tr><td>Materiale</td><td>Disponibilità materiali, eventuali carenze.</td></tr>
+    <tr><td>Probleme deschise</td><td>Problemi aperti da monitorare nel turno successivo.</td></tr>
+    <tr><td>Note libere</td><td>Qualsiasi altra informazione rilevante.</td></tr>
+  </table>
+  <p>Premere <strong>💾 Salva Consegna Turno</strong> per registrare. La consegna appare nello storico con stato <span class="badge badge-err">❌ In attesa</span> finché non viene confermata.</p>
+
+  <h2>Scheda "Storico / Conferma"</h2>
+  <p>Il capo turno entrante utilizza questa scheda per:</p>
+  <ol>
+    <li>Filtrare per data e/o reparto, poi premere <strong>🔍 Cerca</strong>.</li>
+    <li>Selezionare la riga della consegna del turno precedente.</li>
+    <li>Leggere il dettaglio completo nel pannello inferiore.</li>
+    <li>Premere <strong>✅ Ho letto e preso nota della consegna</strong> e confermare.</li>
+  </ol>
+  <div class="ok-box">✅ Dopo la conferma lo stato diventa <strong>CONFERMATO</strong> e viene registrata la firma digitale dell'utente.</div>
+  <div class="warn-box">⚠️ Se la conferma non avviene entro 30 minuti dall'inizio del turno successivo, viene inviata automaticamente un'email di alert ai responsabili.</div>
+
+  <h2>📊 Report Cambio Turno</h2>
+  <p>Menu: <strong>Dichiarazioni → 📊 Report Cambio Turno</strong>. Richiede solo login semplice.</p>
+  <ul>
+    <li>Filtrare per periodo (Dal / Al), reparto e numero turno.</li>
+    <li>La barra KPI mostra: totale consegne · % confermate · Δ Qty medio (Prodotto − Pianificato).</li>
+    <li>Selezionare una riga per vedere i problemi aperti nel pannello in basso.</li>
+    <li>Premere <strong>📥 Export Excel</strong> per salvare il report in <code>C:\Temp\CambioTurno_*.xlsx</code>. Le righe non confermate appaiono evidenziate in rosso.</li>
+  </ul>
+
+  <h2>⚙️ Configura SCT WorkStation</h2>
+  <p>Menu: <strong>Dichiarazioni → ⚙️ Configura SCT WorkStation</strong>. Solo i PC configurati come SCT Host ricevono i popup automatici 15 minuti prima della fine turno.</p>
+  <ol>
+    <li>Selezionare il <strong>Reparto</strong> e i <strong>Turni</strong> abilitati per questo PC.</li>
+    <li>Premere <strong>Attiva SCT WorkStation</strong>: crea il file <code>%LOCALAPPDATA%\sct_host.json</code>.</li>
+    <li>Per disattivare, premere <strong>Disattiva SCT WorkStation</strong>.</li>
+  </ol>
+
+  <h2>Sistema di alert automatici</h2>
+  <table>
+    <tr><th>Orario popup</th><th>Turno</th></tr>
+    <tr><td>15:15</td><td>Turno 1</td></tr>
+    <tr><td>23:15</td><td>Turno 2</td></tr>
+    <tr><td>07:15</td><td>Turno 3 (opzionale)</td></tr>
+  </table>
+  <p>Se la consegna non viene confermata entro 30 minuti dall'inizio del turno successivo, il sistema invia un'email agli indirizzi configurati in <code>traceability_rs.dbo.settings</code> con chiave <code>sys_email_Allert_Shift</code>.</p>
+</div>
+
+<!-- ════════════════════════════════════════════════════════ ENGLISH -->
+<div id="en" class="lang-section">
+  <h2>Overview</h2>
+  <p>The <strong>Shift Handover</strong> module manages the structured transfer of information between the outgoing and incoming shift leader. It ensures complete traceability of critical production data and requires explicit reading confirmation.</p>
+  <div class="box">📍 Menu location: <strong>Declarations → 🔄 Shift Handover</strong></div>
+
+  <h2>Access &amp; Authentication</h2>
+  <p>All module entries require authentication. Enter your credentials (username / password) when opening.</p>
+
+  <h2>"Fill Handover" Tab</h2>
+  <h3>Header</h3>
+  <ul>
+    <li><strong>Date</strong>: set automatically to today (read-only).</li>
+    <li><strong>Shift</strong>: select the current shift (T1 end 15:30 · T2 end 23:30 · T3 end 07:30).</li>
+    <li><strong>Department</strong>: choose from SMT, PTHH, WAREHOUSE.</li>
+    <li><strong>Compiled by</strong>: authenticated user name (automatic).</li>
+  </ul>
+  <h3>Fields to fill in</h3>
+  <table>
+    <tr><th>Field</th><th>Description</th></tr>
+    <tr><td>Production Status</td><td>Plan adherence and any deviations.</td></tr>
+    <tr><td>Lines / Equipment</td><td>Status of each line/equipment (running, stopped, reason).</td></tr>
+    <tr><td>Qty — Planned / Produced</td><td>Planned and actual produced quantities.</td></tr>
+    <tr><td>Quality</td><td>Quality issues found and actions taken.</td></tr>
+    <tr><td>Materials</td><td>Material availability, shortages.</td></tr>
+    <tr><td>Open Issues</td><td>Issues to monitor in the next shift.</td></tr>
+    <tr><td>Free Notes</td><td>Any other relevant information.</td></tr>
+  </table>
+  <p>Press <strong>💾 Save Shift Handover</strong> to record. The handover appears in history with status <span class="badge badge-err">❌ Pending</span> until confirmed.</p>
+
+  <h2>"History / Confirm" Tab</h2>
+  <ol>
+    <li>Filter by date and/or department, then press <strong>🔍 Search</strong>.</li>
+    <li>Select the previous shift's handover row.</li>
+    <li>Read the full detail in the lower panel.</li>
+    <li>Press <strong>✅ I have read and acknowledged</strong> and confirm.</li>
+  </ol>
+  <div class="ok-box">✅ After confirmation status becomes <strong>CONFIRMED</strong> and the user's digital signature is recorded.</div>
+  <div class="warn-box">⚠️ If confirmation does not happen within 30 minutes of the next shift start, an alert email is automatically sent to configured recipients.</div>
+
+  <h2>📊 Shift Handover Report</h2>
+  <ul>
+    <li>Filter by period, department and shift number.</li>
+    <li>KPI bar shows: total handovers · % confirmed · average Qty delta.</li>
+    <li>Press <strong>📥 Export Excel</strong> to save to <code>C:\Temp\CambioTurno_*.xlsx</code>. Unconfirmed rows are highlighted red.</li>
+  </ul>
+
+  <h2>⚙️ Configure SCT WorkStation</h2>
+  <ol>
+    <li>Select the <strong>Department</strong> and enabled <strong>Shifts</strong> for this PC.</li>
+    <li>Press <strong>Activate SCT WorkStation</strong>: creates <code>%LOCALAPPDATA%\sct_host.json</code>.</li>
+    <li>To deactivate, press <strong>Deactivate SCT WorkStation</strong>.</li>
+  </ol>
+
+  <h2>Automatic Alert System</h2>
+  <table>
+    <tr><th>Popup time</th><th>Shift</th></tr>
+    <tr><td>15:15</td><td>Shift 1</td></tr>
+    <tr><td>23:15</td><td>Shift 2</td></tr>
+    <tr><td>07:15</td><td>Shift 3 (optional)</td></tr>
+  </table>
+</div>
+
+<!-- ════════════════════════════════════════════════════════ ROMÂNĂ -->
+<div id="ro" class="lang-section">
+  <h2>Prezentare generală</h2>
+  <p>Modulul <strong>Predare Schimb</strong> gestionează transferul structurat de informații între șeful de schimb ieșit și cel intrat. Asigură trasabilitate completă a datelor critice de producție și necesită o confirmare explicită de citire.</p>
+  <div class="box">📍 Locație meniu: <strong>Declarații → 🔄 Predare Schimb</strong></div>
+
+  <h2>Acces și autentificare</h2>
+  <p>Toate intrările modulului necesită autentificare. Introduceți datele de conectare (utilizator / parolă) la deschidere.</p>
+
+  <h2>Fila "Completează Predarea"</h2>
+  <table>
+    <tr><th>Câmp</th><th>Descriere</th></tr>
+    <tr><td>Stare producție</td><td>Respectarea planului, abateri.</td></tr>
+    <tr><td>Linii / echipamente</td><td>Starea fiecărei linii (funcțională, oprită, motiv).</td></tr>
+    <tr><td>Cantitate — Planificat / Realizat</td><td>Cantitățile planificate și efectiv produse.</td></tr>
+    <tr><td>Calitate</td><td>Probleme de calitate și acțiuni întreprinse.</td></tr>
+    <tr><td>Materiale</td><td>Disponibilitate materiale, lipsuri.</td></tr>
+    <tr><td>Probleme deschise</td><td>Probleme de urmărit în schimbul următor.</td></tr>
+    <tr><td>Note libere</td><td>Orice altă informație relevantă.</td></tr>
+  </table>
+  <p>Apăsați <strong>💾 Salvează Predarea Schimbului</strong> pentru înregistrare.</p>
+
+  <h2>Fila "Istoric / Confirmare"</h2>
+  <ol>
+    <li>Filtrați după dată și/sau secție, apoi apăsați <strong>🔍 Caută</strong>.</li>
+    <li>Selectați rândul predării schimbului anterior.</li>
+    <li>Citiți detaliile complete în panoul inferior.</li>
+    <li>Apăsați <strong>✅ Am citit și luat la cunoștință</strong> și confirmați.</li>
+  </ol>
+  <div class="ok-box">✅ După confirmare, starea devine <strong>CONFIRMATĂ</strong> și se înregistrează semnătura digitală.</div>
+  <div class="warn-box">⚠️ Dacă confirmarea nu are loc în 30 de minute de la începutul schimbului următor, se trimite automat un email de alertă.</div>
+
+  <h2>📊 Raport Predare Schimb</h2>
+  <ul>
+    <li>Filtrați după perioadă, secție și număr de schimb.</li>
+    <li>Bara KPI arată: total predări · % confirmate · Δ Cantitate medie.</li>
+    <li>Apăsați <strong>📥 Export Excel</strong> pentru salvare în <code>C:\Temp\CambioTurno_*.xlsx</code>.</li>
+  </ul>
+
+  <h2>⚙️ Configurare SCT WorkStation</h2>
+  <ol>
+    <li>Selectați <strong>Secția</strong> și <strong>Schimburile</strong> activate pentru acest PC.</li>
+    <li>Apăsați <strong>Activează SCT WorkStation</strong>: creează <code>%LOCALAPPDATA%\sct_host.json</code>.</li>
+    <li>Pentru dezactivare, apăsați <strong>Dezactivează SCT WorkStation</strong>.</li>
+  </ol>
+
+  <h2>Sistem de alerte automate</h2>
+  <table>
+    <tr><th>Ora popup</th><th>Schimb</th></tr>
+    <tr><td>15:15</td><td>Schimbul 1</td></tr>
+    <tr><td>23:15</td><td>Schimbul 2</td></tr>
+    <tr><td>07:15</td><td>Schimbul 3 (opțional)</td></tr>
+  </table>
+</div>
+
+<!-- ════════════════════════════════════════════════════════ DEUTSCH -->
+<div id="de" class="lang-section">
+  <h2>Übersicht</h2>
+  <p>Das Modul <strong>Schichtübergabe</strong> verwaltet die strukturierte Übergabe von Informationen zwischen dem abtretenden und dem antretenden Schichtleiter.</p>
+  <div class="box">📍 Menüposition: <strong>Deklarationen → 🔄 Schichtwechsel</strong></div>
+
+  <h2>Zugang &amp; Authentifizierung</h2>
+  <p>Alle Moduleinträge erfordern eine Authentifizierung mit Benutzername und Passwort.</p>
+
+  <h2>Reiter "Übergabe ausfüllen"</h2>
+  <table>
+    <tr><th>Feld</th><th>Beschreibung</th></tr>
+    <tr><td>Produktionsstatus</td><td>Planeinhaltung und Abweichungen.</td></tr>
+    <tr><td>Linien / Ausrüstung</td><td>Status jeder Linie (läuft, gestoppt, Grund).</td></tr>
+    <tr><td>Menge — Geplant / Produziert</td><td>Geplante und tatsächlich produzierte Mengen.</td></tr>
+    <tr><td>Qualität</td><td>Qualitätsprobleme und ergriffene Maßnahmen.</td></tr>
+    <tr><td>Materialien</td><td>Materialverfügbarkeit, Engpässe.</td></tr>
+    <tr><td>Offene Probleme</td><td>In der nächsten Schicht zu verfolgende Probleme.</td></tr>
+    <tr><td>Freie Notizen</td><td>Sonstige relevante Informationen.</td></tr>
+  </table>
+  <p>Drücken Sie <strong>💾 Übergabe speichern</strong> zur Erfassung.</p>
+
+  <h2>Reiter "Verlauf / Bestätigung"</h2>
+  <ol>
+    <li>Nach Datum und/oder Abteilung filtern, dann <strong>🔍 Suchen</strong> drücken.</li>
+    <li>Die Übergabezeile der vorherigen Schicht auswählen.</li>
+    <li>Vollständige Details im unteren Bereich lesen.</li>
+    <li><strong>✅ Gelesen und zur Kenntnis genommen</strong> drücken und bestätigen.</li>
+  </ol>
+  <div class="warn-box">⚠️ Erfolgt die Bestätigung nicht innerhalb von 30 Minuten nach Schichtbeginn, wird automatisch eine Alert-E-Mail versandt.</div>
+
+  <h2>Automatisches Alarmsystem</h2>
+  <table>
+    <tr><th>Popup-Zeit</th><th>Schicht</th></tr>
+    <tr><td>15:15</td><td>Schicht 1</td></tr>
+    <tr><td>23:15</td><td>Schicht 2</td></tr>
+    <tr><td>07:15</td><td>Schicht 3 (optional)</td></tr>
+  </table>
+</div>
+
+<!-- ════════════════════════════════════════════════════════ SVENSKA -->
+<div id="sv" class="lang-section">
+  <h2>Översikt</h2>
+  <p>Modulen <strong>Skiftöverlämning</strong> hanterar strukturerad överföring av information mellan avgående och tillträdande skiftledare.</p>
+  <div class="box">📍 Menyplats: <strong>Deklarationer → 🔄 Skiftbyte</strong></div>
+
+  <h2>Åtkomst &amp; Autentisering</h2>
+  <p>Alla modulposter kräver autentisering med användarnamn och lösenord.</p>
+
+  <h2>Fliken "Fyll i överlämning"</h2>
+  <table>
+    <tr><th>Fält</th><th>Beskrivning</th></tr>
+    <tr><td>Produktionsstatus</td><td>Planavvikelser och följsamhet.</td></tr>
+    <tr><td>Linjer / utrustning</td><td>Status för varje linje (kör, stoppad, orsak).</td></tr>
+    <tr><td>Antal — Planerat / Producerat</td><td>Planerade och faktiskt producerade kvantiteter.</td></tr>
+    <tr><td>Kvalitet</td><td>Kvalitetsproblem och åtgärder.</td></tr>
+    <tr><td>Material</td><td>Materialtillgänglighet, brister.</td></tr>
+    <tr><td>Öppna ärenden</td><td>Problem att följa upp under nästa skift.</td></tr>
+    <tr><td>Fritext</td><td>Övrig relevant information.</td></tr>
+  </table>
+
+  <h2>Automatiskt larmsystem</h2>
+  <table>
+    <tr><th>Popup-tid</th><th>Skift</th></tr>
+    <tr><td>15:15</td><td>Skift 1</td></tr>
+    <tr><td>23:15</td><td>Skift 2</td></tr>
+    <tr><td>07:15</td><td>Skift 3 (valfritt)</td></tr>
+  </table>
+</div>
+
+<footer>TraceabilityRS — Shift Handover Module v2.4 &nbsp;|&nbsp; GTMC Gianluca Testa</footer>
+<script>
+function setLang(l){
+  document.querySelectorAll('.lang-section').forEach(s=>s.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
+  document.getElementById(l).classList.add('active');
+  event.target.classList.add('active');
+}
+</script>
+</body>
+</html>

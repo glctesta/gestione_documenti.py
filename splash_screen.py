@@ -172,19 +172,45 @@ class SplashScreen:
     def update_progress(self, value: float, message: str = ""):
         """
         Aggiorna la barra di progresso e il messaggio di stato.
-        Thread-safe: può essere chiamato da qualsiasi thread.
-
-        :param value:   Valore 0–100
-        :param message: Testo da mostrare sotto la barra
+        Chiamata dal thread principale durante l'init: aggiornamento SINCRONO
+        con win.update() per garantire il ridisegno immediato.
         """
         with self._lock:
             if self._closed:
                 return
-        # Esegui l'aggiornamento nel thread principale Tk
-        self._root.after(0, self._do_update, value, message)
+        import threading
+        if threading.current_thread() is threading.main_thread():
+            # Siamo nel thread principale: anima fluidamente da valore corrente
+            self._smooth_to(value, message)
+        else:
+            # Thread secondario: schedula via after
+            self._root.after(0, self._do_update, value, message)
+
+    def _smooth_to(self, target: float, message: str, steps: int = 12, delay_ms: int = 18):
+        """Anima la barra fluidamente dal valore corrente al target (sincrono, thread principale)."""
+        try:
+            current = self._progress_var.get()
+            if message:
+                self._status_var.set(message)
+            if target <= current:
+                self._progress_var.set(target)
+                self._win.update()
+                return
+            step = (target - current) / steps
+            val = current
+            for _ in range(steps):
+                val = min(val + step, target)
+                self._progress_var.set(val)
+                self._win.update()
+                import time
+                time.sleep(delay_ms / 1000.0)
+            self._progress_var.set(target)
+            self._win.update()
+        except Exception:
+            pass
 
     def _do_update(self, value: float, message: str):
-        """Eseguito nel thread principale Tk."""
+        """Eseguito nel thread principale Tk (via after, per chiamate da thread secondari)."""
         with self._lock:
             if self._closed:
                 return

@@ -1,0 +1,12 @@
+-- ============================================================
+-- Aggiunge colonne contatto per-società a VisitorContractInfo
+-- Necessario per indirizzare email e documenti alla società
+-- corretta di ogni ospite invece dei valori globali (EUTRON)
+-- ===========================================================p
+
+-- Esempio aggiornamento valori (adattare per ogni società):
+-- UPDATE Employee.dbo.VisitorContractInfo
+-- SET ContactName  = 'Mario Rossi',
+--     ContactTitle = 'Responsabile Tecnico',
+--     ContactEmail = 'mario.rossi@societa.com'
+-- WHERE VisitorPlanToChargeID = <ID>;

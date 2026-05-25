@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
+import tkinter.font as tkfont
 from datetime import datetime
 import logging
 import os
@@ -199,6 +200,9 @@ class NpiDashboardWindow(tk.Toplevel):
         self.project_tree.tag_configure('high_completion', foreground='green', font=('Helvetica', 9, 'bold'))
         self.project_tree.tag_configure('medium_completion', foreground='orange', font=('Helvetica', 9, 'bold'))
         self.project_tree.tag_configure('low_completion', foreground='red', font=('Helvetica', 9, 'bold'))
+        # Progetti cancellati: testo barrato + grigio
+        _canceled_font = tkfont.Font(family='Helvetica', size=9, overstrike=True)
+        self.project_tree.tag_configure('canceled', foreground='gray', font=_canceled_font)
         # --- **FINE MODIFICA** ---
 
         self.project_tree.pack(fill=tk.BOTH, expand=True)
@@ -209,7 +213,7 @@ class NpiDashboardWindow(tk.Toplevel):
         # Pulsanti
         button_frame = ttk.Frame(main_frame, padding=(0, 10, 0, 0))
         button_frame.pack(fill=tk.X)
-        ttk.Button(button_frame, text=self.lang.get('btn_refresh', 'Aggiorna'), command=self.load_npi_projects).pack(
+        ttk.Button(button_frame, text=self.lang.get('btn_refresh', 'Aggiorna'), command=self._on_refresh).pack(
             side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text=self.lang.get('btn_analyze', 'Analisi'),
                    command=self._launch_analysis_window).pack(side=tk.LEFT, padx=5)
@@ -347,6 +351,37 @@ class NpiDashboardWindow(tk.Toplevel):
             logger.error(f"Errore apertura file config NPI: {e}", exc_info=True)
             messagebox.showerror("Errore", f"Impossibile aprire il file:\n{e}", parent=self)
 
+    def _refresh_filters(self):
+        """Ricarica i valori delle Combobox dal DB, preservando la selezione corrente."""
+        # --- Combobox Clienti ---
+        current_client = self.client_filter_var.get()
+        try:
+            clients = self.npi_manager.get_all_clients()
+            client_values = ["Tutti i clienti"] + sorted(clients, key=lambda c: (c or "").lower())
+            self.client_combo['values'] = client_values
+            # Ripristina la selezione precedente se ancora valida, altrimenti default
+            if current_client in client_values:
+                self.client_combo.set(current_client)
+            else:
+                self.client_combo.set("Tutti i clienti")
+        except Exception as e:
+            logger.error(f"Errore aggiornamento lista clienti: {e}")
+
+        # --- Combobox Anno (statica, ma aggiorna per sicurezza) ---
+        current_year_sel = self.year_filter_var.get()
+        current_year = datetime.now().year
+        years = ["Tutti gli anni"] + [str(y) for y in range(current_year, current_year - 10, -1)]
+        self.year_combo['values'] = years
+        if current_year_sel in years:
+            self.year_combo.set(current_year_sel)
+        else:
+            self.year_combo.set(str(current_year))
+
+    def _on_refresh(self):
+        """Callback del bottone Aggiorna: ricarica prima i filtri (Combobox) poi i dati."""
+        self._refresh_filters()
+        self.load_npi_projects()
+
     def load_npi_projects(self):
         self._update_statistics()
         for i in self.project_tree.get_children():
@@ -434,6 +469,16 @@ class NpiDashboardWindow(tk.Toplevel):
                 # Progetti chiusi in verde
                 if proj.StatoProgetto == 'Chiuso':
                     row_tags.append('closed')
+
+                # Progetti cancellati: testo barrato (prevale su overdue/closed)
+                stato = (proj.StatoProgetto or '').strip().lower()
+                nome = (proj.NomeProgetto or '').strip().lower()
+                if ('cancel' in stato or 'annull' in stato
+                        or nome.startswith('canceled')
+                        or nome.startswith('cancellato')):
+                    # Sostituisce gli altri tag di colore con il solo 'canceled'
+                    row_tags = [t for t in row_tags if t == 'selected_client']
+                    row_tags.append('canceled')
                 
                 # Le statistiche sono già state recuperate sopra per il filtro
                 
@@ -473,8 +518,8 @@ class NpiDashboardWindow(tk.Toplevel):
                                      values=('', "Errore", "Impossibile caricare i dati.", str(e), ""))
 
     def _on_double_click(self, event):
-        """Il doppio click ora lancia la finestra di analisi."""
-        self._launch_analysis_window()
+        """Doppio click su una riga: apre direttamente la gestione task del progetto."""
+        self._launch_project_window()
 
     def _get_selected_project_ids(self):
         """Restituisce la lista di ProgettoId delle righe selezionate nel treeview.

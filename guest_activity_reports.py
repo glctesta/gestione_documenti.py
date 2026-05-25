@@ -75,12 +75,35 @@ class GuestActivityReportGenerator:
             logger.error(f"Errore lettura setting '{atribute}': {e}")
             return ''
 
+    def _get_firma(self):
+        """Legge la firma immagine dell'amministratore (employeerid=2) da Administrators.
+
+        Non viene messa in cache perché scade ogni mese.
+        Returns: bytes dell'immagine oppure None.
+        """
+        try:
+            cursor = self.db.conn.cursor()
+            cursor.execute("""
+                SELECT Firma
+                FROM Employee.dbo.Administrators
+                WHERE employeerid = 2 AND dateout IS NULL
+            """)
+            row = cursor.fetchone()
+            cursor.close()
+            if row and row.Firma:
+                return bytes(row.Firma)
+            return None
+        except Exception as e:
+            logger.debug(f"Firma non disponibile: {e}")
+            return None
+
     def _get_contract_info(self, plan_to_charge_id):
         """Recupera le info contratto per una società."""
         try:
             cursor = self.db.conn.cursor()
             cursor.execute("""
-                SELECT ContractNumber, ContractDate, ContractDescription
+                SELECT ContractNumber, ContractDate, ContractDescription,
+                       ContactName, ContactTitle, ContactEmail
                 FROM Employee.dbo.VisitorContractInfo
                 WHERE VisitorPlanToChargeID = ?
             """, (plan_to_charge_id,))
@@ -90,11 +113,15 @@ class GuestActivityReportGenerator:
                 return {
                     'number': row.ContractNumber or '',
                     'date': row.ContractDate,
-                    'description': row.ContractDescription or ''
+                    'description': row.ContractDescription or '',
+                    'contact_name': row.ContactName or '',
+                    'contact_title': row.ContactTitle or '',
+                    'contact_email': row.ContactEmail or '',
                 }
         except Exception as e:
             logger.error(f"Errore lettura contratto: {e}")
-        return {'number': '', 'date': None, 'description': ''}
+        return {'number': '', 'date': None, 'description': '',
+                'contact_name': '', 'contact_title': '', 'contact_email': ''}
 
     # --------------------------------------------------------
     # Logo helper
@@ -160,8 +187,8 @@ class GuestActivityReportGenerator:
 
         chi_richiede = self._get_setting('chi_richiede')
         chi_richiede_titolo = self._get_setting('chi_richiede_titolo')
-        chi_invia = self._get_setting('chi_invia')
-        chi_invia_titolo = self._get_setting('chi_invia_titolo')
+        chi_invia = contract_info.get('contact_name') or self._get_setting('chi_invia')
+        chi_invia_titolo = contract_info.get('contact_title') or self._get_setting('chi_invia_titolo')
 
         self._add_signatories(doc, chi_richiede, chi_richiede_titolo,
                               chi_invia, chi_invia_titolo)
@@ -221,8 +248,8 @@ class GuestActivityReportGenerator:
 
         chi_richiede = self._get_setting('chi_richiede')
         chi_richiede_titolo = self._get_setting('chi_richiede_titolo')
-        chi_invia = self._get_setting('chi_invia')
-        chi_invia_titolo = self._get_setting('chi_invia_titolo')
+        chi_invia = contract_info.get('contact_name') or self._get_setting('chi_invia')
+        chi_invia_titolo = contract_info.get('contact_title') or self._get_setting('chi_invia_titolo')
 
         # Invertito: da chi_invia a chi_richiede
         self._add_signatories(doc, chi_invia, chi_invia_titolo,
@@ -283,9 +310,6 @@ class GuestActivityReportGenerator:
         self._add_logo(doc)
         self._add_date_line(doc, doc_date)
 
-        chi_richiede = self._get_setting('chi_richiede')
-        chi_richiede_titolo = self._get_setting('chi_richiede_titolo')
-
         # Intestazione
         title = doc.add_paragraph()
         title.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -310,11 +334,11 @@ class GuestActivityReportGenerator:
             if contract_info['description']:
                 contract_ref += f" ({contract_info['description']})"
 
-        # Prefazione
+        # Prefazione — scritta in prima persona dall'ospite/consulente
         preface = (
-            f"Il presente rapporto documenta le attività svolte dal/dalla "
-            f"Sig./Sig.ra {visitor_data['guest_name']} della società "
-            f"{visitor_data['company']} presso la sede di Vandewiele Romania "
+            f"Io sottoscritto/a {visitor_data['guest_name']}, in qualità di specialista "
+            f"incaricato dalla società {visitor_data['company']}, redigo il presente rapporto "
+            f"relativo alle attività svolte presso la sede di Vandewiele Romania "
             f"nel periodo dal {start_str} al {end_str}."
         )
         if contract_ref:
@@ -353,19 +377,24 @@ class GuestActivityReportGenerator:
         if activity_description:
             doc.add_paragraph(activity_description)
         else:
+            sponsor = visitor_data.get('sponsor') or 'N/A'
             doc.add_paragraph(
-                f"Durante il periodo di permanenza, il/la Sig./Sig.ra "
-                f"{visitor_data['guest_name']} ha svolto attività di "
-                f"{visitor_data['purpose']}."
+                f"Durante il periodo indicato, ho effettuato tutte le attività concordate con voi "
+                f"e ho avuto il supporto dei vostri colleghi, in particolar modo di {sponsor}. "
+                f"Ho lasciato le informazioni necessarie per permettervi di eseguire il followup "
+                f"delle attività che ho seguito assistendo i vostri dipendenti nelle loro "
+                f"incombenze operative."
             )
 
         doc.add_paragraph()
 
-        # Firma
+        # Firma — il firmatario è l'ospite stesso che ha eseguito le prestazioni
         doc.add_paragraph(f"Vandewiele Romania, {doc_date.strftime('%d/%m/%Y')}")
         doc.add_paragraph()
-        doc.add_paragraph(f"{chi_richiede}")
-        doc.add_paragraph(f"{chi_richiede_titolo}")
+        para_sign = doc.add_paragraph()
+        run_sign = para_sign.add_run(visitor_data['guest_name'])
+        run_sign.bold = True
+        doc.add_paragraph(visitor_data['company'])
 
         return self._doc_to_bytes(doc)
 
@@ -438,8 +467,8 @@ class GuestActivityReportGenerator:
         # Da / A
         chi_richiede = self._get_setting('chi_richiede')
         chi_richiede_titolo = self._get_setting('chi_richiede_titolo')
-        chi_invia = self._get_setting('chi_invia')
-        chi_invia_titolo = self._get_setting('chi_invia_titolo')
+        chi_invia = contract_info.get('contact_name') or self._get_setting('chi_invia')
+        chi_invia_titolo = contract_info.get('contact_title') or self._get_setting('chi_invia_titolo')
 
         story.append(Paragraph(f"Da: <b>{chi_richiede}</b>", styles['DocSignatory']))
         if chi_richiede_titolo:
@@ -467,7 +496,7 @@ class GuestActivityReportGenerator:
         end_str = visitor_data['end_visit'].strftime('%d/%m/%Y')
 
         # Corpo lettera
-        paragraphs = [
+        body_paragraphs = [
             f"Gentile {chi_invia},",
             f"con la presente, Vi chiediamo cortesemente di mettere a disposizione "
             f"il/la Sig./Sig.ra {visitor_data['guest_name']} "
@@ -481,11 +510,21 @@ class GuestActivityReportGenerator:
             "Restiamo a disposizione per qualsiasi chiarimento.",
             "Cordiali saluti,",
             "",
-            f"{chi_richiede}",
-            f"{chi_richiede_titolo}",
-            "Vandewiele Romania"
         ]
-        for p in paragraphs:
+        for p in body_paragraphs:
+            story.append(Paragraph(p, styles['DocBody']))
+
+        # Firma immagine (da DB, scade mensilmente — non cached)
+        firma_bytes = self._get_firma()
+        if firma_bytes:
+            try:
+                story.append(RLImage(io.BytesIO(firma_bytes), width=4 * cm, height=2 * cm))
+            except Exception as _fe:
+                logger.warning(f"Impossibile inserire la firma nel PDF: {_fe}")
+        story.append(Spacer(1, 0.2 * cm))
+
+        # Nome e titolo firmatario
+        for p in [f"{chi_richiede}", f"{chi_richiede_titolo}", "Vandewiele Romania"]:
             story.append(Paragraph(p, styles['DocBody']))
 
         return self._build_pdf_bytes(story)
@@ -513,8 +552,8 @@ class GuestActivityReportGenerator:
         # Da / A (invertiti: da chi_invia a chi_richiede)
         chi_richiede = self._get_setting('chi_richiede')
         chi_richiede_titolo = self._get_setting('chi_richiede_titolo')
-        chi_invia = self._get_setting('chi_invia')
-        chi_invia_titolo = self._get_setting('chi_invia_titolo')
+        chi_invia = contract_info.get('contact_name') or self._get_setting('chi_invia')
+        chi_invia_titolo = contract_info.get('contact_title') or self._get_setting('chi_invia_titolo')
 
         story.append(Paragraph(f"Da: <b>{chi_invia}</b>", styles['DocSignatory']))
         if chi_invia_titolo:
@@ -698,9 +737,21 @@ class GuestActivityReportGenerator:
                 cursor.close()
                 return False
 
-            # Email destinatari — split su ';' e deduplicazione
+            # Email destinatari — chi_richiede fisso, chi_invia dalla società del visitatore
             to_richiede = self._get_setting('chi_richiede_email')
-            to_invia = self._get_setting('chi_invia_email')
+            cursor.execute("""
+                SELECT vci.ContactEmail
+                FROM Employee.dbo.VisitorPlanToCharges vpc
+                INNER JOIN Employee.dbo.VisitorContractInfo vci
+                    ON vci.VisitorPlanToChargeID = vpc.VisitorPlanToChargeID
+                WHERE vpc.CompanyName = ? AND vpc.MustCharged = 1
+            """, (row.CompanyName,))
+            _ce_row = cursor.fetchone()
+            to_invia = (
+                (_ce_row.ContactEmail or '').strip()
+                if _ce_row and _ce_row.ContactEmail
+                else self._get_setting('chi_invia_email')
+            )
 
             to_list = []
             seen = set()
