@@ -247,9 +247,14 @@ class ShipmentConfirmationWindow(tk.Toplevel):
             self.btn_confirm.config(state=tk.DISABLED)
             return
         values = self.tree.item(sel[0], "values")
-        requested_qty = values[7]
-        self.qty_var.set(str(requested_qty))
-        self.qty_hint.config(text=f"(richiesta: {requested_qty})")
+        requested_qty = int(values[7]) if values[7] else 0
+        produced_qty = int(values[8]) if values[8] else 0
+
+        # Valore predefinito: quantità prodotta (non quantità richiesta)
+        self.qty_var.set(str(produced_qty))
+        self.qty_hint.config(
+            text=f"(prodotta: {produced_qty} | richiesta: {requested_qty})"
+        )
         self.btn_confirm.config(state=tk.NORMAL)
 
     # ------------------------------------------------------------------ #
@@ -295,6 +300,18 @@ class ShipmentConfirmationWindow(tk.Toplevel):
             messagebox.showwarning(
                 self.lang.get("warning", "Attenzione"),
                 self.lang.get("qty_positive", "La quantità deve essere maggiore di zero."),
+                parent=self,
+            )
+            return
+
+        # La quantità confermata non può superare la quantità prodotta
+        if confirmed_qty > produced_qty:
+            messagebox.showwarning(
+                self.lang.get("warning", "Attenzione"),
+                self.lang.get(
+                    "shipment_qty_over_produced",
+                    "La quantità confermata non può essere maggiore della quantità prodotta ({0}).",
+                ).format(produced_qty),
                 parent=self,
             )
             return
