@@ -162,7 +162,13 @@ class NpiChecklistWindow(tk.Toplevel):
     def _load_orders(self):
         try:
             self._orders_cache = self.npi_manager.get_orders_for_project(self.project_id)
-            display = [f"{o['order_code']} (Qty: {o['quantity']})" for o in self._orders_cache]
+            display = []
+            for o in self._orders_cache:
+                qty = o.get('quantity') if isinstance(o, dict) else None
+                if qty is None or str(qty) == '':
+                    display.append(f"{o['order_code']}")
+                else:
+                    display.append(f"{o['order_code']} (Qty: {qty})")
             self.order_combo['values'] = display
         except Exception as e:
             logger.error(f"Errore caricamento ordini: {e}", exc_info=True)
@@ -170,7 +176,9 @@ class NpiChecklistWindow(tk.Toplevel):
     def _on_order_selected(self, event=None):
         idx = self.order_combo.current()
         if 0 <= idx < len(self._orders_cache):
-            self.qty_var.set(str(self._orders_cache[idx]['quantity'] or ''))
+            order = self._orders_cache[idx]
+            qty = order.get('quantity') if isinstance(order, dict) else None
+            self.qty_var.set(str(qty or ''))
 
     # ================================================================ #
     #  DYNAMIC TAB — Built from family config                           #

@@ -12,12 +12,19 @@ import json
 import os
 import socket
 import logging
+import subprocess
+import sys
+import winreg
 from datetime import datetime
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 SCT_HOST_DIR  = os.environ.get('LOCALAPPDATA', os.path.expanduser('~\\AppData\\Local'))
 SCT_HOST_FILE = os.path.join(SCT_HOST_DIR, 'sct_host.json')
+POPUP_AUTOSTART_TASK_NAME = 'TraceabilityRS Popup Agent'
+POPUP_AUTOSTART_RUN_KEY_PATH = r'Software\Microsoft\Windows\CurrentVersion\Run'
+POPUP_AUTOSTART_RUN_VALUE = 'TraceabilityRSPopupAgent'
 
 # Turni disponibili
 SHIFT_OPTIONS = [
@@ -41,6 +48,115 @@ def _fetch_departments(db):
     except Exception as e:
         logger.warning(f"Impossibile caricare reparti dal DB: {e}")
         return ['SMT', 'PTHH', 'WAREHOUSE']
+
+
+def _build_popup_autostart_command():
+    """Costruisce il comando da eseguire al logon sui PC abilitati ai popup."""
+    current_exe = Path(sys.executable)
+    if current_exe.name.lower() == 'python.exe':
+        pythonw = current_exe.with_name('pythonw.exe')
+        runner = pythonw if pythonw.exists() else current_exe
+    else:
+        runner = current_exe
+
+    main_script = Path(__file__).resolve().with_name('main.py')
+    if runner.name.lower().endswith('.exe') and runner.name.lower() not in {'python.exe', 'pythonw.exe'}:
+        return f'"{runner}"'
+
+    return f'"{runner}" "{main_script}"'
+
+
+def _create_popup_autostart_task():
+    """Registra/aggiorna il task di avvio automatico per il monitor popup."""
+    command = _build_popup_autostart_command()
+    result = subprocess.run(
+        [
+            'schtasks', '/Create',
+            '/TN', POPUP_AUTOSTART_TASK_NAME,
+            '/TR', command,
+            '/SC', 'ONLOGON',
+            '/RL', 'LIMITED',
+            '/F'
+        ],
+        capture_output=True,
+        text=True,
+        check=False
+    )
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or '').strip() or 'Impossibile creare il task di avvio automatico.')
+
+
+def _delete_popup_autostart_task():
+    """Rimuove il task di avvio automatico dei popup, se presente."""
+    result = subprocess.run(
+        ['schtasks', '/Delete', '/TN', POPUP_AUTOSTART_TASK_NAME, '/F'],
+        capture_output=True,
+        text=True,
+        check=False
+    )
+    if result.returncode != 0:
+        output = (result.stderr or result.stdout or '').strip()
+        if output and 'cannot find the file specified' not in output.lower():
+            raise RuntimeError(output)
+
+
+def _set_popup_autostart_run_key(command):
+    """Imposta avvio automatico per utente corrente via HKCU\...\Run."""
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, POPUP_AUTOSTART_RUN_KEY_PATH) as key:
+        winreg.SetValueEx(key, POPUP_AUTOSTART_RUN_VALUE, 0, winreg.REG_SZ, command)
+
+
+def _delete_popup_autostart_run_key():
+    """Rimuove l'autostart per utente corrente via HKCU\...\Run."""
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, POPUP_AUTOSTART_RUN_KEY_PATH, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, POPUP_AUTOSTART_RUN_VALUE)
+    except FileNotFoundError:
+        return
+
+
+def _create_popup_autostart():
+    """Configura autostart: prima Task Scheduler, fallback su HKCU Run key."""
+    command = _build_popup_autostart_command()
+    try:
+        _create_popup_autostart_task()
+        # Pulizia eventuale fallback precedente
+        _delete_popup_autostart_run_key()
+        return 'Utilita di pianificazione (Task Scheduler)'
+    except Exception as task_error:
+        try:
+            _set_popup_autostart_run_key(command)
+            logger.info(
+                "Popup autostart configurato via HKCU Run: Task Scheduler non disponibile (%s)",
+                task_error
+            )
+            return 'Avvio automatico utente Windows (HKCU Run)'
+        except Exception as run_key_error:
+            logger.warning(
+                "Autostart popup non configurabile: Task Scheduler=%s ; HKCU Run=%s",
+                task_error,
+                run_key_error
+            )
+            raise RuntimeError(
+                f"Autostart fallito: task=({task_error}) fallback_run_key=({run_key_error})"
+            ) from run_key_error
+
+
+def _delete_popup_autostart():
+    """Rimuove autostart popup da Task Scheduler e da HKCU Run key."""
+    errors = []
+    try:
+        _delete_popup_autostart_task()
+    except Exception as e:
+        errors.append(f"task: {e}")
+
+    try:
+        _delete_popup_autostart_run_key()
+    except Exception as e:
+        errors.append(f"run_key: {e}")
+
+    if len(errors) == 2:
+        raise RuntimeError(' | '.join(errors))
 
 
 class SCTWorkstationConfigWindow(tk.Toplevel):
@@ -231,13 +347,23 @@ class SCTWorkstationConfigWindow(tk.Toplevel):
             with open(SCT_HOST_FILE, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4, ensure_ascii=False)
 
+            try:
+                autostart_mode = _create_popup_autostart()
+            except Exception:
+                try:
+                    os.remove(SCT_HOST_FILE)
+                except Exception:
+                    pass
+                raise
+
             logger.info(f"SCT WorkStation config creata: {SCT_HOST_FILE} — {data}")
             messagebox.showinfo(
                 self.lang.get('info', 'Info'),
                 self.lang.get(
                     'sct_config_created',
                     f'SCT WorkStation attivata con successo.\n\n'
-                    f'Reparto: {dept}\nTurni: {", ".join(f"T{s}" for s in sorted(shifts))}'
+                    f'Reparto: {dept}\nTurni: {", ".join(f"T{s}" for s in sorted(shifts))}\n\n'
+                    f'Avvio automatico popup configurato sul computer ({autostart_mode}).'
                 ),
                 parent=self
             )
@@ -271,6 +397,12 @@ class SCTWorkstationConfigWindow(tk.Toplevel):
             return
 
         try:
+            task_error = None
+            try:
+                _delete_popup_autostart()
+            except Exception as e:
+                task_error = e
+
             os.remove(SCT_HOST_FILE)
             logger.info(f"SCT WorkStation config eliminata: {SCT_HOST_FILE}")
             messagebox.showinfo(
@@ -278,6 +410,17 @@ class SCTWorkstationConfigWindow(tk.Toplevel):
                 self.lang.get('sct_config_deleted', 'SCT WorkStation disattivata con successo.'),
                 parent=self
             )
+            if task_error:
+                logger.warning("Task autostart popup non rimosso: %s", task_error)
+                messagebox.showwarning(
+                    self.lang.get('warning', 'Attenzione'),
+                    self.lang.get(
+                        'sct_config_task_delete_warn',
+                        'La configurazione e stata disattivata, ma il task di avvio automatico non e stato rimosso.\n'
+                        'Verificare la pianificazione attività se necessario.'
+                    ),
+                    parent=self
+                )
             self._refresh_status()
 
         except PermissionError:

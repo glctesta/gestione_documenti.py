@@ -770,14 +770,38 @@ class GuestManagementWindow(tk.Toplevel):
         ttk.Entry(edit_frame, textvariable=self.edit_phone_var, width=25).grid(
             row=1, column=1, padx=5, pady=3, sticky='w')
 
+        ttk.Label(edit_frame, text=self.lang.get('badge_number', 'Badge:')).grid(
+            row=1, column=2, sticky='w', padx=5, pady=3)
+        self.edit_badge_var = tk.StringVar()
+        self.edit_badge_combo = ttk.Combobox(
+            edit_frame,
+            textvariable=self.edit_badge_var,
+            width=33,
+            state='readonly'
+        )
+        self.edit_badge_combo.grid(row=1, column=3, padx=5, pady=3, sticky='ew')
+
+        self.badge_info_var = tk.StringVar(value='')
+        ttk.Label(edit_frame, textvariable=self.badge_info_var, foreground='gray').grid(
+            row=2, column=0, columnspan=2, sticky='w', padx=5, pady=(2, 0)
+        )
+
+        self.edit_worker_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            edit_frame,
+            text=self.lang.get('guest_worker_flag', 'Worker'),
+            variable=self.edit_worker_var,
+        ).grid(row=2, column=2, sticky='w', padx=5, pady=(2, 0))
+
         ttk.Button(edit_frame, text=self.lang.get('btn_save_guest', '💾 Salva'),
                    command=self._save_guest_data).grid(
-            row=1, column=3, padx=5, pady=3, sticky='e')
+            row=2, column=3, padx=5, pady=3, sticky='e')
 
         edit_frame.columnconfigure(1, weight=1)
         edit_frame.columnconfigure(3, weight=1)
 
         self._selected_guest_id = None
+        self._badge_values = {}
 
     def _load_companies(self):
         """Carica le società per il filtro."""
@@ -812,6 +836,10 @@ class GuestManagementWindow(tk.Toplevel):
             self.edit_name_var.set('')
             self.edit_email_var.set('')
             self.edit_phone_var.set('')
+            self.edit_badge_var.set('')
+            self.edit_badge_combo['values'] = []
+            self.badge_info_var.set('')
+            self.edit_worker_var.set(False)
 
             company = self.company_filter_var.get().strip()
             plan_id = self._company_ids.get(company) if company else None
@@ -866,6 +894,423 @@ class GuestManagementWindow(tk.Toplevel):
         self.edit_name_var.set(values[1])
         self.edit_email_var.set(values[2])
         self.edit_phone_var.set(values[3])
+        self._load_badge_combo_for_guest(self._selected_guest_id)
+        self.edit_worker_var.set(self._is_worker_enabled_for_guest(self._selected_guest_id))
+
+    def _get_guest_active_visit(self, visitor_data_id):
+        """Ritorna la visita attiva/futura del visitatore per badge assignment."""
+        cursor = self.db.conn.cursor()
+        cursor.execute(
+            """
+            SELECT TOP 1 VisitorId, CompanyName, GuestName, StartVisit, EndVisit
+            FROM Employee.dbo.Visitors
+            WHERE VisitorDataId = ?
+              AND CAST(EndVisit AS DATE) >= CAST(GETDATE() AS DATE)
+            ORDER BY EndVisit DESC, StartVisit DESC
+            """,
+            (visitor_data_id,),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        return row
+
+    def _is_worker_enabled_for_guest(self, visitor_data_id):
+        """Verifica se l'ospite risulta attivo come worker in Timeclocking."""
+        try:
+            visit = self._get_guest_active_visit(visitor_data_id)
+            if not visit:
+                return False
+
+            cursor = self.db.conn.cursor()
+            cursor.execute(
+                """
+                SELECT TOP 1 IDEmployee
+                FROM Timeclocking.dbo.Employee
+                WHERE CompanyID = ?
+                  AND DataStop IS NULL
+                ORDER BY IDEmployee DESC
+                """,
+                (visit.VisitorId,),
+            )
+            row = cursor.fetchone()
+            cursor.close()
+            return bool(row)
+        except Exception as e:
+            logger.warning(f"Impossibile verificare stato worker per VisitorDataID={visitor_data_id}: {e}")
+            return False
+
+    def _split_guest_name(self, full_name):
+        """Split nome/cognome da GuestName: prima parola nome, resto cognome.
+
+        Se non esiste cognome, usa lo stesso valore del nome (non NULL).
+        """
+        text = (full_name or '').strip()
+        if not text:
+            return 'UNKNOWN', 'UNKNOWN'
+
+        parts = text.split()
+        name = parts[0]
+        surname = ' '.join(parts[1:]).strip() if len(parts) > 1 else name
+        return name, (surname or name)
+
+    def _generate_next_fk_company_cui(self):
+        """Genera CompanyCUI progressivo con prefisso FK + 8 cifre."""
+        cursor = self.db.conn.cursor()
+        cursor.execute(
+            """
+            SELECT MAX(TRY_CONVERT(BIGINT, SUBSTRING(CompanyCUI, 3, 32))) AS MaxNum
+            FROM Timeclocking.dbo.Company
+            WHERE CompanyCUI LIKE 'FK%'
+            """
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        next_num = (int(row.MaxNum) if row and row.MaxNum is not None else 0) + 1
+        return f"FK{next_num:08d}"
+
+    def _generate_next_fk_unique_id(self):
+        """Genera UniqueID progressivo con prefisso FK + 12 cifre."""
+        cursor = self.db.conn.cursor()
+        cursor.execute(
+            """
+            SELECT MAX(TRY_CONVERT(BIGINT, SUBSTRING(UniqueID, 3, 32))) AS MaxNum
+            FROM Timeclocking.dbo.Employee
+            WHERE UniqueID LIKE 'FK%'
+            """
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        next_num = (int(row.MaxNum) if row and row.MaxNum is not None else 0) + 1
+        return f"FK{next_num:012d}"
+
+    def _get_or_create_timeclocking_company_id(self, company_name):
+        """Recupera o crea la Company in Timeclocking e ritorna IDCompany."""
+        if not company_name or not str(company_name).strip():
+            raise ValueError(self.lang.get('worker_company_required', 'CompanyName mancante per sync Worker.'))
+
+        cursor = self.db.conn.cursor()
+        cursor.execute(
+            """
+            SELECT TOP 1 IDCompany
+            FROM Timeclocking.dbo.Company
+            WHERE CompanyName = ?
+            ORDER BY IDCompany DESC
+            """,
+            (company_name,),
+        )
+        row = cursor.fetchone()
+        if row and row.IDCompany is not None:
+            cursor.close()
+            return int(row.IDCompany)
+
+        company_cui = self._generate_next_fk_company_cui()
+        cursor.execute(
+            """
+            INSERT INTO Timeclocking.dbo.Company
+                (CompanyName, CompanyCUI, CompanyAddress, CompanyLogo, CompanyDestMail, IsPrimary, IsActive)
+            OUTPUT INSERTED.IDCompany
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (company_name, company_cui, '', None, None, 0, 1),
+        )
+        created = cursor.fetchone()
+        cursor.close()
+
+        if not created or created[0] is None:
+            raise ValueError(self.lang.get('worker_company_create_failed', 'Creazione Company Timeclocking fallita.'))
+
+        return int(created[0])
+
+    def _get_assigned_badge_code(self, visitor_data_id, reference_date):
+        """Ritorna NoBadge attivo per il visitatore alla data di riferimento."""
+        cursor = self.db.conn.cursor()
+        cursor.execute(
+            """
+            SELECT TOP 1 b.NoBadge
+            FROM Employee.dbo.VisitorBadgeLogs vb
+            INNER JOIN Employee.dbo.Badges b ON b.BadgeId = vb.BadgeId
+            WHERE vb.VisitorDataID = ?
+              AND CAST(vb.DateOut AS DATE) >= CAST(? AS DATE)
+            ORDER BY vb.DateOut DESC, vb.DateIn DESC
+            """,
+            (visitor_data_id, reference_date),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        return (str(row.NoBadge).strip() if row and row.NoBadge is not None else None)
+
+    def _sync_guest_worker_to_timeclocking(self, visitor_data_id):
+        """Crea/riattiva il worker in Timeclocking a partire dal visitatore selezionato."""
+        visit = self._get_guest_active_visit(visitor_data_id)
+        if not visit:
+            raise ValueError(
+                self.lang.get('worker_no_active_visit', 'Nessuna visita attiva o futura per questo ospite (Worker).')
+            )
+
+        employee_name, employee_surname = self._split_guest_name(visit.GuestName)
+        company_name = (visit.CompanyName or '').strip()
+        company_id_tc = self._get_or_create_timeclocking_company_id(company_name)
+
+        badge_code = self._get_assigned_badge_code(visitor_data_id, visit.StartVisit)
+        if not badge_code:
+            raise ValueError(
+                self.lang.get('worker_badge_required', 'Per Worker=1 è obbligatorio assegnare un badge al visitatore.')
+            )
+
+        cursor = self.db.conn.cursor()
+        cursor.execute(
+            """
+            SELECT TOP 1 IDEmployee, UniqueID, DataStop
+            FROM Timeclocking.dbo.Employee
+            WHERE CompanyID = ?
+            ORDER BY IDEmployee DESC
+            """,
+            (visit.VisitorId,),
+        )
+        existing = cursor.fetchone()
+
+        unique_id = None
+        if existing:
+            unique_id = (existing.UniqueID or '').strip() if existing.UniqueID else ''
+            if not unique_id:
+                unique_id = self._generate_next_fk_unique_id()
+
+            if existing.DataStop is not None:
+                cursor.execute(
+                    """
+                    UPDATE Timeclocking.dbo.Employee
+                    SET DataStop = NULL
+                    WHERE IDEmployee = ?
+                    """,
+                    (existing.IDEmployee,),
+                )
+
+            cursor.execute(
+                """
+                UPDATE Timeclocking.dbo.Employee
+                SET EmployeeName = ?,
+                    EmployeeSurname = ?,
+                    UniqueID = ?,
+                    Department = 'Production',
+                    Profession = 'TRAINER',
+                    DataStart = ?,
+                    CodeBadge = ?,
+                    IDCompany = ?,
+                    IDTeam = 135,
+                    IDProfession = 2,
+                    IDRuleCalculationMode = NULL,
+                    IsDirect = 0
+                WHERE IDEmployee = ?
+                """,
+                (
+                    employee_name,
+                    employee_surname,
+                    unique_id,
+                    visit.StartVisit,
+                    badge_code,
+                    company_id_tc,
+                    existing.IDEmployee,
+                ),
+            )
+        else:
+            unique_id = self._generate_next_fk_unique_id()
+            cursor.execute(
+                """
+                INSERT INTO Timeclocking.dbo.Employee
+                    (EmployeeName, EmployeeSurname, UniqueID, CompanyID, Department,
+                     Profession, DataStart, DataStop, CodeBadge, DataLastImport,
+                     EmployeeSalary, IDCompany, IDTeam, IDProfession,
+                     IDRuleCalculationMode, IsDirect)
+                VALUES
+                    (?, ?, ?, ?, 'Production',
+                     'TRAINER', ?, NULL, ?, NULL,
+                     NULL, ?, 135, 2,
+                     NULL, 0)
+                """,
+                (
+                    employee_name,
+                    employee_surname,
+                    unique_id,
+                    visit.VisitorId,
+                    visit.StartVisit,
+                    badge_code,
+                    company_id_tc,
+                ),
+            )
+
+        cursor.close()
+
+    def _get_current_badge_assignment(self, visitor_data_id, reference_date):
+        """Ritorna badge attivo per questo visitatore alla data di riferimento."""
+        cursor = self.db.conn.cursor()
+        cursor.execute(
+            """
+            SELECT TOP 1 vb.BadgeId, b.NoBadge, vb.DateOut
+            FROM Employee.dbo.VisitorBadgeLogs vb
+            INNER JOIN Employee.dbo.Badges b ON b.BadgeId = vb.BadgeId
+            WHERE vb.VisitorDataID = ?
+              AND CAST(vb.DateOut AS DATE) >= CAST(? AS DATE)
+            ORDER BY vb.DateOut DESC, vb.DateIn DESC
+            """,
+            (visitor_data_id, reference_date),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        return row
+
+    def _load_badge_combo_for_guest(self, visitor_data_id):
+        """Carica badge disponibili + eventuale badge già assegnato al visitatore."""
+        self._badge_values = {}
+        self.edit_badge_var.set('')
+        self.edit_badge_combo['values'] = []
+        self.badge_info_var.set('')
+
+        try:
+            visit = self._get_guest_active_visit(visitor_data_id)
+            if not visit:
+                self.badge_info_var.set(
+                    self.lang.get('guest_badge_no_active_visit', 'Nessuna visita attiva o futura per questo ospite.')
+                )
+                return
+
+            reference_date = visit.StartVisit
+            current_assignment = self._get_current_badge_assignment(visitor_data_id, reference_date)
+
+            query = """
+                SELECT DISTINCT TOP (1000)
+                    b.BadgeId,
+                    b.NoBadge
+                FROM Employee.dbo.Badges b
+                LEFT JOIN Employee.dbo.EmployeeBadgeHistory bh
+                    ON b.BadgeId = bh.BadgeID
+                WHERE ISNULL(b.ForGuest, 0) = 1
+                  AND ISNULL(b.EmployeerId, 2) = 2
+                  AND (
+                        bh.BadgeID IS NULL
+                     OR bh.DateOut IS NULL
+                     OR CAST(bh.DateOut AS DATE) < CAST(? AS DATE)
+                  )
+                ORDER BY b.NoBadge
+            """
+            cursor = self.db.conn.cursor()
+            cursor.execute(query, (reference_date,))
+            rows = cursor.fetchall()
+            if not rows:
+                # Fallback: se lo storico badge e' incoerente/non presente,
+                # mostra comunque i badge visitatori disponibili per anagrafica.
+                cursor.execute(
+                    """
+                    SELECT TOP (1000) b.BadgeId, b.NoBadge
+                    FROM Employee.dbo.Badges b
+                                        WHERE ISNULL(b.ForGuest, 0) = 1
+                      AND ISNULL(b.EmployeerId, 2) = 2
+                    ORDER BY b.NoBadge
+                    """
+                )
+                rows = cursor.fetchall()
+            cursor.close()
+
+            values = ['']
+            for row in rows:
+                label = str(row.NoBadge)
+                self._badge_values[label] = row.BadgeId
+                values.append(label)
+
+            if current_assignment and current_assignment.NoBadge:
+                current_label = str(current_assignment.NoBadge)
+                if current_label not in self._badge_values:
+                    self._badge_values[current_label] = current_assignment.BadgeId
+                    values.append(current_label)
+                self.edit_badge_var.set(current_label)
+                valid_to = current_assignment.DateOut.strftime('%d/%m/%Y') if current_assignment.DateOut else ''
+                self.badge_info_var.set(
+                    self.lang.get(
+                        'guest_badge_current_assignment',
+                        'Badge attuale: {0} - valido fino al {1}'
+                    ).format(current_label, valid_to)
+                )
+            else:
+                self.badge_info_var.set(
+                    self.lang.get('guest_badge_available_hint', 'Seleziona un badge disponibile per il visitatore.')
+                )
+
+            self.edit_badge_combo['values'] = values
+        except Exception as e:
+            logger.error(f"Errore caricamento combo badge ospite: {e}", exc_info=True)
+            self.badge_info_var.set(str(e))
+
+    def _save_guest_badge_assignment(self, visitor_data_id):
+        """Salva/aggiorna l'assegnazione badge visitatore."""
+        selected_label = self.edit_badge_var.get().strip()
+        if not selected_label:
+            return
+
+        selected_badge_id = self._badge_values.get(selected_label)
+        if not selected_badge_id:
+            raise ValueError(self.lang.get('select_valid_badge', 'Selezionare un badge valido.'))
+
+        visit = self._get_guest_active_visit(visitor_data_id)
+        if not visit:
+            raise ValueError(
+                self.lang.get('guest_badge_no_active_visit', 'Nessuna visita attiva o futura per questo ospite.')
+            )
+
+        reference_date = visit.StartVisit
+        valid_up_to = visit.EndVisit
+        current_assignment = self._get_current_badge_assignment(visitor_data_id, reference_date)
+
+        cursor = self.db.conn.cursor()
+        cursor.execute(
+            """
+            SELECT TOP 1 VisitorDataID
+            FROM Employee.dbo.VisitorBadgeLogs
+            WHERE BadgeId = ?
+              AND CAST(DateOut AS DATE) >= CAST(? AS DATE)
+              AND VisitorDataID <> ?
+            """,
+            (selected_badge_id, reference_date, visitor_data_id),
+        )
+        busy_row = cursor.fetchone()
+        if busy_row:
+            cursor.close()
+            raise ValueError(
+                self.lang.get('badge_already_assigned', 'Il badge selezionato è già assegnato a un altro visitatore.')
+            )
+
+        if current_assignment and current_assignment.BadgeId == selected_badge_id:
+            cursor.execute(
+                """
+                UPDATE Employee.dbo.VisitorBadgeLogs
+                SET DateOut = ?
+                WHERE VisitorDataID = ?
+                  AND BadgeId = ?
+                  AND CAST(DateOut AS DATE) >= CAST(? AS DATE)
+                """,
+                (valid_up_to, visitor_data_id, selected_badge_id, reference_date),
+            )
+            cursor.close()
+            return
+
+        if current_assignment:
+            cursor.execute(
+                """
+                UPDATE Employee.dbo.VisitorBadgeLogs
+                SET DateOut = GETDATE()
+                WHERE VisitorDataID = ?
+                  AND BadgeId = ?
+                  AND CAST(DateOut AS DATE) >= CAST(? AS DATE)
+                """,
+                (visitor_data_id, current_assignment.BadgeId, reference_date),
+            )
+
+        cursor.execute(
+            """
+            INSERT INTO Employee.dbo.VisitorBadgeLogs (BadgeId, VisitorDataID, DateIn, DateOut)
+            VALUES (?, ?, GETDATE(), ?)
+            """,
+            (selected_badge_id, visitor_data_id, valid_up_to),
+        )
+        cursor.close()
 
     def _save_guest_data(self):
         """Salva email e telefono dell'ospite selezionato."""
@@ -885,8 +1330,25 @@ class GuestManagementWindow(tk.Toplevel):
                 SET EmailAddress = ?, TelephonNumber = ?
                 WHERE VisitorDataID = ?
             """, (email or None, phone or None, self._selected_guest_id))
-            self.db.conn.commit()
             cursor.close()
+
+            self._save_guest_badge_assignment(self._selected_guest_id)
+
+            if self.edit_worker_var.get():
+                confirm_worker = messagebox.askyesno(
+                    self.lang.get('confirm', 'Conferma'),
+                    self.lang.get(
+                        'confirm_worker_enable',
+                        "Confermi che l'ospite deve avere accesso al sistema di tracciabilità come Worker?"
+                    ),
+                    parent=self,
+                )
+                if confirm_worker:
+                    self._sync_guest_worker_to_timeclocking(self._selected_guest_id)
+                else:
+                    self.edit_worker_var.set(False)
+
+            self.db.conn.commit()
 
             logger.info(f"Aggiornato ospite {self._selected_guest_id}: email={email}, tel={phone}")
             messagebox.showinfo(
@@ -895,6 +1357,7 @@ class GuestManagementWindow(tk.Toplevel):
             self._load_guests()
         except Exception as e:
             logger.error(f"Errore salvataggio dati ospite: {e}")
+            self.db.conn.rollback()
             messagebox.showerror(self.lang.get('error', 'Errore'), f"Errore: {e}")
 
     # ================================================================

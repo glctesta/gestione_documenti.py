@@ -903,6 +903,26 @@ class GuestActivityReportGenerator:
             logger.info(f"Batch rapporti attività: periodo {from_date} → {to_date}")
 
             cursor = self.db.conn.cursor()
+
+            # Sync background: allinea DataStop dei worker Timeclocking alla EndVisit.
+            cursor.execute(
+                """
+                UPDATE te
+                SET te.DataStop = v.EndVisit
+                FROM Timeclocking.dbo.Employee te
+                INNER JOIN Employee.dbo.Visitors v
+                    ON te.CompanyID = v.VisitorId
+                WHERE CAST(v.EndVisit AS DATE) BETWEEN ? AND ?
+                  AND (
+                        te.DataStop IS NULL
+                     OR CAST(te.DataStop AS DATE) <> CAST(v.EndVisit AS DATE)
+                  )
+                """,
+                (from_date, to_date),
+            )
+            self.db.conn.commit()
+            logger.info("Batch: sync DataStop Timeclocking completata")
+
             cursor.execute("""
                 SELECT v.VisitorId, v.CompanyName, v.GuestName
                 FROM Employee.dbo.Visitors v

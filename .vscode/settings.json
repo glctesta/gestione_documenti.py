@@ -4,6 +4,11 @@
         "py": true,
         "git commit": true,
         "git remote": true,
-        "git push": true
+        "git push": true,
+        "c:/Users/gtesta/PythonProjetcs/Python/PrductionDocumentation/.venv/Scripts/python.exe": true,
+        "/^python -m py_compile \\.\\\\fqc_products_gui\\.py \\.\\\\insert_fqc_products_translations\\.py$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
     }
 }

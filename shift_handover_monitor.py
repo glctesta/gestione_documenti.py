@@ -19,6 +19,7 @@ import winsound
 import time
 import threading
 from datetime import datetime, date, timedelta
+from business_days import is_business_day, get_next_business_day
 
 logger = logging.getLogger('TraceabilityRS')
 
@@ -54,6 +55,9 @@ SHIFT_ENDS = {
     3: (7,  30),
 }
 
+MORNING_START_HM = (7, 30)
+MORNING_DEADLINE_HM = (8, 0)
+
 
 def _get_active_shifts(host_cfg):
     """Restituisce i numeri di turno abilitati su questo PC."""
@@ -85,7 +89,29 @@ def _shift_alert_window(shift_num, now_dt):
     return in_window, shift_date
 
 
-def _next_shift_start(shift_num, ref_date):
+def _get_previous_business_day(ref_date, country_code='RO'):
+    """Restituisce il giorno lavorativo precedente rispetto a ref_date."""
+    d = ref_date - timedelta(days=1)
+    for _ in range(31):
+        if is_business_day(d, country_code=country_code):
+            return d
+        d -= timedelta(days=1)
+    return ref_date - timedelta(days=1)
+
+
+def _is_deferred_shift2_mode(shift_num, active_shifts):
+    """Turno 2 senza turno 3: popup/warning rinviati al mattino lavorativo successivo."""
+    return shift_num == 2 and 3 not in active_shifts
+
+
+def _is_morning_window(now_dt):
+    """Finestra valida per popup mattutino: 07:30-08:00 inclusi."""
+    start = now_dt.replace(hour=MORNING_START_HM[0], minute=MORNING_START_HM[1], second=0, microsecond=0)
+    end = now_dt.replace(hour=MORNING_DEADLINE_HM[0], minute=MORNING_DEADLINE_HM[1], second=0, microsecond=0)
+    return start <= now_dt <= end
+
+
+def _next_shift_start(shift_num, ref_date, active_shifts=None):
     """Restituisce datetime di inizio del turno SUCCESSIVO (per calcolo grazia conferma).
 
     Il turno successivo inizia alla stessa ora in cui finisce quello corrente:
@@ -93,6 +119,12 @@ def _next_shift_start(shift_num, ref_date):
       - Turno 2 finisce 23:30 → Turno 3 inizia 23:30 (stesso giorno)
       - Turno 3 finisce 07:30 → Turno 1 inizia 07:30 (giorno SUCCESSIVO a ref_date)
     """
+    # Caso speciale richiesto: turno 2 senza turno 3 attivo.
+    # L'inizio turno "successivo" è alle 07:30 del primo giorno lavorativo successivo.
+    if shift_num == 2 and active_shifts is not None and 3 not in active_shifts:
+        next_bd = get_next_business_day(ref_date, country_code='RO')
+        return datetime.combine(next_bd, datetime.min.time()).replace(hour=MORNING_START_HM[0], minute=MORNING_START_HM[1])
+
     # Nota: next_starts corrisponde a SHIFT_ENDS, cioè la fine del turno corrente
     # coincide con l'inizio del turno successivo.
     next_starts = {1: (15, 30), 2: (23, 30), 3: (7, 30)}
@@ -177,7 +209,17 @@ class ShiftHandoverMonitor:
 
         now = datetime.now()
         for shift_num in self._active_shifts:
-            in_window, shift_date = _shift_alert_window(shift_num, now)
+            deferred_shift2 = _is_deferred_shift2_mode(shift_num, self._active_shifts)
+
+            if deferred_shift2:
+                # Nessun turno 3: il controllo del turno 2 passa al mattino del
+                # primo giorno lavorativo successivo (es. venerdì -> lunedì).
+                if not is_business_day(now.date(), country_code='RO'):
+                    continue
+                shift_date = _get_previous_business_day(now.date(), country_code='RO')
+                in_window = _is_morning_window(now)
+            else:
+                in_window, shift_date = _shift_alert_window(shift_num, now)
 
             if in_window:
                 # Controlla se esiste già un report
@@ -208,6 +250,8 @@ class ShiftHandoverMonitor:
 
                 if row and not row[1]:
                     next_start = _next_shift_start(shift_num, shift_date)
+                    if deferred_shift2:
+                        next_start = _next_shift_start(shift_num, shift_date, active_shifts=self._active_shifts)
                     grace_end  = next_start + timedelta(minutes=CONFIRM_GRACE_MIN)
                     if now > grace_end:
                         self._send_unconfirmed_alert(shift_num, shift_date, row[2], row[3])

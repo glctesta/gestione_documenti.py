@@ -2,7 +2,9 @@
 # --- StdIO safeguard + Faulthandler sicuro per exe windowed ---
 import shutil
 import sys, os, atexit
+import inspect
 import urllib.parse
+import csv
 from pathlib import Path
 import tkinter as tk
 
@@ -307,7 +309,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.0.9.0'  # Versione aggiornata
+APP_VERSION = '2.4.0.9.7'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -713,20 +715,32 @@ class LanguageManager:
         logger.info(f"Caricate {sum(lang_counts.values())} traduzioni per {len(lang_counts)} lingue")
 
     def get(self, key, *args):
-        """Restituisce la traduzione per una data chiave nella lingua corrente."""
-        translated_text = self.translations[self.current_language].get(key, key)
-        
+        """Restituisce la traduzione per una data chiave nella lingua corrente.
+
+        Compatibilita': se la chiave manca e il primo argomento e' una stringa,
+        viene usata come fallback testuale (pattern usato in gran parte della GUI).
+        """
+        lang_map = self.translations[self.current_language]
+        has_translation = key in lang_map
+        translated_text = lang_map.get(key, key)
+
+        # Se manca la traduzione, usa il primo argomento stringa come fallback
+        format_args = args
+        if not has_translation and args and isinstance(args[0], str):
+            translated_text = args[0]
+            format_args = args[1:]
+
         # DEBUG: Log se la traduzione non viene trovata
-        if translated_text == key and key not in ['', ' ']:
+        if not has_translation and key not in ['', ' ']:
             logger.debug(f"Traduzione non trovata per '{key}' in lingua '{self.current_language}'")
             # Verifica se esiste in altre lingue
             found_in = [lang for lang, trans in self.translations.items() if key in trans]
             if found_in:
                 logger.debug(f"  -> Chiave '{key}' trovata in: {found_in}")
-        
-        if args:
+
+        if format_args:
             try:
-                return translated_text.format(*args)
+                return translated_text.format(*format_args)
             except (IndexError, KeyError):
                 return translated_text
         return translated_text
@@ -1997,17 +2011,58 @@ class Database:
               INSERT INTO [Employee].[dbo].[SegnalazioneSvolgimenti]
                   ([SegnalazioneAssegnazioneId], [DescrizioneAttivita], [DateSys])
               VALUES (?, ?, GETDATE());
-              SELECT SCOPE_IDENTITY(); \
+              SELECT CAST(SCOPE_IDENTITY() AS INT); \
+              """
+        sql_fallback_with_id = """
+              DECLARE @NextSvolgimentoId INT;
+              SELECT @NextSvolgimentoId = ISNULL(MAX([SegnalazioneSvolgimentoId]), 0) + 1
+              FROM [Employee].[dbo].[SegnalazioneSvolgimenti] WITH (UPDLOCK, HOLDLOCK);
+
+              INSERT INTO [Employee].[dbo].[SegnalazioneSvolgimenti]
+                  ([SegnalazioneSvolgimentoId], [SegnalazioneAssegnazioneId], [DescrizioneAttivita], [DateSys])
+              VALUES (@NextSvolgimentoId, ?, ?, GETDATE());
+
+              SELECT @NextSvolgimentoId; \
               """
         try:
             self.conn.autocommit = False
             self.cursor.execute(sql, assegnazione_id, descrizione)
-            svolgimento_id = int(self.cursor.fetchone()[0])
+            row = self.cursor.fetchone()
+            svolgimento_id = int(row[0]) if row and row[0] is not None else None
+
+            if not svolgimento_id:
+                raise pyodbc.Error("SCOPE_IDENTITY returned NULL")
+
             self.conn.commit()
             return True, svolgimento_id
         except pyodbc.Error as e:
+            err_text = str(e)
+
+            # Compatibilita' con DB in cui SegnalazioneSvolgimentoId non e' IDENTITY.
+            if "SegnalazioneSvolgimentoId" in err_text and "(515)" in err_text:
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    pass
+
+                try:
+                    self.cursor.execute(sql_fallback_with_id, assegnazione_id, descrizione)
+                    row = self.cursor.fetchone()
+                    svolgimento_id = int(row[0]) if row and row[0] is not None else None
+
+                    if not svolgimento_id:
+                        raise pyodbc.Error("Fallback insert returned NULL id")
+
+                    self.conn.commit()
+                    return True, svolgimento_id
+                except pyodbc.Error as fallback_error:
+                    self.conn.rollback()
+                    self.last_error_details = str(fallback_error)
+                    logger.error(f"Error inserting activity (fallback): {fallback_error}")
+                    return False, None
+
             self.conn.rollback()
-            self.last_error_details = str(e)
+            self.last_error_details = err_text
             logger.error(f"Error inserting activity: {e}")
             return False, None
         finally:
@@ -3406,7 +3461,26 @@ class Database:
             seg_id = int(segnalazione_id)
             ehh_id = int(employee_hire_history_id)
 
-            cur.execute(q_assign, seg_id, ehh_id, note if note else None)
+            # Evita errore SQL 22001: tronca la nota alla lunghezza massima della colonna.
+            safe_note = note if note else None
+            if safe_note:
+                try:
+                    cur.execute("""
+                        SELECT CHARACTER_MAXIMUM_LENGTH
+                        FROM Employee.INFORMATION_SCHEMA.COLUMNS
+                        WHERE TABLE_SCHEMA = 'dbo'
+                          AND TABLE_NAME = 'SegnalazioneAssegnazioni'
+                          AND COLUMN_NAME = 'Note'
+                    """)
+                    row_len = cur.fetchone()
+                    max_len = int(row_len[0]) if row_len and row_len[0] is not None else None
+                    if max_len and max_len > 0 and len(safe_note) > max_len:
+                        safe_note = safe_note[:max_len]
+                except Exception:
+                    # Se non riusciamo a leggere il metadata, usiamo comunque il testo originale.
+                    pass
+
+            cur.execute(q_assign, seg_id, ehh_id, safe_note)
             cur.execute(q_progress, seg_id )# , ehh_id)
 
             self.conn.commit()
@@ -4518,6 +4592,10 @@ class Database:
                 else:
                     self.cursor.execute(query)
 
+                # Alcune query non restituiscono un result set (cursor.description = None)
+                if self.cursor.description is None:
+                    return []
+
                 results = self.cursor.fetchall()
                 logger.debug(f"[DATABASE] fetch_all eseguito - Righe recuperate: {len(results)}")
                 return results
@@ -4538,13 +4616,48 @@ class Database:
         self._ensure_connection()
         with self._lock:
             try:
+                query_preview = " ".join(str(query).split())[:240]
+                caller = "unknown"
+                try:
+                    frm = inspect.currentframe()
+                    caller_frame = frm.f_back if frm else None
+                    if caller_frame:
+                        caller = f"{caller_frame.f_code.co_name}:{caller_frame.f_lineno}"
+                except Exception:
+                    pass
                 if params:
                     self.cursor.execute(query, params)
                 else:
                     self.cursor.execute(query)
 
+                # Evita SQLFetch su cursore senza result set (es. query non-SELECT)
+                if self.cursor.description is None:
+                    logger.debug(
+                        "[DATABASE] fetch_one chiamato con query senza result set | caller=%s | query=%s | params_present=%s",
+                        caller,
+                        query_preview,
+                        bool(params)
+                    )
+                    return None
+
                 result = self.cursor.fetchone()
                 return result
+
+            except pyodbc.ProgrammingError as e:
+                # SQL Server Native Client: 24000 Invalid cursor state
+                msg = str(e)
+                if '24000' in msg or 'Invalid cursor state' in msg:
+                    logger.debug(
+                        "[DATABASE] fetch_one invalid cursor state | caller=%s | query=%s | params_present=%s | err=%s",
+                        caller,
+                        " ".join(str(query).split())[:240],
+                        bool(params),
+                        e
+                    )
+                    return None
+                self.last_error_details = msg
+                logger.exception(f"[DATABASE] Errore fetch_one (ProgrammingError): {e}")
+                return None
 
             except pyodbc.Error as e:
                 self.last_error_details = str(e)
@@ -4611,6 +4724,130 @@ class Database:
                 self.conn.rollback()
                 logger.exception(f"[DATABASE] Errore inaspettato execute_query_with_id: {e}")
                 return None
+
+    def ensure_program_usage_table(self):
+        """Crea schema/tabella per tracciare le sessioni programma, se mancanti."""
+        self._ensure_connection()
+        with self._lock:
+            try:
+                self.cursor.execute("""
+                    IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'sta')
+                        EXEC('CREATE SCHEMA sta');
+
+                    IF OBJECT_ID('sta.ProgramUsageSessions', 'U') IS NULL
+                    BEGIN
+                        CREATE TABLE sta.ProgramUsageSessions (
+                            ProgramUsageId BIGINT IDENTITY(1,1) PRIMARY KEY,
+                            ProgramName NVARCHAR(260) NOT NULL,
+                            AppVersion NVARCHAR(50) NULL,
+                            HostName NVARCHAR(128) NULL,
+                            IpAddress NVARCHAR(64) NULL,
+                            StartDate DATE NOT NULL,
+                            StartDateTime DATETIME2(0) NOT NULL,
+                            EndDateTime DATETIME2(0) NULL,
+                            CreatedAt DATETIME2(0) NOT NULL CONSTRAINT DF_ProgramUsage_CreatedAt DEFAULT SYSDATETIME()
+                        );
+
+                        CREATE INDEX IX_ProgramUsage_StartDateTime
+                        ON sta.ProgramUsageSessions (StartDateTime DESC);
+                    END
+                """)
+                self.conn.commit()
+                return True
+            except Exception as e:
+                self.last_error_details = str(e)
+                self.conn.rollback()
+                logger.exception("[DATABASE] Errore creazione sta.ProgramUsageSessions: %s", e)
+                return False
+
+    def start_program_usage_session(self, program_name, app_version, hostname, ip_address):
+        """Registra l'avvio del programma e ritorna l'ID sessione."""
+        self._ensure_connection()
+        with self._lock:
+            try:
+                if not self.ensure_program_usage_table():
+                    return None
+
+                self.cursor.execute("""
+                    INSERT INTO sta.ProgramUsageSessions (
+                        ProgramName, AppVersion, HostName, IpAddress, StartDate, StartDateTime
+                    )
+                    OUTPUT inserted.ProgramUsageId
+                    VALUES (?, ?, ?, ?, CAST(GETDATE() AS date), SYSDATETIME());
+                """, (program_name, app_version, hostname, ip_address))
+
+                row = self.cursor.fetchone()
+                self.conn.commit()
+                return int(row[0]) if row and row[0] is not None else None
+            except Exception as e:
+                self.last_error_details = str(e)
+                self.conn.rollback()
+                logger.exception("[DATABASE] Errore registrazione avvio programma: %s", e)
+                return None
+
+    def close_program_usage_session(self, program_usage_id):
+        """Registra la chiusura della sessione programma."""
+        if not program_usage_id:
+            return False
+
+        self._ensure_connection()
+        with self._lock:
+            try:
+                self.cursor.execute("""
+                    UPDATE sta.ProgramUsageSessions
+                    SET EndDateTime = SYSDATETIME()
+                    WHERE ProgramUsageId = ? AND EndDateTime IS NULL;
+                """, (program_usage_id,))
+                self.conn.commit()
+                return True
+            except Exception as e:
+                self.last_error_details = str(e)
+                self.conn.rollback()
+                logger.exception("[DATABASE] Errore registrazione chiusura programma: %s", e)
+                return False
+
+    def fetch_program_usage_report(self, from_date=None, to_date=None):
+        """Recupera i dati sessione per il report uso programma, con filtro date opzionale."""
+        self._ensure_connection()
+        with self._lock:
+            try:
+                query = """
+                    SELECT
+                        ProgramUsageId,
+                        ProgramName,
+                        AppVersion,
+                        HostName,
+                        IpAddress,
+                        StartDate,
+                        StartDateTime,
+                        EndDateTime,
+                        CASE
+                            WHEN EndDateTime IS NOT NULL THEN DATEDIFF(SECOND, StartDateTime, EndDateTime)
+                            ELSE NULL
+                        END AS DurationSeconds
+                    FROM sta.ProgramUsageSessions
+                """
+
+                params = []
+                where_clauses = []
+                if from_date is not None:
+                    where_clauses.append("StartDate >= ?")
+                    params.append(from_date)
+                if to_date is not None:
+                    where_clauses.append("StartDate <= ?")
+                    params.append(to_date)
+
+                if where_clauses:
+                    query += " WHERE " + " AND ".join(where_clauses)
+
+                query += " ORDER BY StartDateTime DESC;"
+
+                self.cursor.execute(query, tuple(params))
+                return self.cursor.fetchall() or []
+            except Exception as e:
+                self.last_error_details = str(e)
+                logger.exception("[DATABASE] Errore fetch report uso programma: %s", e)
+                return []
 
     def add_new_site(self, name, address, vat, country, logo):
         """Aggiunge una nuova compagnia."""
@@ -10386,6 +10623,8 @@ class App(tk.Tk):
         # ─────────────────────────────────────────────────────────────────────
         self._simple_login_cache_file = Path(os.getenv("LOCALAPPDATA", ".")) / "TraceabilityRS" / "simple_login_auth_cache.json"
         self._authorized_action_cache_file = Path(os.getenv("LOCALAPPDATA", ".")) / "TraceabilityRS" / "authorized_action_cache.json"
+        self._program_usage_id = None
+        self._program_usage_started = False
         self.should_exit = False  # Flag to control shutdown
         self.geometry("1024x768")
         #self.project_tree = None  # Placeholder per la lista progetti NPI
@@ -10441,6 +10680,9 @@ class App(tk.Tk):
             self.should_exit = True
             return
         logger.info("Connessione al database stabilita con successo")
+
+        # Registra l'avvio sessione applicazione per statistiche utilizzo.
+        self._register_program_usage_start()
 
         # Leggi modalita' piano produzione PRIMA della costruzione menu
         try:
@@ -10660,13 +10902,29 @@ class App(tk.Tk):
             return
 
         def _worker():
+            batch_conn = None
             try:
                 from guest_activity_reports import GuestActivityReportGenerator
-                gen = GuestActivityReportGenerator(self.db)
+
+                # Usa una connessione dedicata al thread per evitare conflitti di cursore
+                # con la connessione condivisa dell'app (errore SQL 24000 Invalid cursor state).
+                batch_conn = pyodbc.connect(self.db.conn_str, autocommit=False)
+
+                class _BatchDb:
+                    def __init__(self, conn):
+                        self.conn = conn
+
+                gen = GuestActivityReportGenerator(_BatchDb(batch_conn))
                 count = gen.process_departed_visitors()  # default: 1 gen -> ieri
                 logger.info(f"Activity reports batch completato: {count} report generati")
             except Exception as e:
                 logger.error(f"Errore activity reports batch: {e}")
+            finally:
+                try:
+                    if batch_conn:
+                        batch_conn.close()
+                except Exception:
+                    pass
 
         t = threading.Thread(target=_worker, daemon=True, name="ActivityReportsBatch")
         t.start()
@@ -13665,117 +13923,12 @@ class App(tk.Tk):
             messagebox.showerror('Error', f'Cannot open Material Consumption:\n{e}')
 
     def _open_material_consumption_reports(self):
-        """Genera report PDF+Excel consumi alloy fase PTHM.
-        Verifica prima che tutti i prodotti abbiano il dato alloy configurato.
-        """
-        import threading
-
-        def _run():
-            try:
-                import material_consumption_report as mcr
-                import os
-
-                rows = mcr.get_pthm_rows(self.db.conn)
-
-                if not rows:
-                    self.after(0, lambda: messagebox.showinfo(
-                        self.lang.get('info', 'Info'),
-                        self.lang.get(
-                            'mcr_no_data',
-                            'No products found in PTHM phase for the previous production day.'
-                        ),
-                        parent=self
-                    ))
-                    return
-
-                missing = [r for r in rows if r['MissingAlloyConsumption'] == 1]
-                if missing:
-                    codes = '\n'.join(f'  • {r["ProductCode"]} ({r["QtyProcessed"]} pcs)'
-                                     for r in missing)
-                    self.after(0, lambda: messagebox.showwarning(
-                        self.lang.get('warning', 'Warning'),
-                        (
-                            self.lang.get(
-                                'mcr_missing_alloy',
-                                'Cannot generate the report: alloy consumption data '
-                                'is missing for the following products:'
-                            ) + f'\n\n{codes}\n\n'
-                            + self.lang.get(
-                                'mcr_missing_alloy_hint',
-                                'Please use Materials → Consumption Control → '
-                                'Data Management to enter the missing values.'
-                            )
-                        ),
-                        parent=self
-                    ))
-                    return
-
-                # Build report rows
-                total_gr  = 0.0
-                rep_rows  = []
-                for r in rows:
-                    partial = (r['QtyProcessed'] or 0) * (r['MaterialConsumptionGR'] or 0)
-                    total_gr += partial
-                    rep_rows.append({
-                        'ProductCode':         r['ProductCode'],
-                        'QtyProcessed':        r['QtyProcessed'],
-                        'MaterialConsumptionGR': r['MaterialConsumptionGR'],
-                        'PartialTotalGR':      partial,
-                    })
-
-                import datetime as _dt
-                start, end = mcr._production_window()
-
-                # Save to Documents folder (or temp)
-                out_dir = os.path.join(
-                    os.path.expanduser('~'), 'Documents', 'AlloyConsumption'
-                )
-                os.makedirs(out_dir, exist_ok=True)
-
-                pdf_path, xl_path = mcr.generate_reports(
-                    self.db.conn, rep_rows, total_gr, start, end, out_dir
-                )
-
-                def _show_result():
-                    msg_parts = []
-                    if pdf_path:
-                        msg_parts.append(f'PDF: {pdf_path}')
-                    if xl_path:
-                        msg_parts.append(f'Excel: {xl_path}')
-                    if not msg_parts:
-                        messagebox.showerror('Error', 'Report generation failed.', parent=self)
-                        return
-                    ans = messagebox.askokcancel(
-                        self.lang.get('success', 'Success'),
-                        (
-                            self.lang.get('mcr_report_done', 'Report generated successfully.') +
-                            '\n\n' + '\n'.join(msg_parts) +
-                            '\n\n' +
-                            self.lang.get('mcr_open_pdf', 'Open PDF now?')
-                        ),
-                        parent=self
-                    )
-                    if ans and pdf_path and os.path.isfile(pdf_path):
-                        import subprocess
-                        try:
-                            os.startfile(pdf_path)
-                        except AttributeError:
-                            subprocess.Popen(['xdg-open', pdf_path])
-
-                self.after(0, _show_result)
-
-            except Exception as e:
-                logger.error(f'_open_material_consumption_reports: {e}', exc_info=True)
-                self.after(0, lambda: messagebox.showerror(
-                    'Error', f'Report error:\n{e}', parent=self
-                ))
-
-        threading.Thread(target=_run, daemon=True).start()
-
-    # ── FQC Prodotti ───────────────────────────────────────────────────────────
+        """Opens the interactive alloy/flux consumption report search window."""
+        import material_consumption_report_gui as mcr_gui
+        mcr_gui.MaterialConsumptionReportWindow(self, self.db, self.lang)
 
     def _open_fqc_products_with_login(self):
-        """Apre la form di esecuzione checklist FQC (semplice login operatore)."""
+        """Apre la form esecuzione controlli FQC (semplice login)."""
         import fqc_products_gui
         self._execute_simple_login(
             action_callback=lambda user_name: fqc_products_gui.open_fqc_execution(
@@ -13783,12 +13936,11 @@ class App(tk.Tk):
         )
 
     def _open_fqc_products_master_with_login(self):
-        """Apre la form di gestione anagrafica checklist FQC (accesso autorizzato)."""
+        """Apre la form anagrafica FQC (semplice login)."""
         import fqc_products_gui
-        self._execute_authorized_action(
-            menu_translation_key='fqc_master',
-            action_callback=lambda: fqc_products_gui.open_fqc_master(
-                self, self.db, self.lang, self.last_authenticated_user_name)
+        self._execute_simple_login(
+            action_callback=lambda user_name: fqc_products_gui.open_fqc_master(
+                self, self.db, self.lang, user_name)
         )
 
     def _open_fqc_products_feedback_with_login(self):
@@ -15753,6 +15905,10 @@ class App(tk.Tk):
             label=self.lang.get('guest_settings_management', 'Gestione Ospiti'),
             command=self.open_guest_management_with_login
         )
+        self.guests_settings_submenu.add_command(
+            label=self.lang.get('guest_settings_badges', 'Gestione Badges'),
+            command=self.open_guest_badges_with_login
+        )
         
         # Sottomenu Assenze
         self.personnel_menu.add_separator()
@@ -16130,15 +16286,24 @@ class App(tk.Tk):
         )
         fqc_submenu.add_command(
             label=self.lang.get('menu_fqc_execution', '\u25b6 Esecuzione Controlli'),
-            command=self._open_fqc_products_with_login
+            command=self._menu_command_or_error(
+                '_open_fqc_products_with_login',
+                self.lang.get('menu_fqc_execution', '\u25b6 Esecuzione Controlli')
+            )
         )
         fqc_submenu.add_command(
             label=self.lang.get('menu_fqc_master', '\u2699 Gestione Anagrafica'),
-            command=self._open_fqc_products_master_with_login
+            command=self._menu_command_or_error(
+                '_open_fqc_products_master_with_login',
+                self.lang.get('menu_fqc_master', '\u2699 Gestione Anagrafica')
+            )
         )
         fqc_submenu.add_command(
             label=self.lang.get('menu_fqc_feedback', '\U0001f4ac Feedback Cliente'),
-            command=self._open_fqc_products_feedback_with_login
+            command=self._menu_command_or_error(
+                '_open_fqc_products_feedback_with_login',
+                self.lang.get('menu_fqc_feedback', '\U0001f4ac Feedback Cliente')
+            )
         )
 
         # Cambio Turno
@@ -16160,6 +16325,27 @@ class App(tk.Tk):
             label=self.lang.get('menu_analisi_fails', '📈 Analisi Fails'),
             command=self.open_fails_analysis_with_login
         )
+
+    def _menu_command_or_error(self, callback_name: str, menu_label: str):
+        """Restituisce una callback menu sicura; evita crash se il metodo non esiste."""
+        callback = getattr(self, callback_name, None)
+        if callable(callback):
+            return callback
+
+        logger.error("Callback menu mancante: %s (voce: %s)", callback_name, menu_label)
+
+        def _missing_callback():
+            messagebox.showerror(
+                "Errore Configurazione Menu",
+                (
+                    "La funzione richiesta non e disponibile.\n\n"
+                    f"Voce menu: {menu_label}\n"
+                    f"Callback mancante: {callback_name}"
+                ),
+                parent=self
+            )
+
+        return _missing_callback
 
     def _update_line_validation_submenu(self):
         """Aggiorna il sottomenu Validazione linea"""
@@ -18017,6 +18203,16 @@ class App(tk.Tk):
             )
         )
 
+    def open_guest_badges_with_login(self):
+        """Apre la finestra gestione badges visitatori con autenticazione."""
+        import guest_badges_gui
+        self._execute_authorized_action(
+            menu_translation_key='gestione_badge_visitatori',
+            action_callback=lambda: guest_badges_gui.GuestBadgesWindow(
+                self, self.db, self.lang, self.last_authenticated_user_name
+            )
+        )
+
     def open_hotel_settings_with_login(self):
         """Apre la finestra gestione Hotels con autenticazione."""
         import guest_settings_gui
@@ -18401,13 +18597,67 @@ class App(tk.Tk):
                 label=new_label
             )
 
-    def _show_about(self):
-        """Mostra la finestra di dialogo 'About' con le informazioni del software e del certificato."""
+    def _get_local_ip_for_usage(self):
+        """Recupera l'IP locale preferito per il tracciamento sessione."""
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.connect(("8.8.8.8", 80))
+            return sock.getsockname()[0]
+        except Exception:
+            try:
+                return socket.gethostbyname(socket.gethostname())
+            except Exception:
+                return "0.0.0.0"
+        finally:
+            try:
+                if sock:
+                    sock.close()
+            except Exception:
+                pass
+
+    def _register_program_usage_start(self):
+        """Registra l'avvio del programma nel DB statistico."""
+        if self._program_usage_started:
+            return
+        try:
+            program_name = os.path.basename(sys.executable) or "DocumentManagement"
+            host_name = socket.gethostname()
+            ip_address = self._get_local_ip_for_usage()
+            session_id = self.db.start_program_usage_session(
+                program_name=program_name,
+                app_version=APP_VERSION,
+                hostname=host_name,
+                ip_address=ip_address
+            )
+            if session_id:
+                self._program_usage_id = session_id
+                self._program_usage_started = True
+                logger.info("Program usage session registrata: id=%s host=%s ip=%s", session_id, host_name, ip_address)
+            else:
+                logger.warning("Program usage session non registrata (session_id assente)")
+        except Exception as e:
+            logger.error("Errore registrazione avvio sessione programma: %s", e, exc_info=True)
+
+    def _register_program_usage_end(self):
+        """Registra la chiusura del programma nel DB statistico."""
+        if not self._program_usage_started or not self._program_usage_id:
+            return
+        try:
+            self.db.close_program_usage_session(self._program_usage_id)
+            logger.info("Program usage session chiusa: id=%s", self._program_usage_id)
+        except Exception as e:
+            logger.error("Errore registrazione chiusura sessione programma: %s", e, exc_info=True)
+        finally:
+            self._program_usage_started = False
+            self._program_usage_id = None
+
+    def _build_about_message(self):
+        """Costruisce titolo e contenuto della finestra Informazioni."""
         about_title = f"{self.lang.get('about_title')} - v{APP_VERSION}"
         about_template = self.lang.get_raw('about_message')
         about_message = about_template.replace('{version}', APP_VERSION).replace('{developer}', APP_DEVELOPER)
 
-        # Aggiunge info certificato digitale
         cert_info = self._get_certificate_info()
         if cert_info:
             about_message += "\n\n" + "─" * 40
@@ -18418,11 +18668,186 @@ class App(tk.Tk):
         else:
             about_message += f"\n\n⚠ {self.lang.get('about_not_signed', 'Eseguibile non firmato (ambiente di sviluppo)')}"
 
-        messagebox.showinfo(
-            about_title,
-            about_message,
-            parent=self
-        )
+        return about_title, about_message
+
+    def _parse_usage_report_date(self, raw_value):
+        """Converte stringa YYYY-MM-DD in date, oppure None se vuota."""
+        value = (raw_value or "").strip()
+        if not value:
+            return None
+        return datetime.strptime(value, "%Y-%m-%d").date()
+
+    def _open_generated_usage_report(self, file_path):
+        """Prova ad aprire automaticamente il report esportato."""
+        try:
+            os.startfile(str(file_path))
+            return True
+        except Exception as e:
+            logger.warning("Impossibile aprire automaticamente il report %s: %s", file_path, e)
+            return False
+
+    def _generate_program_usage_report(self, file_format='csv', from_date=None, to_date=None, parent=None):
+        """Genera report utilizzo programma in C:\\Temp (CSV o XLSX)."""
+        try:
+            rows = self.db.fetch_program_usage_report(from_date=from_date, to_date=to_date)
+            out_dir = Path(r"C:\Temp")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            date_tag = "all"
+            if from_date and to_date:
+                date_tag = f"{from_date:%Y%m%d}_{to_date:%Y%m%d}"
+            elif from_date:
+                date_tag = f"from_{from_date:%Y%m%d}"
+            elif to_date:
+                date_tag = f"to_{to_date:%Y%m%d}"
+
+            file_ext = 'xlsx' if str(file_format).lower() == 'xlsx' else 'csv'
+            out_file = out_dir / f"TraceabilityRS_ProgramUsage_{date_tag}_{datetime.now():%Y%m%d_%H%M%S}.{file_ext}"
+
+            headers = [
+                'ProgramUsageId', 'ProgramName', 'AppVersion', 'HostName', 'IpAddress',
+                'StartDate', 'StartDateTime', 'EndDateTime', 'DurationSeconds'
+            ]
+
+            rows_data = []
+            for r in rows:
+                rows_data.append([
+                    r.ProgramUsageId,
+                    r.ProgramName,
+                    r.AppVersion,
+                    r.HostName,
+                    r.IpAddress,
+                    r.StartDate.strftime('%Y-%m-%d') if r.StartDate else '',
+                    r.StartDateTime.strftime('%Y-%m-%d %H:%M:%S') if r.StartDateTime else '',
+                    r.EndDateTime.strftime('%Y-%m-%d %H:%M:%S') if r.EndDateTime else '',
+                    r.DurationSeconds if r.DurationSeconds is not None else ''
+                ])
+
+            if file_ext == 'xlsx':
+                from openpyxl import Workbook
+                wb = Workbook()
+                ws = wb.active
+                ws.title = "ProgramUsage"
+                ws.append(headers)
+                for row in rows_data:
+                    ws.append(row)
+                wb.save(out_file)
+            else:
+                with open(out_file, 'w', newline='', encoding='utf-8-sig') as fh:
+                    writer = csv.writer(fh, delimiter=';')
+                    writer.writerow(headers)
+                    for row in rows_data:
+                        writer.writerow(row)
+
+            self._open_generated_usage_report(out_file)
+
+            if not rows:
+                messagebox.showwarning(
+                    self.lang.get('warning', 'Attenzione'),
+                    self.lang.get(
+                        'usage_report_no_data',
+                        'Nessun dato trovato nel periodo selezionato. E stato comunque generato un file con solo intestazioni.\n\nPercorso:\n{0}'
+                    ).format(str(out_file)),
+                    parent=parent or self
+                )
+                return
+
+            messagebox.showinfo(
+                self.lang.get('info', 'Info'),
+                self.lang.get(
+                    'usage_report_saved',
+                    'Report utilizzo generato con successo.\n\nPercorso:\n{0}'
+                ).format(str(out_file)),
+                parent=parent or self
+            )
+        except Exception as e:
+            logger.error("Errore generazione report utilizzo programma: %s", e, exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                self.lang.get(
+                    'usage_report_error',
+                    'Impossibile generare il report utilizzo:\n{0}'
+                ).format(str(e)),
+                parent=parent or self
+            )
+
+    def _show_about(self):
+        """Mostra la finestra Informazioni con opzione report utilizzo."""
+        about_title, about_message = self._build_about_message()
+
+        dlg = tk.Toplevel(self)
+        dlg.title(about_title)
+        dlg.geometry('760x460')
+        dlg.transient(self)
+        dlg.grab_set()
+
+        frame = ttk.Frame(dlg, padding=12)
+        frame.pack(fill='both', expand=True)
+
+        txt = tk.Text(frame, wrap='word', height=20)
+        txt.pack(fill='both', expand=True)
+        txt.insert('1.0', about_message)
+        txt.configure(state='disabled')
+
+        filter_row = ttk.Frame(frame)
+        filter_row.pack(fill='x', pady=(10, 0))
+
+        default_from = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+        default_to = datetime.now().strftime('%Y-%m-%d')
+
+        ttk.Label(filter_row, text=self.lang.get('usage_report_from_date', 'Dal (YYYY-MM-DD):')).pack(side='left')
+        from_entry = ttk.Entry(filter_row, width=14)
+        from_entry.pack(side='left', padx=(6, 12))
+        from_entry.insert(0, default_from)
+
+        ttk.Label(filter_row, text=self.lang.get('usage_report_to_date', 'Al (YYYY-MM-DD):')).pack(side='left')
+        to_entry = ttk.Entry(filter_row, width=14)
+        to_entry.pack(side='left', padx=(6, 0))
+        to_entry.insert(0, default_to)
+
+        btn_row = ttk.Frame(frame)
+        btn_row.pack(fill='x', pady=(10, 0))
+
+        def _run_usage_export(fmt):
+            try:
+                from_date = self._parse_usage_report_date(from_entry.get())
+                to_date = self._parse_usage_report_date(to_entry.get())
+                if from_date and to_date and to_date < from_date:
+                    raise ValueError(self.lang.get('usage_report_invalid_date', 'Intervallo date non valido: "Al" deve essere >= "Dal".'))
+            except ValueError as e:
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    self.lang.get(
+                        'usage_report_invalid_date',
+                        'Intervallo date non valido: "Al" deve essere >= "Dal".'
+                    ) + f"\n\n{e}",
+                    parent=dlg
+                )
+                return
+
+            self._generate_program_usage_report(
+                file_format=fmt,
+                from_date=from_date,
+                to_date=to_date,
+                parent=dlg
+            )
+
+        ttk.Button(
+            btn_row,
+            text=self.lang.get('usage_report_export_csv', 'Export CSV'),
+            command=lambda: _run_usage_export('csv')
+        ).pack(side='left', padx=(0, 8))
+
+        ttk.Button(
+            btn_row,
+            text=self.lang.get('usage_report_export_xlsx', 'Export XLSX'),
+            command=lambda: _run_usage_export('xlsx')
+        ).pack(side='left')
+
+        ttk.Button(
+            btn_row,
+            text=self.lang.get('close', 'Chiudi'),
+            command=dlg.destroy
+        ).pack(side='right')
 
     def _get_certificate_info(self):
         """Legge le informazioni del certificato digitale dall'eseguibile corrente via PowerShell."""
@@ -19151,6 +19576,7 @@ class App(tk.Tk):
 
         # Se force_quit Ã¨ True, chiudi senza chiedere conferma
         if force_quit:
+            self._register_program_usage_end()
             self.db.disconnect()
             self.destroy()
             return
@@ -19161,6 +19587,7 @@ class App(tk.Tk):
             self.lang.get('quit_title', 'Chiudi Applicazione'),
             self.lang.get('quit_message', 'Sei sicuro di voler chiudere l\'applicazione?')
         ):
+            self._register_program_usage_end()
             self.db.disconnect()
             self.destroy()
         else:
@@ -19238,6 +19665,40 @@ if __name__ == "__main__":
         print(f"[STARTUP] Error killing orphan processes: {e}")
     # ──────────────────────────────────────────────────────────────────── #
 
+    app = None
+
+    def _build_startup_error_log(exc: BaseException) -> str:
+        """Scrive il traceback dell'errore di avvio su file e ritorna il path."""
+        import traceback
+        logs_dir = Path(os.getenv("LOCALAPPDATA", ".")) / "TraceabilityRS" / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        error_path = logs_dir / "startup_crash_latest.log"
+        with open(error_path, "w", encoding="utf-8", errors="replace") as fh:
+            fh.write(f"Timestamp: {datetime.now().isoformat()}\n")
+            fh.write("EntryPoint: main.py __main__\n\n")
+            traceback.print_exc(file=fh)
+        return str(error_path)
+
+    def _show_startup_error_dialog(err: Exception, error_path: str) -> None:
+        """Mostra un messaggio topmost indipendente dalla splash, sempre leggibile."""
+        try:
+            dlg_root = tk.Tk()
+            dlg_root.withdraw()
+            dlg_root.attributes('-topmost', True)
+            messagebox.showerror(
+                "Errore Critico Avvio",
+                (
+                    "Si e verificato un errore critico durante l'avvio.\n\n"
+                    f"Errore: {err}\n\n"
+                    f"Dettagli completi: {error_path}\n\n"
+                    "Il file di log verra aperto in Notepad."
+                ),
+                parent=dlg_root
+            )
+            dlg_root.destroy()
+        except Exception:
+            pass
+
     try:
         app = App()
 
@@ -19271,7 +19732,8 @@ if __name__ == "__main__":
         print("\n\nâš ï¸  Applicazione interrotta dall'utente (Ctrl+C)")
         print("Chiusura in corso...")
         try:
-            app.destroy()
+            if app is not None:
+                app.destroy()
         except:
             pass
         import sys
@@ -19281,20 +19743,19 @@ if __name__ == "__main__":
         print(f"\n\nâŒ Errore critico nell'applicazione: {e}")
         import traceback
         traceback.print_exc()
-        
-        # Mostra messaggio all'utente se possibile
+
+        logger.critical("Errore critico in startup", exc_info=True)
+        error_log_path = _build_startup_error_log(e)
+
+        # Mostra messaggio topmost e apri il log per evitare che l'errore resti nascosto.
+        _show_startup_error_dialog(e, error_log_path)
         try:
-            import tkinter.messagebox as mb
-            mb.showerror(
-                "Errore Critico",
-                f"Si Ã¨ verificato un errore critico:\n\n{str(e)}\n\nL'applicazione verrÃ  chiusa."
-            )
-        except:
+            subprocess.Popen(['notepad.exe', error_log_path])
+        except Exception:
             pass
-        
+
         import sys
         sys.exit(1)
     finally:
         # Cleanup finale
         print("Applicazione terminata.")
-        os._exit(0)  # Safety net: termina il processo anche se ci sono thread non-daemon attivi

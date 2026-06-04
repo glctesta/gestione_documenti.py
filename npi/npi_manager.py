@@ -6111,7 +6111,8 @@ class GestoreNPI:
                 ORDER BY o.idorder DESC
             """), {'pid': project_id}).fetchall()
             return [{'order_id': r[0], 'order_code': r[1],
-                     'product_code': r[2], 'product_desc': r[3]} for r in result]
+                     'product_code': r[2], 'product_desc': r[3],
+                     'quantity': None} for r in result]
         except Exception as e:
             logger.error(f"Errore get_orders_for_project({project_id}): {e}", exc_info=True)
             return []
