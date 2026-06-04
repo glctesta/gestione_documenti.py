@@ -63,6 +63,25 @@ WHERE  IDClient = ?
 ORDER  BY ProductCode
 """
 
+_Q_LABELCODE_INFO = """
+SELECT TOP 1
+    l.IDLabelCode,
+    l.LabelCod,
+    o.IDOrder,
+    o.OrderNumber,
+    p.IDProduct,
+    p.ProductCode,
+    c.IDClient,
+    c.ClientName
+FROM Traceability_RS.dbo.LabelCodes l
+INNER JOIN Traceability_RS.dbo.Boards   b ON b.IDBoard   = l.IDBoard
+INNER JOIN Traceability_RS.dbo.Orders   o ON o.IDOrder   = b.IDOrder
+INNER JOIN Traceability_RS.dbo.Products p ON p.IDProduct = o.IDProduct
+LEFT JOIN  Traceability_RS.dbo.Clients  c ON c.IDClient  = p.IDClient
+WHERE l.LabelCod = ?
+ORDER BY l.IDLabelCode DESC
+"""
+
 # Products processed in PTHM (IDPhase=107) in the current production day
 # (window 07:30 today → 07:30 tomorrow).  Used to highlight / pre-filter.
 _Q_PTHM_TODAY = """
@@ -104,6 +123,36 @@ _Q_INSERT_LOG = """
 INSERT INTO [Traceability_RS].[chk].[ProductCheckListDataLogs]
     (ProductCheckListDataId, IsOK, DateCheckList, [User], NotOkNote)
 VALUES (?, ?, GETDATE(), ?, ?)
+"""
+
+_Q_UPSERT_LABEL_LOG = """
+IF EXISTS (
+    SELECT 1
+    FROM [Traceability_RS].[chk].[ProductCheckListDataLabelLogs]
+    WHERE IDLabelCode = ? AND ProductCheckListDataId = ?
+)
+BEGIN
+    UPDATE [Traceability_RS].[chk].[ProductCheckListDataLabelLogs]
+    SET IsOK = ?,
+        DateCheckList = GETDATE(),
+        [User] = ?,
+        NotOkNote = ?,
+        DateSys = GETDATE()
+    WHERE IDLabelCode = ?
+      AND ProductCheckListDataId = ?
+END
+ELSE
+BEGIN
+    INSERT INTO [Traceability_RS].[chk].[ProductCheckListDataLabelLogs]
+        (ProductCheckListDataId, IDLabelCode, IsOK, DateCheckList, [User], NotOkNote, DateSys)
+    VALUES (?, ?, ?, GETDATE(), ?, ?, GETDATE())
+END
+"""
+
+_Q_LABEL_LOGS = """
+SELECT ProductCheckListDataId, IsOK, NotOkNote
+FROM [Traceability_RS].[chk].[ProductCheckListDataLabelLogs]
+WHERE IDLabelCode = ?
 """
 
 _Q_CREATE_CHECKLIST = """
@@ -170,6 +219,37 @@ INSERT INTO [Traceability_RS].[chk].[ProductCheckListDataLogFeedBacks]
     (ProductCheckListDataLogId, FeedBack, FeedBackPicture,
      FeedBackDate, FeedBackFrom, DateSys)
 VALUES (?, ?, ?, ?, ?, GETDATE())
+"""
+
+_DDL_ENSURE_LABEL_LOG_TABLE = """
+IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'chk')
+BEGIN
+    EXEC('CREATE SCHEMA chk')
+END
+
+IF OBJECT_ID(N'[Traceability_RS].[chk].[ProductCheckListDataLabelLogs]', N'U') IS NULL
+BEGIN
+    CREATE TABLE [Traceability_RS].[chk].[ProductCheckListDataLabelLogs]
+    (
+        ProductCheckListDataLabelLogId BIGINT IDENTITY(1,1) NOT NULL
+            CONSTRAINT PK_ProductCheckListDataLabelLogs PRIMARY KEY,
+        ProductCheckListDataId INT NOT NULL,
+        IDLabelCode INT NOT NULL,
+        IsOK BIT NOT NULL,
+        DateCheckList DATETIME NOT NULL
+            CONSTRAINT DF_ProductCheckListDataLabelLogs_DateCheckList DEFAULT (GETDATE()),
+        [User] NVARCHAR(100) NOT NULL,
+        NotOkNote NVARCHAR(1000) NULL,
+        DateSys DATETIME NOT NULL
+            CONSTRAINT DF_ProductCheckListDataLabelLogs_DateSys DEFAULT (GETDATE())
+    );
+
+    CREATE UNIQUE INDEX UX_ProductCheckListDataLabelLogs_Label_Item
+        ON [Traceability_RS].[chk].[ProductCheckListDataLabelLogs](IDLabelCode, ProductCheckListDataId);
+
+    CREATE INDEX IX_ProductCheckListDataLabelLogs_Label
+        ON [Traceability_RS].[chk].[ProductCheckListDataLabelLogs](IDLabelCode, DateCheckList DESC);
+END
 """
 
 # ── Image utilities ───────────────────────────────────────────────────────────
@@ -246,6 +326,22 @@ def _entry(parent, textvariable, width=36):
                     highlightbackground=_C_BORDER,
                     highlightcolor=_C_ACCENT,
                     highlightthickness=1)
+
+
+def _ensure_fqc_labelcode_schema(db) -> None:
+    """Ensure the labelcode-specific FQC persistence table exists."""
+    try:
+        cur = db.conn.cursor()
+        cur.execute(_DDL_ENSURE_LABEL_LOG_TABLE)
+        db.conn.commit()
+    except Exception as exc:
+        logger.error(f"_ensure_fqc_labelcode_schema: {exc}", exc_info=True)
+        raise
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
 
 # ── Client/Product selection mixin ────────────────────────────────────────────
 
@@ -348,6 +444,10 @@ class FqcExecutionForm(_ClientProductMixin, tk.Toplevel):
         self._items:        list[dict]    = []
         self._photo_refs:   list          = []   # keep PhotoImage refs alive
         self._pthm_ids:     set           = set()  # IDProduct processed in PTHM today
+        self._selected_product_id: Optional[int] = None
+        self._current_label_info: Optional[dict] = None
+        self._labelcode_var = tk.StringVar()
+        self._labelcode_validated = False
 
         self.title(self.lang.get('fqc_exec_title', 'FQC Products — Checklist Execution'))
         self.configure(bg=_C_BG)
@@ -384,6 +484,28 @@ class FqcExecutionForm(_ClientProductMixin, tk.Toplevel):
         _, sel = _card(body, self.lang.get('fqc_selection', 'PRODUCT SELECTION'))
         self._build_cp_grid(sel)
 
+        label_row = tk.Frame(sel, bg=_C_CARD)
+        label_row.pack(fill=tk.X, pady=(8, 0))
+        tk.Label(
+            label_row,
+            text=self.lang.get('fqc_labelcode', 'LabelCode:'),
+            bg=_C_CARD,
+            fg=_C_TEXT,
+            font=('Segoe UI', 9),
+            width=10,
+            anchor=tk.W
+        ).pack(side=tk.LEFT)
+        self._labelcode_entry = _entry(label_row, self._labelcode_var, 30)
+        self._labelcode_entry.pack(side=tk.LEFT, padx=(0, 6))
+        self._labelcode_entry.bind('<Return>', self._validate_labelcode)
+        _btn(
+            label_row,
+            self.lang.get('fqc_verify_labelcode', 'Verify'),
+            self._validate_labelcode,
+            bg=_C_HEADER,
+            width=10
+        ).pack(side=tk.LEFT)
+
         # PTHM badge
         self._pthm_badge = tk.Label(
             sel,
@@ -392,6 +514,17 @@ class FqcExecutionForm(_ClientProductMixin, tk.Toplevel):
             font=('Segoe UI', 8, 'italic')
         )
         self._pthm_badge.pack(anchor=tk.W, pady=(0, 2))
+
+        self._labelcode_status = tk.Label(
+            sel,
+            text='',
+            bg=_C_CARD,
+            fg=_C_SUBTEXT,
+            font=('Segoe UI', 9, 'italic'),
+            justify=tk.LEFT,
+            wraplength=760
+        )
+        self._labelcode_status.pack(anchor=tk.W, pady=(4, 0))
 
         self._cl_status = tk.Label(sel, text='', bg=_C_CARD, fg=_C_SUBTEXT,
                                    font=('Segoe UI', 9, 'italic'))
@@ -512,7 +645,149 @@ class FqcExecutionForm(_ClientProductMixin, tk.Toplevel):
         code       = raw.lstrip('\u2605').strip()
         id_product = self._product_map.get(raw) or self._product_map.get(code)
         if id_product:
+            self._selected_product_id = id_product
+            self._invalidate_labelcode_if_mismatch()
             self._load_checklist(id_product)
+
+    def _on_client_selected(self, event=None):
+        super()._on_client_selected(event)
+        self._selected_product_id = None
+        self._reset_labelcode_validation(clear_entry=False)
+
+    def _reset_labelcode_validation(self, clear_entry: bool = False):
+        self._labelcode_validated = False
+        self._current_label_info = None
+        if clear_entry:
+            self._labelcode_var.set('')
+        self._labelcode_status.config(text='', fg=_C_SUBTEXT)
+
+    def _invalidate_labelcode_if_mismatch(self):
+        if not self._labelcode_validated or not self._current_label_info:
+            return
+        current_product = self._current_label_info.get('IDProduct')
+        if current_product and self._selected_product_id and current_product != self._selected_product_id:
+            self._labelcode_validated = False
+            self._labelcode_status.config(
+                text=self.lang.get(
+                    'fqc_labelcode_product_mismatch',
+                    'LabelCode no longer matches the selected product. Verify again.'
+                ),
+                fg=_C_WARNING
+            )
+
+    def _find_product_display_value(self, product_id: int, product_code: str) -> str:
+        for value in self._all_products:
+            code = value.lstrip('\u2605').strip()
+            if self._product_map.get(value) == product_id or code == product_code:
+                return value
+        return product_code
+
+    def _apply_label_selection(self, label_info: dict):
+        client_name = label_info.get('ClientName') or ''
+        product_code = label_info.get('ProductCode') or ''
+        id_client = label_info.get('IDClient')
+        id_product = label_info.get('IDProduct')
+
+        if id_client and client_name:
+            self._client_combo.set(client_name)
+            self._load_products(id_client)
+
+        if id_product:
+            display_value = self._find_product_display_value(id_product, product_code)
+            self._product_combo.set(display_value)
+            self._selected_product_id = id_product
+            self._load_checklist(id_product)
+
+    def _fetch_saved_label_results(self, id_labelcode: int) -> dict[int, dict]:
+        saved: dict[int, dict] = {}
+        try:
+            cur = self.db.conn.cursor()
+            cur.execute(_Q_LABEL_LOGS, (id_labelcode,))
+            for row in cur.fetchall():
+                saved[int(row[0])] = {
+                    'is_ok': int(row[1]),
+                    'note': row[2] or ''
+                }
+        except Exception as exc:
+            logger.error(f"_fetch_saved_label_results: {exc}", exc_info=True)
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+        return saved
+
+    def _validate_labelcode(self, event=None):
+        labelcode_value = self._labelcode_var.get().strip()
+        if not labelcode_value:
+            self._labelcode_status.config(
+                text=self.lang.get('fqc_labelcode_required', 'Enter a LabelCode.'),
+                fg=_C_WARNING
+            )
+            self._labelcode_validated = False
+            return
+
+        try:
+            cur = self.db.conn.cursor()
+            cur.execute(_Q_LABELCODE_INFO, (labelcode_value,))
+            row = cur.fetchone()
+        except Exception as exc:
+            logger.error(f"_validate_labelcode: {exc}", exc_info=True)
+            self._labelcode_status.config(text=str(exc), fg=_C_ERROR)
+            self._labelcode_validated = False
+            return
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+
+        if not row:
+            self._labelcode_status.config(
+                text=self.lang.get('fqc_labelcode_not_found', 'LabelCode not found in database.'),
+                fg=_C_ERROR
+            )
+            self._labelcode_validated = False
+            self._current_label_info = None
+            return
+
+        label_info = {
+            'IDLabelCode': row[0],
+            'LabelCod': row[1],
+            'IDOrder': row[2],
+            'OrderNumber': row[3],
+            'IDProduct': row[4],
+            'ProductCode': row[5],
+            'IDClient': row[6],
+            'ClientName': row[7],
+        }
+
+        selected_raw = self._product_combo.get().strip()
+        if selected_raw:
+            selected_code = selected_raw.lstrip('\u2605').strip()
+            selected_product_id = self._product_map.get(selected_raw) or self._product_map.get(selected_code)
+            if selected_product_id and selected_product_id != label_info['IDProduct']:
+                self._labelcode_status.config(
+                    text=(
+                        f"{self.lang.get('fqc_labelcode_mismatch', 'LabelCode belongs to a different product.')}: "
+                        f"{label_info['OrderNumber']} / {label_info['ProductCode']}"
+                    ),
+                    fg=_C_ERROR
+                )
+                self._labelcode_validated = False
+                self._current_label_info = label_info
+                return
+
+        self._current_label_info = label_info
+        self._labelcode_validated = True
+        self._apply_label_selection(label_info)
+        self._labelcode_status.config(
+            text=(
+                f"✅ {label_info['OrderNumber']} / {label_info['ProductCode']}"
+                + (f" / {label_info['ClientName']}" if label_info.get('ClientName') else '')
+            ),
+            fg=_C_SUCCESS
+        )
 
     def _load_checklist(self, id_product: int):
         try:
@@ -534,7 +809,10 @@ class FqcExecutionForm(_ClientProductMixin, tk.Toplevel):
             cur.execute(_Q_CHECKLIST_ITEMS, (self._checklist_id,))
             raw = [{'id': r[0], 'desc': r[1], 'num': r[2], 'photo': r[3]}
                    for r in cur.fetchall()]
-            self._render_items(raw)
+            saved_results = {}
+            if self._labelcode_validated and self._current_label_info:
+                saved_results = self._fetch_saved_label_results(self._current_label_info['IDLabelCode'])
+            self._render_items(raw, saved_results)
         except Exception as exc:
             logger.error(f"FqcExecutionForm _load_checklist: {exc}", exc_info=True)
             messagebox.showerror('Error', str(exc), parent=self)
@@ -554,11 +832,12 @@ class FqcExecutionForm(_ClientProductMixin, tk.Toplevel):
                                       font=('Segoe UI', 10, 'italic'))
         self._no_items_lbl.pack(pady=30)
 
-    def _render_items(self, raw: list[dict]):
+    def _render_items(self, raw: list[dict], saved_results: Optional[dict[int, dict]] = None):
         for w in self._scroll_frame.winfo_children():
             w.destroy()
         self._items      = []
         self._photo_refs = []
+        saved_results = saved_results or {}
 
         # Column header bar
         hbar = tk.Frame(self._scroll_frame, bg=_C_HEADER)
@@ -629,6 +908,15 @@ class FqcExecutionForm(_ClientProductMixin, tk.Toplevel):
             note_entry.pack(side=tk.LEFT, padx=8)
             self._items.append(item)
 
+            saved_item = saved_results.get(rd['id'])
+            if saved_item is not None:
+                item['ok_var'].set(1 if saved_item.get('is_ok') else 0)
+                item['note_var'].set(saved_item.get('note', ''))
+                if saved_item.get('is_ok'):
+                    self._on_ok(item)
+                else:
+                    self._on_nok(item)
+
         if self._items:
             self._save_btn.config(state='normal')
 
@@ -666,6 +954,26 @@ class FqcExecutionForm(_ClientProductMixin, tk.Toplevel):
     # ── Save ──────────────────────────────────────────────────────────────────
 
     def _on_save(self):
+        labelcode_value = self._labelcode_var.get().strip()
+        if not labelcode_value:
+            messagebox.showwarning(
+                self.lang.get('warning', 'Warning'),
+                self.lang.get('fqc_labelcode_required', 'Enter a LabelCode.'),
+                parent=self
+            )
+            return
+
+        if not self._labelcode_validated or not self._current_label_info:
+            messagebox.showwarning(
+                self.lang.get('warning', 'Warning'),
+                self.lang.get(
+                    'fqc_verify_labelcode_first',
+                    'Verify the LabelCode before saving the checklist.'
+                ),
+                parent=self
+            )
+            return
+
         unanswered = [it for it in self._items if it['ok_var'].get() == -1]
         if unanswered:
             nums = ', '.join(str(it['number']) for it in unanswered)
@@ -689,11 +997,21 @@ class FqcExecutionForm(_ClientProductMixin, tk.Toplevel):
 
         try:
             cur = self.db.conn.cursor()
+            id_labelcode = self._current_label_info['IDLabelCode']
             for it in self._items:
                 is_ok = 1 if it['ok_var'].get() == 1 else 0
                 note  = it['note_var'].get().strip() if is_ok == 0 else None
                 cur.execute(_Q_INSERT_LOG,
                             (it['data_id'], is_ok, self.user_name, note))
+                cur.execute(
+                    _Q_UPSERT_LABEL_LOG,
+                    (
+                        id_labelcode, it['data_id'],
+                        is_ok, self.user_name, note,
+                        id_labelcode, it['data_id'],
+                        it['data_id'], id_labelcode, is_ok, self.user_name, note,
+                    )
+                )
             self.db.conn.commit()
             messagebox.showinfo(
                 self.lang.get('success', 'Success'),
@@ -1225,6 +1543,7 @@ class FqcFeedbackForm(_ClientProductMixin, tk.Toplevel):
 
 def open_fqc_execution(parent, db, lang, user_name: str):
     """Opens the FQC checklist execution form (simple login)."""
+    _ensure_fqc_labelcode_schema(db)
     form = FqcExecutionForm(parent, db, lang, user_name)
     parent.wait_window(form)
 
