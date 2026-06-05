@@ -32,6 +32,33 @@ class ProjectAnalysisWindow(tk.Toplevel):
         self._create_widgets()
         self._load_analysis()
 
+    def _normalize_date(self, value):
+        if not value:
+            return None
+        return value.date() if hasattr(value, 'date') else value
+
+    def _split_late_tasks(self, tasks):
+        """Restituisce (open_overdue, completed_late) per la lista task dell'owner."""
+        today = datetime.now().date()
+        open_overdue = 0
+        completed_late = 0
+
+        for task in tasks:
+            due_date = self._normalize_date(getattr(task, 'DataScadenza', None))
+            status_norm = (getattr(task, 'Stato', '') or '').strip().lower()
+
+            if not due_date:
+                continue
+
+            if status_norm == 'completato':
+                completion_date = self._normalize_date(getattr(task, 'DataCompletamento', None))
+                if completion_date and completion_date > due_date:
+                    completed_late += 1
+            elif status_norm != 'cancellato' and due_date < today:
+                open_overdue += 1
+
+        return open_overdue, completed_late
+
     def _create_widgets(self):
         main_frame = ttk.Frame(self, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
@@ -40,11 +67,28 @@ class ProjectAnalysisWindow(tk.Toplevel):
                            font=('Helvetica', 14, 'bold'))
         header.pack(pady=(0, 10))
 
+        legend_frame = ttk.Frame(main_frame)
+        legend_frame.pack(fill=tk.X, pady=(0, 6))
+
+        ttk.Label(
+            legend_frame,
+            text=self.lang.get('legend_open_overdue', 'Rosso = Aperti in ritardo'),
+            foreground='#C62828',
+            font=('Helvetica', 9, 'bold')
+        ).pack(side=tk.LEFT, padx=(0, 16))
+
+        ttk.Label(
+            legend_frame,
+            text=self.lang.get('legend_completed_late', 'Arancione = Completati in ritardo'),
+            foreground='#EF6C00',
+            font=('Helvetica', 9, 'bold')
+        ).pack(side=tk.LEFT)
+
         tree_frame = ttk.Frame(main_frame)
         tree_frame.pack(fill=tk.BOTH, expand=True, pady=5)
 
         # ---** CORREZIONE: DEFINIZIONE PULITA DELLA TREEVIEW CON COLONNA CHECKBOX **---
-        cols = ('select', 'owner', 'late_count')
+        cols = ('select', 'owner', 'open_overdue', 'completed_late', 'late_count')
         self.tree = ttk.Treeview(tree_frame, columns=cols, show='headings')
 
         # Configurazione colonna Checkbox ('select')
@@ -53,8 +97,16 @@ class ProjectAnalysisWindow(tk.Toplevel):
 
         # Configurazione altre colonne
         self.tree.heading('owner', text=self.lang.get('col_owner', "Responsabile"))
-        self.tree.heading('late_count', text=self.lang.get('col_late_tasks_count', "N. Task in Ritardo"))
-        self.tree.column('late_count', width=150, anchor=tk.CENTER)
+        self.tree.heading('open_overdue', text=self.lang.get('col_open_overdue', "Aperti in Ritardo"))
+        self.tree.column('open_overdue', width=140, anchor=tk.CENTER)
+        self.tree.heading('completed_late', text=self.lang.get('col_completed_late', "Completati in Ritardo"))
+        self.tree.column('completed_late', width=170, anchor=tk.CENTER)
+        self.tree.heading('late_count', text=self.lang.get('col_late_tasks_count', "Totale Ritardo"))
+        self.tree.column('late_count', width=120, anchor=tk.CENTER)
+
+        # Tag colore per lettura immediata della severita'.
+        self.tree.tag_configure('has_open_overdue', foreground='#C62828')
+        self.tree.tag_configure('only_completed_late', foreground='#EF6C00')
 
         # Associa l'evento click alla funzione di toggle
         self.tree.bind('<Button-1>', self._toggle_check)
@@ -103,14 +155,35 @@ class ProjectAnalysisWindow(tk.Toplevel):
                 self._log_message("Nessun task in ritardo trovato. Ottimo lavoro!")
                 return
 
+            owners_with_open_overdue = 0
+            owners_with_any_late = 0
             for owner, tasks in self.analysis_data.items():
+                open_overdue, completed_late = self._split_late_tasks(tasks)
+                total_late = open_overdue + completed_late
+                if total_late == 0:
+                    continue
+
+                owners_with_any_late += 1
+                if open_overdue > 0:
+                    owners_with_open_overdue += 1
+
+                row_tag = 'has_open_overdue' if open_overdue > 0 else 'only_completed_late'
+
                 # Il valore della riga ora include il carattere per la checkbox
-                values = (self.CHAR_CHECKED, owner.Nome, len(tasks))
+                values = (self.CHAR_CHECKED, owner.Nome, open_overdue, completed_late, total_late)
                 # 'text' non è più usato per dati, ma l'ID della riga è univoco
-                self.tree.insert('', tk.END, values=values, text=owner.Nome)
+                self.tree.insert('', tk.END, values=values, text=owner.Nome, tags=(row_tag,))
+
+            if owners_with_any_late == 0:
+                self._log_message("Nessun task in ritardo trovato. Ottimo lavoro!")
+                self.send_button.config(state=tk.DISABLED)
+                return
 
             self.send_button.config(state=tk.NORMAL)
-            self._log_message(f"Analisi completata. Trovati ritardi per {len(self.analysis_data)} responsabili.")
+            self._log_message(
+                f"Analisi completata. Responsabili con ritardi: {owners_with_any_late} "
+                f"(con task aperti scaduti: {owners_with_open_overdue})."
+            )
         except Exception as e:
             logger.error(f"Errore durante l'analisi del progetto {self.project_id}: {e}", exc_info=True)
             self._log_message(f"ERRORE: Impossibile completare l'analisi. Dettagli: {e}")

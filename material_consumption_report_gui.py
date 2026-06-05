@@ -35,10 +35,19 @@ INNER JOIN Traceability_RS.dbo.OrderPhases op ON s.IDOrderPhase = op.IDOrderPhas
 INNER JOIN Traceability_RS.dbo.Orders      o  ON op.IDOrder     = o.IDOrder
 INNER JOIN Traceability_RS.dbo.Phases      ph ON op.IDPhase     = ph.IDPhase
 INNER JOIN Traceability_RS.dbo.Products    p  ON o.IDProduct    = p.IDProduct
-LEFT  JOIN Traceability_RS.dbo.ProductConsumptions pc
-       ON  pc.IdProduct          = o.IDProduct
-      AND  pc.MaterialConsumption = 'Alloy'
-      AND  pc.DateOut             IS NULL
+OUTER APPLY (
+    SELECT TOP 1
+        x.ProductConsumptionId,
+        x.MaterialConsumptionGR
+    FROM Traceability_RS.dbo.ProductConsumptions x
+    WHERE x.IdProduct = o.IDProduct
+      AND x.DateOut IS NULL
+      AND x.MaterialConsumption IN ('Alloy_GR', 'Alloy')
+    ORDER BY
+        CASE WHEN x.MaterialConsumption = 'Alloy_GR' THEN 0 ELSE 1 END,
+        x.DateSys DESC,
+        x.ProductConsumptionId DESC
+) pc
 WHERE ph.IDPhase        = 107
   AND s.ScanTimeFinish >= ?
   AND s.ScanTimeFinish  < ?
@@ -46,7 +55,7 @@ WHERE ph.IDPhase        = 107
 GROUP BY
     CAST(s.ScanTimeFinish AS DATE),
     o.IDProduct, p.ProductCode,
-    pc.ProductConsumptionId, pc.MaterialConsumption, pc.MaterialConsumptionGR
+    pc.ProductConsumptionId, pc.MaterialConsumptionGR
 ORDER BY ProductionDay, p.ProductCode
 """
 

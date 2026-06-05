@@ -563,7 +563,8 @@ class NpiDashboardWindow(tk.Toplevel):
 
         try:
             project_id = int(project_id)
-            project_name = values[0]  # Il nome progetto è il primo valore della riga
+            # La prima colonna valori e' l'icona stato, il nome progetto e' la seconda.
+            project_name = values[1]
             return project_id, project_name
         except (ValueError, IndexError):
             messagebox.showwarning("Selezione", "Seleziona un progetto valido dalla lista.", parent=self)

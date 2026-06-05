@@ -1073,10 +1073,42 @@ def _generate_referat_pdf(doc_name: str, date_ref: datetime, employee_name: str,
         import io
         
         font_dir = r'C:\Windows\Fonts'
-        if 'Arial' not in pdfmetrics.getRegisteredFontNames():
-            pdfmetrics.registerFont(TTFont('Arial', os.path.join(font_dir, 'arial.ttf')))
-            pdfmetrics.registerFont(TTFont('Arial-Bold', os.path.join(font_dir, 'arialbd.ttf')))
-            pdfmetrics.registerFont(TTFont('Arial-Italic', os.path.join(font_dir, 'ariali.ttf')))
+        registered = pdfmetrics.getRegisteredFontNames()
+
+        # Mappa: nome logico -> file TTF
+        _fonts_to_register = {
+            'Arial':        'arial.ttf',
+            'Arial-Bold':   'arialbd.ttf',
+            'Arial-Italic': 'ariali.ttf',
+        }
+        # Fallback ReportLab built-in (sempre disponibili)
+        _font_fallback = {
+            'Arial':        'Helvetica',
+            'Arial-Bold':   'Helvetica-Bold',
+            'Arial-Italic': 'Helvetica-Oblique',
+        }
+
+        _font_alias = {}   # nome logico -> nome da usare nei setFont()
+        for logical_name, ttf_file in _fonts_to_register.items():
+            if logical_name in registered:
+                _font_alias[logical_name] = logical_name
+                continue
+            ttf_path = os.path.join(font_dir, ttf_file)
+            if os.path.isfile(ttf_path):
+                try:
+                    pdfmetrics.registerFont(TTFont(logical_name, ttf_path))
+                    _font_alias[logical_name] = logical_name
+                except Exception as _fe:
+                    logger.warning(f"_generate_referat_pdf: impossibile registrare {logical_name}: {_fe}")
+                    _font_alias[logical_name] = _font_fallback[logical_name]
+            else:
+                logger.warning(f"_generate_referat_pdf: file font non trovato: {ttf_path}, uso fallback")
+                _font_alias[logical_name] = _font_fallback[logical_name]
+
+        # Alias corti per il codice che segue
+        _F_NORMAL  = _font_alias['Arial']
+        _F_BOLD    = _font_alias['Arial-Bold']
+        _F_ITALIC  = _font_alias['Arial-Italic']
         
         output_dir = r"C:\Temp"
         if not os.path.exists(output_dir):
@@ -1110,16 +1142,16 @@ def _generate_referat_pdf(doc_name: str, date_ref: datetime, employee_name: str,
         
         # Titolo
         y = page_h - 4 * cm
-        c.setFont("Arial-Bold", 18)
+        c.setFont(_F_BOLD, 18)
         c.drawCentredString(page_w / 2, y, "REFERAT")
         
         y -= 0.6 * cm
-        c.setFont("Arial-Italic", 10)
+        c.setFont(_F_ITALIC, 10)
         c.drawCentredString(page_w / 2, y, "(Generat automat — FAI Compliance Enforcement)")
         
         # Numero documento
         y -= 1.2 * cm
-        c.setFont("Arial", 11)
+        c.setFont(_F_NORMAL, 11)
         c.drawString(2 * cm, y, f"Nr. {doc_name} / {date_ref.strftime('%d-%m-%Y')}")
         
         # Destinatario
@@ -1129,7 +1161,7 @@ def _generate_referat_pdf(doc_name: str, date_ref: datetime, employee_name: str,
         # Corpo principale
         y -= 1.5 * cm
         body_style = ParagraphStyle(
-            'Body', fontName='Arial', fontSize=11,
+            'Body', fontName=_F_NORMAL, fontSize=11,
             leading=16, firstLineIndent=1 * cm
         )
         
@@ -1161,7 +1193,7 @@ def _generate_referat_pdf(doc_name: str, date_ref: datetime, employee_name: str,
         
         # Motivo
         reason_style = ParagraphStyle(
-            'Reason', fontName='Arial', fontSize=11, leading=15
+            'Reason', fontName=_F_NORMAL, fontSize=11, leading=15
         )
         reason_para = Paragraph(reason_text.replace('\n', '<br/>'), reason_style)
         rw, rh = reason_para.wrap(w_avail, 400)
@@ -1172,7 +1204,7 @@ def _generate_referat_pdf(doc_name: str, date_ref: datetime, employee_name: str,
         
         # Footer
         y = max(y, 4 * cm)
-        c.setFont("Arial", 11)
+        c.setFont(_F_NORMAL, 11)
         c.drawString(2 * cm, y, f"Data GHIRODA, {date_ref.strftime('%d-%m-%Y')}")
         
         y -= 1 * cm
@@ -1193,11 +1225,11 @@ def _generate_referat_pdf(doc_name: str, date_ref: datetime, employee_name: str,
         else:
             y -= 0.8 * cm
         
-        c.setFont("Arial-Bold", 11)
+        c.setFont(_F_BOLD, 11)
         c.drawString(2 * cm, y, admin_name.upper())
         
         y -= 0.8 * cm
-        c.setFont("Arial", 11)
+        c.setFont(_F_NORMAL, 11)
         c.drawString(2 * cm, y, "______________________")
         
         c.save()

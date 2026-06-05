@@ -3127,6 +3127,11 @@ class GestoreNPI:
     def get_project_analysis(self, project_id: int):
         """
         Analizza un progetto per trovare i task in ritardo per ogni owner.
+
+        NOTE:
+        - Include task aperti e scaduti (pending overdue)
+        - Include task completati oltre la scadenza (completed late)
+        Questo mantiene coerenza con la dashboard, che espone entrambe le metriche.
         """
         session = self._get_session()
         try:
@@ -3152,10 +3157,37 @@ class GestoreNPI:
                 if task.IsPostFinalMilestone:
                     final_milestone_task = task
 
+                due_date = None
+                if task.DataScadenza:
+                    due_date = task.DataScadenza.date() if hasattr(task.DataScadenza, 'date') else task.DataScadenza
+
+                status_norm = (task.Stato or '').strip().lower()
+
+                completion_date = None
+                if task.DataCompletamento:
+                    completion_date = (
+                        task.DataCompletamento.date()
+                        if hasattr(task.DataCompletamento, 'date')
+                        else task.DataCompletamento
+                    )
+
                 # Controlla se il task è in ritardo
-                if (task.owner and task.DataScadenza and
-                        task.DataScadenza.date() < today and
-                        task.Stato not in ['Completato']):
+                is_pending_overdue = (
+                    task.owner and
+                    due_date and
+                    due_date < today and
+                    status_norm not in ['completato', 'cancellato']
+                )
+
+                is_completed_late = (
+                    task.owner and
+                    due_date and
+                    status_norm == 'completato' and
+                    completion_date is not None and
+                    completion_date > due_date
+                )
+
+                if is_pending_overdue or is_completed_late:
                     late_tasks_by_owner[task.owner].append(task)
 
             return late_tasks_by_owner, final_milestone_task
@@ -3367,9 +3399,25 @@ class GestoreNPI:
                 total_failed += 1
                 continue
 
+            # Invia reminder SOLO per task ancora aperti e scaduti.
+            # I task completati in ritardo vengono mostrati in analisi, ma non vanno sollecitati.
+            today = datetime.now().date()
+            tasks_to_remind = []
+            for task in tasks:
+                due_date = None
+                if task.DataScadenza:
+                    due_date = task.DataScadenza.date() if hasattr(task.DataScadenza, 'date') else task.DataScadenza
+                status_norm = (task.Stato or '').strip().lower()
+                if due_date and due_date < today and status_norm not in ['completato', 'cancellato']:
+                    tasks_to_remind.append(task)
+
+            if not tasks_to_remind:
+                logger.info(f"No open overdue tasks to remind for owner {owner.Nome}. Skipping email.")
+                continue
+
             # Costruisci l'elenco dei task in ritardo
             tasks_html_list = "<ul>"
-            for task in tasks:
+            for task in tasks_to_remind:
                 tasks_html_list += (f"<li><strong>{task.task_catalogo.NomeTask}</strong> "
                                     f"(Due Date: {task.DataScadenza.strftime('%Y-%m-%d')})</li>")
             tasks_html_list += "</ul>"
