@@ -309,7 +309,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.0.9.7'  # Versione aggiornata
+APP_VERSION = '2.4.1.0.0'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -761,6 +761,7 @@ class Database:
         self.conn = None
         self.cursor = None
         self.engine = None
+        self.npi_engine = None
         self.last_error_details = ""
         self._lock = threading.RLock()
 
@@ -781,7 +782,14 @@ class Database:
                 )
 
                 self.engine.connect().close()
-                self.npi_engine = self._create_npi_engine()
+
+                # NPI engine is an optional sub-feature: never let its creation
+                # (or an interrupt during its blocking connect) crash startup.
+                try:
+                    self.npi_engine = self._create_npi_engine()
+                except Exception as npi_ex:
+                    self.npi_engine = None
+                    logger.error(f"NPI Engine non disponibile, continuo senza: {npi_ex}")
 
                 return True
             except pyodbc.Error as ex:
