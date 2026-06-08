@@ -10847,6 +10847,11 @@ class App(tk.Tk):
         self._weekly_overtime_email_stop_event = threading.Event()
         self._start_weekly_overtime_email_background_task()
 
+        # Inizializza il thread per il report mensile statistico straordinari approvati
+        self._monthly_overtime_report_thread = None
+        self._monthly_overtime_report_stop_event = threading.Event()
+        self._start_monthly_overtime_report_background_task()
+
         # Inizializza il thread per escalation piano produzione
         self._plan_alert_thread = None
         self._plan_alert_stop_event = threading.Event()
@@ -11485,6 +11490,83 @@ class App(tk.Tk):
 
             except Exception as e:
                 logger.error(f"Errore nel worker email settimanale overtime: {e}", exc_info=True)
+                time.sleep(3600)
+
+    def _start_monthly_overtime_report_background_task(self):
+        """Avvia il thread per il report mensile statistico straordinari approvati."""
+        try:
+            if self._monthly_overtime_report_thread is None or not self._monthly_overtime_report_thread.is_alive():
+                self._monthly_overtime_report_stop_event.clear()
+                self._monthly_overtime_report_thread = threading.Thread(
+                    target=self._monthly_overtime_report_worker,
+                    daemon=True,
+                    name="MonthlyOvertimeReportWorker"
+                )
+                self._monthly_overtime_report_thread.start()
+                logger.info("Background task report mensile straordinari avviato")
+        except Exception as e:
+            logger.error(f"Errore avvio background task report mensile straordinari: {e}", exc_info=True)
+
+    def _monthly_overtime_report_worker(self):
+        """
+        Worker che invia il report statistico mensile degli straordinari APPROVATI
+        il primo giorno lavorativo del mese alle 09:00.
+        La deduplicazione e' incorporata in
+        OvertimeManager.generate_and_send_monthly_overtime_report() (chiave mensile).
+        """
+        from business_days import should_send_notification
+        from datetime import datetime, timedelta
+        import time
+
+        target_hour = 9
+        first_run = True
+
+        while not self._monthly_overtime_report_stop_event.is_set():
+            try:
+                if first_run:
+                    first_run = False
+                    if should_send_notification(country_code='IT') and self._is_first_working_day_of_month():
+                        try:
+                            from overtime.overtime_manager import OvertimeManager
+                            OvertimeManager(self.db).generate_and_send_monthly_overtime_report()
+                            logger.info("Report mensile straordinari: prima esecuzione completata")
+                        except Exception as ex:
+                            logger.error(f"Errore prima esecuzione report mensile straordinari: {ex}", exc_info=True)
+
+                # Attendi fino alle 09:00 del giorno successivo
+                now = datetime.now()
+                if now.hour >= target_hour:
+                    next_check = now.replace(hour=target_hour, minute=0, second=0, microsecond=0) + timedelta(days=1)
+                else:
+                    next_check = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
+
+                wait_seconds = (next_check - now).total_seconds()
+                logger.info(f"Prossimo controllo report mensile straordinari: {next_check.strftime('%Y-%m-%d %H:%M')}")
+
+                elapsed = 0
+                while elapsed < wait_seconds and not self._monthly_overtime_report_stop_event.is_set():
+                    time.sleep(60)
+                    elapsed += 60
+
+                if self._monthly_overtime_report_stop_event.is_set():
+                    break
+
+                if not should_send_notification(country_code='IT'):
+                    logger.debug("Report mensile straordinari: oggi non e' un giorno lavorativo")
+                    continue
+                if not self._is_first_working_day_of_month():
+                    logger.debug("Report mensile straordinari: oggi non e' il primo giorno lavorativo del mese")
+                    continue
+
+                try:
+                    from overtime.overtime_manager import OvertimeManager
+                    OvertimeManager(self.db).generate_and_send_monthly_overtime_report()
+                    logger.info("Report mensile straordinari inviato")
+                except Exception as ex:
+                    logger.error(f"Errore invio report mensile straordinari: {ex}", exc_info=True)
+
+            except Exception as e:
+                logger.error(f"Errore nel worker report mensile straordinari: {e}", exc_info=True)
                 time.sleep(3600)
 
     def _create_npi_overview_pie_chart(self, report_data, prefix="NPI_Overview_Pie"):
@@ -14666,7 +14748,7 @@ class App(tk.Tk):
         os.path.dirname(os.path.abspath(__file__)), "slideshow_config.json"
     )
     # Directory di default per le immagini slideshow
-    SLIDESHOW_DEFAULT_FOLDER = r"T:\Traceability_RESET_Services\Pict\AlideShows"
+    SLIDESHOW_DEFAULT_FOLDER = r"T:\Traceability_RESET_Services\Pict\SlideShows"
 
     def _get_slideshow_lang_text(self, key: str) -> str:
         """

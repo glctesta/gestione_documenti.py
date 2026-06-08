@@ -350,15 +350,17 @@ SELECT
     a.ExtraHourApprovalId,
     ISNULL(r.NumRegistro, CAST(a.IdRegistro AS VARCHAR)) AS RequestNumber,
     a.DateSys,
-    ISNULL(u.NomeUser, 'N/A') AS Supervisor,
+    ISNULL(ereq.EmployeeSurname + ' ' + ereq.EmployeeName, 'N/A') AS Supervisor,
     ISNULL(s.EmployeeCount, 0) AS EmployeeCount,
     ISNULL(s.TotalHours, 0) AS TotalHours,
     ISNULL(s.Status, 'Pending') AS Status
 FROM ResetServices.dbo.ExtraTimeApproval a
 LEFT JOIN StoryAggregated s
     ON a.ExtraHourApprovalId = s.ExtraHourApprovalId
-LEFT JOIN resetservices.dbo.tbuserkey u
-    ON a.IdChief = u.idanga
+LEFT JOIN Employee.dbo.EmployeeHireHistory hreq
+    ON a.IdChief = hreq.EmployeeHireHistoryId
+LEFT JOIN Employee.dbo.Employees ereq
+    ON hreq.EmployeeId = ereq.EmployeeId
 LEFT JOIN ResetServices.dbo.TbRegistro r
     ON a.IdRegistro = r.Contatore
 WHERE a.DateSys >= ? AND a.DateSys <= ?
@@ -864,9 +866,11 @@ class RequestDetailsWindow(tk.Toplevel):
         """Carica i dettagli della richiesta."""
         # Query info richiesta
         info_query = """
-        SELECT CAST(a.IdRegistro AS VARCHAR), a.DateSys, ISNULL(u.NomeUser, 'N/A')
+        SELECT CAST(a.IdRegistro AS VARCHAR), a.DateSys,
+               ISNULL(ereq.EmployeeSurname + ' ' + ereq.EmployeeName, 'N/A')
         FROM ResetServices.dbo.ExtraTimeApproval a
-        LEFT JOIN resetservices.dbo.tbuserkey u ON a.IdChief = u.idanga
+        LEFT JOIN Employee.dbo.EmployeeHireHistory hreq ON a.IdChief = hreq.EmployeeHireHistoryId
+        LEFT JOIN Employee.dbo.Employees ereq ON hreq.EmployeeId = ereq.EmployeeId
         WHERE a.ExtraHourApprovalId = ?
         """
         

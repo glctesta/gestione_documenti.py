@@ -294,11 +294,16 @@ class OvertimeManager:
             List di ordini con (IdOrdine, PO, QtaStory)
         """
         query = """
-        SELECT o.IDOrder as IdOrdine, o.OrderNumber as PO, o.OrderQuantity as QtaStory
+        SELECT DISTINCT
+            ro.IdOrdine as IdOrdine,
+            o.OrderNumber as PO,
+            o.OrderQuantity as QtaStory
         FROM traceability_rs.dbo.orders o
-        inner join traceability_rs.dbo.products p on o.idproduct=p.IDProduct
-        WHERE 
-            o.OrderDate > DATEADD(DAY, -100, GETDATE())  -- Ultimi 100 giorni        
+        INNER JOIN ResetServices.dbo.TBORDINI ro ON ro.IdPOTrace = o.IDOrder
+        INNER JOIN traceability_rs.dbo.products p ON o.idproduct = p.IDProduct
+        WHERE
+            ro.IdOrdine IS NOT NULL
+            AND o.OrderDate > DATEADD(DAY, -100, GETDATE())  -- Ultimi 100 giorni
         ORDER BY o.OrderDate DESC
         """
         
@@ -756,15 +761,19 @@ class OvertimeManager:
                 s.DateEnd,
                 CAST(DATEDIFF(MINUTE, s.DateStart, s.DateEnd) / 60.0 AS DECIMAL(10,2)) AS AuthorizedHours,
                 s.IdOrder,
-                o.OrderNumber,
+                COALESCE(o_direct.OrderNumber, o_map.OrderNumber) AS OrderNumber,
                 s.QtyTarget
             FROM ResetServices.dbo.ExtraTimeApprovalStory s
             INNER JOIN Employee.dbo.EmployeeHireHistory h
                 ON s.IdEmployee = h.EmployeeHireHistoryId
             INNER JOIN Employee.dbo.Employees e
                 ON h.EmployeeId = e.EmployeeId
-            LEFT JOIN traceability_rs.dbo.orders o
-                ON o.IDOrder = s.IdOrder
+            LEFT JOIN traceability_rs.dbo.orders o_direct
+                ON o_direct.IDOrder = s.IdOrder
+            LEFT JOIN ResetServices.dbo.TBORDINI ro
+                ON ro.IdOrdine = s.IdOrder
+            LEFT JOIN traceability_rs.dbo.orders o_map
+                ON o_map.IDOrder = ro.IdPOTrace
             WHERE s.ExtraHourApprovalId = ?
             ORDER BY e.EmployeeSurname, e.EmployeeName, s.DateStart
             """
@@ -3247,3 +3256,494 @@ class OvertimeManager:
         except Exception as e:
             logger.error(f"Error sending weekly unauthorized overtime email: {e}", exc_info=True)
             return False
+
+    # ==================================================================
+    # REPORT MENSILE STATISTICO STRAORDINARI APPROVATI
+    # ==================================================================
+    def generate_and_send_monthly_overtime_report(self, force: bool = False,
+                                                   recipients_override: Optional[List[str]] = None) -> bool:
+        """
+        Genera e invia via email il report statistico mensile delle ore di
+        straordinario APPROVATE (ExtraTimeApprovalStory.Approved = 1, ossia le
+        ore confermate dalla form di approvazione 'open_overtime_approval_with_auth').
+
+        Contenuto del PDF (in inglese):
+          - Riepilogo del mese appena trascorso e rolling dall'inizio dell'anno (YTD)
+          - Top richiedenti (chi ha richiesto piu' straordinario - IdChief)
+          - Dipendenti con il maggior numero di ore approvate (ordine decrescente),
+            con le relative motivazioni
+          - Costo totale calcolato sul valore orario standard
+            (ResetServices.dbo.OverTimeDefaults, DescpriptionId = 3)
+
+        Destinatari: traceability_rs.dbo.settings.atribute = 'sys_email_report_overtime'
+        Deduplicazione: NpiWeeklyGeneralEmailLog con Attribute = 'overtime_monthly_report'
+                        e WeekStartDate = primo giorno del mese di riferimento.
+
+        Args:
+            force: se True ignora il controllo anti-duplicato e re-invia.
+            recipients_override: se valorizzato, invia SOLO a questi indirizzi
+                (modalita' test): salta il controllo dedup e non scrive il log
+                di invio, cosi' il report di produzione potra' comunque partire.
+
+        Returns:
+            bool: True se inviato (o gia' inviato), False in caso di errore.
+        """
+        is_test = bool(recipients_override)
+        from datetime import timedelta
+        from collections import defaultdict
+        import base64
+        import sys
+
+        try:
+            # === PERIODI ===
+            today = date.today()
+            first_of_current = today.replace(day=1)
+            last_of_prev = first_of_current - timedelta(days=1)
+            month_start = last_of_prev.replace(day=1)   # primo giorno del mese precedente
+            month_end_excl = first_of_current           # primo giorno del mese corrente (esclusivo)
+            ytd_start = date(month_start.year, 1, 1)     # 1 gennaio dell'anno del mese di riferimento
+            ytd_end_excl = month_end_excl                # rolling fino a fine mese precedente
+
+            month_label = month_start.strftime('%B %Y')
+            ytd_label = f"Year to Date ({month_start.year})"
+
+            dedup_attribute = 'overtime_monthly_report'
+            dedup_key = month_start  # primo giorno mese di riferimento (chiave univoca per mese)
+
+            # === DEDUP CHECK ===
+            if not force and not is_test:
+                try:
+                    dcur = self.db.conn.cursor()
+                    dcur.execute("""
+                        SELECT TOP 1 1 FROM [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
+                        WHERE WeekStartDate = ? AND Attribute = ?
+                    """, (dedup_key, dedup_attribute))
+                    already = dcur.fetchone() is not None
+                    dcur.close()
+                    if already:
+                        logger.info(f"Monthly overtime report already sent for {month_start:%Y-%m}. Skipping.")
+                        return True
+                except Exception as de:
+                    logger.warning(f"Monthly overtime dedup check failed (continuo): {de}")
+
+            # === TARIFFA ORARIA STANDARD (DescpriptionId = 3) ===
+            std_rate = 0.0
+            currency = 'EUR'
+            try:
+                rcur = self.db.conn.cursor()
+                rcur.execute("""
+                    SELECT TOP 1 o.ValueITem, ISNULL(v.[DESC], 'EUR') AS Currency
+                    FROM ResetServices.dbo.OverTimeDefaults o
+                    INNER JOIN ResetServices.dbo.OverTimeDescriptions d
+                        ON o.DescriptionId = d.DescpriptionId
+                    LEFT JOIN ResetServices.dbo.TbValute v ON v.IdValuta = o.CurrencyId
+                    WHERE d.DescpriptionId = 3 AND o.DateOut IS NULL
+                """)
+                rrow = rcur.fetchone()
+                rcur.close()
+                if rrow and rrow[0] is not None:
+                    std_rate = float(rrow[0])
+                    currency = rrow[1] or 'EUR'
+            except Exception as re_:
+                logger.warning(f"Cannot read standard overtime rate (DescpriptionId=3): {re_}")
+
+            # === DATI APPROVATI (YTD, comprende il mese di riferimento) ===
+            data_query = """
+            SELECT
+                e.EmployeeSurname + ' ' + e.EmployeeName AS EmployeeName,
+                s.IdEmployee,
+                ISNULL(ereq.EmployeeSurname + ' ' + ereq.EmployeeName, 'N/A') AS RequesterName,
+                a.IdChief AS RequesterId,
+                s.Descriptionreasons,
+                s.DateStart,
+                CAST(DATEDIFF(MINUTE, s.DateStart, s.DateEnd) / 60.0 AS DECIMAL(10,2)) AS Hours,
+                s.ExtraHourApprovalId
+            FROM ResetServices.dbo.ExtraTimeApprovalStory s
+            INNER JOIN ResetServices.dbo.ExtraTimeApproval a
+                ON a.ExtraHourApprovalId = s.ExtraHourApprovalId
+            INNER JOIN Employee.dbo.EmployeeHireHistory h
+                ON s.IdEmployee = h.EmployeeHireHistoryId
+            INNER JOIN Employee.dbo.Employees e
+                ON h.EmployeeId = e.EmployeeId
+            LEFT JOIN Employee.dbo.EmployeeHireHistory hreq
+                ON a.IdChief = hreq.EmployeeHireHistoryId
+            LEFT JOIN Employee.dbo.Employees ereq
+                ON hreq.EmployeeId = ereq.EmployeeId
+            WHERE s.Approved = 1
+              AND s.DateStart >= ? AND s.DateStart < ?
+            ORDER BY s.DateStart
+            """
+            cur = self.db.conn.cursor()
+            cur.execute(data_query, (ytd_start, ytd_end_excl))
+            rows = cur.fetchall()
+            cur.close()
+
+            # === AGGREGAZIONI ===
+            def new_acc():
+                return {
+                    'hours': 0.0,
+                    'count': 0,
+                    'employees': set(),
+                    'req': defaultdict(lambda: {'name': '', 'hours': 0.0, 'requests': set()}),
+                    'emp': defaultdict(lambda: {'name': '', 'hours': 0.0, 'reasons': defaultdict(float)}),
+                }
+
+            month_acc = new_acc()
+            ytd_acc = new_acc()
+
+            def accumulate(acc, emp_name, emp_id, req_name, req_id, reason, hours, approval_id):
+                acc['hours'] += hours
+                acc['count'] += 1
+                acc['employees'].add(emp_id)
+                r = acc['req'][req_id]
+                r['name'] = req_name
+                r['hours'] += hours
+                r['requests'].add(approval_id)
+                em = acc['emp'][emp_id]
+                em['name'] = emp_name
+                em['hours'] += hours
+                if reason and str(reason).strip():
+                    em['reasons'][str(reason).strip()] += hours
+
+            for row in rows:
+                emp_name = row[0]
+                emp_id = row[1]
+                req_name = row[2]
+                req_id = row[3]
+                reason = row[4]
+                dstart = row[5]
+                hours = float(row[6]) if row[6] is not None else 0.0
+                approval_id = row[7]
+                if hours < 0:
+                    hours = 0.0
+                accumulate(ytd_acc, emp_name, emp_id, req_name, req_id, reason, hours, approval_id)
+                d = dstart.date() if hasattr(dstart, 'date') else dstart
+                if d and month_start <= d < month_end_excl:
+                    accumulate(month_acc, emp_name, emp_id, req_name, req_id, reason, hours, approval_id)
+
+            month_cost = month_acc['hours'] * std_rate
+            ytd_cost = ytd_acc['hours'] * std_rate
+
+            logger.info(
+                f"Monthly overtime report {month_start:%Y-%m}: "
+                f"month_hours={month_acc['hours']:.1f} ytd_hours={ytd_acc['hours']:.1f} rate={std_rate}"
+            )
+
+            # === GENERAZIONE PDF ===
+            pdf_path = self._build_monthly_overtime_pdf(
+                month_label, ytd_label, month_acc, ytd_acc,
+                month_cost, ytd_cost, std_rate, currency
+            )
+            if not pdf_path:
+                logger.error("Monthly overtime report: PDF non generato")
+                return False
+
+            # === DESTINATARI ===
+            sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+            from utils import get_email_recipients, send_email
+
+            if is_test:
+                recipients = recipients_override
+                logger.info(f"Monthly overtime report TEST mode, recipients: {recipients}")
+            else:
+                recipients = get_email_recipients(self.db.conn, attribute='sys_email_report_overtime')
+            if not recipients:
+                logger.warning("No email recipients configured for 'sys_email_report_overtime'")
+                try:
+                    os.remove(pdf_path)
+                except Exception:
+                    pass
+                return False
+
+            # === LOGO INLINE (base64) ===
+            logo_html = ""
+            logo_path = self._resolve_overtime_logo_path()
+            if logo_path:
+                try:
+                    with open(logo_path, "rb") as f:
+                        logo_data = base64.b64encode(f.read()).decode("utf-8")
+                    logo_html = (
+                        f'<img src="data:image/png;base64,{logo_data}" '
+                        f'style="height: 50px; margin-bottom: 10px;" /><br>'
+                    )
+                except Exception as logo_err:
+                    logger.warning(f"Cannot embed logo: {logo_err}")
+
+            # === CORPO EMAIL ===
+            subject = f"Monthly Overtime Report - {month_label}"
+            if is_test:
+                subject = "[TEST] " + subject
+            body = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif; color: #333;">
+                {logo_html}
+                <h2 style="color: #2E5090;">Monthly Overtime Report</h2>
+                <p>Dear Team,</p>
+                <p>Please find attached the statistical report of <strong>approved overtime</strong>
+                for <strong>{month_label}</strong>, including the year-to-date rolling figures.</p>
+                <table style="border-collapse: collapse; margin: 16px 0; font-size: 13px;">
+                    <tr style="background-color: #2E5090; color: white;">
+                        <th style="padding: 8px 14px; border: 1px solid #ddd; text-align: left;">Metric</th>
+                        <th style="padding: 8px 14px; border: 1px solid #ddd;">{month_label}</th>
+                        <th style="padding: 8px 14px; border: 1px solid #ddd;">{ytd_label}</th>
+                    </tr>
+                    <tr>
+                        <td style="padding: 6px 14px; border: 1px solid #ddd;">Approved entries</td>
+                        <td style="padding: 6px 14px; border: 1px solid #ddd; text-align: center;">{month_acc['count']}</td>
+                        <td style="padding: 6px 14px; border: 1px solid #ddd; text-align: center;">{ytd_acc['count']}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 6px 14px; border: 1px solid #ddd;">Employees involved</td>
+                        <td style="padding: 6px 14px; border: 1px solid #ddd; text-align: center;">{len(month_acc['employees'])}</td>
+                        <td style="padding: 6px 14px; border: 1px solid #ddd; text-align: center;">{len(ytd_acc['employees'])}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 6px 14px; border: 1px solid #ddd;">Total approved hours</td>
+                        <td style="padding: 6px 14px; border: 1px solid #ddd; text-align: center;"><strong>{month_acc['hours']:,.1f}</strong></td>
+                        <td style="padding: 6px 14px; border: 1px solid #ddd; text-align: center;"><strong>{ytd_acc['hours']:,.1f}</strong></td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 6px 14px; border: 1px solid #ddd;">Total cost</td>
+                        <td style="padding: 6px 14px; border: 1px solid #ddd; text-align: center; color: #C00000;"><strong>{month_cost:,.2f} {currency}</strong></td>
+                        <td style="padding: 6px 14px; border: 1px solid #ddd; text-align: center; color: #C00000;"><strong>{ytd_cost:,.2f} {currency}</strong></td>
+                    </tr>
+                </table>
+                <p style="font-size: 12px; color: #666;">Standard hourly rate applied: <strong>{std_rate:,.2f} {currency}/h</strong>.</p>
+                <p>The attached PDF includes the top requesters and the employees with the highest
+                approved overtime, together with their reasons.</p>
+                <p style="margin-top: 28px;">
+                    Best regards,<br>
+                    <strong>TraceabilityRS System</strong>
+                </p>
+            </body>
+            </html>
+            """
+
+            send_email(
+                recipients=recipients,
+                subject=subject,
+                body=body,
+                is_html=True,
+                attachments=[pdf_path]
+            )
+            logger.info(f"Monthly overtime report email sent to: {recipients}")
+
+            # === DEDUP: registra invio riuscito (saltato in modalita' test) ===
+            if not is_test:
+              try:
+                log_cursor = self.db.conn.cursor()
+                log_cursor.execute("""
+                    IF NOT EXISTS (
+                        SELECT 1 FROM [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
+                        WHERE WeekStartDate = ? AND Attribute = ?
+                    )
+                    INSERT INTO [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
+                        (WeekStartDate, Attribute)
+                    VALUES (?, ?)
+                """, (dedup_key, dedup_attribute, dedup_key, dedup_attribute))
+                self.db.conn.commit()
+                log_cursor.close()
+              except Exception as log_err:
+                logger.warning(f"Failed to write monthly overtime dedup log: {log_err}")
+
+            # === Pulizia file temporaneo ===
+            try:
+                os.remove(pdf_path)
+            except Exception:
+                pass
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error sending monthly overtime report: {e}", exc_info=True)
+            return False
+
+    def _resolve_overtime_logo_path(self):
+        """Trova il percorso del logo aziendale (Logo.png) nella root del progetto."""
+        base_dir = os.path.dirname(os.path.dirname(__file__))
+        candidates = [
+            os.path.join(base_dir, "Logo.png"),
+            os.path.join(base_dir, "logo.png"),
+            "Logo.png",
+            "logo.png",
+        ]
+        for p in candidates:
+            try:
+                if p and os.path.exists(p):
+                    return p
+            except Exception:
+                continue
+        return None
+
+    def _build_monthly_overtime_pdf(self, month_label, ytd_label, month_acc, ytd_acc,
+                                    month_cost, ytd_cost, std_rate, currency):
+        """
+        Costruisce il PDF del report mensile straordinari (lingua inglese) e
+        ritorna il percorso del file generato (in C:\\Temp), oppure None su errore.
+        """
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.units import cm
+            from reportlab.lib import colors
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.platypus import (
+                SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer,
+                Image as ReportLabImage,
+            )
+
+            output_dir = r"C:\Temp"
+            os.makedirs(output_dir, exist_ok=True)
+            safe_label = month_label.replace(' ', '_')
+            file_path = os.path.join(output_dir, f"Monthly_Overtime_Report_{safe_label}.pdf")
+            # Se il file e' bloccato/aperto, usa un nome alternativo
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path, 'ab'):
+                        pass
+                except PermissionError:
+                    file_path = os.path.join(
+                        output_dir,
+                        f"Monthly_Overtime_Report_{safe_label}_{datetime.now().strftime('%H%M%S')}.pdf"
+                    )
+
+            styles = getSampleStyleSheet()
+            title_style = ParagraphStyle('otTitle', parent=styles['Title'], fontName='Helvetica-Bold',
+                                         fontSize=18, textColor=colors.HexColor('#2E5090'), spaceAfter=2)
+            sub_style = ParagraphStyle('otSub', parent=styles['Normal'], fontName='Helvetica',
+                                       fontSize=9, textColor=colors.HexColor('#666666'))
+            section_style = ParagraphStyle('otSec', parent=styles['Heading2'], fontName='Helvetica-Bold',
+                                           fontSize=13, textColor=colors.HexColor('#2E5090'),
+                                           spaceBefore=14, spaceAfter=6)
+            note_style = ParagraphStyle('otNote', parent=styles['Normal'], fontName='Helvetica-Oblique',
+                                        fontSize=8, textColor=colors.HexColor('#888888'), spaceBefore=4)
+            cell_style = ParagraphStyle('otCell', parent=styles['Normal'], fontName='Helvetica',
+                                        fontSize=8, leading=10)
+            cell_bold = ParagraphStyle('otCellB', parent=cell_style, fontName='Helvetica-Bold')
+
+            def hh(v):
+                return f"{v:,.1f}"
+
+            def cc(v):
+                return f"{v:,.2f} {currency}"
+
+            def header_row(cells):
+                return [Paragraph(f'<font color="white"><b>{c}</b></font>', cell_style) for c in cells]
+
+            def table_style(ncols):
+                return TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2E5090')),
+                    ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#BBBBBB')),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F2F5FA')]),
+                    ('TOPPADDING', (0, 0), (-1, -1), 3),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 4),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+                ])
+
+            elements = []
+
+            # --- Intestazione con logo ---
+            logo_path = self._resolve_overtime_logo_path()
+            if logo_path:
+                try:
+                    elements.append(ReportLabImage(logo_path, width=2.0 * cm, height=2.0 * cm))
+                    elements.append(Spacer(1, 4))
+                except Exception:
+                    pass
+            elements.append(Paragraph("Monthly Overtime Report", title_style))
+            elements.append(Paragraph(
+                f"Approved overtime statistics &nbsp;&bull;&nbsp; {month_label} &nbsp;&bull;&nbsp; {ytd_label}",
+                sub_style))
+            elements.append(Spacer(1, 12))
+
+            # --- Riepilogo Month vs YTD ---
+            elements.append(Paragraph("1. Summary", section_style))
+            summary_data = [
+                header_row(['Metric', month_label, ytd_label]),
+                ['Approved entries', str(month_acc['count']), str(ytd_acc['count'])],
+                ['Employees involved', str(len(month_acc['employees'])), str(len(ytd_acc['employees']))],
+                ['Total approved hours', hh(month_acc['hours']), hh(ytd_acc['hours'])],
+                ['Standard hourly rate', cc(std_rate), cc(std_rate)],
+                [Paragraph('<b>Total cost</b>', cell_bold),
+                 Paragraph(f'<b>{cc(month_cost)}</b>', cell_bold),
+                 Paragraph(f'<b>{cc(ytd_cost)}</b>', cell_bold)],
+            ]
+            summary_table = Table(summary_data, colWidths=[6.5 * cm, 5.2 * cm, 5.3 * cm])
+            summary_table.setStyle(table_style(3))
+            elements.append(summary_table)
+
+            # --- Top richiedenti (mese) ---
+            elements.append(Paragraph("2. Top Requesters (who requested the most overtime)", section_style))
+            req_sorted = sorted(month_acc['req'].values(), key=lambda x: x['hours'], reverse=True)[:10]
+            if req_sorted:
+                req_data = [header_row(['#', 'Requester', 'Requests', 'Approved hours'])]
+                for i, r in enumerate(req_sorted, 1):
+                    req_data.append([
+                        str(i),
+                        Paragraph(r['name'] or 'N/A', cell_style),
+                        str(len(r['requests'])),
+                        hh(r['hours']),
+                    ])
+                req_table = Table(req_data, colWidths=[1.0 * cm, 8.5 * cm, 3.0 * cm, 4.5 * cm])
+                req_table.setStyle(table_style(4))
+                elements.append(req_table)
+            else:
+                elements.append(Paragraph("No approved overtime in the reference month.", note_style))
+
+            # --- Top dipendenti per ore (mese) con motivazioni ---
+            elements.append(Paragraph(
+                f"3. Employees by Approved Hours - {month_label}", section_style))
+            self._append_employee_hours_table(
+                elements, month_acc, std_rate, currency, header_row, table_style,
+                cell_style, cm, Paragraph, Table, note_style, hh, cc, top_n=15)
+
+            # --- Top dipendenti per ore (YTD) con motivazioni ---
+            elements.append(Paragraph(
+                f"4. Employees by Approved Hours - {ytd_label}", section_style))
+            self._append_employee_hours_table(
+                elements, ytd_acc, std_rate, currency, header_row, table_style,
+                cell_style, cm, Paragraph, Table, note_style, hh, cc, top_n=15)
+
+            # --- Nota di calcolo ---
+            elements.append(Spacer(1, 10))
+            elements.append(Paragraph(
+                f"Cost assumption: every approved overtime hour is valued at the standard hourly "
+                f"rate of {cc(std_rate)}/h (OverTimeDefaults, DescpriptionId = 3). "
+                f"Only entries with status 'Approved' are included.", note_style))
+
+            doc = SimpleDocTemplate(
+                file_path, pagesize=A4,
+                leftMargin=1.8 * cm, rightMargin=1.8 * cm,
+                topMargin=1.6 * cm, bottomMargin=1.6 * cm
+            )
+            doc.build(elements)
+            logger.info(f"Monthly overtime PDF generated: {file_path}")
+            return file_path
+
+        except Exception as e:
+            logger.error(f"Error building monthly overtime PDF: {e}", exc_info=True)
+            return None
+
+    def _append_employee_hours_table(self, elements, acc, std_rate, currency, header_row,
+                                     table_style, cell_style, cm, Paragraph, Table,
+                                     note_style, hh, cc, top_n=15):
+        """Aggiunge agli elementi PDF la tabella dipendenti ordinata per ore decrescenti."""
+        emp_sorted = sorted(acc['emp'].values(), key=lambda x: x['hours'], reverse=True)[:top_n]
+        if not emp_sorted:
+            elements.append(Paragraph("No approved overtime for this period.", note_style))
+            return
+        data = [header_row(['#', 'Employee', 'Hours', f'Cost ({currency})', 'Main reasons'])]
+        for i, em in enumerate(emp_sorted, 1):
+            top_reasons = sorted(em['reasons'].items(), key=lambda x: x[1], reverse=True)[:3]
+            reasons_txt = "; ".join(f"{name} ({h:,.1f}h)" for name, h in top_reasons) or "-"
+            data.append([
+                str(i),
+                Paragraph(em['name'] or 'N/A', cell_style),
+                hh(em['hours']),
+                cc(em['hours'] * std_rate),
+                Paragraph(reasons_txt, cell_style),
+            ])
+        table = Table(data, colWidths=[0.9 * cm, 4.3 * cm, 1.7 * cm, 2.7 * cm, 7.4 * cm])
+        table.setStyle(table_style(5))
+        elements.append(table)
