@@ -569,3 +569,55 @@ IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [La
     INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'de', N'fa_status_ready2', N'{0} Platine/Phase FAIL — {1} Ereignisse — Wait {2} · Repaired {3} · Recovered {4} · Scrap {5} · Erneut fehlerhaft {6}');
 IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'sv' AND [TranslationKey]=N'fa_status_ready2')
     INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv', N'fa_status_ready2', N'{0} kort/fas FAIL — {1} händelser — Wait {2} · Repaired {3} · Recovered {4} · Scrap {5} · Omfall {6}');
+
+
+-- ===== Selettore base prodotto (delta) =====
+
+-- fa_rates_base
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'it' AND [TranslationKey]=N'fa_rates_base')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'it', N'fa_rates_base', N'Base prodotto:');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'en' AND [TranslationKey]=N'fa_rates_base')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'en', N'fa_rates_base', N'Produced base:');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'ro' AND [TranslationKey]=N'fa_rates_base')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'ro', N'fa_rates_base', N'Bază produs:');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'de' AND [TranslationKey]=N'fa_rates_base')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'de', N'fa_rates_base', N'Produktionsbasis:');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'sv' AND [TranslationKey]=N'fa_rates_base')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv', N'fa_rates_base', N'Produktionsbas:');
+
+-- fa_rates_base_all
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'it' AND [TranslationKey]=N'fa_rates_base_all')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'it', N'fa_rates_base_all', N'Tutte le schede scansionate');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'en' AND [TranslationKey]=N'fa_rates_base_all')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'en', N'fa_rates_base_all', N'All scanned boards');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'ro' AND [TranslationKey]=N'fa_rates_base_all')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'ro', N'fa_rates_base_all', N'Toate plăcile scanate');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'de' AND [TranslationKey]=N'fa_rates_base_all')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'de', N'fa_rates_base_all', N'Alle gescannten Platinen');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'sv' AND [TranslationKey]=N'fa_rates_base_all')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv', N'fa_rates_base_all', N'Alla skannade kort');
+
+-- fa_rates_base_final
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'it' AND [TranslationKey]=N'fa_rates_base_final')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'it', N'fa_rates_base_final', N'Passate al Final Assembly');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'en' AND [TranslationKey]=N'fa_rates_base_final')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'en', N'fa_rates_base_final', N'Passed at Final Assembly');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'ro' AND [TranslationKey]=N'fa_rates_base_final')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'ro', N'fa_rates_base_final', N'Trecute la Final Assembly');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'de' AND [TranslationKey]=N'fa_rates_base_final')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'de', N'fa_rates_base_final', N'Bei Final Assembly bestanden');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'sv' AND [TranslationKey]=N'fa_rates_base_final')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv', N'fa_rates_base_final', N'Godkända vid Final Assembly');
+
+-- fa_rates_note
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'it' AND [TranslationKey]=N'fa_rates_note')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'it', N'fa_rates_note', N'Prodotto = schede distinte secondo la base selezionata. Scrap/Rework = schede distinte con esito riparazione SCRAP/REPAIRED. Verde = entro target, rosso = oltre target.');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'en' AND [TranslationKey]=N'fa_rates_note')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'en', N'fa_rates_note', N'Produced = distinct boards per the selected base. Scrap/Rework = distinct boards with SCRAP/REPAIRED repair result. Green = within target, red = over target.');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'ro' AND [TranslationKey]=N'fa_rates_note')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'ro', N'fa_rates_note', N'Produs = plăci distincte conform bazei selectate. Scrap/Rework = plăci distincte cu rezultat reparație SCRAP/REPAIRED. Verde = în țintă, roșu = peste țintă.');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'de' AND [TranslationKey]=N'fa_rates_note')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'de', N'fa_rates_note', N'Produziert = eindeutige Platinen je nach gewählter Basis. Scrap/Rework = eindeutige Platinen mit Reparaturergebnis SCRAP/REPAIRED. Grün = im Ziel, rot = über Ziel.');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'sv' AND [TranslationKey]=N'fa_rates_note')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv', N'fa_rates_note', N'Producerat = unika kort enligt vald bas. Scrap/Rework = unika kort med reparationsresultat SCRAP/REPAIRED. Grönt = inom mål, rött = över mål.');
+

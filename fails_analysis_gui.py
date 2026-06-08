@@ -95,20 +95,34 @@ FINAL_PHASE = 'FINAL ASSEMBLY'
 
 # ======================================================================
 # REPORT #2 — TASSI SCRAP / REWORK rispetto al VOLUME PRODOTTO
-# Base 'prodotto' = schede distinte (IDBoard) con almeno una scansione nel periodo.
+# Base 'prodotto' selezionabile:
+#   BASE_ALL   = schede distinte con almeno una scansione nel periodo (coerente:
+#                numeratore e denominatore sulla stessa popolazione ~ tasso reale)
+#   BASE_FINAL = schede distinte con PASS al FINAL ASSEMBLY (completate)
 # Scrap  = schede distinte con riparazione SCRAP    (ScanDefects.IsPass = 0)
 # Rework = schede distinte con riparazione REPAIRED (ScanDefects.IsPass = 1)
-# Aggregazione mensile.
 # ======================================================================
-QUERY_RATES_MONTHLY = f"""
+BASE_ALL = 'ALL'
+BASE_FINAL = 'FINAL'
+
+
+def _produced_clause(base):
+    """Clausola FROM/WHERE per il conteggio 'prodotto' secondo la base scelta."""
+    if base == BASE_FINAL:
+        return ("FROM Scannings s\n"
+                "    INNER JOIN OrderPhases op ON op.IDOrderPhase = s.IDOrderPhase\n"
+                "    INNER JOIN Phases ph ON ph.IDPhase = op.IDPhase\n"
+                f"    WHERE s.IsPass = 1 AND ph.PhaseName = N'{FINAL_PHASE}'\n"
+                "      AND s.ScanTimeFinish BETWEEN @from AND @to")
+    return "FROM Scannings s\n    WHERE s.ScanTimeFinish BETWEEN @from AND @to"
+
+
+def build_rates_monthly(base):
+    return f"""
 DECLARE @from datetime=?, @to datetime=?;
 WITH Produced AS (
     SELECT FORMAT(s.ScanTimeFinish,'yyyy-MM') AS Ym, COUNT(DISTINCT s.IDBoard) AS Produced
-    FROM Scannings s
-    INNER JOIN OrderPhases op ON op.IDOrderPhase = s.IDOrderPhase
-    INNER JOIN Phases ph ON ph.IDPhase = op.IDPhase
-    WHERE s.IsPass = 1 AND ph.PhaseName = N'{FINAL_PHASE}'
-      AND s.ScanTimeFinish BETWEEN @from AND @to
+    {_produced_clause(base)}
     GROUP BY FORMAT(s.ScanTimeFinish,'yyyy-MM')
 ),
 Scrap AS (
@@ -128,15 +142,12 @@ FROM Produced p LEFT JOIN Scrap s ON s.Ym=p.Ym LEFT JOIN Rework r ON r.Ym=p.Ym
 ORDER BY p.Ym
 """
 
-# Totale del periodo con conteggi DISTINTI reali (non somma dei mesi)
-QUERY_RATES_TOTAL = f"""
+
+def build_rates_total(base):
+    return f"""
 DECLARE @from datetime=?, @to datetime=?;
 SELECT
-  (SELECT COUNT(DISTINCT s.IDBoard) FROM Scannings s
-     INNER JOIN OrderPhases op ON op.IDOrderPhase = s.IDOrderPhase
-     INNER JOIN Phases ph ON ph.IDPhase = op.IDPhase
-     WHERE s.IsPass = 1 AND ph.PhaseName = N'{FINAL_PHASE}'
-       AND s.ScanTimeFinish BETWEEN @from AND @to) AS Produced,
+  (SELECT COUNT(DISTINCT s.IDBoard) {_produced_clause(base)}) AS Produced,
   (SELECT COUNT(DISTINCT sc.IDBoard) FROM ScanDefects sd INNER JOIN Scannings sc ON sc.IDScan=sd.IDScan
      WHERE sd.IsPass=0 AND sd.StopTime BETWEEN @from AND @to) AS Scrap,
   (SELECT COUNT(DISTINCT sc.IDBoard) FROM ScanDefects sd INNER JOIN Scannings sc ON sc.IDScan=sd.IDScan
@@ -180,6 +191,7 @@ class FailsAnalysisWindow(tk.Toplevel):
         self.refail_only_var = tk.BooleanVar(value=False)
         self.target_scrap_var = tk.StringVar(value='0.3')
         self.target_rework_var = tk.StringVar(value='5.0')
+        self.rates_base_var = tk.StringVar(value=BASE_ALL)
         self._build_ui()
         self.grab_set()
         # Auto-carica l'ultima settimana all'apertura
@@ -509,6 +521,14 @@ class FailsAnalysisWindow(tk.Toplevel):
         tk.Label(bar, text=self.lang.get('fa_target_rework', 'Target Rework %:'),
                  bg='#F8F8F8', font=('Segoe UI', 9)).pack(side=tk.LEFT, padx=(10, 0))
         tk.Entry(bar, textvariable=self.target_rework_var, width=6).pack(side=tk.LEFT, padx=4)
+        tk.Label(bar, text=self.lang.get('fa_rates_base', 'Base prodotto:'),
+                 bg='#F8F8F8', font=('Segoe UI', 9)).pack(side=tk.LEFT, padx=(10, 0))
+        self.rates_base_combo = ttk.Combobox(bar, width=22, state='readonly',
+                                             values=[
+                                                 self.lang.get('fa_rates_base_all', 'Tutte le schede scansionate'),
+                                                 self.lang.get('fa_rates_base_final', 'Passate al Final Assembly')])
+        self.rates_base_combo.current(0)
+        self.rates_base_combo.pack(side=tk.LEFT, padx=4)
         self.calc_btn = tk.Button(
             bar, text=self.lang.get('fa_calc_btn', '📈 Calcola tassi'),
             command=self._on_calc_rates, bg='#2E75B6', fg='white',
@@ -560,18 +580,20 @@ class FailsAnalysisWindow(tk.Toplevel):
         except ValueError:
             messagebox.showerror('Errore', 'Formato data non valido (YYYY-MM-DD)', parent=self)
             return
+        base = BASE_FINAL if self.rates_base_combo.current() == 1 else BASE_ALL
+        self.rates_base_var.set(base)
         self._rates_loading = True
         self.calc_btn.config(state=tk.DISABLED)
         self.rates_status.config(text=self.lang.get('fa_rates_loading', 'Calcolo tassi in corso...'))
-        threading.Thread(target=self._bg_rates, args=(dt_from, dt_to), daemon=True).start()
+        threading.Thread(target=self._bg_rates, args=(dt_from, dt_to, base), daemon=True).start()
 
-    def _bg_rates(self, dt_from, dt_to):
+    def _bg_rates(self, dt_from, dt_to, base):
         try:
             conn = pyodbc.connect(self.db.conn_str, autocommit=True)
             cur = conn.cursor()
-            cur.execute(QUERY_RATES_MONTHLY, (dt_from, dt_to))
+            cur.execute(build_rates_monthly(base), (dt_from, dt_to))
             monthly = cur.fetchall()
-            cur.execute(QUERY_RATES_TOTAL, (dt_from, dt_to))
+            cur.execute(build_rates_total(base), (dt_from, dt_to))
             total = cur.fetchone()
             conn.close()
             self.after(0, lambda: self._on_rates_loaded(monthly, total))
