@@ -89,6 +89,49 @@ ORDER BY ph.PhaseName, o.OrderNumber, bp.IDBoard
 C_IDBOARD, C_PHASE, C_ORDER, C_PRODUCT, C_QTY, C_LABELS, C_EVENTS, \
     C_LASTPASS, C_LASTTIME, C_FIRSTFAIL, C_SDPASS, C_REFAIL, C_MULTI = range(13)
 
+# ======================================================================
+# REPORT #2 — TASSI SCRAP / REWORK rispetto al VOLUME PRODOTTO
+# Base 'prodotto' = schede distinte (IDBoard) con almeno una scansione nel periodo.
+# Scrap  = schede distinte con riparazione SCRAP    (ScanDefects.IsPass = 0)
+# Rework = schede distinte con riparazione REPAIRED (ScanDefects.IsPass = 1)
+# Aggregazione mensile.
+# ======================================================================
+QUERY_RATES_MONTHLY = """
+DECLARE @from datetime=?, @to datetime=?;
+WITH Produced AS (
+    SELECT FORMAT(s.ScanTimeFinish,'yyyy-MM') AS Ym, COUNT(DISTINCT s.IDBoard) AS Produced
+    FROM Scannings s WHERE s.ScanTimeFinish BETWEEN @from AND @to
+    GROUP BY FORMAT(s.ScanTimeFinish,'yyyy-MM')
+),
+Scrap AS (
+    SELECT FORMAT(sd.StopTime,'yyyy-MM') AS Ym, COUNT(DISTINCT sc.IDBoard) AS Scrap
+    FROM ScanDefects sd INNER JOIN Scannings sc ON sc.IDScan=sd.IDScan
+    WHERE sd.IsPass=0 AND sd.StopTime BETWEEN @from AND @to
+    GROUP BY FORMAT(sd.StopTime,'yyyy-MM')
+),
+Rework AS (
+    SELECT FORMAT(sd.StopTime,'yyyy-MM') AS Ym, COUNT(DISTINCT sc.IDBoard) AS Rework
+    FROM ScanDefects sd INNER JOIN Scannings sc ON sc.IDScan=sd.IDScan
+    WHERE sd.IsPass=1 AND sd.StopTime BETWEEN @from AND @to
+    GROUP BY FORMAT(sd.StopTime,'yyyy-MM')
+)
+SELECT p.Ym, p.Produced, ISNULL(s.Scrap,0) AS Scrap, ISNULL(r.Rework,0) AS Rework
+FROM Produced p LEFT JOIN Scrap s ON s.Ym=p.Ym LEFT JOIN Rework r ON r.Ym=p.Ym
+ORDER BY p.Ym
+"""
+
+# Totale del periodo con conteggi DISTINTI reali (non somma dei mesi)
+QUERY_RATES_TOTAL = """
+DECLARE @from datetime=?, @to datetime=?;
+SELECT
+  (SELECT COUNT(DISTINCT s.IDBoard) FROM Scannings s
+     WHERE s.ScanTimeFinish BETWEEN @from AND @to) AS Produced,
+  (SELECT COUNT(DISTINCT sc.IDBoard) FROM ScanDefects sd INNER JOIN Scannings sc ON sc.IDScan=sd.IDScan
+     WHERE sd.IsPass=0 AND sd.StopTime BETWEEN @from AND @to) AS Scrap,
+  (SELECT COUNT(DISTINCT sc.IDBoard) FROM ScanDefects sd INNER JOIN Scannings sc ON sc.IDScan=sd.IDScan
+     WHERE sd.IsPass=1 AND sd.StopTime BETWEEN @from AND @to) AS Rework
+"""
+
 ST_REPAIRED = 'REPAIRED'
 ST_WAIT = 'WAIT'
 ST_SCRAP = 'SCRAP'
@@ -117,9 +160,14 @@ class FailsAnalysisWindow(tk.Toplevel):
         self.geometry('1320x780')
         self.minsize(960, 600)
         self._rows = []          # tutte le righe (scheda, fase)
+        self._rates = []         # righe report tassi: (Ym, produced, scrap, rework)
+        self._rates_total = None # (produced, scrap, rework) sul periodo
         self._loading = False
+        self._rates_loading = False
         self.status_filter_var = tk.StringVar(value='ALL')
         self.refail_only_var = tk.BooleanVar(value=False)
+        self.target_scrap_var = tk.StringVar(value='0.3')
+        self.target_rework_var = tk.StringVar(value='5.0')
         self._build_ui()
         self.grab_set()
         # Auto-carica l'ultima settimana all'apertura
@@ -170,6 +218,10 @@ class FailsAnalysisWindow(tk.Toplevel):
         tab_st = tk.Frame(self.nb)
         self.nb.add(tab_st, text=self.lang.get('fa_tab_stats', 'Statistiche'))
         self._build_stats(tab_st)
+
+        tab_rates = tk.Frame(self.nb)
+        self.nb.add(tab_rates, text=self.lang.get('fa_tab_rates', 'Tassi Scrap/Rework'))
+        self._build_rates(tab_rates)
 
     def _make_tree(self, parent, cols, widths, labels=None):
         f = tk.Frame(parent)
@@ -427,9 +479,126 @@ class FailsAnalysisWindow(tk.Toplevel):
         self.stats_text.insert(tk.END, '\n'.join(lines))
         self.stats_text.config(state=tk.DISABLED)
 
+    # ============ REPORT #2 — TASSI SCRAP / REWORK ====================
+    def _build_rates(self, parent):
+        bar = tk.Frame(parent, bg='#F8F8F8', padx=6, pady=5)
+        bar.pack(fill=tk.X)
+        tk.Label(bar, text=self.lang.get('fa_target_scrap', 'Target Scrap %:'),
+                 bg='#F8F8F8', font=('Segoe UI', 9)).pack(side=tk.LEFT)
+        tk.Entry(bar, textvariable=self.target_scrap_var, width=6).pack(side=tk.LEFT, padx=4)
+        tk.Label(bar, text=self.lang.get('fa_target_rework', 'Target Rework %:'),
+                 bg='#F8F8F8', font=('Segoe UI', 9)).pack(side=tk.LEFT, padx=(10, 0))
+        tk.Entry(bar, textvariable=self.target_rework_var, width=6).pack(side=tk.LEFT, padx=4)
+        self.calc_btn = tk.Button(
+            bar, text=self.lang.get('fa_calc_btn', '📈 Calcola tassi'),
+            command=self._on_calc_rates, bg='#2E75B6', fg='white',
+            font=('Segoe UI', 9, 'bold'), relief=tk.FLAT, padx=10, pady=3, cursor='hand2')
+        self.calc_btn.pack(side=tk.LEFT, padx=10)
+        self.rates_status = tk.Label(bar, text='', bg='#F8F8F8', fg='#444', font=('Segoe UI', 9))
+        self.rates_status.pack(side=tk.LEFT, padx=10)
+
+        tk.Label(parent, bg='#EEF4FB', fg='#33506E', anchor='w', padx=8, pady=4,
+                 font=('Segoe UI', 8),
+                 text=self.lang.get('fa_rates_note',
+                                    "Prodotto = schede distinte scansionate nel periodo. "
+                                    "Scrap/Rework = schede distinte con esito riparazione SCRAP/REPAIRED. "
+                                    "Verde = entro target, rosso = oltre target.")).pack(fill=tk.X)
+
+        col_keys = [
+            ('fa_rc_month',     'Mese',      90),
+            ('fa_rc_produced',  'Prodotto', 100),
+            ('fa_rc_scrap',     'Scrap',     80),
+            ('fa_rc_rework',    'Rework',    80),
+            ('fa_rc_scrappct',  'Scrap %',  100),
+            ('fa_rc_reworkpct', 'Rework %', 100),
+            ('fa_rc_failpct',   'Fail %',   100),
+        ]
+        cols = tuple(k for k, _, _ in col_keys)
+        widths = tuple(w for _, _, w in col_keys)
+        labels = tuple(self.lang.get(k, d) for k, d, _ in col_keys)
+        self.tree_rates = self._make_tree(parent, cols, widths, labels)
+        self.tree_rates.tag_configure('ok',    background='#D4EDDA')
+        self.tree_rates.tag_configure('over',  background='#FADADD')
+        self.tree_rates.tag_configure('total', background='#E2E8F0', font=('Segoe UI', 9, 'bold'))
+
+    def _targets(self):
+        try:
+            ts = float(self.target_scrap_var.get().replace(',', '.'))
+        except ValueError:
+            ts = 0.3
+        try:
+            tr = float(self.target_rework_var.get().replace(',', '.'))
+        except ValueError:
+            tr = 5.0
+        return ts, tr
+
+    def _on_calc_rates(self):
+        if self._rates_loading:
+            return
+        try:
+            dt_from, dt_to = self._parse_dates()
+        except ValueError:
+            messagebox.showerror('Errore', 'Formato data non valido (YYYY-MM-DD)', parent=self)
+            return
+        self._rates_loading = True
+        self.calc_btn.config(state=tk.DISABLED)
+        self.rates_status.config(text=self.lang.get('fa_rates_loading', 'Calcolo tassi in corso...'))
+        threading.Thread(target=self._bg_rates, args=(dt_from, dt_to), daemon=True).start()
+
+    def _bg_rates(self, dt_from, dt_to):
+        try:
+            conn = pyodbc.connect(self.db.conn_str, autocommit=True)
+            cur = conn.cursor()
+            cur.execute(QUERY_RATES_MONTHLY, (dt_from, dt_to))
+            monthly = cur.fetchall()
+            cur.execute(QUERY_RATES_TOTAL, (dt_from, dt_to))
+            total = cur.fetchone()
+            conn.close()
+            self.after(0, lambda: self._on_rates_loaded(monthly, total))
+        except Exception as e:
+            logger.error(f"AnalisiFailsRS _bg_rates: {e}", exc_info=True)
+            err = str(e)
+            self.after(0, lambda msg=err: (
+                self.rates_status.config(text=f'Errore: {msg}'),
+                self.calc_btn.config(state=tk.NORMAL),
+                setattr(self, '_rates_loading', False)
+            ))
+
+    def _on_rates_loaded(self, monthly, total):
+        self._rates = monthly
+        self._rates_total = total
+        self._rates_loading = False
+        self.calc_btn.config(state=tk.NORMAL)
+        self._populate_rates()
+        self.rates_status.config(text=self.lang.get('fa_rates_done', 'Calcolo completato'))
+        if self._rows or self._rates:
+            self.export_btn.config(state=tk.NORMAL)
+
+    def _populate_rates(self):
+        for i in self.tree_rates.get_children():
+            self.tree_rates.delete(i)
+        ts, tr = self._targets()
+
+        def add_row(month, prod, scrap, rework, is_total=False):
+            sr = (scrap / prod * 100) if prod else 0
+            rr = (rework / prod * 100) if prod else 0
+            if is_total:
+                tag = 'total'
+            else:
+                tag = 'over' if (sr > ts or rr > tr) else 'ok'
+            self.tree_rates.insert('', tk.END, tags=(tag,), values=(
+                month, prod, scrap, rework,
+                f'{sr:.3f}%', f'{rr:.3f}%', f'{(sr + rr):.3f}%'))
+
+        for r in self._rates:
+            add_row(r[0], r[1], r[2], r[3])
+        if self._rates_total:
+            p, s, w = self._rates_total
+            add_row(self.lang.get('fa_rates_total', 'TOTALE periodo'), p, s, w, is_total=True)
+
     # ------------------------------------------------------------------
     def _export_excel(self):
-        if not self._rows:
+        if not self._rows and not self._rates:
             messagebox.showwarning('', self.lang.get('fa_no_data', 'Nessun dato'), parent=self)
             return
         try:
@@ -522,6 +691,40 @@ class FailsAnalysisWindow(tk.Toplevel):
                 ce.font = Font(bold=True)
                 ce.border = THIN
             autofit(ws3)
+
+            # Sheet 4 — Tassi Scrap/Rework (se calcolati)
+            if self._rates:
+                ws4 = wb.create_sheet(self.lang.get('fa_tab_rates', 'Tassi')[:31])
+                hdr(ws4, ['Mese', 'Prodotto', 'Scrap', 'Rework', 'Scrap %', 'Rework %', 'Fail %'])
+                tgt_s, tgt_r = self._targets()
+                OK_FILL = PatternFill('solid', fgColor='D4EDDA')
+                OVER_FILL = PatternFill('solid', fgColor='FADADD')
+                ri = 2
+
+                def rate_row(month, prod, scrap, rework, bold=False):
+                    nonlocal ri
+                    sr = (scrap / prod * 100) if prod else 0
+                    rr = (rework / prod * 100) if prod else 0
+                    fl = OVER_FILL if (sr > tgt_s or rr > tgt_r) else OK_FILL
+                    vals = [month, prod, scrap, rework, round(sr, 3), round(rr, 3), round(sr + rr, 3)]
+                    for c, v in enumerate(vals, 1):
+                        ce = ws4.cell(ri, c, v)
+                        ce.border = THIN
+                        ce.fill = fl
+                        if bold:
+                            ce.font = Font(bold=True)
+                    ri += 1
+
+                for r in self._rates:
+                    rate_row(r[0], r[1], r[2], r[3])
+                if self._rates_total:
+                    p, s, w = self._rates_total
+                    rate_row(self.lang.get('fa_rates_total', 'TOTALE periodo'), p, s, w, bold=True)
+                ws4.append([])
+                ws4.append([self.lang.get('fa_target_scrap', 'Target Scrap %:'), tgt_s])
+                ws4.append([self.lang.get('fa_target_rework', 'Target Rework %:'), tgt_r])
+                ws4.freeze_panes = 'A2'
+                autofit(ws4)
 
             os.makedirs(r'C:\Temp', exist_ok=True)
             ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
