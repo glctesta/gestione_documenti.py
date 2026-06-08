@@ -531,3 +531,41 @@ IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [La
     INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'de', N'fa_rates_total', N'GESAMT Zeitraum');
 IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'sv' AND [TranslationKey]=N'fa_rates_total')
     INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv', N'fa_rates_total', N'TOTALT period');
+
+-- ===== Split Repaired/Recovered (delta) =====
+
+-- fa_h_recovered
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'it' AND [TranslationKey]=N'fa_h_recovered')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'it', N'fa_h_recovered', N'Recuperate');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'en' AND [TranslationKey]=N'fa_h_recovered')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'en', N'fa_h_recovered', N'Recovered');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'ro' AND [TranslationKey]=N'fa_h_recovered')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'ro', N'fa_h_recovered', N'Recuperate');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'de' AND [TranslationKey]=N'fa_h_recovered')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'de', N'fa_h_recovered', N'Erholt');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'sv' AND [TranslationKey]=N'fa_h_recovered')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv', N'fa_h_recovered', N'Återst.');
+
+-- fa_pct_recov
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'it' AND [TranslationKey]=N'fa_pct_recov')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'it', N'fa_pct_recov', N'% recuperate (Recovered) :');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'en' AND [TranslationKey]=N'fa_pct_recov')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'en', N'fa_pct_recov', N'% recovered (Recovered) :');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'ro' AND [TranslationKey]=N'fa_pct_recov')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'ro', N'fa_pct_recov', N'% recuperate (Recovered) :');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'de' AND [TranslationKey]=N'fa_pct_recov')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'de', N'fa_pct_recov', N'% wiederhergestellt :');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'sv' AND [TranslationKey]=N'fa_pct_recov')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv', N'fa_pct_recov', N'% återställda :');
+
+-- fa_status_ready2
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'it' AND [TranslationKey]=N'fa_status_ready2')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'it', N'fa_status_ready2', N'{0} schede/fase FAIL — {1} eventi — Wait {2} · Repaired {3} · Recovered {4} · Scrap {5} · Ri-fallite {6}');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'en' AND [TranslationKey]=N'fa_status_ready2')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'en', N'fa_status_ready2', N'{0} board/phase FAILs — {1} events — Wait {2} · Repaired {3} · Recovered {4} · Scrap {5} · Re-failed {6}');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'ro' AND [TranslationKey]=N'fa_status_ready2')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'ro', N'fa_status_ready2', N'{0} plăci/fază FAIL — {1} evenimente — Wait {2} · Repaired {3} · Recovered {4} · Scrap {5} · Re-eșuate {6}');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'de' AND [TranslationKey]=N'fa_status_ready2')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'de', N'fa_status_ready2', N'{0} Platine/Phase FAIL — {1} Ereignisse — Wait {2} · Repaired {3} · Recovered {4} · Scrap {5} · Erneut fehlerhaft {6}');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode]=N'sv' AND [TranslationKey]=N'fa_status_ready2')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv', N'fa_status_ready2', N'{0} kort/fas FAIL — {1} händelser — Wait {2} · Repaired {3} · Recovered {4} · Scrap {5} · Omfall {6}');

@@ -70,7 +70,8 @@ SELECT
    sd.SdPass,
    CASE WHEN rf.FirstRepairedScan IS NOT NULL AND bp.MaxFailScan > rf.FirstRepairedScan
         THEN 1 ELSE 0 END AS RefailAfterRepair,
-   CASE WHEN bp.FailEvents >= 2 THEN 1 ELSE 0 END AS MultiFail
+   CASE WHEN bp.FailEvents >= 2 THEN 1 ELSE 0 END AS MultiFail,
+   CASE WHEN rf.FirstRepairedScan IS NOT NULL THEN 1 ELSE 0 END AS HasFormalRepair
 FROM BP bp
 INNER JOIN Phases   ph ON ph.IDPhase  = bp.IDPhase
 INNER JOIN Boards   b  ON b.IDBoard   = bp.IDBoard
@@ -87,7 +88,10 @@ ORDER BY ph.PhaseName, o.OrderNumber, bp.IDBoard
 
 # Indici di colonna del result set (per leggibilita')
 C_IDBOARD, C_PHASE, C_ORDER, C_PRODUCT, C_QTY, C_LABELS, C_EVENTS, \
-    C_LASTPASS, C_LASTTIME, C_FIRSTFAIL, C_SDPASS, C_REFAIL, C_MULTI = range(13)
+    C_LASTPASS, C_LASTTIME, C_FIRSTFAIL, C_SDPASS, C_REFAIL, C_MULTI, C_FORMAL = range(14)
+
+# Fase considerata 'fine produzione' per il volume prodotto (report Tassi)
+FINAL_PHASE = 'FINAL ASSEMBLY'
 
 # ======================================================================
 # REPORT #2 — TASSI SCRAP / REWORK rispetto al VOLUME PRODOTTO
@@ -96,11 +100,15 @@ C_IDBOARD, C_PHASE, C_ORDER, C_PRODUCT, C_QTY, C_LABELS, C_EVENTS, \
 # Rework = schede distinte con riparazione REPAIRED (ScanDefects.IsPass = 1)
 # Aggregazione mensile.
 # ======================================================================
-QUERY_RATES_MONTHLY = """
+QUERY_RATES_MONTHLY = f"""
 DECLARE @from datetime=?, @to datetime=?;
 WITH Produced AS (
     SELECT FORMAT(s.ScanTimeFinish,'yyyy-MM') AS Ym, COUNT(DISTINCT s.IDBoard) AS Produced
-    FROM Scannings s WHERE s.ScanTimeFinish BETWEEN @from AND @to
+    FROM Scannings s
+    INNER JOIN OrderPhases op ON op.IDOrderPhase = s.IDOrderPhase
+    INNER JOIN Phases ph ON ph.IDPhase = op.IDPhase
+    WHERE s.IsPass = 1 AND ph.PhaseName = N'{FINAL_PHASE}'
+      AND s.ScanTimeFinish BETWEEN @from AND @to
     GROUP BY FORMAT(s.ScanTimeFinish,'yyyy-MM')
 ),
 Scrap AS (
@@ -121,18 +129,22 @@ ORDER BY p.Ym
 """
 
 # Totale del periodo con conteggi DISTINTI reali (non somma dei mesi)
-QUERY_RATES_TOTAL = """
+QUERY_RATES_TOTAL = f"""
 DECLARE @from datetime=?, @to datetime=?;
 SELECT
   (SELECT COUNT(DISTINCT s.IDBoard) FROM Scannings s
-     WHERE s.ScanTimeFinish BETWEEN @from AND @to) AS Produced,
+     INNER JOIN OrderPhases op ON op.IDOrderPhase = s.IDOrderPhase
+     INNER JOIN Phases ph ON ph.IDPhase = op.IDPhase
+     WHERE s.IsPass = 1 AND ph.PhaseName = N'{FINAL_PHASE}'
+       AND s.ScanTimeFinish BETWEEN @from AND @to) AS Produced,
   (SELECT COUNT(DISTINCT sc.IDBoard) FROM ScanDefects sd INNER JOIN Scannings sc ON sc.IDScan=sd.IDScan
      WHERE sd.IsPass=0 AND sd.StopTime BETWEEN @from AND @to) AS Scrap,
   (SELECT COUNT(DISTINCT sc.IDBoard) FROM ScanDefects sd INNER JOIN Scannings sc ON sc.IDScan=sd.IDScan
      WHERE sd.IsPass=1 AND sd.StopTime BETWEEN @from AND @to) AS Rework
 """
 
-ST_REPAIRED = 'REPAIRED'
+ST_REPAIRED = 'REPAIRED'    # ultima scansione PASS e con riparazione formale (ScanDefects PASS)
+ST_RECOVERED = 'RECOVERED'  # ultima scansione PASS ma senza record di riparazione formale (recuperata al retest)
 ST_WAIT = 'WAIT'
 ST_SCRAP = 'SCRAP'
 
@@ -142,7 +154,7 @@ def _status(row):
     if row[C_SDPASS] == 0:
         return ST_SCRAP
     if row[C_LASTPASS] == 1:
-        return ST_REPAIRED
+        return ST_REPAIRED if row[C_FORMAL] == 1 else ST_RECOVERED
     return ST_WAIT
 
 
@@ -247,7 +259,7 @@ class FailsAnalysisWindow(tk.Toplevel):
         tk.Label(fbar, text=self.lang.get('fa_filter_status', 'Stato:'),
                  bg='#F8F8F8', font=('Segoe UI', 9)).pack(side=tk.LEFT)
         combo = ttk.Combobox(fbar, textvariable=self.status_filter_var, width=14, state='readonly',
-                             values=['ALL', ST_WAIT, ST_REPAIRED, ST_SCRAP])
+                             values=['ALL', ST_WAIT, ST_REPAIRED, ST_RECOVERED, ST_SCRAP])
         combo.pack(side=tk.LEFT, padx=6)
         combo.bind('<<ComboboxSelected>>', lambda e: self._populate_all())
         tk.Checkbutton(fbar, text=self.lang.get('fa_filter_refail', 'Solo riparate → ri-fallite'),
@@ -273,10 +285,11 @@ class FailsAnalysisWindow(tk.Toplevel):
         widths = tuple(w for _, _, w in col_keys)
         labels = tuple(self.lang.get(k, d) for k, d, _ in col_keys)
         self.tree_all = self._make_tree(parent, cols, widths, labels)
-        self.tree_all.tag_configure('repaired', background='#D4EDDA')
-        self.tree_all.tag_configure('wait',     background='#FADADD')
-        self.tree_all.tag_configure('scrap',    background='#FFE5B4')
-        self.tree_all.tag_configure('refail',   foreground='#A00000', font=('Segoe UI', 9, 'bold'))
+        self.tree_all.tag_configure('repaired',  background='#D4EDDA')
+        self.tree_all.tag_configure('recovered', background='#CFE7F5')
+        self.tree_all.tag_configure('wait',      background='#FADADD')
+        self.tree_all.tag_configure('scrap',     background='#FFE5B4')
+        self.tree_all.tag_configure('refail',    foreground='#A00000', font=('Segoe UI', 9, 'bold'))
 
     def _build_refail(self, parent):
         tk.Label(parent, bg='#FFF3CD', fg='#7A5C00', anchor='w', padx=8, pady=4,
@@ -361,11 +374,12 @@ class FailsAnalysisWindow(tk.Toplevel):
         rep = sum(1 for r in self._rows if _status(r) == ST_REPAIRED)
         wait = sum(1 for r in self._rows if _status(r) == ST_WAIT)
         scrap = sum(1 for r in self._rows if _status(r) == ST_SCRAP)
+        recovered = sum(1 for r in self._rows if _status(r) == ST_RECOVERED)
         refail = sum(1 for r in self._rows if r[C_REFAIL] == 1)
         self.status_var.set(self.lang.get(
             'fa_status_ready2',
-            '{0} schede/fase FAIL — {1} eventi — Wait {2} · Repaired {3} · Scrap {4} · Ri-fallite {5}'
-        ).format(boards, events, wait, rep, scrap, refail))
+            '{0} schede/fase FAIL — {1} eventi — Wait {2} · Repaired {3} · Recovered {4} · Scrap {5} · Ri-fallite {6}'
+        ).format(boards, events, wait, rep, recovered, scrap, refail))
         self.export_btn.config(state=tk.NORMAL if self._rows else tk.DISABLED)
 
     # ------------------------------------------------------------------
@@ -384,7 +398,8 @@ class FailsAnalysisWindow(tk.Toplevel):
             if refail_only and r[C_REFAIL] != 1:
                 continue
             shown += 1
-            tag = 'repaired' if st == ST_REPAIRED else ('scrap' if st == ST_SCRAP else 'wait')
+            tag = {ST_REPAIRED: 'repaired', ST_RECOVERED: 'recovered',
+                   ST_SCRAP: 'scrap', ST_WAIT: 'wait'}.get(st, 'wait')
             tags = (tag, 'refail') if r[C_REFAIL] == 1 else (tag,)
             self.tree_all.insert('', tk.END, tags=tags, values=(
                 r[C_ORDER], r[C_PRODUCT], r[C_QTY], r[C_PHASE], r[C_IDBOARD], r[C_LABELS],
@@ -410,13 +425,14 @@ class FailsAnalysisWindow(tk.Toplevel):
 
     def _phase_aggregates(self):
         """Aggrega per fase. Ritorna (dict per fase, totale)."""
-        agg = defaultdict(lambda: dict(boards=0, events=0, rep=0, wait=0, scrap=0, refail=0, multi=0))
+        agg = defaultdict(lambda: dict(boards=0, events=0, rep=0, recov=0, wait=0, scrap=0, refail=0, multi=0))
         for r in self._rows:
             a = agg[r[C_PHASE] or '?']
             a['boards'] += 1
             a['events'] += r[C_EVENTS] or 0
             st = _status(r)
             a['rep'] += (st == ST_REPAIRED)
+            a['recov'] += (st == ST_RECOVERED)
             a['wait'] += (st == ST_WAIT)
             a['scrap'] += (st == ST_SCRAP)
             a['refail'] += (r[C_REFAIL] == 1)
@@ -429,28 +445,31 @@ class FailsAnalysisWindow(tk.Toplevel):
         T = self.lang.get
         agg = self._phase_aggregates()
 
-        tot = dict(boards=0, events=0, rep=0, wait=0, scrap=0, refail=0, multi=0)
+        tot = dict(boards=0, events=0, rep=0, recov=0, wait=0, scrap=0, refail=0, multi=0)
         for a in agg.values():
             for k in tot:
                 tot[k] += a[k]
 
+        fmt = '  {0:<14}{1:>8}{2:>8}{3:>9}{4:>10}{5:>7}{6:>7}{7:>11}{8:>9}'
         lines = [
-            '=' * 96,
+            '=' * 100,
             '  ' + T('fa_stats_title2', 'FAIL — RIEPILOGO PER FASE (tutti i FAIL, riparati e non)'),
-            '=' * 96,
-            '  {0:<14}{1:>8}{2:>8}{3:>9}{4:>7}{5:>7}{6:>11}{7:>10}'.format(
+            '=' * 100,
+            fmt.format(
                 T('fa_h_phase', 'Fase'), T('fa_h_boards', 'Schede'), T('fa_h_events', 'Eventi'),
-                T('fa_h_repaired', 'Repaired'), T('fa_h_wait', 'Wait'), T('fa_h_scrap', 'Scrap'),
+                T('fa_h_repaired', 'Repaired'), T('fa_h_recovered', 'Recovered'),
+                T('fa_h_wait', 'Wait'), T('fa_h_scrap', 'Scrap'),
                 T('fa_h_refail', 'Ri-fallite'), T('fa_h_multi', 'Multi')),
-            '  ' + '-' * 76,
+            '  ' + '-' * 83,
         ]
         for ph in sorted(agg, key=lambda k: -agg[k]['boards']):
             a = agg[ph]
-            lines.append('  {0:<14}{1:>8}{2:>8}{3:>9}{4:>7}{5:>7}{6:>11}{7:>10}'.format(
-                str(ph)[:14], a['boards'], a['events'], a['rep'], a['wait'], a['scrap'], a['refail'], a['multi']))
-        lines.append('  ' + '-' * 76)
-        lines.append('  {0:<14}{1:>8}{2:>8}{3:>9}{4:>7}{5:>7}{6:>11}{7:>10}'.format(
-            T('fa_h_total', 'TOTALE'), tot['boards'], tot['events'], tot['rep'],
+            lines.append(fmt.format(
+                str(ph)[:14], a['boards'], a['events'], a['rep'], a['recov'],
+                a['wait'], a['scrap'], a['refail'], a['multi']))
+        lines.append('  ' + '-' * 83)
+        lines.append(fmt.format(
+            T('fa_h_total', 'TOTALE'), tot['boards'], tot['events'], tot['rep'], tot['recov'],
             tot['wait'], tot['scrap'], tot['refail'], tot['multi']))
 
         # Percentuali interne
@@ -462,6 +481,7 @@ class FailsAnalysisWindow(tk.Toplevel):
             '  ' + '-' * 50,
             '  ' + T('fa_pct_wait',   '% ancora aperte (Wait)   :') + f" {tot['wait']/b*100:5.1f}%",
             '  ' + T('fa_pct_rep',    '% riparate (Repaired)    :') + f" {tot['rep']/b*100:5.1f}%",
+            '  ' + T('fa_pct_recov',  '% recuperate (Recovered) :') + f" {tot['recov']/b*100:5.1f}%",
             '  ' + T('fa_pct_scrap',  '% scrap                  :') + f" {tot['scrap']/b*100:5.1f}%",
             '  ' + T('fa_pct_refail', '% ri-fallite su riparate :') + f" {tot['refail']/rep_b*100:5.1f}%"
             + '   ' + T('fa_pct_refail_note', '(efficienza riparazione)'),
@@ -611,9 +631,10 @@ class FailsAnalysisWindow(tk.Toplevel):
             THIN = Border(left=Side(style='thin'), right=Side(style='thin'),
                           top=Side(style='thin'), bottom=Side(style='thin'))
             FILLS = {
-                ST_REPAIRED: PatternFill('solid', fgColor='D4EDDA'),
-                ST_WAIT:     PatternFill('solid', fgColor='FADADD'),
-                ST_SCRAP:    PatternFill('solid', fgColor='FFE5B4'),
+                ST_REPAIRED:  PatternFill('solid', fgColor='D4EDDA'),
+                ST_RECOVERED: PatternFill('solid', fgColor='CFE7F5'),
+                ST_WAIT:      PatternFill('solid', fgColor='FADADD'),
+                ST_SCRAP:     PatternFill('solid', fgColor='FFE5B4'),
             }
             REFAIL_FONT = Font(bold=True, color='A00000')
 
@@ -672,21 +693,22 @@ class FailsAnalysisWindow(tk.Toplevel):
 
             # Sheet 3 — Statistiche per fase
             ws3 = wb.create_sheet(self.lang.get('fa_tab_stats', 'Statistiche')[:31])
-            hdr(ws3, ['Fase', 'Schede', 'Eventi', 'Repaired', 'Wait', 'Scrap', 'Ri-fallite', 'Multi-fail'])
+            hdr(ws3, ['Fase', 'Schede', 'Eventi', 'Repaired', 'Recovered', 'Wait', 'Scrap',
+                       'Ri-fallite', 'Multi-fail'])
             agg = self._phase_aggregates()
             ri = 2
-            tot = dict(boards=0, events=0, rep=0, wait=0, scrap=0, refail=0, multi=0)
+            tot = dict(boards=0, events=0, rep=0, recov=0, wait=0, scrap=0, refail=0, multi=0)
             for ph in sorted(agg, key=lambda k: -agg[k]['boards']):
                 a = agg[ph]
                 for k in tot:
                     tot[k] += a[k]
-                for c, v in enumerate([ph, a['boards'], a['events'], a['rep'], a['wait'],
+                for c, v in enumerate([ph, a['boards'], a['events'], a['rep'], a['recov'], a['wait'],
                                         a['scrap'], a['refail'], a['multi']], 1):
                     ce = ws3.cell(ri, c, v)
                     ce.border = THIN
                 ri += 1
-            for c, v in enumerate(['TOTALE', tot['boards'], tot['events'], tot['rep'], tot['wait'],
-                                    tot['scrap'], tot['refail'], tot['multi']], 1):
+            for c, v in enumerate(['TOTALE', tot['boards'], tot['events'], tot['rep'], tot['recov'],
+                                    tot['wait'], tot['scrap'], tot['refail'], tot['multi']], 1):
                 ce = ws3.cell(ri, c, v)
                 ce.font = Font(bold=True)
                 ce.border = THIN
