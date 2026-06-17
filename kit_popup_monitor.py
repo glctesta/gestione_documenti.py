@@ -14,6 +14,7 @@ import logging
 import socket
 import threading
 import time
+from datetime import datetime, timedelta
 import tkinter as tk
 from tkinter import ttk
 
@@ -35,6 +36,13 @@ class KitPopupMonitor:
         self.hostname = socket.gethostname()
         self._running = True
         self._popup_open = False
+        # Soglia di freschezza per gli avvisi "server down" (arretrato di un down
+        # prolungato non va impilato): gli avvisi più vecchi vengono consumati senza
+        # mostrare il popup.
+        try:
+            self._alert_max_age = int(server_config.load_config().get("alert_max_age_minutes", 15))
+        except Exception:
+            self._alert_max_age = 15
         logger.info("KitPopupMonitor avviato su %s (kit_prep=%s, kit_prod=%s)",
                     self.hostname, is_kit_prep_workstation(), is_kit_prod_workstation())
         self._poll()
@@ -96,8 +104,24 @@ class KitPopupMonitor:
             )
             if ok:
                 claimed.append(row)
-        if claimed:
-            self._show_popup(claimed)
+
+        # Scarta in SILENZIO gli avvisi "server down" troppo vecchi (arretrato di un
+        # down prolungato): vengono comunque claimati (quindi consumati) ma non mostrati,
+        # così non si impilano decine di popup obsoleti alla riapertura dell'app.
+        cutoff = datetime.now() - timedelta(minutes=self._alert_max_age)
+        to_show, discarded = [], 0
+        for row in claimed:
+            category = row[5] if len(row) > 5 else None
+            created = row[4]
+            if category == server_config.CATEGORY_SERVER_DOWN and created and created < cutoff:
+                discarded += 1
+                continue
+            to_show.append(row)
+        if discarded:
+            logger.info("KitPopupMonitor: scartati %d avvisi 'server down' obsoleti "
+                        "(piu' vecchi di %d min)", discarded, self._alert_max_age)
+        if to_show:
+            self._show_popup(to_show)
 
     def _show_popup(self, rows):
         self._popup_open = True

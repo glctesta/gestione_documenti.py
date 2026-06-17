@@ -27,6 +27,10 @@ DEFAULT_CONFIG = {
     "health_path": "/health",
     "alert_targets": ["KIT_PREP"],
     "email_setting": "Sys_email_Kit_materiali",
+    # Età massima (minuti) di un avviso "server down" perché venga ancora mostrato:
+    # gli avvisi più vecchi (arretrato di un down prolungato) vengono consumati in
+    # silenzio dal monitor, senza impilare popup obsoleti.
+    "alert_max_age_minutes": 15,
     "history_default_days": 3,
     "pthm_phase_id": 4,            # IdPhase 'PTHM' (dbo.Phases)
     "pthm_phase_name": "PTHM",     # match esatto nel file di pianificazione (escl. 'PTHM SELECTIVE')
