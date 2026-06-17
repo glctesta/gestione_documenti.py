@@ -54,7 +54,8 @@ class PasswordRecoveryWindow(tk.Toplevel):
         # Istruzioni
         instruction_text = self.lang.get(
             'password_recovery_instructions',
-            'Inserire il CNP (OBBLIGATORIO) e, opzionalmente, altri campi per recuperare le credenziali:'
+            "Inserire l'email aziendale (OBBLIGATORIA). Gli altri campi sono opzionali e "
+            "servono solo a restringere la ricerca. Le credenziali saranno inviate all'email aziendale registrata."
         )
         instruction_label = ttk.Label(
             main_frame,
@@ -104,10 +105,11 @@ class PasswordRecoveryWindow(tk.Toplevel):
             width=35
         ).grid(row=2, column=1, sticky=tk.EW, pady=5, padx=(10, 0))
 
-        # Email
+        # Email (OBBLIGATORIA)
         ttk.Label(
             fields_frame,
-            text=self.lang.get('label_work_email', 'Email Aziendale:')
+            text=self.lang.get('label_work_email_required', 'Email Aziendale (obbligatoria):'),
+            foreground="#b00020"
         ).grid(row=3, column=0, sticky=tk.W, pady=5)
         
         ttk.Entry(
@@ -181,10 +183,19 @@ class PasswordRecoveryWindow(tk.Toplevel):
         email = self.email_var.get().strip() if self.email_var.get().strip() else None
         cnp = self.cnp_var.get().strip() if self.cnp_var.get().strip() else None
 
-        # Verifica che il CNP sia obbligatoriamente presente
-        if not cnp:
+        # L'unico campo OBBLIGATORIO è l'email aziendale. Gli altri sono opzionali
+        # e servono solo a restringere la ricerca.
+        if not email:
             self.status_label.config(
-                text=self.lang.get('cnp_required', 'Il Codice Numerico Personale (CNP) è obbligatorio per il recupero password'),
+                text=self.lang.get('recovery_email_required',
+                                   "L'email aziendale è obbligatoria per il recupero password."),
+                foreground="red"
+            )
+            return
+        import re
+        if not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
+            self.status_label.config(
+                text=self.lang.get('recovery_email_invalid', 'Formato email non valido.'),
                 foreground="red"
             )
             return
