@@ -917,22 +917,26 @@ class GestoreNPI:
                        p.NomeProdotto,
                        n.[Version],
                        n.ProdottoID,
-                       n.OwnerID
-                FROM [Traceability_RS].[dbo].[ProgettiNPI] n 
+                       n.OwnerID,
+                       n.ScadenzaProgetto,
+                       n.StatoProgetto
+                FROM [Traceability_RS].[dbo].[ProgettiNPI] n
                 INNER JOIN Prodotti p ON p.ProdottoID = n.ProdottoID
                 INNER JOIN WaveNPI w ON w.ProgettoID = n.ProgettoID
                 LEFT JOIN [Traceability_RS].[dbo].[TaskProdotto] t ON w.WaveID = t.WaveID AND t.[stato] IS NOT NULL
                 WHERE n.DateOut IS NULL
                 -- Tutti gli stati (Attivo, Chiuso, In Pausa) inclusi per version_map/owner_map corretti
 
-                GROUP BY n.[ProgettoID], 
+                GROUP BY n.[ProgettoID],
                          p.Cliente + ' -> ' + p.CodiceProdotto + ' (Version: ' + ISNULL(n.[version],'#N/D') + ') ' + p.NomeProdotto,
                          p.Cliente,
                          p.CodiceProdotto,
                          p.NomeProdotto,
                          n.[Version],
                          n.ProdottoID,
-                         n.OwnerID
+                         n.OwnerID,
+                         n.ScadenzaProgetto,
+                         n.StatoProgetto
                 ORDER BY p.Cliente + ' -> ' + p.CodiceProdotto + ' (Version: ' + ISNULL(n.[version],'#N/D') + ') ' + p.NomeProdotto, n.[Version]
             """
             
@@ -950,7 +954,9 @@ class GestoreNPI:
                     'NomeProdotto': row[4],
                     'Version': row[5],
                     'ProdottoID': row[6],
-                    'OwnerID': row[7]
+                    'OwnerID': row[7],
+                    'ScadenzaProgetto': row[8],
+                    'StatoProgetto': row[9]
                 })
             
             return progetti

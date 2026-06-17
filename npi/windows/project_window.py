@@ -139,6 +139,20 @@ class ProjectWindow(tk.Toplevel):
         self.destroy()
 
 
+    def _back_to_selection(self):
+        """Chiude questa finestra e riapre la form di selezione cliente/progetto NPI
+        (senza richiedere di nuovo il login)."""
+        cb = getattr(self.master_app, '_reopen_npi_selection', None)
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        if callable(cb):
+            try:
+                cb()
+            except Exception as e:
+                logger.error(f"Errore riapertura selezione NPI: {e}", exc_info=True)
+
     def _create_widgets(self):
         # Main Layout
         main_frame = ttk.Frame(self)
@@ -192,7 +206,15 @@ class ProjectWindow(tk.Toplevel):
         # Buttons in Header - PRIMA RIGA
         toolbar_row1 = ttk.Frame(header_frame)
         toolbar_row1.pack(side=tk.TOP, fill=tk.X, pady=(0, 5))
-        
+
+        # Bottone per tornare alla form di selezione cliente/progetto
+        self.back_button = ttk.Button(
+            toolbar_row1,
+            text=self.lang.get('btn_back_to_selection', '⬅ Torna alla selezione'),
+            command=self._back_to_selection
+        )
+        self.back_button.pack(side=tk.LEFT, padx=(0, 5))
+
         self.import_button = ttk.Button(toolbar_row1, text=self.lang.get('btn_import_tasks', 'Importa Task'), command=self._launch_import_tasks_window)
         self.import_button.pack(side=tk.LEFT, padx=(0, 5))
         

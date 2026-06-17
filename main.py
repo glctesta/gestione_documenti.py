@@ -309,7 +309,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.1.2'  # Versione aggiornata
+APP_VERSION = '2.4.2.1.5'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -17738,11 +17738,28 @@ class App(tk.Tk):
                 combo_var = tk.StringVar()
                 combo = ttk.Combobox(combo_frame, textvariable=combo_var, width=100)
                 
-                # Prepara lista completa dei progetti con formato ActiveNpi
-                all_projects_list = [p['ActiveNpi'] for p in progetti]
-                progetti_map = {p['ActiveNpi']: p['ProgettoId'] for p in progetti}
+                # Etichetta progetto = ActiveNpi + data dichiarata di chiusura (ScadenzaProgetto)
+                deadline_lbl = self.lang.get('npi_project_deadline', 'Scadenza')
+                no_deadline = self.lang.get('npi_no_deadline', 'n/d')
+
+                status_closed = self.lang.get('npi_status_closed', 'Chiuso')
+                status_open = self.lang.get('npi_status_open', 'Aperto')
+
+                def _proj_label(p):
+                    d = p.get('ScadenzaProgetto')
+                    try:
+                        scad = d.strftime('%d/%m/%Y') if d else no_deadline
+                    except Exception:
+                        scad = str(d) if d else no_deadline
+                    stato_raw = (p.get('StatoProgetto') or '').strip()
+                    stato = status_closed if stato_raw.lower() == 'chiuso' else status_open
+                    return f"{p['ActiveNpi']}  —  {deadline_lbl}: {scad}  —  {stato}"
+
+                # Prepara lista completa dei progetti con formato ActiveNpi + scadenza
+                all_projects_list = [_proj_label(p) for p in progetti]
+                progetti_map = {_proj_label(p): p['ProgettoId'] for p in progetti}
                 # ðŸ†• Mappa inversa per accedere ai dati completi del progetto
-                progetti_map_reverse = {p['ActiveNpi']: p for p in progetti}
+                progetti_map_reverse = {_proj_label(p): p for p in progetti}
                 
                 combo['values'] = all_projects_list
                 combo.pack(fill=tk.X, expand=True)
@@ -17822,6 +17839,10 @@ class App(tk.Tk):
                     f"Errore apertura gestione progetti: {str(e)}"
                 )
                 logger.error(f"Errore apertura ProjectWindow: {e}")
+
+        # Salva il riferimento per poter riaprire la selezione senza ri-login
+        # (usato dal bottone "Torna alla selezione" della ProjectWindow).
+        self._reopen_npi_selection = authorized_action
 
         # Usa il sistema di autorizzazione con la chiave corretta
         self._execute_authorized_action(
