@@ -309,7 +309,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.1.0.0'  # Versione aggiornata
+APP_VERSION = '2.4.2.1.2'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -13729,7 +13729,7 @@ class App(tk.Tk):
         """Recupera IP e Porta del programma 'Skill Program' da ExternalIps."""
         try:
             query = """
-                SELECT [ExternalIP], [Port]
+                SELECT [ExternalIP], [Port], [Path]
                 FROM [Employee].[dbo].[ExternalIps]
                 WHERE [DateOut] IS NULL AND [ProgramName] = 'Skill Program'
             """
@@ -13740,7 +13740,11 @@ class App(tk.Tk):
             if row and row.ExternalIP:
                 ip = row.ExternalIP.strip()
                 port = str(row.Port).strip() if row.Port else ''
+                path = (getattr(row, 'Path', '') or '').strip().replace('\\', '/')
+                if path and not path.startswith('/'):
+                    path = '/' + path
                 url = f"{ip}:{port}" if port else ip
+                url += path
                 logger.info(f"Skill Program URL trovato: {url}")
                 return url
             logger.warning("Skill Program non trovato in ExternalIps")
@@ -13965,6 +13969,87 @@ class App(tk.Tk):
                 self, self.db, self.lang, user_name
             )
         )
+
+    def open_kit_priority_with_login(self):
+        """Apre la gestione priorità ordini kit (pianificatore) dopo login semplice."""
+        import kit_preparation_gui
+
+        def _open(user_id):
+            emp_id = None
+            try:
+                emp_id = self.db.get_employee_hire_history_id(user_id)
+            except Exception as exc:
+                logger.warning(f"open_kit_priority_with_login: hire history id non trovato: {exc}")
+            kit_preparation_gui.open_kit_preparation_window(
+                self, self.db, self.lang,
+                self.last_authenticated_user_name, emp_id or 0, tab='priority'
+            )
+
+        self._execute_simple_login(action_callback=_open)
+
+    def open_kit_picking_with_login(self):
+        """Apre il prelievo magazzino kit dopo login autorizzato
+        (chiave 'conferma_kit_completamento', spec Kit Preparation §2.3)."""
+        import kit_preparation_gui
+        self._execute_authorized_action(
+            menu_translation_key='conferma_kit_completamento',
+            action_callback=lambda: kit_preparation_gui.open_kit_preparation_window(
+                self, self.db, self.lang,
+                self.last_authenticated_user_name,
+                self.last_authorized_user_id, tab='picking'
+            )
+        )
+
+    def open_kit_preforming_with_login(self):
+        """Apre l'ingresso preformatura kit dopo login autorizzato
+        (chiave 'verifica_kit_materiale', spec Kit Preparation §2.3)."""
+        import kit_pf_gui
+        self._execute_authorized_action(
+            menu_translation_key='verifica_kit_materiale',
+            action_callback=lambda: kit_pf_gui.open_kit_pf_window(
+                self, self.db, self.lang,
+                self.last_authenticated_user_name,
+                self.last_authorized_user_id
+            )
+        )
+
+    def open_kit_production_with_login(self):
+        """Apre il ricevimento kit in produzione dopo login autorizzato
+        (chiave 'verifica_kit_materiale': copre tutta la sezione produzione)."""
+        import kit_prod_gui
+        self._execute_authorized_action(
+            menu_translation_key='verifica_kit_materiale',
+            action_callback=lambda: kit_prod_gui.open_kit_prod_window(
+                self, self.db, self.lang,
+                self.last_authenticated_user_name,
+                self.last_authorized_user_id
+            )
+        )
+
+    def open_kit_dashboard(self):
+        """Apre la dashboard stato kit (sola lettura, nessun login — spec §8.1)."""
+        import kit_dashboard_gui
+        kit_dashboard_gui.open_kit_dashboard(self, self.db, self.lang)
+
+    def _open_kit_dashboard_web(self):
+        """Apre nel browser la dashboard web (pagina Produzione) sul server configurato."""
+        import webbrowser
+        try:
+            from kit_dashboard import server_config
+            url = server_config.base_url() + "/produzione"
+        except Exception as e:
+            logger.error(f"Errore lettura config dashboard web: {e}", exc_info=True)
+            url = "http://192.168.10.72:8090/produzione"
+        try:
+            webbrowser.open(url)
+            logger.info(f"Aperta dashboard web: {url}")
+        except Exception as e:
+            logger.error(f"Errore apertura dashboard web: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire la dashboard web:\n{url}\n\n{e}",
+                parent=self
+            )
 
     def open_stock_value_with_login(self):
         """Apre la finestra Stock Value dopo autorizzazione."""
@@ -16195,7 +16280,52 @@ class App(tk.Tk):
             label=self.lang.get('submenu_labels', 'Etichette'),
             command=self.open_label_print_with_login
         )
-        
+
+        # Sottomenu Kit Preparation (spec docs/PlanRespect_KitPreparation_Spec_v1.2.md)
+        materials_menu.add_separator()
+        kit_menu = tk.Menu(materials_menu, tearoff=0)
+        materials_menu.add_cascade(
+            label=self.lang.get('menu_kit_preparation', 'Preparazione Kit Produzione'),
+            menu=kit_menu
+        )
+        kit_menu.add_command(
+            label=self.lang.get('menu_kit_priority', 'Priorità Ordini Kit'),
+            command=self.open_kit_priority_with_login
+        )
+        kit_menu.add_command(
+            label=self.lang.get('menu_kit_picking', 'Prelievo Magazzino (Kit)'),
+            command=self.open_kit_picking_with_login
+        )
+        kit_menu.add_command(
+            label=self.lang.get('menu_kit_preforming', 'Preformatura — Ingresso (Kit)'),
+            command=self.open_kit_preforming_with_login
+        )
+        kit_menu.add_command(
+            label=self.lang.get('menu_kit_production', 'Produzione — Ricevimento (Kit)'),
+            command=self.open_kit_production_with_login
+        )
+        kit_menu.add_separator()
+        kit_menu.add_command(
+            label=self.lang.get('menu_kit_dashboard', 'Dashboard Stato Kit'),
+            command=self.open_kit_dashboard
+        )
+        kit_menu.add_command(
+            label=self.lang.get('menu_kit_dashboard_web', 'Dashboard Web (Produzione)'),
+            command=self._open_kit_dashboard_web
+        )
+        # Postazioni popup Kit (attivazione esplicita di questo PC)
+        kit_menu.add_separator()
+        kit_menu.add_command(
+            label=self.lang.get('submenu_confirm_kit_prep_workstation',
+                                 'Conferma Postazione Formazione Kit'),
+            command=self._open_confirm_kit_prep_workstation
+        )
+        kit_menu.add_command(
+            label=self.lang.get('submenu_confirm_kit_prod_workstation',
+                                 'Conferma Postazione Ricezione Kit'),
+            command=self._open_confirm_kit_prod_workstation
+        )
+
         # Sottomenu Materiali Indiretti
         materials_menu.add_separator()
         indirect_materials_menu = tk.Menu(materials_menu, tearoff=0)
@@ -16246,7 +16376,7 @@ class App(tk.Tk):
             label=self.lang.get('submenu_confirm_wh_workstation', 'Conferma WH WorkStation'),
             command=self._open_confirm_wh_workstation
         )
-        
+
         # Allinea Codici sotto Configurazioni
         materials_config_menu.add_command(
             label=self.lang.get('submenu_align_codes', 'Allinea Codici'),
@@ -16791,6 +16921,8 @@ class App(tk.Tk):
                                   command=self.open_add_maintenance_tasks_with_login)
         tasks_submenu.add_command(label=self.lang.get('submenu_manage_task_cycles', "Gestione Voci Task"),
                                   command=self.open_task_cycles_manager_with_login)
+        tasks_submenu.add_command(label=self.lang.get('submenu_manage_scrap_returns', "Gestione scorie"),
+                                  command=self.open_scrap_returns_with_login)
         tasks_submenu.add_command(label=self.lang.get('submenu_assign_responsibles', "Assegna Responsabili"),
                                   command=self.open_assign_responsibles_with_login)
 
@@ -17187,6 +17319,9 @@ class App(tk.Tk):
         self.manuals_menu.add_command(
             label=self.lang.get('menu_indirect_materials_manual', 'Materiale Indirecte (Manual)'),
             command=self._open_indirect_materials_manual)
+        self.manuals_menu.add_command(
+            label=self.lang.get('menu_kit_preparation_manual', 'Pregătire Kit Producție (Manual)'),
+            command=self._open_kit_preparation_manual)
 
         # ── 7. Strumenti ───────────────────────────────────────────
         tools_manual_menu = tk.Menu(self.manuals_menu, tearoff=0)
@@ -17372,6 +17507,23 @@ class App(tk.Tk):
                 self.lang.get('indirect_materials_manual_not_found',
                              "Manualul Materiale Indirecte nu a fost gasit.\n\n"
                              f"Cale asteptata: {os.path.join(app_dir, 'docs', 'Manual_Materiale_Indirecte_RO.pdf')}"),
+                parent=self)
+
+    def _open_kit_preparation_manual(self):
+        """Apre il manuale Pregătire Kit Producție (HTML in rumeno) nel browser."""
+        import webbrowser
+        manual_path = self._get_resource_path('docs', 'Kit_Preparation_Manual_RO.html')
+        if manual_path:
+            try:
+                webbrowser.open(f'file:///{manual_path.replace(os.sep, "/")}')
+                logger.info(f"Aperto manuale Kit Preparation: {manual_path}")
+            except Exception as e:
+                logger.error(f"Errore apertura manuale Kit Preparation: {e}")
+                messagebox.showerror(self.lang.get('error', 'Errore'), str(e), parent=self)
+        else:
+            messagebox.showinfo(
+                self.lang.get('menu_manuals', 'Manuali'),
+                self.lang.get('manual_not_available', 'Manuale non ancora disponibile.'),
                 parent=self)
 
     def _open_logs_viewer(self):
@@ -19395,6 +19547,29 @@ class App(tk.Tk):
             authorized_action
         )
 
+    def open_scrap_returns_with_login(self, preselect_must_code_id=None):
+        """Apre la finestra Gestione scorie/rientri con autorizzazione
+        (chiave 'dichiara_scarti-rientri'). Può essere richiamata anche dalla form
+        di richiesta materiali, preselezionando il MustCode."""
+        def authorized_action():
+            try:
+                import scrap_returns_gui
+                user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
+                scrap_returns_gui.open_scrap_returns(
+                    self, self.db, self.lang, user_name, preselect_must_code_id
+                )
+            except Exception as e:
+                logger.error(f"Errore apertura Gestione scorie: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire Gestione scorie:\n{e}",
+                    parent=self
+                )
+        self._execute_authorized_action(
+            'dichiara_scarti-rientri',
+            authorized_action
+        )
+
     def _open_indirect_materials_report(self):
         """Apre la finestra Report Mensile Materiali Indiretti."""
         try:
@@ -19451,6 +19626,34 @@ class App(tk.Tk):
             messagebox.showerror(
                 self.lang.get('error', 'Errore'),
                 f"Impossibile aprire la configurazione WH WorkStation:\n{e}",
+                parent=self
+            )
+
+    def _open_confirm_kit_prep_workstation(self):
+        """Apre la finestra Conferma Postazione Formazione Kit."""
+        try:
+            import kit_workstation_config
+            user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
+            kit_workstation_config.open_kit_prep_workstation_config(self, self.lang, user_name)
+        except Exception as e:
+            logger.error(f"Errore apertura Postazione Formazione Kit: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire la configurazione Postazione Formazione Kit:\n{e}",
+                parent=self
+            )
+
+    def _open_confirm_kit_prod_workstation(self):
+        """Apre la finestra Conferma Postazione Ricezione Kit Produzione."""
+        try:
+            import kit_workstation_config
+            user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
+            kit_workstation_config.open_kit_prod_workstation_config(self, self.lang, user_name)
+        except Exception as e:
+            logger.error(f"Errore apertura Postazione Ricezione Kit: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire la configurazione Postazione Ricezione Kit:\n{e}",
                 parent=self
             )
 
@@ -19597,6 +19800,25 @@ class App(tk.Tk):
         except Exception as e:
             logger.error(f"Errore avvio monitor materiali indiretti: {e}", exc_info=True)
 
+        # Monitor popup Kit Preparation (categoria DIRECT_MATERIAL, spec §7.2)
+        try:
+            from kit_popup_monitor import KitPopupMonitor
+            self._kit_popup_monitor = KitPopupMonitor(self, self.db, self.lang)
+            logger.info("KitPopupMonitor avviato")
+        except Exception as e:
+            logger.error(f"Errore avvio KitPopupMonitor: {e}", exc_info=True)
+
+        # Kit Dashboard: watcher (ping /health del server indipendente; alert
+        # popup KIT_PREP + email se down). Il web server gira autonomo sul .72
+        # e fa da sé il sync. Vedi docs/KitDashboard_WebServer_Spec_v1.0.md
+        try:
+            from kit_dashboard.controller import KitDashboardController
+            self._kit_dashboard_controller = KitDashboardController()
+            self._kit_dashboard_controller.start()
+            logger.info("KitDashboardController (watcher) avviato")
+        except Exception as e:
+            logger.error(f"Errore avvio KitDashboardController: {e}", exc_info=True)
+
         # Monitor approvazione budget NPI
         try:
             from npi_budget_approval_monitor import BudgetApprovalMonitor, is_budget_approver
@@ -19653,6 +19875,11 @@ class App(tk.Tk):
             self._budget_approval_monitor.stop()
         if hasattr(self, '_shift_handover_monitor') and self._shift_handover_monitor:
             self._shift_handover_monitor.stop()
+        if hasattr(self, '_kit_dashboard_controller') and self._kit_dashboard_controller:
+            try:
+                self._kit_dashboard_controller.stop()
+            except Exception:
+                pass
 
         # Ferma tutti i timer attivi
         if self.slideshow_job_id: self.after_cancel(self.slideshow_job_id)
@@ -19731,14 +19958,53 @@ class UpdateNotificationDialog(tk.Toplevel):
         self.destroy()
 
 if __name__ == "__main__":
+    # ── Avvio in modalità "web server Kit Dashboard" (build frozen) ──────── #
+    # Il supervisor lancia l'eseguibile con --kit-web-server: in quel caso NON
+    # avviamo la GUI né la kill degli orfani, ma solo il web server Flask.
+    if "--kit-web-server" in sys.argv:
+        try:
+            import kit_web_server
+            kit_web_server.main()
+        except Exception as _e:
+            print(f"[KIT-WEB] Errore avvio web server: {_e}")
+        sys.exit(0)
+
+    # ── Installazione/rimozione della Scheduled Task del web server (admin) ── #
+    # Uso (prompt Amministratore):
+    #   DocumentManagement.exe --install-kit-dashboard-task            (SYSTEM/boot)
+    #   DocumentManagement.exe --install-kit-dashboard-task --logon    (al logon utente)
+    #   DocumentManagement.exe --remove-kit-dashboard-task
+    if "--install-kit-dashboard-task" in sys.argv or "--remove-kit-dashboard-task" in sys.argv:
+        try:
+            import install_kit_dashboard_autostart as _ins
+            if "--remove-kit-dashboard-task" in sys.argv:
+                _msg = _ins.remove()
+            else:
+                _msg = _ins.install(logon="--logon" in sys.argv)
+        except Exception as _e:
+            _msg = f"Errore: {_e}"
+        try:
+            import tkinter as _tk
+            from tkinter import messagebox as _mb
+            _r = _tk.Tk(); _r.withdraw()
+            _mb.showinfo("Kit Dashboard — Task", _msg)
+            _r.destroy()
+        except Exception:
+            print(_msg)
+        sys.exit(0)
+
     # ── Kill processi orfani di DocumentManagement.exe ──────────────────── #
     try:
         import psutil
         current_pid = os.getpid()
         exe_name = "DocumentManagement.exe"
         killed = []
-        for proc in psutil.process_iter(['pid', 'name']):
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
             try:
+                # Non uccidere il processo figlio che ospita il web server kit
+                cmdline = proc.info.get('cmdline') or []
+                if any('--kit-web-server' in str(c) for c in cmdline):
+                    continue
                 if (proc.info['name'] and
                     proc.info['name'].lower() == exe_name.lower() and
                     proc.info['pid'] != current_pid):

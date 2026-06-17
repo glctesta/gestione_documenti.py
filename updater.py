@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import time
 import threading
+import filecmp
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
@@ -112,12 +113,44 @@ class UpdateProgressWindow(tk.Tk):
         'vcruntime140_1.dll',
     }
 
+    @staticmethod
+    def _same_content(src, dst):
+        """True se dst esiste e ha lo STESSO contenuto di src (size + byte).
+        Non usa l'mtime: ogni build PyInstaller rigenera le date dei file."""
+        try:
+            if not os.path.exists(dst):
+                return False
+            return filecmp.cmp(src, dst, shallow=False)
+        except Exception:
+            # In dubbio (es. file illeggibile) prova comunque a copiare
+            return False
+
+    def _kill_running_instances(self):
+        """(B) Chiude tutte le istanze dell'app (incluso il figlio --kit-web-server)
+        prima della copia, così i .pyd caricati vengono liberati e sovrascrivibili.
+        NB: niente '/T' — l'updater è figlio dell'app e verrebbe ucciso anch'esso."""
+        if not self.exe_name:
+            return
+        try:
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            r = subprocess.run(
+                ["taskkill", "/F", "/IM", self.exe_name],
+                capture_output=True, text=True, creationflags=flags,
+            )
+            log(f"_kill_running_instances: taskkill {self.exe_name} rc={r.returncode} "
+                f"out={(r.stdout or r.stderr or '').strip()[:200]}")
+        except Exception as e:
+            log(f"_kill_running_instances: errore taskkill: {e}")
+        # lascia rilasciare gli handle dei file dai processi terminati
+        time.sleep(2)
+
     def _copy_worker(self, file_list):
         """
         Worker eseguito in un thread separato.
         NON chiama mai direttamente widget tkinter — usa self.after() come ponte.
         """
         errors = []
+        skipped = 0
         total = len(file_list)
         log(f"_copy_worker: avvio copia di {total} file")
 
@@ -142,6 +175,14 @@ class UpdateProgressWindow(tk.Tk):
                 os.makedirs(dest_dir, exist_ok=True)
                 dest_file = os.path.join(dest_dir, name)
 
+                # (A) Salta i file con CONTENUTO identico: niente copia, niente lock.
+                # filecmp confronta size + byte (gli mtime cambiano a ogni build).
+                # Un .pyd caricato in memoria resta comunque LEGGIBILE (FILE_SHARE_READ),
+                # quindi il confronto riesce anche se il file è "in uso".
+                if self._same_content(source_file, dest_file):
+                    skipped += 1
+                    continue
+
                 # Retry in caso di PermissionError (file temporaneamente in uso)
                 max_retries = 3
                 for attempt in range(max_retries):
@@ -160,7 +201,8 @@ class UpdateProgressWindow(tk.Tk):
                 log(msg)
                 errors.append(msg)
 
-        log(f"_copy_worker: copia completata. {total - len(errors)} OK, {len(errors)} errori")
+        log(f"_copy_worker: copia completata. {total - len(errors) - skipped} copiati, "
+            f"{skipped} invariati (saltati), {len(errors)} errori")
         # Al termine notifica il thread principale
         self.after(0, self._on_copy_done, errors)
 
@@ -200,8 +242,10 @@ class UpdateProgressWindow(tk.Tk):
         self.destroy()
 
     def start_update(self):
-        """Attende la chiusura dell'app principale poi avvia il thread di copia."""
-        log("start_update: attesa 2 secondi per chiusura app principale...")
+        """Chiude le istanze in esecuzione, attende, poi avvia il thread di copia."""
+        log("start_update: chiusura istanze in esecuzione prima della copia...")
+        self._kill_running_instances()
+        log("start_update: attesa 2 secondi per il rilascio dei file...")
         self.after(2000, self._perform_update)
 
     def _perform_update(self):

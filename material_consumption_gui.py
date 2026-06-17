@@ -34,6 +34,18 @@ WHERE (charindex('CIP', ProductCode) = 0) AND (charindex('RMA', ProductCode) = 0
 ORDER  BY ProductCode
 """
 
+_Q_PRODUCTS_WITH_CONSUMPTION = """
+SELECT DISTINCT
+        p.IDProduct,
+        p.ProductCode
+FROM Traceability_RS.dbo.Products p
+INNER JOIN Traceability_RS.dbo.ProductConsumptions pc
+                ON pc.IdProduct = p.IDProduct
+WHERE pc.MaterialConsumption = ?
+    AND pc.DateOut IS NULL
+ORDER BY p.ProductCode
+"""
+
 _Q_CHECK_EXISTING = """
 SELECT TOP 1
     ProductConsumptionId,
@@ -93,6 +105,8 @@ class MaterialConsumptionForm(tk.Toplevel):
         self._product_code: str         = ''
         self._products_map: dict        = {}   # ProductCode → IDProduct
         self._all_products: list        = []   # [(IDProduct, ProductCode), ...]
+        self._existing_consumption: dict | None = None
+        self._combo_display_map: dict[str, str] = {}
 
         self.title(self.lang.get('mat_cons_title', 'Material Consumption Management'))
         self.resizable(False, False)
@@ -263,6 +277,16 @@ class MaterialConsumptionForm(tk.Toplevel):
         _val(0, self._info_code_var)
         _val(1, self._info_id_var)
 
+        self._existing_lbl = tk.Label(
+            grid,
+            text='',
+            bg=_C_CARD,
+            fg=_C_SUBTEXT,
+            font=('Segoe UI', 9, 'italic'),
+            justify=tk.LEFT
+        )
+        self._existing_lbl.grid(row=2, column=0, columnspan=4, sticky=tk.W, padx=4, pady=(6, 0))
+
     def _build_data(self, parent):
         row = tk.Frame(parent, bg=_C_CARD)
         row.pack(fill=tk.X)
@@ -310,11 +334,38 @@ class MaterialConsumptionForm(tk.Toplevel):
             cur = self.db.conn.cursor()
             cur.execute(_Q_ALL_PRODUCTS)
             self._all_products = [(r.IDProduct, r.ProductCode) for r in cur.fetchall()]
-            codes = [r[1] for r in self._all_products]
-            self._products_map = {r[1]: r[0] for r in self._all_products}
-            self._combo['values'] = codes
+            self._refresh_products_combo()
         except Exception as e:
             logger.error(f'MaterialConsumptionForm _load_products: {e}')
+
+    def _load_products_with_consumption(self, material_type: str) -> set[int]:
+        """Return product IDs that already have a saved consumption for the selected material type."""
+        existing_ids: set[int] = set()
+        try:
+            cur = self.db.conn.cursor()
+            cur.execute(_Q_PRODUCTS_WITH_CONSUMPTION, (material_type,))
+            existing_ids = {r.IDProduct for r in cur.fetchall()}
+        except Exception as e:
+            logger.error(f'MaterialConsumptionForm _load_products_with_consumption: {e}')
+        return existing_ids
+
+    def _refresh_products_combo(self):
+        """Refresh combo values and mark products that already have a saved value."""
+        material_type = self._type_var.get() if hasattr(self, '_type_var') else 'Alloy_GR'
+        existing_ids = self._load_products_with_consumption(material_type)
+
+        self._products_map = {}
+        self._combo_display_map = {}
+        display_values: list[str] = []
+
+        for id_product, product_code in self._all_products:
+            display_code = f'★ {product_code}' if id_product in existing_ids else product_code
+            self._products_map[product_code] = id_product
+            self._products_map[display_code] = id_product
+            self._combo_display_map[product_code] = display_code
+            display_values.append(display_code)
+
+        self._combo['values'] = display_values
 
     def _load_count(self):
         try:
@@ -349,6 +400,7 @@ class MaterialConsumptionForm(tk.Toplevel):
             row = cur.fetchone()
             if row:
                 self._set_product(row.IDProduct, row.ProductCode)
+                self._load_existing_consumption_state()
                 self._lc_status.config(
                     text=f'✅ {row.ProductCode}',
                     fg=_C_SUCCESS
@@ -365,10 +417,13 @@ class MaterialConsumptionForm(tk.Toplevel):
 
     def _on_combo_selected(self, event=None):
         code = self._combo_var.get()
-        if code in self._products_map:
-            self._set_product(self._products_map[code], code)
+        plain_code = code.lstrip('★').strip()
+        if code in self._products_map or plain_code in self._products_map:
+            id_product = self._products_map.get(code) or self._products_map.get(plain_code)
+            self._set_product(id_product, plain_code)
             # Clear label status since user used combo
             self._lc_status.config(text='', fg=_C_SUBTEXT)
+            self._load_existing_consumption_state()
 
     def _on_combo_filter(self, event=None):
         """Filters combo list based on user input."""
@@ -384,7 +439,66 @@ class MaterialConsumptionForm(tk.Toplevel):
         self._product_code = product_code
         self._info_code_var.config(value=product_code) if hasattr(self._info_code_var, 'config') else self._info_code_var.set(product_code)
         self._info_id_var.set(str(id_product))
-        self._combo_var.set(product_code)
+        display_value = self._combo_display_map.get(product_code, product_code)
+        self._combo_var.set(display_value)
+
+    def _load_existing_consumption_state(self):
+        """Highlight the product when a saved consumption already exists for the selected type."""
+        if self._id_product is None:
+            self._existing_consumption = None
+            self._existing_lbl.config(text='', fg=_C_SUBTEXT)
+            return
+
+        mat_type = self._type_var.get()
+        try:
+            cur = self.db.conn.cursor()
+            cur.execute(_Q_CHECK_EXISTING, (self._id_product, mat_type))
+            existing = cur.fetchone()
+        except Exception as e:
+            logger.error(f'MaterialConsumptionForm _load_existing_consumption_state: {e}')
+            existing = None
+
+        if existing:
+            self._existing_consumption = {
+                'id': existing.ProductConsumptionId,
+                'gr': existing.MaterialConsumptionGR,
+                'date': existing.DateSys,
+                'user': existing.User,
+                'type': mat_type,
+            }
+            self._existing_lbl.config(
+                text=(
+                    f"✅ {mat_type} already set: {existing.MaterialConsumptionGR} gr"
+                    f"  |  {self.lang.get('mat_cons_user', 'User')}: {existing.User or '—'}"
+                    f"  |  {self.lang.get('mat_cons_date', 'Date')}: {str(existing.DateSys)[:19]}"
+                ),
+                fg=_C_SUCCESS
+            )
+            self._info_code_var.set(self._product_code)
+            self._info_id_var.set(str(self._id_product))
+        else:
+            self._existing_consumption = None
+            self._existing_lbl.config(
+                text=self.lang.get(
+                    'mat_cons_no_existing',
+                    'No saved consumption for this product and type.'
+                ),
+                fg=_C_SUBTEXT
+            )
+
+        # Make the selected product stand out when an existing value is present.
+        if existing:
+            self._info_code_var.set(f'● {self._product_code}')
+            self._info_id_var.set(f'● {self._id_product}')
+        else:
+            self._info_code_var.set(self._product_code)
+            self._info_id_var.set(str(self._id_product))
+
+        # Rebuild combo labels when the selected type changes so markers stay accurate.
+        if hasattr(self, '_combo') and self._all_products:
+            self._refresh_products_combo()
+            if self._product_code:
+                self._combo_var.set(self._combo_display_map.get(self._product_code, self._product_code))
 
     def _clear_product(self):
         self._id_product   = None
@@ -475,6 +589,7 @@ class MaterialConsumptionForm(tk.Toplevel):
             self._load_count()
             # Clear value for next entry
             self._value_var.set('')
+            self._load_existing_consumption_state()
 
         except Exception as e:
             logger.error(f'MaterialConsumptionForm _on_save: {e}', exc_info=True)

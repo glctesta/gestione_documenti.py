@@ -26,6 +26,12 @@ logger = logging.getLogger('TraceabilityRS')
 POLL_INTERVAL_MS   = 60_000    # polling ogni 60s
 ALERT_WINDOW_MIN   = 15        # minuti prima della fine turno: apre alert "compila"
 CONFIRM_GRACE_MIN  = 30        # minuti dopo inizio turno: se non confermato → email
+ALERT_CUTOFF_HM    = (10, 0)   # oltre le 10:00 del primo giorno lavorativo successivo
+                               # alla ShiftDate non si invia più l'alert di mancata conferma
+
+# Tabelle di log per garantire un solo invio (anche con più PC Capo Turno e tra riavvii)
+MONTHLY_REPORT_LOG_TABLE = 'Employee.dbo.ShiftHandoverMonthlyReportLog'
+ALERT_LOG_TABLE          = 'Employee.dbo.ShiftHandoverAlertLog'
 
 # ─── File marker workstation ─────────────────────────────────────────────────
 _LOCALAPPDATA = os.environ.get('LOCALAPPDATA', os.path.expanduser('~\\AppData\\Local'))
@@ -97,6 +103,22 @@ def _get_previous_business_day(ref_date, country_code='RO'):
             return d
         d -= timedelta(days=1)
     return ref_date - timedelta(days=1)
+
+
+def _alert_cutoff(shift_date, country_code='RO'):
+    """Limite oltre il quale NON si invia più l'alert di mancata conferma.
+
+    È fissato alle 10:00 del primo giorno lavorativo SUCCESSIVO alla ShiftDate.
+    Conseguenze (coerenti con la regola richiesta):
+      - turno del giorno in corso: alert valido fino alle 10:00 del giorno dopo;
+      - giorno precedente: valido solo se siamo entro le 10:00;
+      - venerdì: valido fino alle 10:00 del lunedì (o primo giorno lavorativo).
+    """
+    if isinstance(shift_date, datetime):
+        shift_date = shift_date.date()
+    next_bd = get_next_business_day(shift_date, country_code=country_code)
+    return datetime.combine(next_bd, datetime.min.time()).replace(
+        hour=ALERT_CUTOFF_HM[0], minute=ALERT_CUTOFF_HM[1])
 
 
 def _is_deferred_shift2_mode(shift_num, active_shifts):
@@ -208,6 +230,10 @@ class ShiftHandoverMonitor:
         self._active_shifts = _get_active_shifts(host_cfg)
 
         now = datetime.now()
+
+        # Report mensile (primo giorno del mese / primo avvio del mese nuovo)
+        self._maybe_send_monthly_report(now)
+
         for shift_num in self._active_shifts:
             deferred_shift2 = _is_deferred_shift2_mode(shift_num, self._active_shifts)
 
@@ -253,9 +279,22 @@ class ShiftHandoverMonitor:
                     if deferred_shift2:
                         next_start = _next_shift_start(shift_num, shift_date, active_shifts=self._active_shifts)
                     grace_end  = next_start + timedelta(minutes=CONFIRM_GRACE_MIN)
-                    if now > grace_end:
-                        self._send_unconfirmed_alert(shift_num, shift_date, row[2], row[3])
-                        self._email_sent_for.add(key)
+                    cutoff     = _alert_cutoff(shift_date)
+                    # Invia SOLO se: superata la grazia E non oltre il limite.
+                    # Così si notifica il giorno in corso, il giorno precedente
+                    # entro le 10:00 e il venerdì entro le 10:00 del lunedì,
+                    # evitando alert per cambi turno di giorni più vecchi.
+                    if grace_end < now <= cutoff:
+                        # Claim atomico: previene duplicati tra riavvii dell'app e
+                        # tra più PC Capo Turno sullo stesso reparto/turno/data.
+                        if self._claim_unconfirmed_alert(shift_num, shift_date):
+                            if self._send_unconfirmed_alert(shift_num, shift_date, row[2], row[3]):
+                                self._email_sent_for.add(key)            # inviato: non riprovare
+                            else:
+                                self._release_unconfirmed_alert(shift_num, shift_date)  # ritenta dopo
+                        else:
+                            # già inviato (da questo o altro PC): evita ulteriori query
+                            self._email_sent_for.add(key)
 
     # ── Popup "Compila consegna" ──────────────────────────────────────────────
     def _show_compile_popup(self, shift_num, shift_date):
@@ -368,6 +407,50 @@ class ShiftHandoverMonitor:
         except Exception as e:
             logger.error(f"Errore apertura ShiftHandoverWindow dal monitor: {e}", exc_info=True)
 
+    # ── Dedup persistente alert (anti-duplicati tra riavvii e tra PC) ─────────
+    def _claim_unconfirmed_alert(self, shift_num, shift_date):
+        """Prenota l'invio dell'alert per (data, turno, reparto). Ritorna True solo
+        se questo PC ha ottenuto il claim ora; False se già presente/inviato."""
+        try:
+            with self.db._lock:
+                self.db.cursor.execute(f"""
+                    INSERT INTO {ALERT_LOG_TABLE} (ShiftDate, ShiftNumber, Department, SentByComputer)
+                    SELECT ?, ?, ?, ?
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM {ALERT_LOG_TABLE}
+                        WHERE ShiftDate = ? AND ShiftNumber = ? AND Department = ?
+                    )
+                """, (shift_date, shift_num, self._department, self.hostname,
+                      shift_date, shift_num, self._department))
+                claimed = self.db.cursor.rowcount == 1
+                self.db.conn.commit()
+            return claimed
+        except Exception as e:
+            # Race / violazione PK con altro PC → consideriamo già inviato
+            logger.info(f"Claim alert non riuscito (t{shift_num} {shift_date} {self._department}): {e}")
+            try:
+                self.db.conn.rollback()
+            except Exception:
+                pass
+            return False
+
+    def _release_unconfirmed_alert(self, shift_num, shift_date):
+        """Rimuove il claim dell'alert (in caso di invio fallito) per ritentare."""
+        try:
+            with self.db._lock:
+                self.db.cursor.execute(
+                    f"DELETE FROM {ALERT_LOG_TABLE} "
+                    f"WHERE ShiftDate = ? AND ShiftNumber = ? AND Department = ? AND SentByComputer = ?",
+                    (shift_date, shift_num, self._department, self.hostname)
+                )
+                self.db.conn.commit()
+        except Exception as e:
+            logger.warning(f"Impossibile rilasciare il claim alert: {e}")
+            try:
+                self.db.conn.rollback()
+            except Exception:
+                pass
+
     # ── Email mancata conferma ────────────────────────────────────────────────
     def _send_unconfirmed_alert(self, shift_num, shift_date, compiled_by, open_issues):
         try:
@@ -408,11 +491,308 @@ entro {CONFIRM_GRACE_MIN} minuti dall'inizio del turno successivo.</p>
 
             utils.send_email(recipients, subj, body, is_html=True)
             logger.info(f"Alert mancata conferma inviato: turno={shift_num} dept={self._department}")
+            return True
         except Exception as e:
             logger.error(f"Errore invio email alert cambio turno: {e}", exc_info=True)
+            return False
+
+    # ── Report mensile cambi turno ────────────────────────────────────────────
+    def _maybe_send_monthly_report(self, now):
+        """Il primo giorno del mese (o al primo avvio nel nuovo mese) invia il
+        report mensile sui cambi turno del mese precedente + rolling da inizio
+        anno. L'invio avviene UNA SOLA volta grazie al claim atomico sulla
+        tabella di log, anche se sono attivi più PC Capo Turno."""
+        try:
+            # Invio previsto "il primo del mese"; finestra dei primi giorni per
+            # robustezza (PC spento il 1°, weekend/festivi a inizio mese).
+            if now.day > 5:
+                return
+
+            # Mese da riportare = mese precedente rispetto a 'now'
+            first_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            report_month = (first_of_month - timedelta(days=1)).replace(day=1).date()
+
+            # Claim atomico: solo il primo PC che inserisce la riga invia il report
+            if not self._claim_monthly_report(report_month):
+                return
+
+            try:
+                recipients = _get_alert_recipients(self.db)
+                if not recipients:
+                    logger.warning('Report mensile cambi turno: nessun destinatario configurato')
+                    self._release_monthly_report(report_month)
+                    return
+
+                stats = self._compute_monthly_stats(report_month)
+                html = _build_monthly_report_html(report_month, stats)
+                subj = f"[Report Mensile] Cambi Turno — {_month_label(report_month)}"
+
+                import utils
+                logo = os.path.join(os.path.dirname(__file__), 'Logo.png')
+                attachments = [('inline', logo, 'company_logo')] if os.path.exists(logo) else None
+
+                utils.send_email(recipients, subj, html, is_html=True, attachments=attachments)
+                self._update_monthly_report_recipients(report_month, len(recipients))
+                logger.info(
+                    f"Report mensile cambi turno inviato per {report_month:%Y-%m} "
+                    f"a {len(recipients)} destinatari"
+                )
+            except Exception as e:
+                # Invio fallito: rilascia il claim così verrà ritentato al prossimo poll
+                logger.error(f"Errore invio report mensile cambi turno: {e}", exc_info=True)
+                self._release_monthly_report(report_month)
+        except Exception as e:
+            logger.error(f"Errore _maybe_send_monthly_report: {e}", exc_info=True)
+
+    def _claim_monthly_report(self, report_month):
+        """Prenota l'invio del report per il mese dato. Ritorna True se questo PC
+        ha ottenuto il claim (riga inserita ora), False se già presente/inviato."""
+        try:
+            with self.db._lock:
+                self.db.cursor.execute(f"""
+                    INSERT INTO {MONTHLY_REPORT_LOG_TABLE} (ReportMonth, SentByComputer)
+                    SELECT ?, ?
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM {MONTHLY_REPORT_LOG_TABLE} WHERE ReportMonth = ?
+                    )
+                """, (report_month, self.hostname, report_month))
+                claimed = self.db.cursor.rowcount == 1
+                self.db.conn.commit()
+            return claimed
+        except Exception as e:
+            # Es. violazione PK per race con un altro PC → consideriamo già inviato
+            logger.info(f"Claim report mensile non riuscito ({report_month:%Y-%m}): {e}")
+            try:
+                self.db.conn.rollback()
+            except Exception:
+                pass
+            return False
+
+    def _release_monthly_report(self, report_month):
+        """Rimuove il claim (in caso di invio fallito) per consentire un nuovo tentativo."""
+        try:
+            with self.db._lock:
+                self.db.cursor.execute(
+                    f"DELETE FROM {MONTHLY_REPORT_LOG_TABLE} WHERE ReportMonth = ? AND SentByComputer = ?",
+                    (report_month, self.hostname)
+                )
+                self.db.conn.commit()
+        except Exception as e:
+            logger.warning(f"Impossibile rilasciare il claim report mensile: {e}")
+            try:
+                self.db.conn.rollback()
+            except Exception:
+                pass
+
+    def _update_monthly_report_recipients(self, report_month, count):
+        try:
+            with self.db._lock:
+                self.db.cursor.execute(
+                    f"UPDATE {MONTHLY_REPORT_LOG_TABLE} SET RecipientCount = ? WHERE ReportMonth = ?",
+                    (count, report_month)
+                )
+                self.db.conn.commit()
+        except Exception:
+            try:
+                self.db.conn.rollback()
+            except Exception:
+                pass
+
+    def _compute_monthly_stats(self, report_month):
+        """Calcola le statistiche di compliance sui cambi turno per il mese e
+        per il rolling da inizio anno (fino a fine mese di riferimento)."""
+        # Intervalli [inizio, fineEsclusa)
+        month_start = report_month
+        if report_month.month == 12:
+            month_end = date(report_month.year + 1, 1, 1)
+        else:
+            month_end = date(report_month.year, report_month.month + 1, 1)
+        ytd_start = date(report_month.year, 1, 1)
+        ytd_end = month_end  # YTD fino a fine mese di riferimento incluso
+
+        agg_sql = """
+            SELECT
+                COUNT(*)                                          AS Total,
+                SUM(CASE WHEN IsConfirmed = 1 THEN 1 ELSE 0 END)  AS Confirmed,
+                SUM(CASE WHEN IsConfirmed = 0 THEN 1 ELSE 0 END)  AS NotConfirmed
+            FROM Employee.dbo.ShiftHandoverReports
+            WHERE ShiftDate >= ? AND ShiftDate < ?
+        """
+        by_dept_sql = """
+            SELECT Department,
+                   COUNT(*)                                          AS Total,
+                   SUM(CASE WHEN IsConfirmed = 1 THEN 1 ELSE 0 END)  AS Confirmed,
+                   SUM(CASE WHEN IsConfirmed = 0 THEN 1 ELSE 0 END)  AS NotConfirmed
+            FROM Employee.dbo.ShiftHandoverReports
+            WHERE ShiftDate >= ? AND ShiftDate < ?
+            GROUP BY Department
+            ORDER BY Department
+        """
+        by_shift_sql = """
+            SELECT ShiftNumber,
+                   COUNT(*)                                          AS Total,
+                   SUM(CASE WHEN IsConfirmed = 1 THEN 1 ELSE 0 END)  AS Confirmed,
+                   SUM(CASE WHEN IsConfirmed = 0 THEN 1 ELSE 0 END)  AS NotConfirmed
+            FROM Employee.dbo.ShiftHandoverReports
+            WHERE ShiftDate >= ? AND ShiftDate < ?
+            GROUP BY ShiftNumber
+            ORDER BY ShiftNumber
+        """
+
+        def _row_to_dict(r):
+            return {
+                'total': int(r.Total or 0),
+                'confirmed': int(r.Confirmed or 0),
+                'not_confirmed': int(r.NotConfirmed or 0),
+            }
+
+        stats = {}
+        with self.db._lock:
+            cur = self.db.cursor
+            cur.execute(agg_sql, (month_start, month_end))
+            stats['month'] = _row_to_dict(cur.fetchone())
+            cur.execute(agg_sql, (ytd_start, ytd_end))
+            stats['ytd'] = _row_to_dict(cur.fetchone())
+
+            cur.execute(by_dept_sql, (month_start, month_end))
+            stats['by_dept'] = [
+                {'key': (r.Department or '—'), **_row_to_dict(r)} for r in cur.fetchall()
+            ]
+            cur.execute(by_shift_sql, (month_start, month_end))
+            stats['by_shift'] = [
+                {'key': f"Turno {r.ShiftNumber}", **_row_to_dict(r)} for r in cur.fetchall()
+            ]
+        return stats
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
+_MONTH_NAMES_IT = ['', 'Gennaio', 'Febbraio', 'Marzo', 'Aprile', 'Maggio', 'Giugno',
+                   'Luglio', 'Agosto', 'Settembre', 'Ottobre', 'Novembre', 'Dicembre']
+
+
+def _month_label(d):
+    return f"{_MONTH_NAMES_IT[d.month]} {d.year}"
+
+
+def _rate(confirmed, total):
+    return (confirmed / total * 100.0) if total else 0.0
+
+
+def _rate_color(pct):
+    if pct >= 95:
+        return '#2E7D32'   # verde
+    if pct >= 80:
+        return '#F9A825'   # ambra
+    return '#C62828'       # rosso
+
+
+def _build_monthly_report_html(report_month, stats):
+    """Costruisce l'HTML del report mensile cambi turno (con logo inline)."""
+    m = stats['month']
+    y = stats['ytd']
+    m_rate = _rate(m['confirmed'], m['total'])
+    y_rate = _rate(y['confirmed'], y['total'])
+
+    def _summary_card(title, data, subtitle):
+        pct = _rate(data['confirmed'], data['total'])
+        return f"""
+        <td style="padding:10px;">
+          <div style="border:1px solid #e0e0e0;border-radius:8px;padding:16px;background:#fafafa;">
+            <div style="font-size:12px;color:#777;text-transform:uppercase;letter-spacing:.5px;">{title}</div>
+            <div style="font-size:11px;color:#999;margin-bottom:8px;">{subtitle}</div>
+            <table style="width:100%;font-size:13px;">
+              <tr><td style="color:#555;padding:2px 0;">Totale consegne</td><td style="text-align:right;font-weight:bold;">{data['total']}</td></tr>
+              <tr><td style="color:#2E7D32;padding:2px 0;">Confermate</td><td style="text-align:right;font-weight:bold;color:#2E7D32;">{data['confirmed']}</td></tr>
+              <tr><td style="color:#C62828;padding:2px 0;">Non confermate</td><td style="text-align:right;font-weight:bold;color:#C62828;">{data['not_confirmed']}</td></tr>
+            </table>
+            <div style="margin-top:10px;text-align:center;">
+              <span style="font-size:26px;font-weight:bold;color:{_rate_color(pct)};">{pct:.1f}%</span>
+              <div style="font-size:11px;color:#999;">tasso di conferma</div>
+            </div>
+          </div>
+        </td>"""
+
+    def _breakdown_rows(items):
+        if not items:
+            return '<tr><td colspan="5" style="padding:10px;text-align:center;color:#999;">Nessun dato</td></tr>'
+        rows = []
+        for it in items:
+            pct = _rate(it['confirmed'], it['total'])
+            rows.append(f"""
+            <tr>
+              <td style="padding:8px 12px;border-bottom:1px solid #eee;">{it['key']}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:center;">{it['total']}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:center;color:#2E7D32;">{it['confirmed']}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:center;color:#C62828;">{it['not_confirmed']}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:center;font-weight:bold;color:{_rate_color(pct)};">{pct:.1f}%</td>
+            </tr>""")
+        return ''.join(rows)
+
+    def _breakdown_table(title, items):
+        return f"""
+        <h3 style="color:#37474F;margin:24px 0 8px 0;font-size:15px;">{title}</h3>
+        <table style="width:100%;border-collapse:collapse;font-size:13px;border:1px solid #e0e0e0;">
+          <tr style="background:#37474F;color:#fff;">
+            <th style="padding:8px 12px;text-align:left;">Voce</th>
+            <th style="padding:8px 12px;">Consegne</th>
+            <th style="padding:8px 12px;">Confermate</th>
+            <th style="padding:8px 12px;">Non conf.</th>
+            <th style="padding:8px 12px;">% Conferma</th>
+          </tr>
+          {_breakdown_rows(items)}
+        </table>"""
+
+    now_str = datetime.now().strftime('%d/%m/%Y %H:%M')
+
+    return f"""
+<html><body style="font-family:'Segoe UI',Arial,sans-serif;color:#333;margin:0;padding:0;background:#f4f6f8;">
+  <div style="max-width:720px;margin:0 auto;padding:20px;">
+    <div style="background:#fff;border-radius:10px;overflow:hidden;border:1px solid #e0e0e0;">
+      <div style="border-bottom:3px solid #37474F;padding:18px 24px;">
+        <table width="100%"><tr>
+          <td style="font-size:20px;font-weight:bold;color:#37474F;">
+            Report Mensile &mdash; Cambi Turno
+          </td>
+          <td style="text-align:right;">
+            <img src="cid:company_logo" alt="Vandewiele" style="width:120px;height:auto;"/>
+          </td>
+        </tr></table>
+        <div style="font-size:14px;color:#777;margin-top:4px;">Periodo: <strong>{_month_label(report_month)}</strong></div>
+      </div>
+
+      <div style="padding:20px 24px;">
+        <p style="font-size:14px;line-height:1.6;">
+          Riepilogo della compliance dei cambi turno: numero di consegne registrate,
+          confermate e non confermate dal capo turno entrante. La colonna
+          <em>Non confermate</em> rappresenta i cambi turno che hanno generato un alert di ritardo.
+        </p>
+
+        <table width="100%" style="margin:8px 0;"><tr>
+          {_summary_card('Mese di riferimento', m, _month_label(report_month))}
+          {_summary_card('Rolling da inizio anno', y, f'01/01/{report_month.year} → {_month_label(report_month)}')}
+        </tr></table>
+
+        {_breakdown_table('Dettaglio per reparto (mese)', stats['by_dept'])}
+        {_breakdown_table('Dettaglio per turno (mese)', stats['by_shift'])}
+
+        <p style="font-size:13px;color:#555;margin-top:24px;line-height:1.6;">
+          Tasso di conferma mese: <strong style="color:{_rate_color(m_rate)};">{m_rate:.1f}%</strong> &nbsp;|&nbsp;
+          Rolling YTD: <strong style="color:{_rate_color(y_rate)};">{y_rate:.1f}%</strong>
+        </p>
+      </div>
+
+      <div style="padding:14px 24px;border-top:1px solid #eee;background:#fafafa;">
+        <p style="font-size:11px;color:#999;line-height:1.5;margin:0;">
+          Report generato automaticamente da TraceabilityRS il {now_str}.<br/>
+          &copy; {datetime.now().year} Vandewiele Romania &mdash; All rights reserved.
+        </p>
+      </div>
+    </div>
+  </div>
+</body></html>"""
+
+
+# ─── Suoni ───────────────────────────────────────────────────────────────────
 def _play_alert():
     def _beep():
         try:

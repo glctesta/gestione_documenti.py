@@ -79,7 +79,7 @@ class RequestIndirectMaterialsWindow(tk.Toplevel):
         tree_frame = ttk.Frame(main)
         tree_frame.pack(fill="both", expand=True, pady=(0, 10))
 
-        columns = ('codice', 'descrizione', 'tipo', 'stock', 'confezione', 'frazionabile')
+        columns = ('codice', 'descrizione', 'tipo', 'stock', 'confezione', 'frazionabile', 'scoria')
         self.tree = ttk.Treeview(tree_frame, columns=columns, show='headings', selectmode='browse')
         self.tree.heading('codice', text=self.lang.get('ind_import_col_code', 'Codice'))
         self.tree.heading('descrizione', text=self.lang.get('ind_import_col_desc', 'Descrizione'))
@@ -87,18 +87,22 @@ class RequestIndirectMaterialsWindow(tk.Toplevel):
         self.tree.heading('stock', text=self.lang.get('ind_req_col_stock', 'Stock'))
         self.tree.heading('confezione', text=self.lang.get('ind_req_col_package', 'Confezione'))
         self.tree.heading('frazionabile', text=self.lang.get('ind_req_col_fractional', 'Frazionabile'))
+        self.tree.heading('scoria', text=self.lang.get('ind_req_col_scrap', 'Scoria collegata'))
 
         self.tree.column('codice', width=120)
-        self.tree.column('descrizione', width=300)
-        self.tree.column('tipo', width=100)
-        self.tree.column('stock', width=80, anchor="e")
-        self.tree.column('confezione', width=80, anchor="e")
-        self.tree.column('frazionabile', width=80, anchor="center")
+        self.tree.column('descrizione', width=270)
+        self.tree.column('tipo', width=90)
+        self.tree.column('stock', width=70, anchor="e")
+        self.tree.column('confezione', width=70, anchor="e")
+        self.tree.column('frazionabile', width=70, anchor="center")
+        self.tree.column('scoria', width=120, anchor="center")
 
         scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
         self.tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
+        # Evidenzia in arancione i materiali che richiedono dichiarazione scoria
+        self.tree.tag_configure('needs_scrap', background='#fff3cd')
         self.tree.bind('<<TreeviewSelect>>', self._on_material_selected)
 
         # --- Quantità e aggiunta al carrello ---
@@ -202,12 +206,17 @@ class RequestIndirectMaterialsWindow(tk.Toplevel):
                        ISNULL(t.IsFrazionabile, 0) AS IsFrazionabile,
                        t.TipoMaterialeId,
                        mc.IsFractionabil,
-                       mc.QuantityStandard
+                       mc.QuantityStandard,
+                       link.CodiceMateriale AS LinkedMaterial,
+                       mr.MustCodeId AS MustCodeId
                 FROM ind.Materiali m
                 LEFT JOIN ind.TipoMateriali t ON m.TipoMaterialeId = t.TipoMaterialeId
                 LEFT JOIN ind.MaterialiStock s ON m.MaterialeId = s.MaterialeId AND s.DateOut IS NULL
                 LEFT JOIN dbo.MaterialConfigurations mc
                     ON mc.MaterialId = m.MaterialeId AND mc.DateOut IS NULL
+                LEFT JOIN dbo.MaterialRules mr
+                    ON mr.MaterialeId = m.MaterialeId AND mr.DateOut IS NULL
+                LEFT JOIN ind.Materiali link ON link.MaterialeId = mr.MustCodeId
                 WHERE m.IsActive = 1
                 ORDER BY m.CodiceMateriale
             """
@@ -235,6 +244,8 @@ class RequestIndirectMaterialsWindow(tk.Toplevel):
                     'confezione': confezione,
                     'frazionabile': frazionabile,
                     'has_config': has_config,
+                    'linked_material': row[10] or '',   # codice MustCode (scoria) collegato
+                    'must_code_id': row[11],            # MaterialeId del MustCode (None se nessuna regola)
                 })
             self._filter_materials()
         except Exception as e:
@@ -264,10 +275,12 @@ class RequestIndirectMaterialsWindow(tk.Toplevel):
             if desc_filter and desc_filter not in m['descrizione'].lower():
                 continue
             fraz_text = "Sì" if m['frazionabile'] else "No"
+            scoria_text = m.get('linked_material') or ''
+            tags = ('needs_scrap',) if m.get('must_code_id') else ()
             idx = len(self._filtered_materials)
-            self.tree.insert('', 'end', iid=str(idx), values=(
+            self.tree.insert('', 'end', iid=str(idx), tags=tags, values=(
                 m['codice'], m['descrizione'], m['tipo'],
-                f"{m['stock']:.2f}", f"{m['confezione']:.0f}", fraz_text
+                f"{m['stock']:.2f}", f"{m['confezione']:.0f}", fraz_text, scoria_text
             ))
             self._filtered_materials.append(m)
 
@@ -373,9 +386,68 @@ class RequestIndirectMaterialsWindow(tk.Toplevel):
         qty = result
         m = self._selected_material
 
+        # Gating scorie: se il materiale ha una regola (MustCode) e non ci sono scorie
+        # disponibili (RichiestaId NULL), avvisa e apri la form di dichiarazione scorie.
+        if m.get('must_code_id') and not self._has_available_scrap(m['must_code_id']):
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('ind_req_scrap_required',
+                              'Per richiedere questo materiale occorre prima dichiarare la '
+                              'scoria/rientro del materiale collegato ({0}).').format(m.get('linked_material') or '-'),
+                parent=self
+            )
+            try:
+                # apre "Gestione scorie" passando per il login autorizzato
+                self.master.open_scrap_returns_with_login(preselect_must_code_id=m['must_code_id'])
+            except Exception as e:
+                logger.error("Apertura form scorie fallita: %s", e, exc_info=True)
+            return
+
         self._cart.append({'material': m.copy(), 'qty': qty})
         self._refresh_cart()
         logger.info(f"Aggiunto al carrello: {m['codice']} x {qty}")
+
+    def _has_available_scrap(self, must_code_id) -> bool:
+        """True se esistono scorie del MustCode non ancora consumate (RichiestaId NULL)."""
+        try:
+            q = ("SELECT COUNT(*) FROM dbo.ReturnMaterials "
+                 "WHERE MateriaId = ? AND RichiestaId IS NULL AND DateOut IS NULL")
+            if hasattr(self.db, 'fetch_all'):
+                rows = self.db.fetch_all(q, (must_code_id,))
+                return bool(rows and rows[0][0] > 0)
+            rows = self._fetch_all(q, (must_code_id,))
+            return bool(rows and rows[0][0] > 0)
+        except Exception as e:
+            logger.error("Verifica scorie disponibili fallita: %s", e, exc_info=True)
+            return False
+
+    def _link_scrap_to_request(self, cursor, must_code_id, request_id, qty):
+        """Aggancia le scorie non consumate del MustCode alla richiesta (D7, opzione c):
+        righe RichiestaId NULL in ordine di DateReturn, accumulando ReturWeight fino a
+        coprire la quantità richiesta (l'ultima può superare; se il totale è inferiore,
+        si agganciano tutte). Stessa transazione dell'insert richiesta."""
+        cursor.execute(
+            "SELECT ReturnMaterialId, ReturWeight FROM dbo.ReturnMaterials "
+            "WHERE MateriaId = ? AND RichiestaId IS NULL AND DateOut IS NULL "
+            "ORDER BY DateReturn, ReturnMaterialId",
+            (must_code_id,)
+        )
+        rows = cursor.fetchall()
+        cumulative, ids = 0.0, []
+        for rid, weight in rows:
+            ids.append(rid)
+            cumulative += float(weight or 0)
+            if cumulative >= float(qty or 0):
+                break
+        if ids:
+            placeholders = ','.join('?' * len(ids))
+            cursor.execute(
+                f"UPDATE dbo.ReturnMaterials SET RichiestaId = ? "
+                f"WHERE ReturnMaterialId IN ({placeholders})",
+                [request_id] + ids
+            )
+            logger.info("Agganciate %d scorie (kg=%.1f) del MustCode %s alla richiesta %s",
+                        len(ids), cumulative, must_code_id, request_id)
 
     def _refresh_cart(self):
         """Aggiorna la treeview del carrello e i contatori."""
@@ -460,9 +532,15 @@ class RequestIndirectMaterialsWindow(tk.Toplevel):
                             "INSERT INTO ind.MaterialiRichieste "
                             "(MaterialeId, QtaRichiesta, QtaStockAlMomento, Stato, "
                             " DataRichiesta, RichiestoDa, ComputerRichiedente) "
+                            "OUTPUT INSERTED.RichiestaId "
                             "VALUES (?, ?, ?, 'RICHIESTA', GETDATE(), ?, ?)",
                             (m['id'], item['qty'], m['stock'], self.user_name, self.hostname)
                         )
+                        new_request_id = cursor.fetchone()[0]
+                        # Aggancia le scorie consumate (per i materiali con regola MustCode)
+                        if m.get('must_code_id'):
+                            self._link_scrap_to_request(cursor, m['must_code_id'],
+                                                        new_request_id, item['qty'])
 
                     self.db.conn.commit()
                     logger.info(f"Inviate {count} richieste materiali da {self.user_name}@{self.hostname}")

@@ -14,11 +14,31 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+def _normalize_path(path):
+    """Normalizza un percorso opzionale: '' oppure '/kit'. Accetta '\\kit', 'kit', '/kit'."""
+    if not path:
+        return ''
+    p = str(path).strip().replace('\\', '/')
+    if not p:
+        return ''
+    if not p.startswith('/'):
+        p = '/' + p
+    return p
+
+
+def build_external_url(ip, port, path=None):
+    """Costruisce l'URL completo: http://ip:port[/path]."""
+    ip = str(ip).strip()
+    port = str(port).strip() if port not in (None, '') else ''
+    base = f"http://{ip}:{port}" if port else f"http://{ip}"
+    return base + _normalize_path(path)
+
+
 class ExternalIpsManagerWindow(tk.Toplevel):
     """Finestra CRUD per gestire IP/Programmi esterni (Employee.dbo.ExternalIps)."""
 
     QUERY_ACTIVE = """
-        SELECT [ExternalIpID], [ExternalIP], [Port], [ProgramName],
+        SELECT [ExternalIpID], [ExternalIP], [Port], [Path], [ProgramName],
                ISNULL([ShowOnProductionMonitors], 0) AS ShowOnProductionMonitors
         FROM [Employee].[dbo].[ExternalIps]
         WHERE [DateOut] IS NULL
@@ -62,7 +82,7 @@ class ExternalIpsManagerWindow(tk.Toplevel):
         vsb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL)
         self.tree = ttk.Treeview(
             tree_frame,
-            columns=('ID', 'IP', 'Port', 'Program', 'Monitor'),
+            columns=('ID', 'IP', 'Port', 'Path', 'Program', 'Monitor'),
             show='headings',
             yscrollcommand=vsb.set
         )
@@ -71,13 +91,15 @@ class ExternalIpsManagerWindow(tk.Toplevel):
         self.tree.heading('ID', text='ID')
         self.tree.heading('IP', text='IP')
         self.tree.heading('Port', text='Port')
+        self.tree.heading('Path', text=self.lang.get('ext_path', 'Path'))
         self.tree.heading('Program', text=self.lang.get('ext_program_name', 'Programma'))
         self.tree.heading('Monitor', text=self.lang.get('ext_show_monitor', 'Prod. Monitor'))
 
         self.tree.column('ID', width=50, anchor=tk.CENTER)
-        self.tree.column('IP', width=200)
-        self.tree.column('Port', width=80, anchor=tk.CENTER)
-        self.tree.column('Program', width=250)
+        self.tree.column('IP', width=160)
+        self.tree.column('Port', width=70, anchor=tk.CENTER)
+        self.tree.column('Path', width=90)
+        self.tree.column('Program', width=230)
         self.tree.column('Monitor', width=90, anchor=tk.CENTER)
 
         self.tree.grid(row=0, column=0, sticky='nsew')
@@ -94,7 +116,8 @@ class ExternalIpsManagerWindow(tk.Toplevel):
             for row in self.db.cursor.fetchall():
                 monitor_val = getattr(row, 'ShowOnProductionMonitors', 0) or 0
                 self.tree.insert('', tk.END, values=(
-                    row.ExternalIpID, row.ExternalIP, row.Port, row.ProgramName,
+                    row.ExternalIpID, row.ExternalIP, row.Port,
+                    getattr(row, 'Path', '') or '', row.ProgramName,
                     '✓' if monitor_val else ''
                 ))
         except Exception as e:
@@ -123,8 +146,8 @@ class ExternalIpsManagerWindow(tk.Toplevel):
             return
         vals = self.tree.item(sel[0])['values']
         data = {
-            'ID': vals[0], 'IP': vals[1], 'Port': vals[2], 'Program': vals[3],
-            'Monitor': 1 if vals[4] == '✓' else 0
+            'ID': vals[0], 'IP': vals[1], 'Port': vals[2], 'Path': vals[3],
+            'Program': vals[4], 'Monitor': 1 if vals[5] == '✓' else 0
         }
         dialog = _ExternalIpDialog(self, self.db, self.lang, mode='edit', data=data)
         self.wait_window(dialog)
@@ -142,7 +165,7 @@ class ExternalIpsManagerWindow(tk.Toplevel):
             return
         vals = self.tree.item(sel[0])['values']
         rec_id = vals[0]
-        program = vals[3]
+        program = vals[4]
 
         if not messagebox.askyesno(
             self.lang.get('confirm_delete', 'Conferma Eliminazione'),
@@ -154,6 +177,7 @@ class ExternalIpsManagerWindow(tk.Toplevel):
         try:
             ip_val = vals[1]
             port_val = vals[2]
+            path_val = vals[3]
             self.db.cursor.execute(
                 "UPDATE [Employee].[dbo].[ExternalIps] SET [DateOut] = GETDATE() WHERE [ExternalIpID] = ?",
                 (rec_id,)
@@ -162,7 +186,7 @@ class ExternalIpsManagerWindow(tk.Toplevel):
 
             # Invia notifica email in background
             _send_ip_change_notification(
-                self.db, 'deactivated', program, str(ip_val), str(port_val)
+                self.db, 'deactivated', program, str(ip_val), str(port_val), path=str(path_val)
             )
 
             messagebox.showinfo(
@@ -192,7 +216,7 @@ class _ExternalIpDialog(tk.Toplevel):
                  if mode == 'add'
                  else self.lang.get('ext_edit_title', 'Modifica Programma Esterno'))
         self.title(title)
-        self.geometry('400x280')
+        self.geometry('400x340')
         self.resizable(False, False)
 
         self._create_widgets()
@@ -214,18 +238,26 @@ class _ExternalIpDialog(tk.Toplevel):
         self.port_var = tk.StringVar()
         ttk.Entry(f, textvariable=self.port_var, width=30).grid(row=1, column=1, sticky=tk.EW, padx=6, pady=4)
 
-        ttk.Label(f, text=self.lang.get('ext_program_name', 'Programma:')).grid(row=2, column=0, sticky=tk.W, pady=4)
+        ttk.Label(f, text=self.lang.get('ext_path', 'Path:')).grid(row=2, column=0, sticky=tk.W, pady=4)
+        self.path_var = tk.StringVar()
+        ttk.Entry(f, textvariable=self.path_var, width=30).grid(row=2, column=1, sticky=tk.EW, padx=6, pady=4)
+        ttk.Label(
+            f, text=self.lang.get('ext_path_hint', 'Opzionale, es. /kit'),
+            foreground='#888', font=('Segoe UI', 8)
+        ).grid(row=3, column=1, sticky=tk.W, padx=6)
+
+        ttk.Label(f, text=self.lang.get('ext_program_name', 'Programma:')).grid(row=4, column=0, sticky=tk.W, pady=4)
         self.prog_var = tk.StringVar()
-        ttk.Entry(f, textvariable=self.prog_var, width=30).grid(row=2, column=1, sticky=tk.EW, padx=6, pady=4)
+        ttk.Entry(f, textvariable=self.prog_var, width=30).grid(row=4, column=1, sticky=tk.EW, padx=6, pady=4)
 
         self.monitor_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             f, text=self.lang.get('ext_show_monitor', 'Show on Production Monitors'),
             variable=self.monitor_var
-        ).grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=4)
+        ).grid(row=5, column=0, columnspan=2, sticky=tk.W, pady=4)
 
         btn = ttk.Frame(f)
-        btn.grid(row=4, column=0, columnspan=2, pady=16)
+        btn.grid(row=6, column=0, columnspan=2, pady=16)
         ttk.Button(btn, text=self.lang.get('save', 'Salva'), command=self._save).pack(side=tk.LEFT, padx=6)
         ttk.Button(btn, text=self.lang.get('cancel', 'Annulla'), command=self.destroy).pack(side=tk.LEFT, padx=6)
 
@@ -234,15 +266,18 @@ class _ExternalIpDialog(tk.Toplevel):
     def _populate(self):
         self.ip_var.set(self.data['IP'])
         self.port_var.set(self.data['Port'])
+        self.path_var.set(self.data.get('Path', '') or '')
         self.prog_var.set(self.data['Program'])
         self.monitor_var.set(bool(self.data.get('Monitor', 0)))
 
     def _save(self):
         ip = self.ip_var.get().strip()
         port = self.port_var.get().strip()
+        path = _normalize_path(self.path_var.get())
         prog = self.prog_var.get().strip()
         monitor = 1 if self.monitor_var.get() else 0
 
+        # Il path è opzionale; IP, Porta e Programma restano obbligatori
         if not ip or not port or not prog:
             messagebox.showwarning(
                 self.lang.get('warning', 'Attenzione'),
@@ -251,16 +286,26 @@ class _ExternalIpDialog(tk.Toplevel):
             )
             return
 
+        if not port.isdigit():
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('ext_port_numeric', "La porta deve essere numerica. Il percorso (es. /kit) va nel campo 'Path'."),
+                parent=self
+            )
+            return
+
+        path_db = path or None  # salva NULL se vuoto
+
         try:
             if self.mode == 'add':
                 self.db.cursor.execute(
-                    "INSERT INTO [Employee].[dbo].[ExternalIps] ([ExternalIP], [Port], [ProgramName], [ShowOnProductionMonitors]) VALUES (?, ?, ?, ?)",
-                    (ip, port, prog, monitor)
+                    "INSERT INTO [Employee].[dbo].[ExternalIps] ([ExternalIP], [Port], [Path], [ProgramName], [ShowOnProductionMonitors]) VALUES (?, ?, ?, ?, ?)",
+                    (ip, port, path_db, prog, monitor)
                 )
             else:
                 self.db.cursor.execute(
-                    "UPDATE [Employee].[dbo].[ExternalIps] SET [ExternalIP]=?, [Port]=?, [ProgramName]=?, [ShowOnProductionMonitors]=? WHERE [ExternalIpID]=?",
-                    (ip, port, prog, monitor, self.data['ID'])
+                    "UPDATE [Employee].[dbo].[ExternalIps] SET [ExternalIP]=?, [Port]=?, [Path]=?, [ProgramName]=?, [ShowOnProductionMonitors]=? WHERE [ExternalIpID]=?",
+                    (ip, port, path_db, prog, monitor, self.data['ID'])
                 )
             self.db.conn.commit()
             self.result = True
@@ -268,15 +313,16 @@ class _ExternalIpDialog(tk.Toplevel):
             # Invia notifica email in background
             if self.mode == 'add':
                 _send_ip_change_notification(
-                    self.db, 'added', prog, ip, port
+                    self.db, 'added', prog, ip, port, path=path
                 )
             else:
                 old_vals = self.data or {}
                 _send_ip_change_notification(
-                    self.db, 'modified', prog, ip, port,
+                    self.db, 'modified', prog, ip, port, path=path,
                     old_values={
                         'IP': str(old_vals.get('IP', '')),
                         'Port': str(old_vals.get('Port', '')),
+                        'Path': str(old_vals.get('Path', '') or ''),
                         'Program': str(old_vals.get('Program', ''))
                     }
                 )
@@ -297,7 +343,7 @@ class BrowserLauncherWindow(tk.Toplevel):
     """Finestra per selezionare un programma esterno e aprirlo nel browser."""
 
     QUERY_ACTIVE = """
-        SELECT [ExternalIpID], [ExternalIP], [Port], [ProgramName]
+        SELECT [ExternalIpID], [ExternalIP], [Port], [Path], [ProgramName]
         FROM [Employee].[dbo].[ExternalIps]
         WHERE [DateOut] IS NULL
         ORDER BY [ProgramName]
@@ -358,6 +404,7 @@ class BrowserLauncherWindow(tk.Toplevel):
                     'id': row.ExternalIpID,
                     'ip': row.ExternalIP,
                     'port': row.Port,
+                    'path': getattr(row, 'Path', '') or '',
                     'name': row.ProgramName
                 }
                 self.programs.append(entry)
@@ -380,7 +427,7 @@ class BrowserLauncherWindow(tk.Toplevel):
             return
 
         prog = self.programs[idx]
-        url = f"http://{prog['ip']}:{prog['port']}"
+        url = build_external_url(prog['ip'], prog['port'], prog.get('path'))
         logger.info(f"Apertura browser: {url} ({prog['name']})")
         webbrowser.open(url)
 
@@ -389,7 +436,7 @@ class BrowserLauncherWindow(tk.Toplevel):
 # Notifica email per modifiche IP
 # ═══════════════════════════════════════════════════════════════════════
 
-def _send_ip_change_notification(db, change_type, program_name, ip, port, old_values=None):
+def _send_ip_change_notification(db, change_type, program_name, ip, port, path='', old_values=None):
     """
     Invia una notifica email professionale a tutti gli utenti SKILL attivi
     quando un IP esterno viene aggiunto, modificato o disattivato.
@@ -400,8 +447,11 @@ def _send_ip_change_notification(db, change_type, program_name, ip, port, old_va
         program_name: Nome del programma
         ip: Indirizzo IP corrente
         port: Porta corrente
-        old_values: dict con IP/Port/Program precedenti (solo per 'modified')
+        path: Percorso opzionale (es. /kit)
+        old_values: dict con IP/Port/Path/Program precedenti (solo per 'modified')
     """
+    path = _normalize_path(path)
+    full_url = build_external_url(ip, port, path)
     def _do_send():
         try:
             from email_connector import EmailSender
@@ -465,6 +515,11 @@ def _send_ip_change_notification(db, change_type, program_name, ip, port, old_va
                         <td style="padding: 10px 15px; border: 1px solid #dee2e6;">{old_values.get('Port', '')}</td>
                         <td style="padding: 10px 15px; border: 1px solid #dee2e6;">{port}</td>
                     </tr>
+                    <tr style="background-color: #f8f9fa;">
+                        <td style="padding: 10px 15px; border: 1px solid #dee2e6; font-weight: bold;">Path</td>
+                        <td style="padding: 10px 15px; border: 1px solid #dee2e6;">{old_values.get('Path', '')}</td>
+                        <td style="padding: 10px 15px; border: 1px solid #dee2e6;">{path}</td>
+                    </tr>
                 </table>
                 """
             else:
@@ -485,6 +540,10 @@ def _send_ip_change_notification(db, change_type, program_name, ip, port, old_va
                     <tr>
                         <td style="padding: 10px 15px; border: 1px solid #dee2e6; font-weight: bold;">Port</td>
                         <td style="padding: 10px 15px; border: 1px solid #dee2e6;">{port}</td>
+                    </tr>
+                    <tr style="background-color: #f8f9fa;">
+                        <td style="padding: 10px 15px; border: 1px solid #dee2e6; font-weight: bold;">Path</td>
+                        <td style="padding: 10px 15px; border: 1px solid #dee2e6;">{path or '—'}</td>
                     </tr>
                 </table>
                 """
@@ -529,7 +588,7 @@ def _send_ip_change_notification(db, change_type, program_name, ip, port, old_va
 
                     {details_html}
 
-                    {'<p style="font-size: 14px; line-height: 1.6;">You can access the program directly using the link below:</p><p style="text-align: center; margin: 20px 0;"><a href="http://' + ip + ':' + port + '" style="background-color: #0056b3; color: #ffffff; padding: 12px 28px; text-decoration: none; border-radius: 5px; font-size: 14px; font-weight: bold; display: inline-block;">&#x1F517; Open ' + program_name + ' &mdash; http://' + ip + ':' + port + '</a></p>' if change_type != 'deactivated' else ''}
+                    {'<p style="font-size: 14px; line-height: 1.6;">You can access the program directly using the link below:</p><p style="text-align: center; margin: 20px 0;"><a href="' + full_url + '" style="background-color: #0056b3; color: #ffffff; padding: 12px 28px; text-decoration: none; border-radius: 5px; font-size: 14px; font-weight: bold; display: inline-block;">&#x1F517; Open ' + program_name + ' &mdash; ' + full_url + '</a></p>' if change_type != 'deactivated' else ''}
 
                     <p style="font-size: 14px; line-height: 1.6;">
                         If you have any questions or need assistance accessing this program, 

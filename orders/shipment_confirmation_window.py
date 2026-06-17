@@ -39,7 +39,14 @@ SELECT
     -- Quantità già prodotta (OutOfBox)
     K.Packet              AS ProducedQty,
     -- Rimanenti su PO
-    D.QtyOrder - ISNULL(K.Packet, 0) AS RemainOverPO
+    D.QtyOrder - ISNULL(K.Packet, 0) AS RemainOverPO,
+    -- Quantità totale dell'ordine di produzione (dbo.Orders)
+    PO.OrderQuantity      AS OrderQty,
+    -- Già spedito (confermato) per lo stesso ordine di produzione
+    (SELECT ISNULL(SUM(r2.ConfirmedQty), 0)
+     FROM [Traceability_RS].[dyn].[DynamicShippingRules] r2
+     WHERE r2.DynamicProductionOrderID = R.DynamicProductionOrderID
+       AND r2.ConfirmedAt IS NOT NULL) AS AlreadyShipped
 FROM [Traceability_RS].[dyn].[DynamicShippingRules] R
 INNER JOIN [Traceability_RS].[dyn].[DynamicProductionOrders] O
        ON  O.DynamicProductionOrderID = R.DynamicProductionOrderID
@@ -92,6 +99,8 @@ class ShipmentConfirmationWindow(tk.Toplevel):
         self.db = db
         self.lang = lang
         self.user_name = user_name
+        # rule_id -> {order_qty, already_shipped, max_confirmable, produced, requested}
+        self._rule_info = {}
 
         self.title(self.lang.get("shipment_confirm_title", "Conferma Spedizioni Urgenti"))
         self.geometry("1300x650")
@@ -202,10 +211,20 @@ class ShipmentConfirmationWindow(tk.Toplevel):
     def _load_data(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
+        self._rule_info = {}
         try:
             self.db.cursor.execute(_QUERY_PENDING)
             rows = self.db.cursor.fetchall()
             for row in rows:
+                order_qty = int(row.OrderQty or 0)
+                already_shipped = int(row.AlreadyShipped or 0)
+                self._rule_info[str(row.DybamicShippingRuleId)] = {
+                    "order_qty": order_qty,
+                    "already_shipped": already_shipped,
+                    "max_confirmable": max(0, order_qty - already_shipped),
+                    "produced": int(row.ProducedQty or 0),
+                    "requested": int(row.QtyToShip or 0),
+                }
                 requested_on = (
                     row.RequestedOn.strftime("%d/%m/%Y %H:%M")
                     if row.RequestedOn
@@ -247,13 +266,19 @@ class ShipmentConfirmationWindow(tk.Toplevel):
             self.btn_confirm.config(state=tk.DISABLED)
             return
         values = self.tree.item(sel[0], "values")
+        rule_id = str(values[0])
         requested_qty = int(values[7]) if values[7] else 0
         produced_qty = int(values[8]) if values[8] else 0
+        info = self._rule_info.get(rule_id, {})
+        max_conf = info.get("max_confirmable", 0)
 
         # Valore predefinito: quantità prodotta (non quantità richiesta)
         self.qty_var.set(str(produced_qty))
         self.qty_hint.config(
-            text=f"(prodotta: {produced_qty} | richiesta: {requested_qty})"
+            text=self.lang.get(
+                "shipment_qty_hint",
+                "(prodotta: {0} | richiesta: {1} | max ordine: {2})",
+            ).format(produced_qty, requested_qty, max_conf)
         )
         self.btn_confirm.config(state=tk.NORMAL)
 
@@ -304,14 +329,21 @@ class ShipmentConfirmationWindow(tk.Toplevel):
             )
             return
 
-        # La quantità confermata non può superare la quantità prodotta
-        if confirmed_qty > produced_qty:
+        # La quantità confermata può superare la quantità richiesta, ma NON la
+        # quantità residua dell'ordine di produzione (Orders.OrderQuantity meno
+        # quanto già spedito/confermato per lo stesso ordine).
+        info = self._rule_info.get(str(rule_id), {})
+        order_qty = info.get("order_qty", 0)
+        already_shipped = info.get("already_shipped", 0)
+        max_confirmable = info.get("max_confirmable", max(0, order_qty - already_shipped))
+        if confirmed_qty > max_confirmable:
             messagebox.showwarning(
                 self.lang.get("warning", "Attenzione"),
                 self.lang.get(
-                    "shipment_qty_over_produced",
-                    "La quantità confermata non può essere maggiore della quantità prodotta ({0}).",
-                ).format(produced_qty),
+                    "shipment_qty_over_order",
+                    "La quantità confermata ({0}) non può superare la quantità residua "
+                    "dell'ordine ({1}) = quantità ordine ({2}) − già spedito ({3}).",
+                ).format(confirmed_qty, max_confirmable, order_qty, already_shipped),
                 parent=self,
             )
             return

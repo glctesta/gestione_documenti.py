@@ -114,6 +114,27 @@ TRANSLATIONS = [
         "de": "Alle Felder sind erforderlich",
         "sv": "Alla f\u00e4lt \u00e4r obligatoriska",
     }),
+    ("ext_path", {
+        "it": "Percorso",
+        "en": "Path",
+        "ro": "Cale",
+        "de": "Pfad",
+        "sv": "S\u00f6kv\u00e4g",
+    }),
+    ("ext_path_hint", {
+        "it": "Opzionale, es. /kit",
+        "en": "Optional, e.g. /kit",
+        "ro": "Op\u021bional, ex. /kit",
+        "de": "Optional, z. B. /kit",
+        "sv": "Valfritt, t.ex. /kit",
+    }),
+    ("ext_port_numeric", {
+        "it": "La porta deve essere numerica. Il percorso (es. /kit) va nel campo 'Path'.",
+        "en": "The port must be numeric. Put the path (e.g. /kit) in the 'Path' field.",
+        "ro": "Portul trebuie s\u0103 fie numeric. Pune\u021bi calea (ex. /kit) \u00een c\u00e2mpul 'Path'.",
+        "de": "Der Port muss numerisch sein. Geben Sie den Pfad (z. B. /kit) im Feld 'Path' ein.",
+        "sv": "Porten m\u00e5ste vara numerisk. Ange s\u00f6kv\u00e4gen (t.ex. /kit) i f\u00e4ltet 'Path'.",
+    }),
     ("ext_saved_ok", {
         "it": "Salvato con successo",
         "en": "Saved successfully",

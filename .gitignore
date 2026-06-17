@@ -16,3 +16,22 @@ env/
 
 # File di database
 *.db
+
+# Artefatti di build PyInstaller
+build/
+dist/
+
+# Bytecode Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Cartella interna agente / sessioni
+.claude/
+
+# Backup
+*.bak
+
+# Config generata a runtime (creata dall'app al primo avvio)
+kit_server_config.json
+kit_server_config.json.bak

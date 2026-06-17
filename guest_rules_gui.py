@@ -35,6 +35,7 @@ class GuestRulesWindow(tk.Toplevel):
 
         self._settings_vars = {}
         self._contract_data = {}  # {iid: contract_info_id}
+        self._selected_contract_id = None
 
         self._build_ui()
         self._load_settings()
@@ -205,6 +206,11 @@ class GuestRulesWindow(tk.Toplevel):
         ttk.Button(btn_cf, text=self.lang.get('btn_save', '💾 Salva'),
                    command=self._save_contract).pack(side='left', padx=3)
 
+        self.contract_mode_var = tk.StringVar()
+        ttk.Label(btn_cf, textvariable=self.contract_mode_var, foreground='#1f5f99').pack(
+            side='left', padx=(12, 0))
+        self._set_contract_mode_label(None)
+
     def _add_setting_row(self, parent, row, setting_key, label_text):
         """Aggiunge una riga di setting."""
         ttk.Label(parent, text=label_text).grid(
@@ -350,6 +356,8 @@ class GuestRulesWindow(tk.Toplevel):
         try:
             self.contract_tree.delete(*self.contract_tree.get_children())
             self._contract_data = {}
+            self._selected_contract_id = None
+            self._set_contract_mode_label(None)
 
             # Carica combo società
             cursor = self.db.conn.cursor()
@@ -471,10 +479,23 @@ class GuestRulesWindow(tk.Toplevel):
     # ================================================================
     # CONTRACT ACTIONS
     # ================================================================
+    def _set_contract_mode_label(self, contract_id):
+        """Aggiorna l'indicatore visivo della modalità contratto (nuovo/modifica)."""
+        if contract_id is None:
+            txt = self.lang.get('contract_mode_new', 'Modalita: Nuovo contratto')
+        else:
+            txt = self.lang.get('contract_mode_edit', 'Modalita: Modifica contratto')
+            txt = f"{txt} (ID {contract_id})"
+        self.contract_mode_var.set(txt)
+
     def _on_contract_select(self, event=None):
         sel = self.contract_tree.selection()
         if not sel:
+            self._selected_contract_id = None
+            self._set_contract_mode_label(None)
             return
+        self._selected_contract_id = self._contract_data.get(sel[0])
+        self._set_contract_mode_label(self._selected_contract_id)
         values = self.contract_tree.item(sel[0], 'values')
         self.contract_company_var.set(values[1])
         self.contract_no_var.set(values[2])
@@ -490,6 +511,8 @@ class GuestRulesWindow(tk.Toplevel):
 
     def _new_contract(self):
         self.contract_tree.selection_remove(*self.contract_tree.selection())
+        self._selected_contract_id = None
+        self._set_contract_mode_label(None)
         self.contract_company_var.set('')
         self.contract_no_var.set('')
         self.contract_date_entry.delete(0, 'end')
@@ -530,10 +553,14 @@ class GuestRulesWindow(tk.Toplevel):
 
         try:
             cursor = self.db.conn.cursor()
-            sel = self.contract_tree.selection()
-            if sel and sel[0] in self._contract_data:
+            contract_id = self._selected_contract_id
+            if contract_id is None:
+                sel = self.contract_tree.selection()
+                if sel and sel[0] in self._contract_data:
+                    contract_id = self._contract_data[sel[0]]
+
+            if contract_id is not None:
                 # UPDATE
-                contract_id = self._contract_data[sel[0]]
                 cursor.execute("""
                     UPDATE Employee.dbo.VisitorContractInfo
                     SET ContractNumber = ?, ContractDate = ?, ContractDescription = ?,
@@ -617,8 +644,8 @@ class GuestRulesWindow(tk.Toplevel):
                                           activity_description=row.ActivityDescription or '',
                                           created_by=self.user_name)
             if new_id:
-                messagebox.showinfo(self.lang.get('success', 'Successo'),
-                    self.lang.get('docs_regenerated', 'Documenti rigenerati con successo.'))
+                # messagebox.showinfo(self.lang.get('success', 'Successo'),
+                #    self.lang.get('docs_regenerated', 'Documenti rigenerati con successo.'))
                 self._load_reports()
             else:
                 messagebox.showerror(self.lang.get('error', 'Errore'),

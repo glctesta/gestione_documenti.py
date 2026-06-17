@@ -63,6 +63,31 @@ if os.path.isdir(_updater_src):
 else:
     print(f'[spec] ATTENZIONE: {_updater_src} non trovato — eseguire: pyinstaller --noconfirm --clean updater.spec')
 
+# Kit Dashboard web (Flask) + package kit_dashboard: hidden imports
+from PyInstaller.utils.hooks import collect_submodules
+_web_hidden = (
+    collect_submodules('flask')
+    + collect_submodules('werkzeug')
+    + collect_submodules('jinja2')
+    + collect_submodules('click')
+    + [
+        'markupsafe', 'blinker', 'itsdangerous',
+        'requests', 'urllib3', 'certifi', 'idna', 'charset_normalizer',
+        'kit_web_server',
+        'kit_dashboard',
+        'kit_dashboard.server_config',
+        'kit_dashboard.planning',
+        'kit_dashboard.eta',
+        'kit_dashboard.sync_service',
+        'kit_dashboard.web_data',
+        'kit_dashboard.web_templates',
+        'kit_dashboard.server_watcher',
+        'kit_dashboard.controller',
+        'install_kit_dashboard_autostart',  # self-install della Scheduled Task dall'exe
+        'fai_autocheck',  # usato da kit_dashboard.planning per T:\Planning
+    ]
+)
+
 a = Analysis(
     ['main.py'],
     pathex=[],
@@ -97,7 +122,7 @@ a = Analysis(
         'material_consumption_report',
         'fqc_products_gui',
         'fqc_email',
-    ],
+    ] + _web_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

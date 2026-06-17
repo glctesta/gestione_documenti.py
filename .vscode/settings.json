@@ -9,6 +9,30 @@
         "/^python -m py_compile \\.\\\\fqc_products_gui\\.py \\.\\\\insert_fqc_products_translations\\.py$/": {
             "approve": true,
             "matchCommandLine": true
+        },
+        "/^python -m py_compile \\.\\\\material_consumption_gui\\.py$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^python -m py_compile npi\\\\windows\\\\dashboard_window\\.py npi\\\\npi_manager\\.py$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^python -m py_compile material_consumption_report_gui\\.py$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^python -m py_compile npi\\\\npi_manager\\.py npi\\\\windows\\\\analysis_window\\.py npi\\\\windows\\\\dashboard_window\\.py$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^python -m py_compile npi\\\\windows\\\\analysis_window\\.py npi\\\\npi_manager\\.py$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^python -m py_compile npi\\\\windows\\\\analysis_window\\.py$/": {
+            "approve": true,
+            "matchCommandLine": true
         }
     }
 }
