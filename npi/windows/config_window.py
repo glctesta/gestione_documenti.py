@@ -2453,6 +2453,236 @@ class BudgetCategoriesFrame(ttk.Frame):
             messagebox.showerror(self.lang.get('error_title', 'Errore'), str(e), parent=self)
 
 
+class CommercialeManagementFrame(ttk.Frame):
+    """TAB Commerciale: gestione commerciali (Soggetti IsCommercial=1) e
+    associazione cliente→commerciale (un commerciale per cliente)."""
+
+    def __init__(self, master, npi_manager, lang, **kwargs):
+        super().__init__(master, **kwargs)
+        self.npi_manager = npi_manager
+        self.lang = lang
+        self.selected_id = None
+        self.pack(fill=tk.BOTH, expand=True)
+
+        # Società selezionabili (Sites con IsSupplier IS NULL)
+        self._sites = self.npi_manager.get_sites_commerciali()
+        self._site_name_to_id = {s['SiteName']: s['IDSite'] for s in self._sites}
+        self._site_id_to_name = {s['IDSite']: s['SiteName'] for s in self._sites}
+
+        # ─── Parte alta: lista + form ───────────────────────────────────
+        top = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
+        top.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 5))
+
+        list_frame = ttk.Frame(top, padding=10)
+        top.add(list_frame, weight=2)
+        cols = ('id', 'nome', 'email', 'tel', 'soc', 'auto')
+        self.tree = ttk.Treeview(list_frame, columns=cols, show='headings', selectmode='browse')
+        self.tree.heading('id', text=self.lang.get('col_id', 'ID'))
+        self.tree.heading('nome', text=self.lang.get('col_name_generic', 'Nome'))
+        self.tree.heading('email', text=self.lang.get('label_email_col', 'Email'))
+        self.tree.heading('tel', text=self.lang.get('col_phone', 'Telefono'))
+        self.tree.heading('soc', text=self.lang.get('col_company', 'Società'))
+        self.tree.heading('auto', text=self.lang.get('col_auto_email', 'Auto Email'))
+        self.tree.column('id', width=45)
+        self.tree.column('nome', width=150)
+        self.tree.column('email', width=170)
+        self.tree.column('tel', width=95)
+        self.tree.column('soc', width=130)
+        self.tree.column('auto', width=70, anchor=tk.CENTER)
+        self.tree.pack(fill=tk.BOTH, expand=True)
+        self.tree.bind('<<TreeviewSelect>>', self._on_select)
+
+        form = ttk.LabelFrame(top, text=self.lang.get('commerciale_details_title', 'Dettagli Commerciale'), padding=10)
+        top.add(form, weight=2)
+        self.fields = {}
+        ttk.Label(form, text=self.lang.get('label_commerciale_name', 'Nome:')).grid(row=0, column=0, sticky=tk.W, pady=3)
+        self.fields['Nome'] = ttk.Entry(form, width=38); self.fields['Nome'].grid(row=0, column=1, sticky=tk.EW, padx=5)
+        ttk.Label(form, text=self.lang.get('label_email', 'Email:')).grid(row=1, column=0, sticky=tk.W, pady=3)
+        self.fields['Email'] = ttk.Entry(form, width=38); self.fields['Email'].grid(row=1, column=1, sticky=tk.EW, padx=5)
+        ttk.Label(form, text=self.lang.get('label_phone', 'Telefono:')).grid(row=2, column=0, sticky=tk.W, pady=3)
+        self.fields['Telefono'] = ttk.Entry(form, width=38); self.fields['Telefono'].grid(row=2, column=1, sticky=tk.EW, padx=5)
+        ttk.Label(form, text=self.lang.get('label_company', 'Società:')).grid(row=3, column=0, sticky=tk.W, pady=3)
+        self.fields['Societa'] = ttk.Combobox(form, state='readonly', width=36,
+                                               values=[s['SiteName'] for s in self._sites])
+        self.fields['Societa'].grid(row=3, column=1, sticky=tk.EW, padx=5)
+        self.auto_email_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(form, text=self.lang.get('label_auto_email', 'Invia email automatica (venerdì)'),
+                        variable=self.auto_email_var).grid(row=4, column=1, sticky=tk.W, padx=5, pady=3)
+        form.columnconfigure(1, weight=1)
+
+        btns = ttk.Frame(form); btns.grid(row=5, column=0, columnspan=2, pady=15, sticky=tk.E)
+        ttk.Button(btns, text=self.lang.get('btn_new', 'Nuovo'), command=self._clear_form).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text=self.lang.get('btn_save', 'Salva'), command=self._save).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text=self.lang.get('btn_delete', 'Elimina'), command=self._delete).pack(side=tk.LEFT, padx=4)
+
+        # ─── Parte bassa: associazione cliente → commerciale ────────────
+        assoc = ttk.LabelFrame(self, text=self.lang.get('commerciale_assoc_title', 'Associazione Cliente → Commerciale'), padding=10)
+        assoc.pack(fill=tk.BOTH, expand=True, padx=10, pady=(5, 10))
+
+        row = ttk.Frame(assoc); row.pack(fill=tk.X)
+        ttk.Label(row, text=self.lang.get('label_client', 'Cliente:')).pack(side=tk.LEFT, padx=(0, 4))
+        self.client_var = tk.StringVar()
+        self.client_combo = ttk.Combobox(row, textvariable=self.client_var, state='readonly', width=28)
+        self.client_combo.pack(side=tk.LEFT, padx=(0, 12))
+        self.client_combo.bind('<<ComboboxSelected>>', self._on_client_change)
+        ttk.Label(row, text=self.lang.get('label_commerciale', 'Commerciale:')).pack(side=tk.LEFT, padx=(0, 4))
+        self.assoc_var = tk.StringVar()
+        self.assoc_combo = ttk.Combobox(row, textvariable=self.assoc_var, state='readonly', width=28)
+        self.assoc_combo.pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Button(row, text=self.lang.get('btn_assign', 'Assegna'), command=self._assign).pack(side=tk.LEFT, padx=4)
+        ttk.Button(row, text=self.lang.get('btn_remove_assoc', 'Rimuovi'), command=self._remove_assoc).pack(side=tk.LEFT, padx=4)
+
+        acols = ('cliente', 'commerciale')
+        self.assoc_tree = ttk.Treeview(assoc, columns=acols, show='headings', selectmode='browse', height=8)
+        self.assoc_tree.heading('cliente', text=self.lang.get('col_client', 'Cliente'))
+        self.assoc_tree.heading('commerciale', text=self.lang.get('col_commerciale', 'Commerciale'))
+        self.assoc_tree.column('cliente', width=220)
+        self.assoc_tree.column('commerciale', width=260)
+        self.assoc_tree.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+        self.assoc_tree.bind('<<TreeviewSelect>>', self._on_assoc_select)
+
+        self._comm_name_to_id = {}
+        self._load_commerciali()
+        self._load_clienti()
+        self._load_assoc()
+
+    # ------------------------------------------------------------------ #
+    def _load_commerciali(self):
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        self._commerciali = self.npi_manager.get_commerciali()
+        self._comm_name_to_id = {}
+        for c in self._commerciali:
+            soc = self._site_id_to_name.get(c.get('IdSite'), '') or ''
+            auto = 'Sì' if c.get('AutoEmail') else 'No'
+            self.tree.insert('', tk.END, values=(c['SoggettoId'], c['NomeSoggetto'],
+                                                  c.get('Email') or '', c.get('Telefono') or '', soc, auto))
+            self._comm_name_to_id[c['NomeSoggetto']] = c['SoggettoId']
+        # aggiorna combo commerciali per l'associazione
+        if hasattr(self, 'assoc_combo'):
+            self.assoc_combo['values'] = [c['NomeSoggetto'] for c in self._commerciali]
+
+    def _on_select(self, event=None):
+        if not self.tree.selection():
+            return
+        vals = self.tree.item(self.tree.selection()[0])['values']
+        self.selected_id = vals[0]
+        self._clear_form(clear_selection=False)
+        self.selected_id = vals[0]
+        self.fields['Nome'].insert(0, vals[1] or '')
+        self.fields['Email'].insert(0, vals[2] or '')
+        self.fields['Telefono'].insert(0, vals[3] or '')
+        self.fields['Societa'].set(vals[4] or '')
+        self.auto_email_var.set(str(vals[5]).strip().lower() in ('sì', 'si', '1', 'true'))
+
+    def _clear_form(self, clear_selection=True):
+        self.selected_id = None
+        if clear_selection and self.tree.selection():
+            self.tree.selection_remove(self.tree.selection())
+        self.fields['Nome'].delete(0, tk.END)
+        self.fields['Email'].delete(0, tk.END)
+        self.fields['Telefono'].delete(0, tk.END)
+        self.fields['Societa'].set('')
+        self.auto_email_var.set(True)
+
+    def _save(self):
+        nome = self.fields['Nome'].get().strip()
+        if not nome:
+            messagebox.showerror(self.lang.get('error_title', 'Errore'),
+                                 self.lang.get('validation_error_name_required', 'Il nome è obbligatorio.'), parent=self)
+            return
+        data = {
+            'Nome': nome,
+            'Email': self.fields['Email'].get().strip(),
+            'Telefono': self.fields['Telefono'].get().strip(),
+            'IdSite': self._site_name_to_id.get(self.fields['Societa'].get()),
+            'AutoEmail': self.auto_email_var.get(),
+        }
+        try:
+            if self.selected_id is None:
+                self.npi_manager.create_commerciale(data)
+            else:
+                self.npi_manager.update_commerciale(self.selected_id, data)
+            messagebox.showinfo(self.lang.get('success_title', 'Successo'),
+                                self.lang.get('success_subject_saved', 'Salvato.'), parent=self)
+            self._load_commerciali()
+            self._clear_form()
+        except Exception as e:
+            messagebox.showerror(self.lang.get('db_error_title', 'Errore DB'), str(e), parent=self)
+
+    def _delete(self):
+        if self.selected_id is None:
+            messagebox.showwarning(self.lang.get('warning_no_selection_title', 'Attenzione'),
+                                   self.lang.get('warning_select_to_delete', 'Selezionare un elemento.'), parent=self)
+            return
+        if messagebox.askyesno(self.lang.get('confirm_delete_title', 'Conferma'),
+                               self.lang.get('confirm_delete_subject_text', 'Eliminare?'), parent=self):
+            try:
+                self.npi_manager.delete_commerciale(self.selected_id)
+                self._load_commerciali()
+                self._load_assoc()
+                self._clear_form()
+            except Exception as e:
+                messagebox.showerror(self.lang.get('db_error_title', 'Errore DB'), str(e), parent=self)
+
+    # ----- associazione cliente → commerciale ------------------------- #
+    def _load_clienti(self):
+        try:
+            self.client_combo['values'] = self.npi_manager.get_clienti_nomi()
+        except Exception as e:
+            logger.error("Errore caricamento clienti: %s", e)
+
+    def _load_assoc(self):
+        for i in self.assoc_tree.get_children():
+            self.assoc_tree.delete(i)
+        try:
+            for a in self.npi_manager.get_associazioni_commerciali():
+                self.assoc_tree.insert('', tk.END, values=(a['ClienteNome'], a.get('NomeSoggetto') or ''))
+        except Exception as e:
+            logger.error("Errore caricamento associazioni: %s", e)
+
+    def _on_client_change(self, event=None):
+        cliente = self.client_var.get()
+        if not cliente:
+            return
+        sid = self.npi_manager.get_commerciale_per_cliente(cliente)
+        # preimposta la combo commerciale con quello assegnato
+        name = next((n for n, i in self._comm_name_to_id.items() if i == sid), '')
+        self.assoc_var.set(name)
+
+    def _on_assoc_select(self, event=None):
+        if not self.assoc_tree.selection():
+            return
+        vals = self.assoc_tree.item(self.assoc_tree.selection()[0])['values']
+        self.client_var.set(vals[0])
+        self.assoc_var.set(vals[1] or '')
+
+    def _assign(self):
+        cliente = self.client_var.get().strip()
+        comm_name = self.assoc_var.get().strip()
+        if not cliente or not comm_name:
+            messagebox.showwarning(self.lang.get('warning_no_selection_title', 'Attenzione'),
+                                   self.lang.get('warning_select_client_comm', 'Seleziona cliente e commerciale.'), parent=self)
+            return
+        sid = self._comm_name_to_id.get(comm_name)
+        try:
+            self.npi_manager.set_commerciale_per_cliente(cliente, sid)
+            self._load_assoc()
+        except Exception as e:
+            messagebox.showerror(self.lang.get('db_error_title', 'Errore DB'), str(e), parent=self)
+
+    def _remove_assoc(self):
+        cliente = self.client_var.get().strip()
+        if not cliente:
+            return
+        try:
+            self.npi_manager.set_commerciale_per_cliente(cliente, None)
+            self.assoc_var.set('')
+            self._load_assoc()
+        except Exception as e:
+            messagebox.showerror(self.lang.get('db_error_title', 'Errore DB'), str(e), parent=self)
+
+
 class NpiConfigWindow(tk.Toplevel):
     def __init__(self, master, npi_manager, lang, authorized_user, db=None, product_id_to_select=None, **kwargs):
         super().__init__(master, **kwargs)
@@ -2474,6 +2704,7 @@ class NpiConfigWindow(tk.Toplevel):
         self.subj_frame = SubjectManagementFrame(notebook, self.npi_manager, self.lang, db=self.db)
         self.prod_frame = ProductManagementFrame(notebook, self.npi_manager, self.lang)
         self.project_frame = ProjectManagementFrame(notebook, self.npi_manager, self.lang)
+        self.commerciale_frame = CommercialeManagementFrame(notebook, self.npi_manager, self.lang)
         self.cat_frame = CategoryManagementFrame(notebook, self.npi_manager, self.lang)
         self.task_frame = TaskManagementFrame(notebook, self.npi_manager, self.lang)
         self.defaults_frame = DefaultCatalogFrame(notebook, self.npi_manager, self.lang)
@@ -2484,6 +2715,7 @@ class NpiConfigWindow(tk.Toplevel):
         notebook.add(self.subj_frame, text=self.lang.get('tab_subjects_title'))
         notebook.add(self.prod_frame, text=self.lang.get('tab_products_title'))
         notebook.add(self.project_frame, text=self.lang.get('tab_projects_title', 'Progetti'))
+        notebook.add(self.commerciale_frame, text=self.lang.get('tab_commerciale_title', 'Commerciale'))
         notebook.add(self.cat_frame, text=self.lang.get('tab_categories_title'))
         notebook.add(self.task_frame, text=self.lang.get('tab_task_catalog_title'))
         notebook.add(self.defaults_frame, text=self.lang.get('tab_defaults_title', 'Defaults'))

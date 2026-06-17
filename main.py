@@ -20014,6 +20014,17 @@ if __name__ == "__main__":
             print(_msg)
         sys.exit(0)
 
+    # ── Email settimanale commerciali NPI (Task Scheduler, venerdì 17:00) ── #
+    #   DocumentManagement.exe --npi-weekly-email           (invio reale)
+    #   DocumentManagement.exe --npi-weekly-email --dry-run (simulazione)
+    if "--npi-weekly-email" in sys.argv:
+        try:
+            import npi_commerciali_weekly_email
+            npi_commerciali_weekly_email.run(dry_run="--dry-run" in sys.argv)
+        except Exception as _e:
+            print(f"[NPI-WEEKLY] Errore: {_e}")
+        sys.exit(0)
+
     # ── Kill processi orfani di DocumentManagement.exe ──────────────────── #
     try:
         import psutil

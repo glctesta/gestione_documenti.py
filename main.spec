@@ -84,6 +84,7 @@ _web_hidden = (
         'kit_dashboard.server_watcher',
         'kit_dashboard.controller',
         'install_kit_dashboard_autostart',  # self-install della Scheduled Task dall'exe
+        'npi_commerciali_weekly_email',  # email settimanale commerciali NPI (flag --npi-weekly-email)
         'fai_autocheck',  # usato da kit_dashboard.planning per T:\Planning
     ]
 )

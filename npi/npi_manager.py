@@ -325,6 +325,124 @@ class GestoreNPI:
         finally:
             session.close()
 
+    # ================================================================
+    #  Commerciali NPI (Soggetti con IsCommercial=1) e associazione cliente
+    # ================================================================
+    def get_commerciali(self):
+        """Lista dei commerciali (Soggetti IsCommercial=1) con società (Sites)."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT s.SoggettoId, s.NomeSoggetto, s.Email, s.Telefono,
+                       s.IdSite, si.SiteName, s.AutoEmail
+                FROM dbo.Soggetti s
+                LEFT JOIN dbo.Sites si ON si.IDSite = s.IdSite
+                WHERE s.IsCommercial = 1
+                ORDER BY s.NomeSoggetto
+            """)).mappings().all()
+        return [dict(r) for r in rows]
+
+    def get_sites_commerciali(self):
+        """Siti selezionabili come società del commerciale (IsSupplier IS NULL)."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT IDSite, SiteName FROM dbo.Sites
+                WHERE IsSupplier IS NULL ORDER BY SiteName
+            """)).mappings().all()
+        return [dict(r) for r in rows]
+
+    def create_commerciale(self, data):
+        """Crea un commerciale su dbo.Soggetti (IsCommercial=1)."""
+        with self.engine.begin() as conn:
+            new_id = conn.execute(text("""
+                INSERT INTO dbo.Soggetti
+                    (NomeSoggetto, Tipo, Email, Telefono, IdSite, IsCommercial, [External], AutoEmail)
+                OUTPUT INSERTED.SoggettoId
+                VALUES (:nome, 'Commerciale', :email, :tel, :idsite, 1, 1, :autoemail)
+            """), {
+                'nome': data.get('Nome', ''),
+                'email': data.get('Email', ''),
+                'tel': data.get('Telefono') or None,
+                'idsite': data.get('IdSite') or None,
+                'autoemail': 1 if data.get('AutoEmail', False) else 0,
+            }).scalar()
+        logger.info("Commerciale creato: ID=%s Nome=%s", new_id, data.get('Nome'))
+        return new_id
+
+    def update_commerciale(self, soggetto_id, data):
+        """Aggiorna un commerciale."""
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                UPDATE dbo.Soggetti
+                SET NomeSoggetto=:nome, Email=:email, Telefono=:tel,
+                    IdSite=:idsite, IsCommercial=1, AutoEmail=:autoemail
+                WHERE SoggettoId=:id
+            """), {
+                'nome': data.get('Nome', ''),
+                'email': data.get('Email', ''),
+                'tel': data.get('Telefono') or None,
+                'idsite': data.get('IdSite') or None,
+                'autoemail': 1 if data.get('AutoEmail', False) else 0,
+                'id': soggetto_id,
+            })
+        logger.info("Commerciale aggiornato: ID=%s", soggetto_id)
+        return soggetto_id
+
+    def delete_commerciale(self, soggetto_id):
+        """Elimina un commerciale e le sue associazioni cliente."""
+        with self.engine.begin() as conn:
+            conn.execute(text("DELETE FROM dbo.CommercialeCliente WHERE SoggettoID=:id"),
+                         {'id': soggetto_id})
+            conn.execute(text("DELETE FROM dbo.Soggetti WHERE SoggettoId=:id AND IsCommercial=1"),
+                         {'id': soggetto_id})
+        logger.info("Commerciale eliminato: ID=%s", soggetto_id)
+        return True
+
+    def get_clienti_nomi(self):
+        """Nomi cliente distinti dai prodotti (per l'associazione commerciale)."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT DISTINCT LTRIM(RTRIM(Cliente)) AS Cliente
+                FROM dbo.Prodotti
+                WHERE Cliente IS NOT NULL AND LTRIM(RTRIM(Cliente)) <> ''
+                ORDER BY Cliente
+            """)).all()
+        return [r[0] for r in rows]
+
+    def get_associazioni_commerciali(self):
+        """Associazioni cliente→commerciale (con nome commerciale)."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT cc.ClienteNome, cc.SoggettoID, s.NomeSoggetto
+                FROM dbo.CommercialeCliente cc
+                LEFT JOIN dbo.Soggetti s ON s.SoggettoId = cc.SoggettoID
+                ORDER BY cc.ClienteNome
+            """)).mappings().all()
+        return [dict(r) for r in rows]
+
+    def get_commerciale_per_cliente(self, cliente_nome):
+        """SoggettoID del commerciale associato al cliente, o None."""
+        with self.engine.connect() as conn:
+            r = conn.execute(text("""
+                SELECT SoggettoID FROM dbo.CommercialeCliente WHERE ClienteNome=:c
+            """), {'c': cliente_nome}).first()
+        return r[0] if r else None
+
+    def set_commerciale_per_cliente(self, cliente_nome, soggetto_id):
+        """Imposta (o rimuove se soggetto_id None) il commerciale di un cliente.
+        Un solo commerciale per cliente (ClienteNome è PK)."""
+        with self.engine.begin() as conn:
+            if soggetto_id is None:
+                conn.execute(text("DELETE FROM dbo.CommercialeCliente WHERE ClienteNome=:c"),
+                             {'c': cliente_nome})
+            else:
+                conn.execute(text("""
+                    MERGE dbo.CommercialeCliente AS t
+                    USING (SELECT :c AS ClienteNome) AS s ON t.ClienteNome = s.ClienteNome
+                    WHEN MATCHED THEN UPDATE SET SoggettoID=:sid, DateSys=GETDATE()
+                    WHEN NOT MATCHED THEN INSERT (ClienteNome, SoggettoID) VALUES (:c, :sid);
+                """), {'c': cliente_nome, 'sid': soggetto_id})
+        return True
+
 
     def get_prodotti(self):
         """Recupera tutti i prodotti ATTIVI (DateOut IS NULL) ordinati per nome."""
