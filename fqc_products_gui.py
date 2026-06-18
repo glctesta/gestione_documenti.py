@@ -506,6 +506,16 @@ class FqcExecutionForm(_ClientProductMixin, tk.Toplevel):
             width=10
         ).pack(side=tk.LEFT)
 
+        # Action buttons immediately after Verify
+        self._save_btn = _btn(label_row,
+                              self.lang.get('fqc_save_checklist', '✔ Save Results'),
+                              self._on_save, _C_SUCCESS)
+        self._save_btn.pack(side=tk.LEFT, padx=(12, 0))
+        self._save_btn.config(state='disabled')
+
+        _btn(label_row, self.lang.get('close', 'Close'), self.destroy,
+             bg=_C_BORDER, fg=_C_TEXT).pack(side=tk.LEFT, padx=(6, 0))
+
         # PTHM badge
         self._pthm_badge = tk.Label(
             sel,
@@ -558,19 +568,6 @@ class FqcExecutionForm(_ClientProductMixin, tk.Toplevel):
                                       bg=_C_BG, fg=_C_SUBTEXT,
                                       font=('Segoe UI', 10, 'italic'))
         self._no_items_lbl.pack(pady=30)
-
-        # Footer buttons
-        foot = tk.Frame(self, bg=_C_BG, padx=12, pady=8)
-        foot.pack(fill=tk.X)
-        self._save_btn = _btn(foot,
-                              self.lang.get('fqc_save_checklist', '✔ Save Results'),
-                              self._on_save, _C_SUCCESS)
-        self._save_btn.pack(side=tk.LEFT)
-        self._save_btn.config(state='disabled')
-
-        close = _btn(foot, self.lang.get('close', 'Close'), self.destroy,
-                     bg=_C_BORDER, fg=_C_TEXT)
-        close.pack(side=tk.RIGHT)
 
     # ── PTHM products ─────────────────────────────────────────────────────────
 

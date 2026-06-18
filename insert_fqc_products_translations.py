@@ -12,6 +12,20 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 # ── DB connection (reuse the project helper) ──────────────────────────────────
 def _get_conn():
+    # 1) Standard attuale del progetto: credenziali criptate (db_config.enc)
+    try:
+        import pyodbc
+        from config_manager import ConfigManager
+        cm = ConfigManager(key_file='encryption_key.key',
+                           config_file='db_config.enc')
+        c = cm.load_config()
+        cs = (f"DRIVER={c['driver']};SERVER={c['server']};"
+              f"DATABASE={c['database']};UID={c['username']};PWD={c['password']};"
+              f"TrustServerCertificate=Yes")
+        return pyodbc.connect(cs, timeout=15)
+    except Exception:
+        pass
+    # 2) Fallback legacy
     try:
         from utils import get_db_connection
         return get_db_connection()
@@ -488,6 +502,126 @@ TRANSLATIONS = [
      'Previzualizare Fotografie',
      'Fotovorschau',
      'Fotoförhandsvisning'),
+
+    # ── Report schede validate (FQC) ─────────────────────────────────────────────
+    ('menu_fqc_report',
+     '📊 Report Schede Validate',
+     '📊 Validated Cards Report',
+     '📊 Raport Fise Validate',
+     '📊 Bericht validierte Karten',
+     '📊 Rapport validerade kort'),
+
+    ('fqc_report_title',
+     'FQC Prodotti — Schede Validate',
+     'FQC Products — Validated Cards',
+     'FQC Produse — Fise Validate',
+     'FQC Produkte — Validierte Karten',
+     'FQC Produkter — Validerade kort'),
+
+    ('fqc_report_filter_title',
+     'Filtri di ricerca',
+     'Search filters',
+     'Filtre de cautare',
+     'Suchfilter',
+     'Sökfilter'),
+
+    ('fqc_report_date_from',
+     'Da (gg/mm/aaaa):',
+     'From (dd/mm/yyyy):',
+     'De la (zz/ll/aaaa):',
+     'Von (TT/MM/JJJJ):',
+     'Från (dd/mm/åååå):'),
+
+    ('fqc_report_date_to',
+     'A (gg/mm/aaaa):',
+     'To (dd/mm/yyyy):',
+     'Pana la (zz/ll/aaaa):',
+     'Bis (TT/MM/JJJJ):',
+     'Till (dd/mm/åååå):'),
+
+    ('fqc_report_product_code',
+     'Codice prodotto:',
+     'Product code:',
+     'Cod produs:',
+     'Produktcode:',
+     'Produktkod:'),
+
+    ('fqc_report_labelcode',
+     'LabelCode:',
+     'LabelCode:',
+     'LabelCode:',
+     'LabelCode:',
+     'LabelCode:'),
+
+    ('fqc_report_btn_search',
+     '🔍 Cerca',
+     '🔍 Search',
+     '🔍 Cauta',
+     '🔍 Suchen',
+     '🔍 Sök'),
+
+    ('fqc_report_btn_export',
+     '📊 Esporta Excel',
+     '📊 Export Excel',
+     '📊 Exporta Excel',
+     '📊 Excel exportieren',
+     '📊 Exportera Excel'),
+
+    ('fqc_report_invalid_dates',
+     'Inserire date valide nel formato gg/mm/aaaa.',
+     'Please enter valid dates in dd/mm/yyyy format.',
+     'Introduceti date valide in formatul zz/ll/aaaa.',
+     'Bitte geben Sie gültige Daten im Format TT/MM/JJJJ ein.',
+     'Ange giltiga datum i formatet dd/mm/åååå.'),
+
+    ('fqc_report_date_order',
+     'La data "Da" deve essere <= alla data "A".',
+     '"From" date must be ≤ "To" date.',
+     'Data "De la" trebuie sa fie <= data "Pana la".',
+     'Das "Von"-Datum muss <= dem "Bis"-Datum sein.',
+     '"Från"-datum måste vara <= "Till"-datum.'),
+
+    ('fqc_report_no_results',
+     'Nessuna scheda validata nel periodo selezionato.',
+     'No validated cards in the selected period.',
+     'Nicio fisa validata in perioada selectata.',
+     'Keine validierten Karten im ausgewählten Zeitraum.',
+     'Inga validerade kort under vald period.'),
+
+    ('fqc_report_summary_total',
+     'Schede validate: {0}',
+     'Validated cards: {0}',
+     'Fise validate: {0}',
+     'Validierte Karten: {0}',
+     'Validerade kort: {0}'),
+
+    ('fqc_report_summary_ok',
+     'OK: {0}',
+     'OK: {0}',
+     'OK: {0}',
+     'OK: {0}',
+     'OK: {0}'),
+
+    ('fqc_report_summary_nok',
+     'NOK: {0}',
+     'NOK: {0}',
+     'NOK: {0}',
+     'NOK: {0}',
+     'NOK: {0}'),
+
+    ('fqc_report_no_data_export',
+     'Nessun dato da esportare. Esegui prima una ricerca.',
+     'No data to export. Run a search first.',
+     'Niciun dat de exportat. Efectuati mai intai o cautare.',
+     'Keine Daten zum Exportieren. Führen Sie zuerst eine Suche durch.',
+     'Inga data att exportera. Gör en sökning först.'),
+
+    ('fqc_report_export_ok',
+     'File salvato:\n{0}',
+     'File saved:\n{0}',
+     'Fisier salvat:\n{0}',
+     'Datei gespeichert:\n{0}',
+     'Fil sparad:\n{0}'),
 ]
 
 LANGS = ('it', 'en', 'ro', 'de', 'sv')

@@ -23,6 +23,41 @@ logger = logging.getLogger("TraceabilityRS")
 
 
 # ================================================================
+# CLASSIFICAZIONE ITEM E COLORI DIREZIONALI
+# ================================================================
+# Per gli item che rappresentano stock/valore di MATERIALE una crescita e'
+# NEGATIVA (capitale immobilizzato in magazzino) -> warning ROSSO.
+# Per gli item che rappresentano ORDINI (produzione/vendita) una crescita e'
+# POSITIVA (piu' business) -> VERDE.
+_MATERIAL_KEYWORDS = ('material', 'materiale', 'materii', 'stoc', 'stock',
+                      'magazz', 'inventory', 'inventario')
+
+COLOR_GOOD = '#2E7D32'    # verde
+COLOR_BAD = '#B71C1C'     # rosso
+COLOR_NEUTRAL = '#666'    # grigio (variazione trascurabile / N/A)
+
+
+def is_material_item(name):
+    """True se l'item rappresenta stock/valore di materiale (crescita = negativa)."""
+    n = (name or '').lower()
+    return any(k in n for k in _MATERIAL_KEYWORDS)
+
+
+def direction_color(pct, material, neutral=0.0):
+    """Colore in base alla 'bonta'' della variazione.
+
+    material=True  -> crescita cattiva (rosso), calo buono (verde).
+    material=False -> crescita buona (verde), calo cattivo (rosso).
+    Variazioni entro +/- neutral sono trascurabili (grigio).
+    """
+    if pct is None or abs(pct) <= neutral:
+        return COLOR_NEUTRAL
+    rising = pct > 0
+    good = (not rising) if material else rising
+    return COLOR_GOOD if good else COLOR_BAD
+
+
+# ================================================================
 # QUERY
 # ================================================================
 
@@ -489,10 +524,10 @@ class StockValueWindow(tk.Toplevel):
                 if prev is not None and prev != 0:
                     change_pct = ((total - prev) / abs(prev)) * 100
                     change_str = f"{change_pct:+.1f}%"
-                    change_color = '#2E7D32' if change_pct >= 0 else '#B71C1C'
+                    change_color = direction_color(change_pct, is_material_item(item))
                 else:
                     change_str = "—"
-                    change_color = '#666'
+                    change_color = COLOR_NEUTRAL
                 prev_values[item] = total
 
                 rolling_rows += f"""
@@ -563,6 +598,7 @@ class StockValueWindow(tk.Toplevel):
 
                 for tv in day_values:
                     item_name = tv.ItemName
+                    is_mat = is_material_item(item_name)
                     current_val = float(tv.ValueforItem or 0)
                     stat = stats_30d.get(item_name)
 
@@ -588,28 +624,34 @@ class StockValueWindow(tk.Toplevel):
                     else:
                         delta_pct = 0.0
 
-                    # Anomalia: valore fuori 1.5 * σ dalla media
+                    # Anomalia DIREZIONALE: scostamento dalla media nella direzione
+                    # "sfavorevole". Per il materiale e' sfavorevole un valore SOPRA la
+                    # media; per gli ordini e' sfavorevole un valore SOTTO la media.
                     is_anomaly = False
                     anomaly_icon = ""
                     if std_30 > 0:
-                        z_score = abs(current_val - avg_30) / std_30
-                        if z_score > 2.0:
+                        signed_z = (current_val - avg_30) / std_30
+                        bad_z = signed_z if is_mat else -signed_z
+                        if bad_z > 2.0:
                             is_anomaly = True
                             anomaly_icon = "🔴"
                             alert_items.append(
                                 f"<strong>{item_name}</strong>: value {current_val:,.2f} "
-                                f"deviates <strong>{z_score:.1f}σ</strong> from mean "
-                                f"({avg_30:,.2f}) — <em>Critical anomaly</em>")
-                        elif z_score > 1.5:
+                                f"deviates <strong>{bad_z:.1f}σ</strong> in the unfavorable "
+                                f"direction from mean ({avg_30:,.2f}) — <em>Critical</em>")
+                        elif bad_z > 1.5:
                             is_anomaly = True
                             anomaly_icon = "🟡"
                             alert_items.append(
                                 f"<strong>{item_name}</strong>: value {current_val:,.2f} "
-                                f"deviates <strong>{z_score:.1f}σ</strong> from mean "
-                                f"({avg_30:,.2f}) — <em>Warning</em>")
+                                f"deviates <strong>{bad_z:.1f}σ</strong> in the unfavorable "
+                                f"direction from mean ({avg_30:,.2f}) — <em>Warning</em>")
+                        elif bad_z < -2.0:
+                            anomaly_icon = "🟢"  # scostamento forte ma FAVOREVOLE
 
                     # Trend 7gg
                     vals_7d = trend_by_item.get(item_name, [])
+                    trend_color = COLOR_NEUTRAL
                     if len(vals_7d) >= 2:
                         trend_diff = vals_7d[-1] - vals_7d[0]
                         if trend_diff > 0:
@@ -621,12 +663,22 @@ class StockValueWindow(tk.Toplevel):
                         else:
                             trend_icon = "➡️"
                             trend_label = "Stable"
-                        # Alerta per trend costantemente in crescita
-                        if len(vals_7d) >= 4 and all(
-                            vals_7d[i] <= vals_7d[i+1] for i in range(len(vals_7d)-1)):
+                        trend_color = direction_color(trend_diff, is_mat)
+                        # Alert DIREZIONALE: per il materiale e' negativa una crescita
+                        # costante; per gli ordini e' negativo un calo costante.
+                        rising_streak = len(vals_7d) >= 4 and all(
+                            vals_7d[i] <= vals_7d[i+1] for i in range(len(vals_7d)-1))
+                        falling_streak = len(vals_7d) >= 4 and all(
+                            vals_7d[i] >= vals_7d[i+1] for i in range(len(vals_7d)-1))
+                        if is_mat and rising_streak:
                             alert_items.append(
                                 f"<strong>{item_name}</strong>: "
-                                f"stock rising for {len(vals_7d)} consecutive days "
+                                f"material stock rising for {len(vals_7d)} consecutive days "
+                                f"({vals_7d[0]:,.0f} → {vals_7d[-1]:,.0f})")
+                        elif (not is_mat) and falling_streak:
+                            alert_items.append(
+                                f"<strong>{item_name}</strong>: "
+                                f"orders declining for {len(vals_7d)} consecutive days "
                                 f"({vals_7d[0]:,.0f} → {vals_7d[-1]:,.0f})")
                     else:
                         trend_icon = "—"
@@ -635,11 +687,13 @@ class StockValueWindow(tk.Toplevel):
                     # Colore riga
                     if is_anomaly:
                         row_bg = "#fff3cd" if anomaly_icon == "🟡" else "#f8d7da"
+                    elif anomaly_icon == "🟢":
+                        row_bg = "#e8f5e9"
                     else:
                         row_bg = "#ffffff"
 
-                    delta_color = '#2E7D32' if delta_pct <= 5 else (
-                        '#E65100' if delta_pct <= 15 else '#B71C1C')
+                    # Colore "vs Avg" direzionale (scostamenti <5% considerati neutri)
+                    delta_color = direction_color(delta_pct, is_mat, neutral=5.0)
                     delta_str = f"{delta_pct:+.1f}%"
 
                     analysis_rows += f"""
@@ -651,7 +705,8 @@ class StockValueWindow(tk.Toplevel):
                         <td style="padding:8px 12px; border:1px solid #dee2e6; text-align:center;
                                    color:{delta_color}; font-weight:bold;">{delta_str}</td>
                         <td style="padding:8px 12px; border:1px solid #dee2e6; text-align:center;">{min_30:,.2f} — {max_30:,.2f}</td>
-                        <td style="padding:8px 12px; border:1px solid #dee2e6; text-align:center;">{trend_icon} {trend_label}</td>
+                        <td style="padding:8px 12px; border:1px solid #dee2e6; text-align:center;
+                                   color:{trend_color}; font-weight:bold;">{trend_icon} {trend_label}</td>
                     </tr>"""
 
                 # Alert box
@@ -678,8 +733,9 @@ class StockValueWindow(tk.Toplevel):
                 <!-- ANALISI INTELLIGENTE -->
                 <h3 style="color:#0056b3; margin-top:30px;">🔍 Stock Analysis — Anomaly Detection</h3>
                 <p style="font-size:12px; color:#666; margin-bottom:8px;">
-                    Comparing today's values against the 30-day average. 
-                    🟡 = Warning (>1.5σ), 🔴 = Critical (>2σ)
+                    Comparing today's values against the 30-day average.
+                    For material/stock items a rise is unfavorable (red); for orders a rise is favorable (green).
+                    🟡 = Warning (&gt;1.5σ unfavorable), 🔴 = Critical (&gt;2σ unfavorable), 🟢 = Strongly favorable
                 </p>
                 <table style="border-collapse:collapse; width:100%; margin:10px 0;">
                     <thead>

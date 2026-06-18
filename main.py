@@ -309,7 +309,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.1.5'  # Versione aggiornata
+APP_VERSION = '2.4.2.1.7'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -14126,6 +14126,11 @@ class App(tk.Tk):
                 self, self.db, self.lang, user_name)
         )
 
+    def _open_fqc_products_report(self):
+        """Apre il report delle schede FQC validate (sola lettura)."""
+        import fqc_products_report_gui
+        fqc_products_report_gui.open_fqc_products_report(self, self.db, self.lang)
+
     def _open_label_config_placeholder(self):
         """Apre la finestra di configurazione etichetta."""
         def action():
@@ -15349,24 +15354,28 @@ class App(tk.Tk):
                 action_callback(cached_user_id)
             return user
 
-        login_form = LoginWindow(self, self.db, self.lang)
-        self.wait_window(login_form)
+        # Ciclo: in caso di password/credenziali errate si ripropone sempre la form di login.
+        while True:
+            login_form = LoginWindow(self, self.db, self.lang)
+            self.wait_window(login_form)
 
-        if not login_form.clicked_login:
-            logger.info("Login window closed without login.")
-            return None
+            if not login_form.clicked_login:
+                logger.info("Login window closed without login.")
+                return None
 
-        user_id = login_form.user_id
-        logger.info("LoginWindow returned user_id=%r", user_id)
+            user_id = login_form.user_id
+            logger.info("LoginWindow returned user_id=%r", user_id)
 
-        password = login_form.password
-        user = self.db.authenticate_and_get_user_simple(user_id, password)
+            password = login_form.password
+            user = self.db.authenticate_and_get_user_simple(user_id, password)
 
-        if not user:
-            logger.info("Authentication failed for user_id=%r", user_id)
-            messagebox.showerror(self.lang.get('login_title'),
-                                 self.lang.get('login_auth_failed'), parent=self)
-            return None
+            if not user:
+                logger.info("Authentication failed for user_id=%r", user_id)
+                messagebox.showerror(self.lang.get('login_title'),
+                                     self.lang.get('login_auth_failed'), parent=self)
+                continue  # credenziali errate: torna alla form di login
+
+            break  # autenticazione riuscita
 
         logger.debug("Authenticated as %r; permissions=%s", user.name,
                      sorted(user.permissions) if hasattr(user, 'permissions') else [])
@@ -15455,23 +15464,28 @@ class App(tk.Tk):
             action_callback()
             return True
 
-        login_form = LoginWindow(self, self.db, self.lang)
-        self.wait_window(login_form)
+        # Ciclo: in caso di password/credenziali errate si ripropone sempre la form di login.
+        while True:
+            login_form = LoginWindow(self, self.db, self.lang)
+            self.wait_window(login_form)
 
-        if not login_form.clicked_login:
-            return False
+            if not login_form.clicked_login:
+                return False
 
-        user_id = login_form.user_id
-        logger.debug("LoginWindow returned user_id=%r for authorized action %r", user_id, menu_translation_key)
-        password = login_form.password
+            user_id = login_form.user_id
+            logger.debug("LoginWindow returned user_id=%r for authorized action %r", user_id, menu_translation_key)
+            password = login_form.password
 
-        auth_result = self.db.authenticate_and_authorize(user_id, password, menu_translation_key)
+            auth_result = self.db.authenticate_and_authorize(user_id, password, menu_translation_key)
 
-        if auth_result is None:
-            messagebox.showerror(self.lang.get('login_title'), self.lang.get('login_auth_failed'), parent=self)
-            logger.debug("User %r authenticated but NOT authorized for %r", user_id, menu_translation_key)
-            return False
-        elif auth_result.AuthorizedUsedId is None:
+            if auth_result is None:
+                messagebox.showerror(self.lang.get('login_title'), self.lang.get('login_auth_failed'), parent=self)
+                logger.debug("Authentication failed (wrong credentials) for user_id=%r on %r", user_id, menu_translation_key)
+                continue  # credenziali errate: torna alla form di login
+
+            break  # autenticazione riuscita (autorizzazione verificata sotto)
+
+        if auth_result.AuthorizedUsedId is None:
             logger.debug("User %r authenticated but NOT authorized for %r", user_id, menu_translation_key)
             messagebox.showwarning(
                 self.lang.get('auth_access_denied_title', "Accesso Negato"),
@@ -16523,6 +16537,13 @@ class App(tk.Tk):
             command=self._menu_command_or_error(
                 '_open_fqc_products_feedback_with_login',
                 self.lang.get('menu_fqc_feedback', '\U0001f4ac Feedback Cliente')
+            )
+        )
+        fqc_submenu.add_command(
+            label=self.lang.get('menu_fqc_report', '\U0001f4ca Report Schede Validate'),
+            command=self._menu_command_or_error(
+                '_open_fqc_products_report',
+                self.lang.get('menu_fqc_report', '\U0001f4ca Report Schede Validate')
             )
         )
 
