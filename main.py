@@ -309,7 +309,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.1.7'  # Versione aggiornata
+APP_VERSION = '2.4.2.1.8'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -19526,10 +19526,11 @@ class App(tk.Tk):
         )
 
     def _open_shipment_confirmation(self):
-        """Apre la finestra di conferma spedizioni urgenti (login semplice)."""
-        def action(user_name):
+        """Apre la finestra di conferma spedizioni urgenti (con autorizzazione)."""
+        def authorized_action():
             try:
                 from orders.shipment_confirmation_window import open_shipment_confirmation_window
+                user_name = getattr(self, 'last_authenticated_user_name', 'Unknown')
                 open_shipment_confirmation_window(self, self.db, self.lang, user_name)
             except Exception as e:
                 logger.error(f"Errore apertura conferma spedizioni: {e}", exc_info=True)
@@ -19539,7 +19540,10 @@ class App(tk.Tk):
                     parent=self
                 )
 
-        self._execute_simple_login(action_callback=action)
+        self._execute_authorized_action(
+            menu_translation_key='conferma_spedizioni',
+            action_callback=authorized_action
+        )
 
     def open_equipment_types_manager_with_login(self):
         """Apre la finestra di gestione tipi macchine con autorizzazione"""

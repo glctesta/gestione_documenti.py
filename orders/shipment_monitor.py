@@ -4,6 +4,8 @@ orders/shipment_monitor.py
 Monitor background per i PC configurati come postazione spedizioni urgenti.
 - Polling ogni 15 s
 - Mostra popup di avviso quando ci sono regole di spedizione non ancora confermate
+- Il popup ricompare ogni N minuti (configurabile via shipment_monitor_config.json
+  nella directory di lavoro dell'eseguibile)
 - Si attiva solo sui PC con shipment_host.json in %LOCALAPPDATA%
 
 Stesso pattern di indirect_materials_wh_monitor.py / shift_handover_monitor.py.
@@ -13,6 +15,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import logging
 import os
+import sys
+import json
 import winsound
 import threading
 from datetime import datetime
@@ -21,8 +25,60 @@ from orders.shipment_workstation_config import is_shipment_workstation
 
 logger = logging.getLogger(__name__)
 
-POLL_INTERVAL_MS = 15_000        # polling ogni 15 secondi
-RE_NOTIFY_MINUTES = 10           # ri-notifica se non gestita entro N minuti
+POLL_INTERVAL_MS = 15_000           # polling DB ogni 15 secondi
+DEFAULT_RE_NOTIFY_MINUTES = 10      # default: il popup ricompare ogni N minuti
+
+# File di configurazione salvato nella directory di lavoro dell'eseguibile.
+CONFIG_FILENAME = "shipment_monitor_config.json"
+
+
+def _executable_dir() -> str:
+    """Directory dell'eseguibile (o di lavoro corrente in sviluppo)."""
+    if getattr(sys, "frozen", False):
+        # App impacchettata con PyInstaller: cartella che contiene il .exe
+        return os.path.dirname(sys.executable)
+    # In sviluppo: directory di lavoro corrente
+    return os.getcwd()
+
+
+def _config_path() -> str:
+    return os.path.join(_executable_dir(), CONFIG_FILENAME)
+
+
+def _write_default_config(path: str) -> None:
+    """Crea il file di config con i valori di default (best-effort)."""
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(
+                {"reappear_interval_minutes": DEFAULT_RE_NOTIFY_MINUTES},
+                f, indent=4, ensure_ascii=False,
+            )
+        logger.info(f"ShipmentMonitor: creato file di configurazione {path}")
+    except Exception as e:
+        logger.warning(f"ShipmentMonitor: impossibile creare config {path}: {e}")
+
+
+def get_reappear_interval_minutes() -> int:
+    """Legge dal JSON l'intervallo (minuti) di ricomparsa del popup.
+
+    Se il file non esiste lo crea con il default. In caso di errore o valore
+    non valido restituisce il default.
+    """
+    path = _config_path()
+    try:
+        if not os.path.isfile(path):
+            _write_default_config(path)
+            return DEFAULT_RE_NOTIFY_MINUTES
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        val = int(data.get("reappear_interval_minutes", DEFAULT_RE_NOTIFY_MINUTES))
+        return val if val >= 1 else DEFAULT_RE_NOTIFY_MINUTES
+    except Exception as e:
+        logger.warning(
+            f"ShipmentMonitor: config non leggibile ({e}); uso default "
+            f"{DEFAULT_RE_NOTIFY_MINUTES} min"
+        )
+        return DEFAULT_RE_NOTIFY_MINUTES
 
 
 _QUERY_PENDING_COUNT = """
@@ -91,9 +147,11 @@ class ShipmentMonitor:
         if self._popup_open:
             return
         try:
+            # Intervallo (minuti) di ricomparsa del popup, letto dal file di config
+            re_notify_minutes = get_reappear_interval_minutes()
             # Usa LastShipmentNotify per evitare flood (colonna opzionale — gestisce l'assenza)
             try:
-                self.db.cursor.execute(_QUERY_PENDING_DETAIL, (RE_NOTIFY_MINUTES,))
+                self.db.cursor.execute(_QUERY_PENDING_DETAIL, (re_notify_minutes,))
             except Exception:
                 # Colonna LastShipmentNotify potrebbe non esistere: usa query semplice
                 self.db.cursor.execute(
@@ -250,11 +308,16 @@ class ShipmentMonitor:
         ).pack(side=tk.RIGHT, padx=20)
 
     def _open_confirmation(self):
-        """Apre la finestra di conferma (senza login — già verificato dal menu)."""
+        """Apre la finestra di conferma passando per il login previsto dal menu."""
         try:
-            from orders.shipment_confirmation_window import open_shipment_confirmation_window
+            # Usa lo stesso flusso del menu: login semplice + apertura finestra
+            menu_handler = getattr(self.master, "_open_shipment_confirmation", None)
+            if callable(menu_handler):
+                menu_handler()
+                return
 
-            # Recupera un user_name generico di sistema per apertura da popup
+            # Fallback: apertura diretta se il metodo del menu non è disponibile
+            from orders.shipment_confirmation_window import open_shipment_confirmation_window
             user_name = getattr(self.master, "last_authenticated_user_name", "Unknown")
             open_shipment_confirmation_window(self.master, self.db, self.lang, user_name)
         except Exception as e:
