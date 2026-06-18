@@ -213,7 +213,8 @@ class ShipmentMonitor:
                 f"⚠️ SPEDIZIONI URGENTI — {len(rows)} in attesa di conferma",
             )
         )
-        popup.geometry("760x420")
+        popup.geometry("820x480")
+        popup.minsize(700, 380)
         popup.attributes("-topmost", True)
         popup.configure(bg="#c0392b")
         popup.grab_set()
@@ -224,9 +225,11 @@ class ShipmentMonitor:
 
         popup.protocol("WM_DELETE_WINDOW", _on_close)
 
-        # Header
+        # ── Header (in alto) ──
+        header_frame = tk.Frame(popup, bg="#c0392b")
+        header_frame.pack(side=tk.TOP, fill=tk.X)
         tk.Label(
-            popup,
+            header_frame,
             text=self.lang.get(
                 "shipment_popup_header",
                 f"📦  {len(rows)} SPEDIZIONE/I URGENTE/I NON CONFERMATA/E",
@@ -235,9 +238,8 @@ class ShipmentMonitor:
             fg="white",
             font=("Segoe UI", 14, "bold"),
         ).pack(pady=(12, 4))
-
         tk.Label(
-            popup,
+            header_frame,
             text=self.lang.get(
                 "shipment_popup_subheader",
                 "Aprire la finestra 'Conferma Shipping' per registrare la conferma.",
@@ -247,9 +249,29 @@ class ShipmentMonitor:
             font=("Segoe UI", 10),
         ).pack(pady=(0, 10))
 
-        # Treeview
+        # ── Bottoni (ancorati in basso: packati PRIMA della lista così
+        #    restano sempre visibili anche se la finestra si rimpicciolisce) ──
+        btn_frame = tk.Frame(popup, bg="#c0392b")
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=10)
+
+        ttk.Button(
+            btn_frame,
+            text=self.lang.get("shipment_popup_btn_open", "📋 Apri Conferma Shipping"),
+            command=lambda: [_on_close(), self._open_confirmation()],
+        ).pack(side=tk.LEFT, padx=20)
+
+        ttk.Button(
+            btn_frame,
+            text=self.lang.get("btn_close", "Chiudi"),
+            command=_on_close,
+        ).pack(side=tk.RIGHT, padx=20)
+
+        # ── Lista (riempie lo spazio centrale rimanente) ──
+        fr = ttk.Frame(popup)
+        fr.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=8, pady=(0, 6))
+
         cols = ("ProductionOrder", "Customer", "SONumber", "ItemCode", "DateToShip", "QtyRequested", "ShipTo", "AddedBy")
-        tree = ttk.Treeview(popup, columns=cols, show="headings", height=8)
+        tree = ttk.Treeview(fr, columns=cols, show="headings", height=8)
         tree.heading("ProductionOrder", text="Ord. Prod.")
         tree.heading("Customer",        text="Cliente")
         tree.heading("SONumber",        text="Ord. Vendita")
@@ -284,28 +306,10 @@ class ShipmentMonitor:
                 ),
             )
 
-        fr = ttk.Frame(popup)
-        fr.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 6))
         vsb = ttk.Scrollbar(fr, orient=tk.VERTICAL, command=tree.yview)
         tree.configure(yscrollcommand=vsb.set)
-        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
-
-        # Bottoni
-        btn_frame = tk.Frame(popup, bg="#c0392b")
-        btn_frame.pack(fill=tk.X, pady=8)
-
-        ttk.Button(
-            btn_frame,
-            text=self.lang.get("shipment_popup_btn_open", "📋 Apri Conferma Shipping"),
-            command=lambda: [_on_close(), self._open_confirmation()],
-        ).pack(side=tk.LEFT, padx=20)
-
-        ttk.Button(
-            btn_frame,
-            text=self.lang.get("btn_close", "Chiudi"),
-            command=_on_close,
-        ).pack(side=tk.RIGHT, padx=20)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
     def _open_confirmation(self):
         """Apre la finestra di conferma passando per il login previsto dal menu."""
