@@ -179,36 +179,62 @@ class OvertimeAnalysisWindow(tk.Toplevel):
         ttk.Label(tab, textvariable=self._eco_file_var,
                   foreground='#1F3864', font=('Helvetica', 8)).pack(anchor=tk.W, pady=(0, 6))
 
-        # Riquadro KPI
-        kpi_frame = ttk.LabelFrame(
-            tab, text=self.lang.get('economics_kpi', 'Indicatori'), padding="10")
-        kpi_frame.pack(fill=tk.X, pady=4)
-
-        # (chiave KPI, etichetta)
-        self._eco_fields = [
-            ('people',          self.lang.get('eco_people', 'Persone in straordinario')),
-            ('ot_hours',        self.lang.get('eco_ot_hours', 'Ore straordinario (svolte / appr.)')),
-            ('ot_cost',         self.lang.get('eco_ot_cost', 'Costo straordinario')),
-            ('finalized',       self.lang.get('eco_finalized', 'Pezzi finalizzati')),
-            ('finalized_value', self.lang.get('eco_finalized_value', 'Valore finalizzato')),
-            ('wip',             self.lang.get('eco_wip', 'WIP (schede / pezzi-eq.)')),
-            ('wip_value',       self.lang.get('eco_wip_value', 'Valore WIP')),
-            ('total_value',     self.lang.get('eco_total_value', 'Valore prodotto totale')),
-            ('margin',          self.lang.get('eco_margin', 'Margine (valore - costo)')),
-            ('index',           self.lang.get('eco_index', 'Indice convenienza (valore/costo)')),
-            ('per_person',      self.lang.get('eco_per_person', 'Valore / persona')),
-            ('per_hour',        self.lang.get('eco_per_hour', 'Valore / ora straordinario')),
-        ]
         self._eco_vars = {}
-        for i, (key, label) in enumerate(self._eco_fields):
-            r, col = divmod(i, 2)
-            cell = ttk.Frame(kpi_frame)
-            cell.grid(row=r, column=col, sticky=tk.W, padx=12, pady=3)
-            ttk.Label(cell, text=label + ':', width=34, anchor=tk.W).pack(side=tk.LEFT)
-            var = tk.StringVar(value='—')
-            self._eco_vars[key] = var
-            ttk.Label(cell, textvariable=var, font=('Helvetica', 10, 'bold'),
-                      foreground='#0056b3').pack(side=tk.LEFT)
+        self._eco_labels = {}
+
+        def add_section(parent, title, fields):
+            lf = ttk.LabelFrame(parent, text=title, padding="8")
+            for i, (key, label) in enumerate(fields):
+                r, col = divmod(i, 2)
+                cell = ttk.Frame(lf)
+                cell.grid(row=r, column=col, sticky=tk.W, padx=10, pady=2)
+                ttk.Label(cell, text=label + ':', width=32, anchor=tk.W).pack(side=tk.LEFT)
+                var = tk.StringVar(value='—')
+                self._eco_vars[key] = var
+                lbl = ttk.Label(cell, textvariable=var,
+                                font=('Helvetica', 10, 'bold'), foreground='#0056b3')
+                lbl.pack(side=tk.LEFT)
+                self._eco_labels[key] = lbl
+            return lf
+
+        # Sezione Produzione del periodo
+        prod = add_section(
+            tab, self.lang.get('economics_prod_section', 'Produzione del periodo (tutte le ore)'), [
+                ('finalized',      self.lang.get('eco_finalized', 'Pezzi finalizzati')),
+                ('finalized_value', self.lang.get('eco_finalized_value', 'Valore finalizzato')),
+                ('wip',            self.lang.get('eco_wip', 'WIP (schede / pezzi-eq.)')),
+                ('wip_value',      self.lang.get('eco_wip_value', 'Valore WIP')),
+                ('total_value',    self.lang.get('eco_total_value', 'Valore prodotto totale')),
+                ('labor_hours',    self.lang.get('eco_labor_hours', 'Ore lavorate (produzione)')),
+                ('productivity',   self.lang.get('eco_productivity', 'Produttività media (valore/ora)')),
+            ])
+        prod.pack(fill=tk.X, pady=4)
+
+        # Sezione Straordinario
+        ot = add_section(
+            tab, self.lang.get('economics_ot_section', 'Straordinario'), [
+                ('people',          self.lang.get('eco_people', 'Persone in straordinario')),
+                ('ot_hours',        self.lang.get('eco_ot_hours', 'Ore straordinario (svolte / appr.)')),
+                ('ot_incidence',    self.lang.get('eco_ot_incidence', 'Incidenza ore straord. (%)')),
+                ('ot_cost',         self.lang.get('eco_ot_cost', 'Costo straordinario')),
+                ('ot_cost_per_hour', self.lang.get('eco_ot_cost_per_hour', 'Costo medio straord. (/h)')),
+                ('ot_value',        self.lang.get('eco_ot_value', 'Valore attribuibile allo straord.')),
+                ('ot_margin',       self.lang.get('eco_ot_margin', 'Margine straordinario (valore - costo)')),
+            ])
+        ot.pack(fill=tk.X, pady=4)
+
+        # ROI evidenziato
+        roi_frame = ttk.Frame(tab)
+        roi_frame.pack(fill=tk.X, pady=(2, 4))
+        ttk.Label(roi_frame,
+                  text=self.lang.get('eco_ot_roi', 'ROI straordinario (valore/costo)') + ':',
+                  font=('Helvetica', 12, 'bold')).pack(side=tk.LEFT, padx=(2, 8))
+        self._eco_roi_var = tk.StringVar(value='—')
+        self._eco_roi_label = tk.Label(roi_frame, textvariable=self._eco_roi_var,
+                                       font=('Helvetica', 16, 'bold'), fg='#0056b3')
+        self._eco_roi_label.pack(side=tk.LEFT)
+        self._eco_roi_note = tk.Label(roi_frame, text='', font=('Helvetica', 9))
+        self._eco_roi_note.pack(side=tk.LEFT, padx=12)
 
         # Avviso prezzi mancanti
         self._eco_missing_var = tk.StringVar(value='')
@@ -271,19 +297,41 @@ class OvertimeAnalysisWindow(tk.Toplevel):
             self._eco_file_var.set(self.lang.get(
                 'economics_no_d365', '⚠️ File prezzi D365 non trovato in T:\\D365 data — valori a 0.'))
 
-        idx = s['index']
-        self._eco_vars['people'].set(str(s['people']))
-        self._eco_vars['ot_hours'].set(f"{s['ot_hours_done']:.1f} / {s['ot_hours_approved']:.1f}")
-        self._eco_vars['ot_cost'].set(self._fmt_money(s['ot_cost']))
-        self._eco_vars['finalized'].set(f"{s['finalized_pieces']:,}")
-        self._eco_vars['finalized_value'].set(self._fmt_money(s['finalized_value']))
-        self._eco_vars['wip'].set(f"{s['wip_boards']:,} / {s['wip_pieces_equiv']:.1f}")
-        self._eco_vars['wip_value'].set(self._fmt_money(s['wip_value']))
-        self._eco_vars['total_value'].set(self._fmt_money(s['total_value']))
-        self._eco_vars['margin'].set(self._fmt_money(s['margin']))
-        self._eco_vars['index'].set(f"{idx:.2f}" if idx is not None else '—')
-        self._eco_vars['per_person'].set(self._fmt_money(s['value_per_person']))
-        self._eco_vars['per_hour'].set(self._fmt_money(s['value_per_ot_hour']))
+        v = self._eco_vars
+        # Produzione
+        v['finalized'].set(f"{s['finalized_pieces']:,}")
+        v['finalized_value'].set(self._fmt_money(s['finalized_value']))
+        v['wip'].set(f"{s['wip_boards']:,} / {s['wip_pieces_equiv']:.1f}")
+        v['wip_value'].set(self._fmt_money(s['wip_value']))
+        v['total_value'].set(self._fmt_money(s['total_value']))
+        v['labor_hours'].set(f"{s['total_labor_hours']:,.1f} h")
+        v['productivity'].set(self._fmt_money(s['productivity']) + "/h" if s['productivity'] else '—')
+        # Straordinario
+        v['people'].set(str(s['people']))
+        v['ot_hours'].set(f"{s['ot_hours_done']:.1f} / {s['ot_hours_approved']:.1f} h")
+        v['ot_incidence'].set(f"{s['ot_incidence_pct']:.2f}%" if s['ot_incidence_pct'] is not None else '—')
+        v['ot_cost'].set(self._fmt_money(s['ot_cost']))
+        v['ot_cost_per_hour'].set(self._fmt_money(s['ot_cost_per_hour']) + "/h" if s['ot_cost_per_hour'] else '—')
+        v['ot_value'].set(self._fmt_money(s['ot_value']))
+        v['ot_margin'].set(self._fmt_money(s['ot_margin']))
+        self._eco_labels['ot_margin'].config(
+            foreground='#1B5E20' if s['ot_margin'] >= 0 else '#B71C1C')
+
+        # ROI evidenziato
+        roi = s['ot_roi']
+        if roi is not None:
+            self._eco_roi_var.set(f"{roi:.2f}")
+            if roi >= 1:
+                self._eco_roi_label.config(fg='#1B5E20')
+                self._eco_roi_note.config(
+                    text=self.lang.get('eco_roi_good', '✓ Straordinario conveniente'), fg='#1B5E20')
+            else:
+                self._eco_roi_label.config(fg='#B71C1C')
+                self._eco_roi_note.config(
+                    text=self.lang.get('eco_roi_bad', '✗ Straordinario non conveniente'), fg='#B71C1C')
+        else:
+            self._eco_roi_var.set('—')
+            self._eco_roi_note.config(text='')
 
         # Prezzi mancanti
         miss = s['missing_price']
@@ -651,30 +699,42 @@ class OvertimeAnalysisWindow(tk.Toplevel):
             f"Tariffe: feriale {s['rates'].get('weekday_ot',0):.2f} {cur}/h  ·  "
             f"weekend {s['rates'].get('weekend',0):.2f} {cur}/h"))
 
-        idx = s['index']
+        roi = s['ot_roi']
         kpis = [
-            ("Persone in straordinario", s['people']),
-            ("Ore straordinario svolte", round(s['ot_hours_done'], 1)),
-            ("Ore straordinario approvate", round(s['ot_hours_approved'], 1)),
-            (f"Costo straordinario ({cur})", round(s['ot_cost'], 2)),
+            ("— PRODUZIONE DEL PERIODO (tutte le ore) —", None),
             ("Pezzi finalizzati", s['finalized_pieces']),
             (f"Valore finalizzato ({cur})", round(s['finalized_value'], 2)),
             ("Schede WIP", s['wip_boards']),
             ("WIP pezzi-equivalenti", round(s['wip_pieces_equiv'], 1)),
             (f"Valore WIP ({cur})", round(s['wip_value'], 2)),
             (f"Valore prodotto totale ({cur})", round(s['total_value'], 2)),
-            (f"Margine valore-costo ({cur})", round(s['margin'], 2)),
-            ("Indice convenienza (valore/costo)", round(idx, 2) if idx is not None else "—"),
-            (f"Valore / persona ({cur})", round(s['value_per_person'], 2) if s['value_per_person'] else "—"),
-            (f"Valore / ora straord. ({cur})", round(s['value_per_ot_hour'], 2) if s['value_per_ot_hour'] else "—"),
+            ("Ore lavorate produzione", round(s['total_labor_hours'], 1)),
+            (f"Produttività media (valore/ora) ({cur})",
+             round(s['productivity'], 2) if s['productivity'] else "—"),
+            ("— STRAORDINARIO —", None),
+            ("Persone in straordinario", s['people']),
+            ("Ore straordinario svolte", round(s['ot_hours_done'], 1)),
+            ("Ore straordinario approvate", round(s['ot_hours_approved'], 1)),
+            ("Incidenza ore straord. (%)",
+             round(s['ot_incidence_pct'], 2) if s['ot_incidence_pct'] is not None else "—"),
+            (f"Costo straordinario ({cur})", round(s['ot_cost'], 2)),
+            (f"Costo medio straordinario ({cur}/h)",
+             round(s['ot_cost_per_hour'], 2) if s['ot_cost_per_hour'] else "—"),
+            (f"Valore attribuibile allo straordinario ({cur})", round(s['ot_value'], 2)),
+            (f"Margine straordinario valore-costo ({cur})", round(s['ot_margin'], 2)),
+            ("ROI straordinario (valore/costo)", round(roi, 2) if roi is not None else "—"),
         ]
         r0 = 6
         ws.cell(row=r0, column=1, value="Indicatore").font = title_font
         ws.cell(row=r0, column=1).fill = title_fill
         ws.cell(row=r0, column=2, value="Valore").font = title_font
         ws.cell(row=r0, column=2).fill = title_fill
+        section_font = Font(bold=True, color="1F3864")
         for i, (label, value) in enumerate(kpis, start=r0 + 1):
-            ws.cell(row=i, column=1, value=label)
+            cell_l = ws.cell(row=i, column=1, value=label)
+            if value is None:                       # riga di sezione
+                cell_l.font = section_font
+                continue
             ws.cell(row=i, column=2, value=value).alignment = Alignment(horizontal='right')
 
         # Dettaglio per giorno
@@ -846,26 +906,32 @@ class OvertimeAnalysisWindow(tk.Toplevel):
                      f"Tariffe: feriale {s['rates'].get('weekday_ot',0):.2f} {cur}/h  -  "
                      f"weekend {s['rates'].get('weekend',0):.2f} {cur}/h")
 
-        idx = s['index']
+        roi = s['ot_roi']
         def m(v):
             return f"{v:,.2f} {cur}" if v is not None else "—"
         rows = [
             ["Indicatore", "Valore"],
-            ["Persone in straordinario", str(s['people'])],
-            ["Ore straordinario (svolte / appr.)", f"{s['ot_hours_done']:.1f} / {s['ot_hours_approved']:.1f}"],
-            ["Costo straordinario", m(s['ot_cost'])],
+            ["PRODUZIONE DEL PERIODO (tutte le ore)", ""],
             ["Pezzi finalizzati", f"{s['finalized_pieces']:,}"],
             ["Valore finalizzato", m(s['finalized_value'])],
             ["WIP (schede / pezzi-eq.)", f"{s['wip_boards']:,} / {s['wip_pieces_equiv']:.1f}"],
             ["Valore WIP", m(s['wip_value'])],
             ["Valore prodotto totale", m(s['total_value'])],
-            ["Margine (valore - costo)", m(s['margin'])],
-            ["Indice convenienza (valore/costo)", f"{idx:.2f}" if idx is not None else "—"],
-            ["Valore / persona", m(s['value_per_person'])],
-            ["Valore / ora straordinario", m(s['value_per_ot_hour'])],
+            ["Ore lavorate produzione", f"{s['total_labor_hours']:,.1f} h"],
+            ["Produttività media (valore/ora)", m(s['productivity'])],
+            ["STRAORDINARIO", ""],
+            ["Persone in straordinario", str(s['people'])],
+            ["Ore straordinario (svolte / appr.)", f"{s['ot_hours_done']:.1f} / {s['ot_hours_approved']:.1f}"],
+            ["Incidenza ore straord. (%)", f"{s['ot_incidence_pct']:.2f}%" if s['ot_incidence_pct'] is not None else "—"],
+            ["Costo straordinario", m(s['ot_cost'])],
+            ["Costo medio straordinario (/h)", m(s['ot_cost_per_hour'])],
+            ["Valore attribuibile allo straordinario", m(s['ot_value'])],
+            ["Margine straordinario (valore - costo)", m(s['ot_margin'])],
+            ["ROI straordinario (valore/costo)", f"{roi:.2f}" if roi is not None else "—"],
         ]
-        table = Table(rows, colWidths=[10 * cm, 8 * cm])
-        table.setStyle(TableStyle([
+        section_rows = [1, 9]   # indici righe di sezione
+        table = Table(rows, colWidths=[11 * cm, 7 * cm])
+        style = [
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#2E5090")),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
@@ -874,7 +940,17 @@ class OvertimeAnalysisWindow(tk.Toplevel):
             ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
             ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
             ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor("#F4F6F8")]),
-        ]))
+        ]
+        for sr in section_rows:
+            style.append(('BACKGROUND', (0, sr), (-1, sr), colors.HexColor("#D6E4F0")))
+            style.append(('FONTNAME', (0, sr), (-1, sr), 'Helvetica-Bold'))
+            style.append(('TEXTCOLOR', (0, sr), (-1, sr), colors.HexColor("#1F3864")))
+        # ROI: ultima riga, colore in base al valore
+        roi_row = len(rows) - 1
+        roi_color = colors.HexColor("#1B5E20") if (roi is not None and roi >= 1) else colors.HexColor("#B71C1C")
+        style.append(('FONTNAME', (0, roi_row), (-1, roi_row), 'Helvetica-Bold'))
+        style.append(('TEXTCOLOR', (0, roi_row), (-1, roi_row), roi_color))
+        table.setStyle(TableStyle(style))
         table.wrapOn(c, width, height)
         table.drawOn(c, 2 * cm, height - 4.2 * cm - table._height)
 

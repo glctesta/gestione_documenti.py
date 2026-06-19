@@ -117,11 +117,19 @@ Aggregate sul periodo selezionato:
   - feriale: `Daily_Cost × 1,5`
   - weekend (sab/dom): `WeekEndCost` (invariato)
 
-**Indici di convenienza**
-- Valore prodotto / persona in straordinario
-- Valore prodotto / ora di straordinario
-- **Margine** = Valore prodotto − Costo straordinario
-- **Indice convenienza** = Valore prodotto / Costo straordinario (>1 = conveniente)
+**Attribuzione del valore allo straordinario (metodo affinato)**
+La produzione del periodo è realizzata da *tutte* le ore lavorate (ordinarie + straordinarie); confrontare il valore **totale** con il solo costo dello straordinario sovrastima la convenienza. Si attribuisce quindi allo straordinario **solo la quota proporzionale** alle sue ore, valutata alla produttività media:
+- **Ore lavorate totali (produzione)** = Σ `DailyState.WorkedMin` / 60 per la popolazione produttiva (`FunctionCode ≤ 60`).
+- **Produttività media** = Valore prodotto totale / Ore lavorate totali (€/h).
+- **Valore attribuibile allo straordinario** = Produttività media × Ore straordinario svolte.
+- **Incidenza ore straordinario** = Ore straordinario / Ore lavorate totali (%).
+
+**Indici di convenienza (headline = ROI)**
+- **Margine straordinario** = Valore attribuibile − Costo straordinario
+- **ROI straordinario** = Valore attribuibile / Costo straordinario (**> 1 = conveniente**)
+- Costo medio orario straordinario (€/h) come riferimento.
+
+> Nota: il valore lordo del periodo (finalizzato + WIP) e la produttività media restano mostrati come contesto, ma l'indicatore di convenienza è il **ROI straordinario**, che isola il contributo economico delle ore straordinarie.
 
 > Granularità proposta: riepilogo complessivo + dettaglio **per giorno** (e opzionalmente per ordine/prodotto), così da affiancare le ore di straordinario del giorno al valore prodotto dello stesso giorno.
 

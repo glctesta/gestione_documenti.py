@@ -220,6 +220,42 @@ def get_overtime_detail(conn, start_date, end_date):
     return out
 
 
+_TOTAL_LABOR_SQL = """
+DECLARE @dateStart DATE = ?;
+DECLARE @dateStop  DATE = ?;
+
+WITH CTE_HireHistory AS (
+    SELECT ee.EmployeeNID COLLATE DATABASE_DEFAULT AS UniqueID
+    FROM employee.dbo.employees ee
+    INNER JOIN employee.dbo.employeehirehistory h
+        ON ee.EmployeeId = h.EmployeeId AND h.employeerid = 2 AND h.EndWorkDate IS NULL
+    LEFT JOIN Employee.dbo.EmployeeCdcStories cs
+        ON cs.EmployeeHireHistoryId = h.EmployeeHireHistoryId AND cs.DateOut IS NULL
+    LEFT JOIN Employee.dbo.Functions f ON cs.FunctionId = f.FunctionId
+    WHERE ISNULL(f.FunctionCode, 0) <= 60
+)
+SELECT ISNULL(SUM(ds.WorkedMin), 0) AS TotalWorkedMin
+FROM Timeclocking.dbo.DailyState ds
+INNER JOIN Timeclocking.dbo.Employee e ON e.IDEmployee = ds.IDEmployee
+INNER JOIN CTE_HireHistory hh ON e.UniqueID COLLATE DATABASE_DEFAULT = hh.UniqueID
+WHERE ds.DailyStateDate BETWEEN @dateStart AND @dateStop;
+"""
+
+
+def get_total_labor_hours(conn, start_date, end_date):
+    """Ore lavorate totali (presenza) della popolazione produttiva (FunctionCode<=60)
+    nel periodo. Usata come base per la produttività media (valore/ora)."""
+    try:
+        cur = conn.cursor()
+        cur.execute(_TOTAL_LABOR_SQL, (start_date, end_date))
+        row = cur.fetchone()
+        cur.close()
+        return float(row[0] or 0) / 60.0
+    except Exception as e:
+        logger.error(f"get_total_labor_hours: {e}", exc_info=True)
+        return 0.0
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 #  Produzione: finalizzati + WIP
 # ════════════════════════════════════════════════════════════════════════════════
@@ -381,23 +417,42 @@ def compute_economics(conn, start_date, end_date):
     ot_hours_done = ot_min_done / 60.0
     ot_hours_approved = ot_min_approved / 60.0
 
+    # ── Metriche affinate: attribuzione del valore allo straordinario ──
+    # La produzione del periodo è realizzata da TUTTE le ore lavorate (ordinarie +
+    # straordinarie). Si attribuisce allo straordinario solo la quota di valore
+    # proporzionale alle sue ore, valutata alla produttività media (valore/ora).
+    total_labor_hours = get_total_labor_hours(conn, start_date, end_date)
+    productivity = (total_value / total_labor_hours) if total_labor_hours else None
+    ot_cost_per_hour = (ot_cost / ot_hours_done) if ot_hours_done else None
+    ot_incidence_pct = (ot_hours_done / total_labor_hours * 100) if total_labor_hours else None
+    ot_value = (productivity * ot_hours_done) if productivity else 0.0   # valore attribuibile
+    ot_margin = ot_value - ot_cost                                       # margine straordinario
+    ot_roi = (ot_value / ot_cost) if ot_cost else None                  # ROI straordinario
+
     summary = {
         "d365_file": d365_path,
         "rates": rates,
-        "people": n_people,
-        "ot_hours_done": ot_hours_done,
-        "ot_hours_approved": ot_hours_approved,
-        "ot_cost": ot_cost,
+        # produzione del periodo (tutte le ore)
         "finalized_pieces": finalized_pieces,
         "finalized_value": finalized_value,
         "wip_boards": wip_boards,
         "wip_pieces_equiv": wip_pieces_equiv,
         "wip_value": wip_value,
         "total_value": total_value,
-        "margin": total_value - ot_cost,
-        "index": (total_value / ot_cost) if ot_cost else None,
-        "value_per_person": (total_value / n_people) if n_people else None,
-        "value_per_ot_hour": (total_value / ot_hours_done) if ot_hours_done else None,
+        "total_labor_hours": total_labor_hours,
+        "productivity": productivity,
+        # straordinario
+        "people": n_people,
+        "ot_hours_done": ot_hours_done,
+        "ot_hours_approved": ot_hours_approved,
+        "ot_incidence_pct": ot_incidence_pct,
+        "ot_cost": ot_cost,
+        "ot_cost_per_hour": ot_cost_per_hour,
+        "ot_value": ot_value,
+        "ot_margin": ot_margin,
+        "ot_roi": ot_roi,
+        # contesto (valore lordo per ora straord., NON attribuzione — solo riferimento)
+        "gross_value_per_ot_hour": (total_value / ot_hours_done) if ot_hours_done else None,
         "missing_price": sorted(missing_price),
     }
 
