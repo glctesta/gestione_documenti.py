@@ -118,7 +118,7 @@ class IndirectMaterialsReportWindow(tk.Toplevel):
         self.detail_tree.pack(fill='both', expand=True)
 
         # Tag colori stato
-        self.detail_tree.tag_configure('CONSEGNATA', background='#d4edda')
+        self.detail_tree.tag_configure('PRELEVATA', background='#d4edda')
         self.detail_tree.tag_configure('ANNULLATA',  background='#f8d7da')
 
         # Totale dettaglio
@@ -301,9 +301,9 @@ class IndirectMaterialsReportWindow(tk.Toplevel):
             SELECT FORMAT(r.DataRichiesta, 'yyyy-MM') AS AnnoMese,
                    ISNULL(t.Tipo, 'Generico') AS Tipo,
                    COUNT(*) AS NRichieste,
-                   SUM(CASE WHEN r.Stato = 'CONSEGNATA' THEN 1 ELSE 0 END) AS NConsegnate,
+                   SUM(CASE WHEN r.Stato = 'PRELEVATA' THEN 1 ELSE 0 END) AS NConsegnate,
                    SUM(r.QtaRichiesta) AS QtyRichiesta,
-                   SUM(CASE WHEN r.Stato = 'CONSEGNATA' THEN r.QtaRichiesta ELSE 0 END) AS QtyConsegnata
+                   SUM(CASE WHEN r.Stato = 'PRELEVATA' THEN r.QtaRichiesta ELSE 0 END) AS QtyConsegnata
             FROM ind.MaterialiRichieste r
             JOIN ind.Materiali m ON r.MaterialeId = m.MaterialeId
             LEFT JOIN ind.TipoMateriali t ON m.TipoMaterialeId = t.TipoMaterialeId
@@ -430,7 +430,7 @@ class IndirectMaterialsReportWindow(tk.Toplevel):
                     data_c if data_c else '',
                 ])
                 last = ws_det.max_row
-                if stato == 'CONSEGNATA':
+                if stato == 'PRELEVATA':
                     for c in ws_det[last]:
                         c.fill = green_fill
                 elif stato == 'ANNULLATA':

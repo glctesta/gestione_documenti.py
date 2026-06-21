@@ -272,7 +272,7 @@ def setup_logging(debug: bool = False,
 
     # File handler
     if not log_dir:
-        log_dir = os.path.join(os.getenv("LOCALAPPDATA", "."), "TraceabilityRS", "logs")
+        log_dir = os.path.join(os.getenv("LOCALAPPDATA", "."), "GTMC_DocumentManagement", "logs")
     os.makedirs(log_dir, exist_ok=True)
     file_path = os.path.join(log_dir, logfile_name)
 
@@ -298,8 +298,8 @@ def setup_logging(debug: bool = False,
     return str(Path(file_path).resolve())
 
 
-LOG_FILE_PATH = setup_logging(debug=False, logger_name="TraceabilityRS")
-logger = logging.getLogger("TraceabilityRS")
+LOG_FILE_PATH = setup_logging(debug=False, logger_name="GTMC_DocumentManagement")
+logger = logging.getLogger("GTMC_DocumentManagement")
 logger.info("Logging avviato. File: %s", LOG_FILE_PATH)
 
 try:
@@ -309,7 +309,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.1.8'  # Versione aggiornata
+APP_VERSION = '2.4.2.2.0'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -14293,6 +14293,9 @@ class App(tk.Tk):
         # Ritardo 45 secondi: Email FQC di fine turno (15:30 e 23:30, Lun-Sab)
         self.after(45000, self._start_fqc_email_scheduler)
 
+        # Ritardo 55 secondi: Controllo giornaliero riordino materiali indiretti (07:30)
+        self.after(55000, self._start_indirect_reorder_scheduler)
+
     def _start_fqc_email_scheduler(self):
         """Daemon thread che invia l'email FQC alle 15:30 e alle 23:30 (Lun-Sab)."""
         import threading
@@ -14356,6 +14359,51 @@ class App(tk.Tk):
 
         threading.Thread(target=_worker, daemon=True,
                          name='fqc_email_scheduler').start()
+
+    def _start_indirect_reorder_scheduler(self):
+        """Daemon thread che ogni giorno alle 07:30 (Lun-Sab) controlla i materiali
+        indiretti sotto scorta minima e invia l'email di riordino agli acquisti.
+        Il dedup giornaliero è gestito dal layer dati (ind.RiordineEmailLog)."""
+        import threading
+
+        def _worker():
+            import time as _time
+            from datetime import datetime as _dt, timedelta as _td
+
+            TRIGGER_H, TRIGGER_M = 7, 30
+
+            while True:
+                now = _dt.now()
+                next_run = now.replace(hour=TRIGGER_H, minute=TRIGGER_M,
+                                       second=0, microsecond=0)
+                if next_run <= now:
+                    next_run += _td(days=1)
+                # Skip Sunday (weekday 6)
+                if next_run.weekday() == 6:
+                    next_run += _td(days=1)
+
+                wait_s = (next_run - now).total_seconds()
+                logger.info(
+                    f"indirect_reorder_scheduler: next run "
+                    f"{next_run.strftime('%Y-%m-%d %H:%M')}"
+                )
+
+                # Interruptible sleep in 60-second slices
+                elapsed = 0.0
+                while elapsed < wait_s:
+                    _time.sleep(min(60, wait_s - elapsed))
+                    elapsed += 60
+
+                try:
+                    import indirect_materials_stock_data as stock_data
+                    res = stock_data.check_and_send_reorder(self.db, self.lang)
+                    logger.info(f"indirect_reorder_scheduler: {res}")
+                except Exception as exc:
+                    logger.error(
+                        f"indirect_reorder_scheduler: {exc}", exc_info=True)
+
+        threading.Thread(target=_worker, daemon=True,
+                         name='indirect_reorder_scheduler').start()
 
     def _check_weekly_visitor_email(self):
         """Invia email settimanale con lista visitatori programmati (solo lunedì, una volta).
@@ -16357,12 +16405,25 @@ class App(tk.Tk):
         )
         indirect_materials_menu.add_separator()
         indirect_materials_menu.add_command(
+            label=self.lang.get('submenu_check_stock', '📦 Verifica Giacenze'),
+            command=self._open_check_stock
+        )
+        indirect_materials_menu.add_command(
+            label=self.lang.get('submenu_min_stock_config', '⚙ Configura Scorte Minime'),
+            command=self._open_min_stock_config
+        )
+        indirect_materials_menu.add_separator()
+        indirect_materials_menu.add_command(
             label=self.lang.get('submenu_report_indirect_materials', '📊 Report Mensile Materiali'),
             command=self._open_indirect_materials_report
         )
         indirect_materials_menu.add_command(
             label=self.lang.get('submenu_stats_indirect_materials', '📈 Statistiche & Anomalie'),
             command=self._open_indirect_materials_stats
+        )
+        indirect_materials_menu.add_command(
+            label=self.lang.get('submenu_consumption_indirect_materials', '📉 Analisi Consumi & Budget'),
+            command=self._open_indirect_materials_consumption
         )
         # Sottomenu Configurazioni
         materials_config_menu = tk.Menu(materials_menu, tearoff=0)
@@ -17341,6 +17402,9 @@ class App(tk.Tk):
             label=self.lang.get('menu_indirect_materials_manual', 'Materiale Indirecte (Manual)'),
             command=self._open_indirect_materials_manual)
         self.manuals_menu.add_command(
+            label=self.lang.get('menu_stock_management_manual', 'Gestione Giacenze & Riordino (Manuale)'),
+            command=self._open_stock_management_manual)
+        self.manuals_menu.add_command(
             label=self.lang.get('menu_kit_preparation_manual', 'Pregătire Kit Producție (Manual)'),
             command=self._open_kit_preparation_manual)
 
@@ -17528,6 +17592,30 @@ class App(tk.Tk):
                 self.lang.get('indirect_materials_manual_not_found',
                              "Manualul Materiale Indirecte nu a fost gasit.\n\n"
                              f"Cale asteptata: {os.path.join(app_dir, 'docs', 'Manual_Materiale_Indirecte_RO.pdf')}"),
+                parent=self)
+
+    def _open_stock_management_manual(self):
+        """Apre il manuale Gestione Giacenze & Riordino (HTML multilingua) nel browser."""
+        import webbrowser
+        manual_path = self._get_resource_path('docs', 'Manual_Gestione_Giacenze.html')
+        if manual_path:
+            try:
+                webbrowser.open(f'file:///{manual_path.replace(os.sep, "/")}')
+                logger.info(f"Aperto manuale Gestione Giacenze: {manual_path}")
+            except Exception as e:
+                logger.error(f"Errore apertura manuale Gestione Giacenze: {e}")
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire il manuale: {e}",
+                    parent=self)
+        else:
+            app_dir = os.path.dirname(os.path.abspath(
+                sys.executable if getattr(sys, 'frozen', False) else __file__))
+            messagebox.showinfo(
+                self.lang.get('menu_manuals', 'Manuali'),
+                self.lang.get('stock_management_manual_not_found',
+                             "Il manuale Gestione Giacenze non è stato trovato.\n\n"
+                             f"Percorso atteso: {os.path.join(app_dir, 'docs', 'Manual_Gestione_Giacenze.html')}"),
                 parent=self)
 
     def _open_kit_preparation_manual(self):
@@ -19647,6 +19735,55 @@ class App(tk.Tk):
                 f"Impossibile aprire Conferma Materiali:\n{e}",
                 parent=self
             )
+
+    def _open_indirect_materials_consumption(self):
+        """Apre l'analisi consumi & budget materiali indiretti."""
+        try:
+            import indirect_materials_consumption
+            user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
+            indirect_materials_consumption.open_consumption_analysis(self, self.db, self.lang, user_name)
+        except Exception as e:
+            logger.error(f"Errore apertura Analisi Consumi: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire Analisi Consumi:\n{e}",
+                parent=self
+            )
+
+    def _open_check_stock(self):
+        """Apre la finestra Verifica Giacenze materiali indiretti."""
+        try:
+            import indirect_materials_stock
+            user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
+            indirect_materials_stock.open_stock_check(self, self.db, self.lang, user_name)
+        except Exception as e:
+            logger.error(f"Errore apertura Verifica Giacenze: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire Verifica Giacenze:\n{e}",
+                parent=self
+            )
+
+    def _open_min_stock_config(self):
+        """Apre il form di configurazione scorte minime previa autorizzazione
+        (chiave permesso: Stock_minimo_met_indiretti)."""
+        def _after_login():
+            try:
+                import indirect_materials_stock
+                user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
+                indirect_materials_stock.open_min_stock_config(self, self.db, self.lang, user_name)
+            except Exception as e:
+                logger.error(f"Errore apertura Configura Scorte Minime: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire Configura Scorte Minime:\n{e}",
+                    parent=self
+                )
+
+        self._execute_authorized_action(
+            menu_translation_key='Stock_minimo_met_indiretti',
+            action_callback=_after_login
+        )
 
     def _open_tipo_materiali(self):
         """Apre la finestra gestione Tipi Materiale."""

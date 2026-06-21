@@ -201,7 +201,7 @@ class RequestIndirectMaterialsWindow(tk.Toplevel):
             query = """
                 SELECT m.MaterialeId, m.CodiceMateriale, m.DescrizioneMateriale,
                        ISNULL(t.Tipo, 'Generico') AS Tipo,
-                       ISNULL(s.Qty, 0) AS QtaStock,
+                       ISNULL(s.Giacenza, 0) AS QtaStock,
                        ISNULL(t.QtaConfezione, 1) AS QtaConfezione,
                        ISNULL(t.IsFrazionabile, 0) AS IsFrazionabile,
                        t.TipoMaterialeId,
@@ -211,7 +211,7 @@ class RequestIndirectMaterialsWindow(tk.Toplevel):
                        mr.MustCodeId AS MustCodeId
                 FROM ind.Materiali m
                 LEFT JOIN ind.TipoMateriali t ON m.TipoMaterialeId = t.TipoMaterialeId
-                LEFT JOIN ind.MaterialiStock s ON m.MaterialeId = s.MaterialeId AND s.DateOut IS NULL
+                LEFT JOIN ind.vw_GiacenzaCorrente s ON s.MaterialeId = m.MaterialeId
                 LEFT JOIN dbo.MaterialConfigurations mc
                     ON mc.MaterialId = m.MaterialeId AND mc.DateOut IS NULL
                 LEFT JOIN dbo.MaterialRules mr
@@ -622,6 +622,25 @@ class RequestHistoryWindow(tk.Toplevel):
             command=self._reprint_selected
         ).pack(side="right", padx=5)
 
+        # --- Avanzamento stato richiesta ---
+        ttk.Button(
+            header,
+            text=self.lang.get('ind_req_btn_prepared', 'Segna Preparata'),
+            command=self._mark_prepared
+        ).pack(side="right", padx=5)
+
+        ttk.Button(
+            header,
+            text=self.lang.get('ind_req_btn_picked', '✅ Conferma Prelievo (scarico)'),
+            command=self._mark_picked
+        ).pack(side="right", padx=5)
+
+        ttk.Button(
+            header,
+            text=self.lang.get('ind_req_btn_cancel', 'Annulla richiesta'),
+            command=self._cancel_request
+        ).pack(side="right", padx=5)
+
         # Treeview
         tree_frame = ttk.Frame(main)
         tree_frame.pack(fill="both", expand=True)
@@ -701,6 +720,115 @@ class RequestHistoryWindow(tk.Toplevel):
             messagebox.showerror(
                 self.lang.get('error', 'Errore'),
                 f"{self.lang.get('ind_req_reprint_error', 'Errore ristampa')}:\n{e}",
+                parent=self
+            )
+
+    # ------------------------------------------------------------------ #
+    #  Avanzamento stato richiesta                                          #
+    # ------------------------------------------------------------------ #
+    def _get_selected_request_id(self):
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('ind_req_select_row', 'Seleziona una richiesta.'),
+                parent=self
+            )
+            return None
+        return int(selection[0])
+
+    def _mark_prepared(self):
+        """Porta la richiesta selezionata a stato PREPARATA."""
+        rid = self._get_selected_request_id()
+        if rid is None:
+            return
+        try:
+            import indirect_materials_stock_data as stock_data
+            ok, msg = stock_data.avanza_stato_richiesta(self.db, rid, 'PREPARATA', self.user_name)
+        except Exception as e:
+            logger.error(f"Errore _mark_prepared: {e}", exc_info=True)
+            messagebox.showerror(self.lang.get('error', 'Errore'), str(e), parent=self)
+            return
+        if ok:
+            self._load_history()
+        else:
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('ind_req_state_no_change',
+                              'Impossibile cambiare lo stato (già prelevata o annullata?).'),
+                parent=self
+            )
+
+    def _mark_picked(self):
+        """Conferma il prelievo: stato PRELEVATA + scarico di magazzino."""
+        rid = self._get_selected_request_id()
+        if rid is None:
+            return
+        if not messagebox.askyesno(
+            self.lang.get('confirm', 'Conferma'),
+            self.lang.get('ind_req_confirm_pick',
+                          'Confermare il prelievo? Verrà generato lo scarico di magazzino.'),
+            parent=self
+        ):
+            return
+        try:
+            import indirect_materials_stock_data as stock_data
+            ok, code = stock_data.registra_scarico_richiesta(self.db, rid, self.user_name)
+        except Exception as e:
+            logger.error(f"Errore _mark_picked: {e}", exc_info=True)
+            messagebox.showerror(self.lang.get('error', 'Errore'), str(e), parent=self)
+            return
+        if ok:
+            messagebox.showinfo(
+                self.lang.get('info', 'Info'),
+                self.lang.get('ind_req_pick_ok', 'Prelievo confermato e scarico registrato.'),
+                parent=self
+            )
+            self._load_history()
+        elif code == 'already':
+            messagebox.showinfo(
+                self.lang.get('info', 'Info'),
+                self.lang.get('ind_req_already_picked', 'Richiesta già prelevata.'),
+                parent=self
+            )
+        elif code == 'annullata':
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('ind_req_is_cancelled', 'La richiesta è annullata.'),
+                parent=self
+            )
+        else:
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                self.lang.get('ind_req_pick_error', 'Scarico non riuscito: {0}').format(code),
+                parent=self
+            )
+
+    def _cancel_request(self):
+        """Annulla la richiesta selezionata."""
+        rid = self._get_selected_request_id()
+        if rid is None:
+            return
+        if not messagebox.askyesno(
+            self.lang.get('confirm', 'Conferma'),
+            self.lang.get('ind_req_confirm_cancel', 'Annullare la richiesta selezionata?'),
+            parent=self
+        ):
+            return
+        try:
+            import indirect_materials_stock_data as stock_data
+            ok, msg = stock_data.avanza_stato_richiesta(self.db, rid, 'ANNULLATA', self.user_name)
+        except Exception as e:
+            logger.error(f"Errore _cancel_request: {e}", exc_info=True)
+            messagebox.showerror(self.lang.get('error', 'Errore'), str(e), parent=self)
+            return
+        if ok:
+            self._load_history()
+        else:
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('ind_req_state_no_change',
+                              'Impossibile cambiare lo stato (già prelevata o annullata?).'),
                 parent=self
             )
 

@@ -152,7 +152,7 @@ class IndirectMaterialsStatsWindow(tk.Toplevel):
                    COUNT(*) AS NReq,
                    SUM(r.QtaRichiesta) AS QtyTot,
                    COUNT(DISTINCT r.MaterialeId) AS NMat,
-                   SUM(CASE WHEN r.Stato='CONSEGNATA' THEN 1 ELSE 0 END) AS NDel
+                   SUM(CASE WHEN r.Stato='PRELEVATA' THEN 1 ELSE 0 END) AS NDel
             FROM ind.MaterialiRichieste r
             WHERE YEAR(r.DataRichiesta) = ?
             GROUP BY r.RichiestoDa
