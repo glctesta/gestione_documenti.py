@@ -333,6 +333,7 @@ def send_fai_fails_notification(conn, logo_path: str = "logo.png") -> bool:
         LEFT JOIN [Traceability_RS].[dbo].[orders] o ON l.OrderId = o.IDOrder
         LEFT JOIN [Traceability_RS].[dbo].[Products] p ON o.IDProduct = p.IDProduct
         WHERE l.IsOk = 0
+            AND ISNULL(l.IsNA, 0) = 0   -- escludi step N/A: salvati con IsOk=0 ma non sono fail
             AND ISNULL(l.IsAnalized, 0) = 0
             AND l.DateOut IS NULL
         ORDER BY l.LabelCode
@@ -353,51 +354,30 @@ def send_fai_fails_notification(conn, logo_path: str = "logo.png") -> bool:
         logger.info(f"Trovati {num_fails} FAI fails non analizzati ({len(fail_labels)} LabelCode unici)")
         
         # 2. Calcola statistiche per operatore (UNION ALL)
+        # ProcentFail = tasso di fallimento a livello di STEP (step Not-OK / step verificati).
+        # NB: in fai.FaiLogs ogni riga e' un singolo step della checklist; IsOk e' l'esito
+        # dello step. Due correzioni rispetto alla versione precedente:
+        #  1) la metrica contava schede-con-almeno-un-fail / schede-totali, gonfiando verso il
+        #     100% (bastava 1 step Not-OK su ~44 per marcare l'intera scheda come fallita);
+        #  2) gli step N/A vengono salvati con IsOk=0 ma IsNA=1: NON sono fail e vanno esclusi
+        #     sia dal numeratore sia dal denominatore (erano il ~99% dei finti "fail").
+        # Vedi anche fai_fails_report.py.
         query_stats = """
         SELECT
             UPPER(Operator) AS Operator,
-            SUM(FailFAI)        AS FailFai,
-            SUM(TotalCheckFai)  AS TotalCheckFai,
-            SUM(TotalFails)     AS TotalFails,
-            CAST(SUM(TotalFails) AS FLOAT) / NULLIF(SUM(TotalCheckFai), 0) * 100 AS ProcentFail
-        FROM (
-            -- Parte A: conta schede FAIL non analizzate per operatore
-            SELECT
-                l.Operator,
-                COUNT(DISTINCT ISNULL(l.LabelCode, '0')) AS FailFAI,
-                0 AS TotalCheckFai,
-                0 AS TotalFails
-            FROM [Traceability_RS].[fai].[FaiLogs] AS l
-            WHERE l.IsOk = 0
-                AND ISNULL(l.IsAnalized, 0) = 0
-                AND l.DateOut IS NULL
-            GROUP BY l.Operator
-
-            UNION ALL
-
-            -- Parte B: conta TUTTE le verifiche FAI attive per operatore
-            SELECT
-                Operator,
-                0 AS FailFai,
-                COUNT(DISTINCT LabelCode) AS TotalCheckFai,
-                0 AS TotalFails
-            FROM [Traceability_RS].[fai].[FaiLogs]
-            WHERE DateOut IS NULL
-            GROUP BY Operator
-
-            UNION ALL
-
-            -- Parte C: conta schede con almeno un FAIL attivo per operatore
-            SELECT
-                Operator,
-                0 AS FailFAI,
-                0 AS TotalCheckFai,
-                COUNT(DISTINCT LabelCode) AS TotalFails
-            FROM [Traceability_RS].[fai].[FaiLogs]
-            WHERE IsOk = 0
-                AND DateOut IS NULL
-            GROUP BY Operator
-        ) AS W
+            -- schede (LabelCode) con almeno un fail reale ancora da analizzare
+            COUNT(DISTINCT CASE WHEN IsOk = 0 AND ISNULL(IsAnalized, 0) = 0
+                                THEN LabelCode END)        AS FailFai,
+            -- step FAI verificati (attivi, esclusi N/A)
+            COUNT(*)                                       AS TotalCheckFai,
+            -- step falliti (reali)
+            SUM(CASE WHEN IsOk = 0 THEN 1 ELSE 0 END)      AS TotalFails,
+            -- percentuale di step falliti sul totale verificato
+            CAST(SUM(CASE WHEN IsOk = 0 THEN 1 ELSE 0 END) AS FLOAT)
+                / NULLIF(COUNT(*), 0) * 100               AS ProcentFail
+        FROM [Traceability_RS].[fai].[FaiLogs]
+        WHERE DateOut IS NULL
+            AND ISNULL(IsNA, 0) = 0   -- escludi step N/A (IsOk=0 ma non sono fail)
         GROUP BY UPPER(Operator)
         ORDER BY ProcentFail DESC
         """
@@ -556,6 +536,7 @@ def send_fai_fails_notification(conn, logo_path: str = "logo.png") -> bool:
             UPDATE [Traceability_RS].[fai].[FaiLogs]
             SET IsAnalized = 1
             WHERE IsOk = 0
+                AND ISNULL(IsNA, 0) = 0   -- non toccare gli step N/A
                 AND ISNULL(IsAnalized, 0) = 0
                 AND LabelCode IN ({placeholders})
             """

@@ -12,6 +12,37 @@ import logging
 logger = logging.getLogger("TraceabilityRS")
 
 
+def _normalize_password_value(val):
+    """
+    Normalizza un valore password letto dal DB per il confronto.
+
+    La colonna ResetServices.dbo.TbUserKey.Pass e' nvarchar e contiene la
+    password in chiaro; pyodbc la restituisce di norma come str. Tuttavia, a
+    seconda di come il valore e' stato scritto storicamente, potrebbe arrivare:
+      - come bytes (es. se la colonna fosse varbinary in qualche ambiente),
+      - come str con NUL interlacciati (byte UTF-16LE reinterpretati come testo).
+    Questa funzione riporta sempre a una str pulita, cosi' il confronto con la
+    password digitata non fallisce per motivi di codifica.
+    """
+    if val is None:
+        return ""
+    if isinstance(val, (bytes, bytearray)):
+        decoded = None
+        for enc in ("utf-16-le", "utf-8", "latin-1"):
+            try:
+                decoded = bytes(val).decode(enc)
+                break
+            except Exception:
+                continue
+        if decoded is None:
+            decoded = bytes(val).decode("latin-1", errors="ignore")
+        val = decoded
+    else:
+        val = str(val)
+    # Rimuove eventuali NUL (UTF-16 reinterpretato) e spazi ai bordi
+    return val.replace("\x00", "").strip()
+
+
 class ChangePasswordWindow(tk.Toplevel):
     """Finestra per il cambio password utente"""
     
@@ -32,7 +63,12 @@ class ChangePasswordWindow(tk.Toplevel):
         self.user_id = user_id
         self.force_change = force_change
         self.password_changed = False
-        
+
+        logger.info(
+            f"[ChangePassword] Apertura finestra cambio password "
+            f"(user_id={user_id}, force_change={force_change})"
+        )
+
         self.title(self.lang.get('change_password_title', 'Cambio Password'))
         self.geometry("450x450")
         self.resizable(False, False)
@@ -224,8 +260,9 @@ class ChangePasswordWindow(tk.Toplevel):
                 return
             
             # Verifica password corrente e cambia
+            logger.info(f"[ChangePassword] Tentativo di cambio password avviato per utente '{user_id}'")
             success, message = self._change_password_in_db(user_id, current_password, new_password)
-            
+
             if success:
                 self.password_changed = True
                 messagebox.showinfo(
@@ -257,54 +294,73 @@ class ChangePasswordWindow(tk.Toplevel):
         Returns:
             tuple: (bool, str) - (successo, messaggio)
         """
+        cursor = None
+        # Lunghezze loggabili senza esporre le password in chiaro
+        logger.info(
+            f"[ChangePassword] Avvio cambio password per utente='{user_id}' "
+            f"(len_corrente={len(current_password or '')}, len_nuova={len(new_password or '')})"
+        )
         try:
             # Verifica password corrente
             query_check = """
-                SELECT IdUserKey, Pass 
-                FROM ResetServices.dbo.TbUserKey 
+                SELECT IdUserKey, Pass
+                FROM ResetServices.dbo.TbUserKey
                 WHERE NomeUser = ?
             """
-            
+
             cursor = self.db.conn.cursor()
             cursor.execute(query_check, user_id)
             row = cursor.fetchone()
-            
+
             if not row:
+                logger.warning(f"[ChangePassword] Utente '{user_id}' non trovato in TbUserKey")
                 return False, self.lang.get('user_not_found', 'Utente non trovato')
-            
-            if row.Pass != current_password:
-                # Gestione caso in cui Pass sia in formato binario (bytes)
-                db_pass = row.Pass
-                if isinstance(db_pass, bytes):
-                    try:
-                        db_pass = db_pass.decode('utf-8').rstrip('\x00')
-                    except:
-                        pass
-                
-                if db_pass != current_password:
-                    return False, self.lang.get('wrong_current_password', 
-                                               'Password corrente errata')
-                                           
+
+            # Confronto robusto della password corrente (gestisce str/bytes/NUL)
+            stored_norm = _normalize_password_value(row.Pass)
+            entered = current_password or ""
+            match = (
+                row.Pass == current_password          # confronto diretto (caso normale)
+                or stored_norm == entered             # normalizzato
+                or stored_norm == entered.strip()     # tolleranza spazi sul digitato
+            )
+            logger.info(
+                f"[ChangePassword] Verifica password corrente per '{user_id}': "
+                f"IdUserKey={row.IdUserKey}, stored_type={type(row.Pass).__name__}, "
+                f"stored_len={len(stored_norm)}, match={match}"
+            )
+            if not match:
+                logger.warning(f"[ChangePassword] Password corrente errata per '{user_id}'")
+                return False, self.lang.get('wrong_current_password',
+                                            'Password corrente errata')
+
             if new_password == current_password:
-                return False, self.lang.get('new_password_same_as_current', 
+                logger.info(f"[ChangePassword] Nuova password uguale alla corrente per '{user_id}'")
+                return False, self.lang.get('new_password_same_as_current',
                                            'La nuova password non può essere uguale a quella attuale')
 
-            # --- NUOVA LOGICA: Controllo storico password (ultimi 6 mesi) ---
+            # --- Controllo storico password (ultimi 6 mesi) ---
+            # TbUserKeyLogs.Password e' BINARY(50): per confrontare correttamente
+            # bisogna convertire la nuova password a BINARY(50) (zero-padded),
+            # come avviene nell'INSERT. Con CONVERT(VARBINARY(MAX)) non combaciava mai.
             query_history_check = """
                 SELECT TOP 1 UserKeyPassLogId
                 FROM ResetServices.dbo.TbUserKeyLogs
-                WHERE IduserKey = ? AND Password = CONVERT(VARBINARY(MAX), ?) 
+                WHERE IduserKey = ?
+                  AND Password = CONVERT(BINARY(50), CONVERT(VARBINARY(MAX), ?))
                   AND DateChange >= DATEADD(month, -6, GETDATE())
             """
             cursor.execute(query_history_check, row.IdUserKey, new_password)
-            if cursor.fetchone():
-                return False, self.lang.get('password_already_used_recently', 
+            reused = cursor.fetchone() is not None
+            logger.info(f"[ChangePassword] Controllo riuso storico per '{user_id}': riusata={reused}")
+            if reused:
+                return False, self.lang.get('password_already_used_recently',
                                            'Questa password è già stata utilizzata negli ultimi 6 mesi. Sceglierne una diversa.')
 
-            # Aggiorna password principale
+            # Aggiorna password principale (Pass e' nvarchar: salvo testo in chiaro)
             query_update = """
                 UPDATE ResetServices.dbo.TbUserKey
-                SET Pass = CONVERT(VARBINARY(MAX), ?),
+                SET Pass = ?,
                     Cambia = 1,
                     Scadenza = 90,
                     Scade = 1,
@@ -312,31 +368,40 @@ class ChangePasswordWindow(tk.Toplevel):
                 WHERE IdUserKey = ?
             """
             cursor.execute(query_update, new_password, row.IdUserKey)
+            logger.info(f"[ChangePassword] UPDATE TbUserKey IdUserKey={row.IdUserKey} righe={cursor.rowcount}")
 
-            # --- NUOVA LOGICA: Registrazione nello storico ---
+            # --- Registrazione nello storico (BINARY(50)) ---
             query_log = """
                 INSERT INTO ResetServices.dbo.TbUserKeyLogs (IduserKey, Password, DateChange)
-                VALUES (?, CONVERT(VARBINARY(MAX), ?), GETDATE())
+                VALUES (?, CONVERT(BINARY(50), CONVERT(VARBINARY(MAX), ?)), GETDATE())
             """
             cursor.execute(query_log, row.IdUserKey, new_password)
-            
+            logger.info(f"[ChangePassword] INSERT storico TbUserKeyLogs IdUserKey={row.IdUserKey}")
+
             self.db.conn.commit()
-            
-            logger.info(f"Password cambiata per utente: {user_id}")
+
+            logger.info(f"[ChangePassword] Password cambiata con successo per utente '{user_id}'")
             return True, "Password cambiata con successo"
-            
+
         except pyodbc.Error as e:
-            self.db.conn.rollback()
-            logger.error(f"Errore database durante cambio password: {e}")
+            try:
+                self.db.conn.rollback()
+            except Exception:
+                pass
+            logger.error(f"[ChangePassword] Errore database per '{user_id}': {e}", exc_info=True)
             return False, f"Errore database: {str(e)}"
         except Exception as e:
-            self.db.conn.rollback()
-            logger.error(f"Errore imprevisto durante cambio password: {e}")
+            try:
+                self.db.conn.rollback()
+            except Exception:
+                pass
+            logger.error(f"[ChangePassword] Errore imprevisto per '{user_id}': {e}", exc_info=True)
             return False, f"Errore imprevisto: {str(e)}"
         finally:
             try:
-                cursor.close()
-            except:
+                if cursor is not None:
+                    cursor.close()
+            except Exception:
                 pass
 
 
@@ -362,38 +427,51 @@ def check_password_expiration(db, user_id):
         cursor.execute(query, user_id)
         row = cursor.fetchone()
         cursor.close()
-        
+
         if not row:
+            logger.warning(f"[PasswordExpiration] Utente '{user_id}' non trovato")
             return False, "Utente non trovato"
-        
+
         # Se i campi sono NULL, non forza il cambio
         cambia = getattr(row, 'Cambia', None)
         scadenza = getattr(row, 'Scadenza', None)
         scade = getattr(row, 'Scade', None)
         data_change = getattr(row, 'DataChangePass', None)
-        
+
+        logger.info(
+            f"[PasswordExpiration] Utente '{user_id}': Cambia={cambia}, "
+            f"Scadenza={scadenza}, Scade={scade}, DataChangePass={data_change}"
+        )
+
         # Se tutti NULL o Scade è False, non scade
         if scade is None or scade == 0:
+            logger.info(f"[PasswordExpiration] '{user_id}': la password non scade (Scade={scade})")
             return False, "Password non scade"
-        
+
         # Se Cambia è True, forza cambio
         if cambia == 1:
             # Se non c'è data cambio, forza cambio
             if data_change is None:
+                logger.info(f"[PasswordExpiration] '{user_id}': prima configurazione (DataChangePass NULL) -> cambio forzato")
                 return True, "Prima configurazione password"
-            
+
             # Calcola giorni dalla data cambio
             if scadenza is not None and scadenza > 0:
                 from datetime import datetime, timedelta
                 giorni_passati = (datetime.now() - data_change).days
-                
+
                 if giorni_passati >= scadenza:
+                    logger.info(
+                        f"[PasswordExpiration] '{user_id}': SCADUTA "
+                        f"({giorni_passati} giorni >= {scadenza}) -> cambio forzato"
+                    )
                     return True, f"Password scaduta ({giorni_passati} giorni)"
-        
+
+        logger.info(f"[PasswordExpiration] '{user_id}': password valida")
         return False, "Password valida"
-        
+
     except Exception as e:
-        logger.error(f"Errore verifica scadenza password: {e}")
+        logger.error(f"[PasswordExpiration] Errore verifica scadenza per '{user_id}': {e}", exc_info=True)
         return False, f"Errore: {str(e)}"
 
 

@@ -480,16 +480,25 @@ class OrdersManager:
             session.close()
 
     
-    def create_production_association(self, association_data: Dict) -> int:
+    def create_production_association(self, association_data: Dict, user_name: str = None) -> int:
         """
         Crea un'associazione tra ordine di vendita e ordine di produzione
-        
+        (popola dyn.DynamicProductionOrders).
+
         Args:
             association_data: Dizionario con DynamicSaleOrderId, IdOrder, Qty
-            
+            user_name: Nome utente che esegue l'operazione (per tracciamento)
+
         Returns:
             ID della nuova associazione
         """
+        sale_order_id = association_data.get('DynamicSaleOrderId')
+        id_order = association_data.get('IdOrder')
+        qty = association_data.get('Qty')
+        logger.info(
+            f"[ProdAssoc] CREATE richiesta da utente='{user_name or 'n/d'}' "
+            f"DynamicSaleOrderId={sale_order_id}, IdOrder={id_order}, Qty={qty}"
+        )
         # Usa OUTPUT INSERTED invece di SCOPE_IDENTITY() per compatibilità con SQLAlchemy/pyodbc
         insert_query = text("""
             INSERT INTO [Traceability_RS].[dyn].[DynamicProductionOrders]
@@ -508,24 +517,28 @@ class OrdersManager:
                 GETDATE()
             )
         """)
-        
+
         session = self._get_session()
         try:
             result = session.execute(insert_query, {
-                'dynamic_sale_order_id': association_data.get('DynamicSaleOrderId'),
-                'id_order': association_data.get('IdOrder'),
-                'qty': association_data.get('Qty')
+                'dynamic_sale_order_id': sale_order_id,
+                'id_order': id_order,
+                'qty': qty
             })
-            
+
             # Con OUTPUT INSERTED, l'ID viene restituito direttamente nel primo result set
             row = result.fetchone()
             new_id = int(row[0]) if row else None
-            
+
             session.commit()
-            logger.info(f"Associazione creata con successo (ID: {new_id})")
+            logger.info(
+                f"[ProdAssoc] CREATE OK (DynamicProductionOrderID={new_id}) "
+                f"utente='{user_name or 'n/d'}' SaleOrderId={sale_order_id} IdOrder={id_order} Qty={qty}"
+            )
             return new_id
         except Exception as e:
-            logger.error(f"Errore nella creazione associazione: {e}", exc_info=True)
+            logger.error(f"[ProdAssoc] CREATE ERRORE (utente='{user_name or 'n/d'}', "
+                         f"SaleOrderId={sale_order_id}, IdOrder={id_order}): {e}", exc_info=True)
             session.rollback()
             raise
         finally:
@@ -579,29 +592,61 @@ class OrdersManager:
         finally:
             session.close()
     
-    def delete_production_association(self, dynamic_production_order_id: int) -> bool:
+    def delete_production_association(self, dynamic_production_order_id: int, user_name: str = None) -> bool:
         """
         Elimina un'associazione tra ordine di vendita e ordine di produzione
-        
+        (rimuove una riga da dyn.DynamicProductionOrders).
+
         Args:
             dynamic_production_order_id: ID dell'associazione da eliminare
-            
+            user_name: Nome utente che esegue l'operazione (per tracciamento)
+
         Returns:
             True se l'eliminazione è riuscita
         """
+        # Recupera i dettagli PRIMA della cancellazione, per tracciare cosa viene rimosso
+        detail_query = text("""
+            SELECT po.DynamicSaleOrderId, po.IdOrder, po.Qty,
+                   dso.SONumber, o.ordernumber
+            FROM [Traceability_RS].[dyn].[DynamicProductionOrders] po
+            LEFT JOIN [Traceability_RS].[dyn].[DynamicSaleOrders] dso
+                ON dso.DynamicSaleOrderId = po.DynamicSaleOrderId
+            LEFT JOIN [Traceability_RS].dbo.orders o
+                ON o.IDOrder = po.IdOrder
+            WHERE po.DynamicProductionOrderID = :id
+        """)
         delete_query = text("""
             DELETE FROM [Traceability_RS].[dyn].[DynamicProductionOrders]
             WHERE DynamicProductionOrderID = :id
         """)
-        
+
         session = self._get_session()
         try:
-            session.execute(delete_query, {'id': dynamic_production_order_id})
+            det = session.execute(detail_query, {'id': dynamic_production_order_id}).fetchone()
+            if det is not None:
+                logger.warning(
+                    f"[ProdAssoc] DELETE richiesta da utente='{user_name or 'n/d'}' "
+                    f"DynamicProductionOrderID={dynamic_production_order_id} "
+                    f"(SONumber={det[3]}, OrdineProd={det[4]}, SaleOrderId={det[0]}, "
+                    f"IdOrder={det[1]}, Qty={det[2]})"
+                )
+            else:
+                logger.warning(
+                    f"[ProdAssoc] DELETE richiesta da utente='{user_name or 'n/d'}' "
+                    f"DynamicProductionOrderID={dynamic_production_order_id} (riga non trovata)"
+                )
+
+            result = session.execute(delete_query, {'id': dynamic_production_order_id})
             session.commit()
-            logger.info(f"Associazione {dynamic_production_order_id} eliminata con successo")
+            logger.warning(
+                f"[ProdAssoc] DELETE OK DynamicProductionOrderID={dynamic_production_order_id} "
+                f"(righe rimosse={result.rowcount}) utente='{user_name or 'n/d'}'"
+            )
             return True
         except Exception as e:
-            logger.error(f"Errore nell'eliminazione associazione: {e}", exc_info=True)
+            logger.error(f"[ProdAssoc] DELETE ERRORE DynamicProductionOrderID="
+                         f"{dynamic_production_order_id} (utente='{user_name or 'n/d'}'): {e}",
+                         exc_info=True)
             session.rollback()
             raise
         finally:

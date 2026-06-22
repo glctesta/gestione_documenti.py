@@ -120,14 +120,71 @@ def registra_movimento(db, materiale_id, qty, tipo, user_name,
             return False, str(e)
 
 
+def scorie_confermate_per_richiesta(db, richiesta_id):
+    """Verifica il gate scorie/rientri per una richiesta.
+
+    Una richiesta il cui materiale ha una regola attiva in dbo.MaterialRules
+    (cioe' e' legato al ritorno di un altro materiale o dello stesso codice)
+    puo' essere preparata/rilasciata SOLO se le scorie collegate alla richiesta
+    (dbo.ReturnMaterials.RichiestaId = richiesta) sono state CONFERMATE dal
+    controllore, cioe' esiste almeno una riga collegata e tutte hanno IsOk = 1
+    (peso rilevato corrispondente).
+
+    Ritorna (allowed: bool, code: str) con code in:
+        'ok' | 'scrap_not_confirmed' | 'not_found' | 'error'
+    """
+    try:
+        db._ensure_connection()
+        with db._lock:
+            cur = db.cursor
+            cur.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM dbo.MaterialRules mr
+                       WHERE mr.MaterialeId = r.MaterialeId AND mr.DateOut IS NULL) AS HasRule,
+                    (SELECT COUNT(*) FROM dbo.ReturnMaterials rm
+                       WHERE rm.RichiestaId = ? AND rm.DateOut IS NULL) AS LinkedCount,
+                    (SELECT COUNT(*) FROM dbo.ReturnMaterials rm
+                       WHERE rm.RichiestaId = ? AND rm.DateOut IS NULL
+                         AND ISNULL(rm.IsOk, 0) = 0) AS NotOkCount
+                FROM ind.MaterialiRichieste r
+                WHERE r.RichiestaId = ?
+                """,
+                (richiesta_id, richiesta_id, richiesta_id)
+            )
+            row = cur.fetchone()
+        if not row:
+            return False, 'not_found'
+        has_rule = int(row[0] or 0)
+        linked = int(row[1] or 0)
+        not_ok = int(row[2] or 0)
+        if has_rule == 0:
+            return True, 'ok'                      # materiale non legato a ritorni
+        if linked > 0 and not_ok == 0:
+            return True, 'ok'                      # scorie collegate e tutte confermate
+        logger.info(
+            f"[ScrapGate] Richiesta {richiesta_id} BLOCCATA: has_rule={has_rule}, "
+            f"linked={linked}, non_confermate={not_ok}"
+        )
+        return False, 'scrap_not_confirmed'
+    except Exception as e:
+        logger.error(f"scorie_confermate_per_richiesta errore: {e}", exc_info=True)
+        return False, 'error'
+
+
 def registra_scarico_richiesta(db, richiesta_id, user_name, hostname=None):
     """Porta una richiesta a stato PRELEVATA e genera il movimento di SCARICO
     (Qty negativa = -QtaRichiesta) collegato, in un'unica transazione.
 
     Idempotente: se la richiesta e' gia' PRELEVATA o lo scarico esiste gia',
     non duplica. Ritorna (ok, code) dove code in:
-        'ok', 'not_found', 'already', 'annullata', 'error'
+        'ok', 'not_found', 'already', 'annullata', 'scrap_not_confirmed', 'error'
     """
+    # Gate scorie/rientri: blocca il rilascio se le scorie collegate non sono confermate
+    allowed, gate_code = scorie_confermate_per_richiesta(db, richiesta_id)
+    if not allowed and gate_code == 'scrap_not_confirmed':
+        return False, 'scrap_not_confirmed'
+
     hostname = hostname or socket.gethostname()
     db._ensure_connection()
     with db._lock:
@@ -179,6 +236,11 @@ def avanza_stato_richiesta(db, richiesta_id, nuovo_stato, user_name):
     Per PRELEVATA usare registra_scarico_richiesta(). Ritorna (ok, msg)."""
     if nuovo_stato not in ('PREPARATA', 'PRONTA', 'ANNULLATA'):
         return False, f"Stato non gestito qui: {nuovo_stato}"
+    # Gate scorie/rientri: blocca la preparazione se le scorie collegate non sono confermate
+    if nuovo_stato == 'PREPARATA':
+        allowed, gate_code = scorie_confermate_per_richiesta(db, richiesta_id)
+        if not allowed and gate_code == 'scrap_not_confirmed':
+            return False, 'scrap_not_confirmed'
     set_parts = ["Stato = ?"]
     params = [nuovo_stato]
     if nuovo_stato == 'PREPARATA':

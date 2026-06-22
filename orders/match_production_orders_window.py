@@ -483,7 +483,7 @@ class MatchProductionOrdersWindow(tk.Toplevel):
                 'Qty': qty
             }
             
-            self.orders_manager.create_production_association(association_data)
+            self.orders_manager.create_production_association(association_data, self.user_name)
             
             messagebox.showinfo(
                 self.lang.get('success', 'Successo'),
@@ -524,7 +524,7 @@ class MatchProductionOrdersWindow(tk.Toplevel):
                 return
             
             item_id = int(selection[0])
-            self.orders_manager.delete_production_association(item_id)
+            self.orders_manager.delete_production_association(item_id, self.user_name)
             
             messagebox.showinfo(
                 self.lang.get('success', 'Successo'),

@@ -17,6 +17,7 @@ import logging
 import os
 import sys
 import json
+import time
 import winsound
 import threading
 from datetime import datetime
@@ -81,12 +82,6 @@ def get_reappear_interval_minutes() -> int:
         return DEFAULT_RE_NOTIFY_MINUTES
 
 
-_QUERY_PENDING_COUNT = """
-SELECT COUNT(*) AS PendingCount
-FROM [Traceability_RS].[dyn].[DynamicShippingRules]
-WHERE ConfirmedAt IS NULL
-"""
-
 _QUERY_PENDING_DETAIL = """
 SELECT
     R.DybamicShippingRuleId,
@@ -107,8 +102,19 @@ INNER JOIN [Traceability_RS].[dyn].[DynamicSaleOrders] D
 INNER JOIN traceability_rs.dbo.Orders PO
        ON  PO.IDOrder = O.IdOrder
 WHERE R.ConfirmedAt IS NULL
-  AND (R.LastShipmentNotify IS NULL
-       OR DATEDIFF(MINUTE, R.LastShipmentNotify, GETDATE()) >= ?)
+  -- Mostra solo gli ordini con residuo da spedire > 0: domanda (regole non
+  -- confermate) meno quanto gia' confermato su pallet (dyn.ShipmentPallets).
+  -- Gli ordini interamente spediti spariscono; i parziali restano.
+  AND (
+        (SELECT SUM(r3.QtyToShip)
+         FROM [Traceability_RS].[dyn].[DynamicShippingRules] r3
+         WHERE r3.DynamicProductionOrderID = R.DynamicProductionOrderID
+           AND r3.ConfirmedAt IS NULL)
+        -
+        ISNULL((SELECT SUM(sp.ConfirmedQty)
+                FROM [Traceability_RS].[dyn].[ShipmentPallets] sp
+                WHERE sp.DynamicProductionOrderID = R.DynamicProductionOrderID), 0)
+      ) > 0
 ORDER BY R.DateToship ASC
 """
 
@@ -122,6 +128,9 @@ class ShipmentMonitor:
         self.lang = lang
         self._running = True
         self._popup_open = False
+        # Momento (monotonic) in cui il popup è stato mostrato l'ultima volta.
+        # Usato per il throttle in memoria basato sul JSON (reappear_interval_minutes).
+        self._last_popup_shown = 0.0
         logger.info("ShipmentMonitor avviato")
         self._poll()
 
@@ -146,31 +155,17 @@ class ShipmentMonitor:
     def _check_pending(self):
         if self._popup_open:
             return
+
+        # Throttle in memoria: non riproporre il popup prima dell'intervallo
+        # configurato nel JSON (reappear_interval_minutes, in MINUTI).
+        interval_minutes = get_reappear_interval_minutes()
+        interval_seconds = interval_minutes * 60
+        if self._last_popup_shown and \
+                (time.monotonic() - self._last_popup_shown) < interval_seconds:
+            return
+
         try:
-            # Intervallo (minuti) di ricomparsa del popup, letto dal file di config
-            re_notify_minutes = get_reappear_interval_minutes()
-            # Usa LastShipmentNotify per evitare flood (colonna opzionale — gestisce l'assenza)
-            try:
-                self.db.cursor.execute(_QUERY_PENDING_DETAIL, (re_notify_minutes,))
-            except Exception:
-                # Colonna LastShipmentNotify potrebbe non esistere: usa query semplice
-                self.db.cursor.execute(
-                    """
-                    SELECT R.DybamicShippingRuleId,
-                           PO.ordernumber   AS ProductionOrder,
-                           D.CustomerName, D.SONumber, D.ItemCode, D.ItemName,
-                           FORMAT(R.DateToship,'dd/MM/yyyy HH:mm') AS DateToShipFmt,
-                           R.QtyToShip, R.ShipTo, R.AddBayUser
-                    FROM [Traceability_RS].[dyn].[DynamicShippingRules] R
-                    INNER JOIN [Traceability_RS].[dyn].[DynamicProductionOrders] O
-                           ON  O.DynamicProductionOrderID = R.DynamicProductionOrderID
-                    INNER JOIN [Traceability_RS].[dyn].[DynamicSaleOrders] D
-                           ON  D.DynamicSaleOrderId = O.DynamicSaleOrderId
-                    INNER JOIN traceability_rs.dbo.Orders PO ON PO.IDOrder = O.IdOrder
-                    WHERE R.ConfirmedAt IS NULL
-                    ORDER BY R.DateToship ASC
-                    """
-                )
+            self.db.cursor.execute(_QUERY_PENDING_DETAIL)
             rows = self.db.cursor.fetchall()
         except Exception as e:
             logger.error(f"ShipmentMonitor query error: {e}", exc_info=True)
@@ -179,22 +174,12 @@ class ShipmentMonitor:
         if not rows:
             return
 
-        # Aggiorna LastShipmentNotify (best-effort)
-        for row in rows:
-            try:
-                self.db.cursor.execute(
-                    """
-                    UPDATE [Traceability_RS].[dyn].[DynamicShippingRules]
-                    SET LastShipmentNotify = GETDATE()
-                    WHERE DybamicShippingRuleId = ?
-                    """,
-                    (row.DybamicShippingRuleId,),
-                )
-                self.db.conn.commit()
-            except Exception:
-                pass
-
-        # Mostra popup nel thread UI
+        # Registra il momento della notifica e mostra il popup nel thread UI
+        self._last_popup_shown = time.monotonic()
+        logger.info(
+            f"ShipmentMonitor: {len(rows)} spedizioni non confermate — popup "
+            f"(prossima ricomparsa tra {interval_minutes} min)"
+        )
         self.master.after(0, lambda r=rows: self._show_popup(r))
 
     def _show_popup(self, rows):

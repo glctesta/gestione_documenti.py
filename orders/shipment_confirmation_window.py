@@ -1,113 +1,142 @@
 """
 orders/shipment_confirmation_window.py
 
-Finestra "Conferma Shipping": mostra tutte le regole di spedizione urgenti
-ancora non confermate (ConfirmedAt IS NULL).
-L'operatore (login semplice) le visualizza, inserisce la quantità confermata
-e salva.  Al termine viene inviata un'email professionale agli indirizzi
-presenti in traceability_rs.dbo.settings con atribute = 'Sys_shipment_email'.
+Finestra "Conferma Shipping" v2.
+
+Novita' rispetto alla v1:
+ - lista raggruppata per Ordine di Produzione con somma delle quantita' da spedire
+   e residuo che si scala man mano che si confermano i pallet;
+ - filtri di ricerca per Ordine e per Prodotto;
+ - una spedizione (dyn.Shipments) raggruppa piu' ordini su piu' pallet
+   (dyn.ShipmentPallets); codice pallet inserito dall'operatore (univoco solo
+   entro la spedizione) con suggerimento progressivo;
+ - finalizzazione con generazione di 2 PDF (lista per pallet + riepilogo),
+   archiviazione, ed email ai destinatari 'Sys_shipment_email' con PDF allegati;
+ - recupero per data di una spedizione passata, correzione, email di correzione
+   e ristampa documenti.
+
+Il residuo per ordine = SUM(QtyToShip su regole ConfirmedAt IS NULL) -
+SUM(ShipmentPallets.ConfirmedQty). Non si usa il roll-up di ConfirmedAt: cosi'
+le correzioni ricalcolano tutto automaticamente. Vedi DESIGN_shipment_confirmation_v2.md
 """
 
 import logging
 import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
-from datetime import datetime
+from datetime import datetime, date
+
+from tkcalendar import DateEntry
 
 import utils
+from orders import shipment_pdf
 
 logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Query helper
+#  Query
 # ─────────────────────────────────────────────────────────────────────────────
 
-_QUERY_PENDING = """
+# Ordini di produzione con residuo da spedire > 0 (filtri opzionali).
+_QUERY_ORDERS = """
 SELECT
-    R.DybamicShippingRuleId,
-    PO.ordernumber        AS ProductionOrder,
-    D.CustomerName,
-    D.SONumber,
-    D.ItemCode,
-    D.ItemName,
-    FORMAT(R.DateToship, 'dd/MM/yyyy HH:mm')  AS DateToShipFmt,
-    R.QtyToShip,
-    R.ShipTo,
-    R.AddBayUser,
-    R.datesys             AS RequestedOn,
-    -- Quantità già prodotta (OutOfBox)
-    K.Packet              AS ProducedQty,
-    -- Rimanenti su PO
-    D.QtyOrder - ISNULL(K.Packet, 0) AS RemainOverPO,
-    -- Quantità totale dell'ordine di produzione (dbo.Orders)
-    PO.OrderQuantity      AS OrderQty,
-    -- Già spedito (confermato) per lo stesso ordine di produzione
-    (SELECT ISNULL(SUM(r2.ConfirmedQty), 0)
-     FROM [Traceability_RS].[dyn].[DynamicShippingRules] r2
-     WHERE r2.DynamicProductionOrderID = R.DynamicProductionOrderID
-       AND r2.ConfirmedAt IS NOT NULL) AS AlreadyShipped
+    O.DynamicProductionOrderID                AS DPOID,
+    PO.ordernumber                            AS ProductionOrder,
+    MAX(D.CustomerName)                        AS CustomerName,
+    MAX(D.SONumber)                            AS SONumber,
+    MAX(D.ItemCode)                            AS ItemCode,
+    MAX(D.ItemName)                            AS ItemName,
+    MAX(R.ShipTo)                              AS ShipTo,
+    FORMAT(MIN(R.DateToship), 'dd/MM/yyyy')    AS DateToShipFmt,
+    SUM(R.QtyToShip)                           AS QtyToShipTotal,
+    ISNULL((SELECT SUM(sp.ConfirmedQty)
+            FROM [Traceability_RS].[dyn].[ShipmentPallets] sp
+            WHERE sp.DynamicProductionOrderID = O.DynamicProductionOrderID), 0)
+                                              AS QtyConfirmedTotal
 FROM [Traceability_RS].[dyn].[DynamicShippingRules] R
 INNER JOIN [Traceability_RS].[dyn].[DynamicProductionOrders] O
-       ON  O.DynamicProductionOrderID = R.DynamicProductionOrderID
+       ON O.DynamicProductionOrderID = R.DynamicProductionOrderID
 INNER JOIN [Traceability_RS].[dyn].[DynamicSaleOrders] D
-       ON  D.DynamicSaleOrderId = O.DynamicSaleOrderId
-INNER JOIN traceability_rs.dbo.Orders PO
-       ON  PO.IDOrder = O.IdOrder
-OUTER APPLY
-    (SELECT NoBoards AS Packet
-     FROM traceability_rs.[dbo].[GetOrderPhaseStatus](O.idorder, 9)) AS K
+       ON D.DynamicSaleOrderId = O.DynamicSaleOrderId
+INNER JOIN [Traceability_RS].[dbo].[Orders] PO
+       ON PO.IDOrder = O.IdOrder
 WHERE R.ConfirmedAt IS NULL
-ORDER BY R.DateToship ASC
+  {filters}
+GROUP BY O.DynamicProductionOrderID, PO.ordernumber
+HAVING SUM(R.QtyToShip) - ISNULL((SELECT SUM(sp.ConfirmedQty)
+            FROM [Traceability_RS].[dyn].[ShipmentPallets] sp
+            WHERE sp.DynamicProductionOrderID = O.DynamicProductionOrderID), 0) > 0
+ORDER BY MIN(R.DateToship) ASC
 """
 
-_COLS = (
-    "RuleId",          # hidden
+_ORDER_COLS = (
+    "DPOID",            # hidden
     "ProductionOrder",
     "Customer",
     "SONumber",
     "ItemCode",
     "ItemName",
     "DateToShip",
-    "QtyRequested",
-    "ProducedQty",
-    "RemainOverPO",
-    "ShipTo",
-    "AddedBy",
+    "QtyToShip",
+    "Confirmed",
+    "Residual",
 )
+_ORDER_LABELS = {
+    "ProductionOrder": ("Ordine Prod.",  100),
+    "Customer":        ("Cliente",       150),
+    "SONumber":        ("Ord. Vendita",  100),
+    "ItemCode":        ("Codice",         90),
+    "ItemName":        ("Prodotto",      170),
+    "DateToShip":      ("Data Sped.",     90),
+    "QtyToShip":       ("Qta da Sped.",   90),
+    "Confirmed":       ("Confermato",     85),
+    "Residual":        ("Residuo",        80),
+}
 
-_COL_LABELS = {
-    "ProductionOrder": ("Ordine Prod.",    110),
-    "Customer":        ("Cliente",         130),
-    "SONumber":        ("Ord. Vendita",    100),
-    "ItemCode":        ("Codice",           90),
-    "ItemName":        ("Prodotto",        150),
-    "DateToShip":      ("Data Spedizione", 120),
-    "QtyRequested":    ("Qtà Rich.",        80),
-    "ProducedQty":     ("Qtà Prodotta",     90),
-    "RemainOverPO":    ("Rimanenti PO",     90),
-    "ShipTo":          ("Destinazione",    140),
-    "AddedBy":         ("Inserito Da",     110),
+_PALLET_COLS = (
+    "ShipmentPalletId",   # hidden
+    "DPOID",              # hidden
+    "PalletCode",
+    "ProductionOrder",
+    "ItemCode",
+    "ItemName",
+    "Qty",
+)
+_PALLET_LABELS = {
+    "PalletCode":      ("Pallet",        90),
+    "ProductionOrder": ("Ordine Prod.", 100),
+    "ItemCode":        ("Codice",        90),
+    "ItemName":        ("Prodotto",     200),
+    "Qty":             ("Qta",           70),
 }
 
 
 class ShipmentConfirmationWindow(tk.Toplevel):
-    """Finestra per confermare le spedizioni urgenti pendenti."""
+    """Finestra per confermare le spedizioni urgenti su pallet."""
 
     def __init__(self, master, db, lang, user_name: str):
         super().__init__(master)
         self.db = db
         self.lang = lang
         self.user_name = user_name
-        # rule_id -> {order_qty, already_shipped, max_confirmable, produced, requested}
-        self._rule_info = {}
+
+        # Stato spedizione
+        self.shipment_id = None
+        self.shipment_status = None      # OPEN | CLOSED | CORRECTED
+        self.mode = "current"            # current | recover
+        # DPOID -> dict snapshot/totali dell'ordine selezionabile
+        self._order_info = {}
 
         self.title(self.lang.get("shipment_confirm_title", "Conferma Spedizioni Urgenti"))
-        self.geometry("1300x650")
+        self.geometry("1320x760")
         self.transient(master)
 
         self._build_ui()
-        self._load_data()
+        self._resume_or_create_shipment()
+        self._refresh_all()
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ------------------------------------------------------------------ #
     #  UI
@@ -116,409 +145,857 @@ class ShipmentConfirmationWindow(tk.Toplevel):
         main = ttk.Frame(self, padding=10)
         main.pack(fill=tk.BOTH, expand=True)
 
-        # --- Header ---
+        # --- Header + riga spedizione ---
         hdr = ttk.Frame(main)
-        hdr.pack(fill=tk.X, pady=(0, 8))
-
+        hdr.pack(fill=tk.X, pady=(0, 6))
         ttk.Label(
             hdr,
-            text=self.lang.get(
-                "shipment_confirm_header",
-                "⚠️  Spedizioni Urgenti — Conferma Ricezione",
-            ),
+            text=self.lang.get("shipment_confirm_header", "Spedizioni Urgenti - Conferma su Pallet"),
             font=("Segoe UI", 13, "bold"),
         ).pack(side=tk.LEFT)
+        ttk.Button(hdr, text=self.lang.get("btn_refresh", "Aggiorna"),
+                   command=self._refresh_all).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(hdr, text=self.lang.get("btn_recover_shipment", "Recupera spedizione..."),
+                   command=self._open_recover_dialog).pack(side=tk.RIGHT, padx=4)
 
-        ttk.Button(
-            hdr,
-            text=self.lang.get("btn_refresh", "🔄 Aggiorna"),
-            command=self._load_data,
-        ).pack(side=tk.RIGHT, padx=5)
+        ship_row = ttk.Frame(main)
+        ship_row.pack(fill=tk.X, pady=(0, 6))
+        self.lbl_shipment = ttk.Label(ship_row, text="", font=("Segoe UI", 10, "bold"))
+        self.lbl_shipment.pack(side=tk.LEFT, padx=(0, 16))
+        ttk.Label(ship_row, text=self.lang.get("shipment_date_label", "Data spedizione:")).pack(side=tk.LEFT)
+        self.date_entry = DateEntry(ship_row, width=12, date_pattern="dd/mm/yyyy")
+        self.date_entry.pack(side=tk.LEFT, padx=(6, 16))
+        self.lbl_mode = ttk.Label(ship_row, text="", foreground="#1a5276", font=("Segoe UI", 10, "bold"))
+        self.lbl_mode.pack(side=tk.LEFT)
 
-        # --- Treeview ---
-        tree_frame = ttk.Frame(main)
-        tree_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+        # --- Filtri ---
+        flt = ttk.LabelFrame(main, text=self.lang.get("filters", "Filtri"), padding=8)
+        flt.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(flt, text=self.lang.get("filter_order", "Ordine:")).pack(side=tk.LEFT)
+        self.filter_order_var = tk.StringVar()
+        e1 = ttk.Entry(flt, textvariable=self.filter_order_var, width=18)
+        e1.pack(side=tk.LEFT, padx=(4, 12))
+        ttk.Label(flt, text=self.lang.get("filter_product", "Prodotto:")).pack(side=tk.LEFT)
+        self.filter_product_var = tk.StringVar()
+        e2 = ttk.Entry(flt, textvariable=self.filter_product_var, width=22)
+        e2.pack(side=tk.LEFT, padx=(4, 12))
+        ttk.Button(flt, text=self.lang.get("btn_filter", "Filtra"),
+                   command=self._load_orders).pack(side=tk.LEFT, padx=4)
+        ttk.Button(flt, text=self.lang.get("btn_clear", "Pulisci"),
+                   command=self._clear_filters).pack(side=tk.LEFT, padx=4)
+        e1.bind("<Return>", lambda _e: self._load_orders())
+        e2.bind("<Return>", lambda _e: self._load_orders())
 
-        self.tree = ttk.Treeview(
-            tree_frame, columns=_COLS, show="headings", selectmode="browse"
-        )
+        # --- Griglia ordini (residuo > 0) ---
+        og = ttk.LabelFrame(main, text=self.lang.get("orders_to_ship", "Ordini da spedire"), padding=6)
+        og.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+        self.orders_tree = ttk.Treeview(og, columns=_ORDER_COLS, show="headings",
+                                        selectmode="browse", height=8)
+        self.orders_tree.column("DPOID", width=0, stretch=False)
+        self.orders_tree.heading("DPOID", text="")
+        for col in _ORDER_COLS[1:]:
+            label, width = _ORDER_LABELS[col]
+            self.orders_tree.heading(col, text=self.lang.get(f"ocol_{col.lower()}", label))
+            anchor = tk.W if col in ("Customer", "ItemName") else tk.CENTER
+            self.orders_tree.column(col, width=width, anchor=anchor)
+        ovsb = ttk.Scrollbar(og, orient=tk.VERTICAL, command=self.orders_tree.yview)
+        self.orders_tree.configure(yscrollcommand=ovsb.set)
+        self.orders_tree.grid(row=0, column=0, sticky="nsew")
+        ovsb.grid(row=0, column=1, sticky="ns")
+        og.rowconfigure(0, weight=1)
+        og.columnconfigure(0, weight=1)
+        self.orders_tree.bind("<<TreeviewSelect>>", self._on_order_select)
 
-        # Hidden column
-        self.tree.column("RuleId", width=0, stretch=False)
-        self.tree.heading("RuleId", text="")
+        # --- Pannello aggiunta pallet ---
+        addp = ttk.LabelFrame(main, text=self.lang.get("add_pallet", "Aggiungi pallet alla spedizione"), padding=8)
+        addp.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(addp, text=self.lang.get("pallet_code", "Codice Pallet:")).grid(row=0, column=0, sticky=tk.W)
+        self.pallet_var = tk.StringVar()
+        self.pallet_entry = ttk.Entry(addp, textvariable=self.pallet_var, width=14)
+        self.pallet_entry.grid(row=0, column=1, padx=(4, 16))
+        ttk.Label(addp, text=self.lang.get("shipped_qty", "Qta spedita:")).grid(row=0, column=2, sticky=tk.W)
+        self.add_qty_var = tk.StringVar()
+        self.add_qty_entry = ttk.Entry(addp, textvariable=self.add_qty_var, width=10)
+        self.add_qty_entry.grid(row=0, column=3, padx=(4, 16))
+        self.btn_add = ttk.Button(addp, text=self.lang.get("btn_add_to_shipment", "Aggiungi a spedizione"),
+                                  command=self._add_pallet, state=tk.DISABLED)
+        self.btn_add.grid(row=0, column=4, padx=4)
+        self.add_hint = ttk.Label(addp, text="", foreground="gray")
+        self.add_hint.grid(row=0, column=5, sticky=tk.W, padx=(12, 0))
 
-        for col in _COLS[1:]:
-            label, width = _COL_LABELS[col]
-            self.tree.heading(col, text=self.lang.get(f"col_{col.lower()}", label))
-            anchor = tk.W if col in ("Customer", "ItemName", "ShipTo") else tk.CENTER
-            self.tree.column(col, width=width, anchor=anchor)
+        # --- Griglia pallet della spedizione ---
+        pg = ttk.LabelFrame(main, text=self.lang.get("shipment_pallets", "Pallet della spedizione"), padding=6)
+        pg.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+        self.pallets_tree = ttk.Treeview(pg, columns=_PALLET_COLS, show="headings",
+                                         selectmode="browse", height=7)
+        for hidden in ("ShipmentPalletId", "DPOID"):
+            self.pallets_tree.column(hidden, width=0, stretch=False)
+            self.pallets_tree.heading(hidden, text="")
+        for col in _PALLET_COLS[2:]:
+            label, width = _PALLET_LABELS[col]
+            self.pallets_tree.heading(col, text=self.lang.get(f"pcol_{col.lower()}", label))
+            anchor = tk.W if col == "ItemName" else tk.CENTER
+            self.pallets_tree.column(col, width=width, anchor=anchor)
+        pvsb = ttk.Scrollbar(pg, orient=tk.VERTICAL, command=self.pallets_tree.yview)
+        self.pallets_tree.configure(yscrollcommand=pvsb.set)
+        self.pallets_tree.grid(row=0, column=0, sticky="nsew")
+        pvsb.grid(row=0, column=1, sticky="ns")
+        pg.rowconfigure(0, weight=1)
+        pg.columnconfigure(0, weight=1)
 
-        vsb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        hsb = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
-        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        pbtns = ttk.Frame(pg)
+        pbtns.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        ttk.Button(pbtns, text=self.lang.get("btn_edit_pallet", "Modifica qta"),
+                   command=self._edit_pallet).pack(side=tk.LEFT, padx=4)
+        ttk.Button(pbtns, text=self.lang.get("btn_delete_pallet", "Elimina"),
+                   command=self._delete_pallet).pack(side=tk.LEFT, padx=4)
 
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        hsb.grid(row=1, column=0, sticky="ew")
-        tree_frame.rowconfigure(0, weight=1)
-        tree_frame.columnconfigure(0, weight=1)
+        # --- Bottoni azione + status ---
+        actions = ttk.Frame(main)
+        actions.pack(fill=tk.X, pady=(2, 0))
+        self.btn_finalize = ttk.Button(actions, text=self.lang.get("btn_finalize", "Finalizza spedizione"),
+                                       command=self._finalize)
+        self.btn_finalize.pack(side=tk.LEFT, padx=4)
+        self.btn_save_corr = ttk.Button(actions, text=self.lang.get("btn_save_corrections", "Salva correzioni e ristampa"),
+                                        command=self._save_corrections)
+        # mostrato solo in modalita' recover
 
-        # Tag colore riga selezionata
-        self.tree.tag_configure("urgente", background="#fff3cd")
-
-        # --- Pannello Conferma ---
-        confirm_frame = ttk.LabelFrame(
-            main,
-            text=self.lang.get("shipment_confirm_panel", "Conferma Spedizione Selezionata"),
-            padding=10,
-        )
-        confirm_frame.pack(fill=tk.X)
-
-        ttk.Label(
-            confirm_frame,
-            text=self.lang.get("shipment_confirm_qty_label", "Quantità confermata:"),
-        ).grid(row=0, column=0, sticky=tk.W, padx=(0, 8))
-
-        self.qty_var = tk.StringVar()
-        self.qty_entry = ttk.Entry(confirm_frame, textvariable=self.qty_var, width=12)
-        self.qty_entry.grid(row=0, column=1, sticky=tk.W)
-
-        self.qty_hint = ttk.Label(confirm_frame, text="", foreground="gray")
-        self.qty_hint.grid(row=0, column=2, sticky=tk.W, padx=(8, 20))
-
-        self.btn_confirm = ttk.Button(
-            confirm_frame,
-            text=self.lang.get("btn_confirm_shipping", "✅ Conferma Spedizione"),
-            command=self._confirm_selected,
-            state=tk.DISABLED,
-        )
-        self.btn_confirm.grid(row=0, column=3, padx=5)
-
-        # Status bar
-        self.status_var = tk.StringVar(
-            value=self.lang.get("select_row_first", "Seleziona una riga per confermare")
-        )
-        ttk.Label(main, textvariable=self.status_var, foreground="gray").pack(
-            fill=tk.X, pady=(4, 0)
-        )
-
-        # Bind selezione
-        self.tree.bind("<<TreeviewSelect>>", self._on_select)
-
-    # ------------------------------------------------------------------ #
-    #  Data
-    # ------------------------------------------------------------------ #
-    def _load_data(self):
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        self._rule_info = {}
-        try:
-            self.db.cursor.execute(_QUERY_PENDING)
-            rows = self.db.cursor.fetchall()
-            for row in rows:
-                order_qty = int(row.OrderQty or 0)
-                already_shipped = int(row.AlreadyShipped or 0)
-                self._rule_info[str(row.DybamicShippingRuleId)] = {
-                    "order_qty": order_qty,
-                    "already_shipped": already_shipped,
-                    "max_confirmable": max(0, order_qty - already_shipped),
-                    "produced": int(row.ProducedQty or 0),
-                    "requested": int(row.QtyToShip or 0),
-                }
-                requested_on = (
-                    row.RequestedOn.strftime("%d/%m/%Y %H:%M")
-                    if row.RequestedOn
-                    else ""
-                )
-                self.tree.insert(
-                    "",
-                    tk.END,
-                    tags=("urgente",),
-                    values=(
-                        row.DybamicShippingRuleId,
-                        row.ProductionOrder or "",
-                        row.CustomerName or "",
-                        row.SONumber or "",
-                        row.ItemCode or "",
-                        row.ItemName or "",
-                        row.DateToShipFmt or "",
-                        row.QtyToShip or 0,
-                        row.ProducedQty or 0,
-                        row.RemainOverPO or 0,
-                        row.ShipTo or "",
-                        row.AddBayUser or "",
-                    ),
-                )
-            count = len(rows)
-            self.status_var.set(
-                self.lang.get(
-                    "shipment_pending_count",
-                    "{0} spedizione/i urgente/i in attesa di conferma",
-                ).format(count)
-            )
-        except Exception as e:
-            logger.error(f"Errore caricamento spedizioni urgenti: {e}", exc_info=True)
-            messagebox.showerror(self.lang.get("error", "Errore"), str(e), parent=self)
-
-    def _on_select(self, _event=None):
-        sel = self.tree.selection()
-        if not sel:
-            self.btn_confirm.config(state=tk.DISABLED)
-            return
-        values = self.tree.item(sel[0], "values")
-        rule_id = str(values[0])
-        requested_qty = int(values[7]) if values[7] else 0
-        produced_qty = int(values[8]) if values[8] else 0
-        info = self._rule_info.get(rule_id, {})
-        max_conf = info.get("max_confirmable", 0)
-
-        # Valore predefinito: quantità prodotta (non quantità richiesta)
-        self.qty_var.set(str(produced_qty))
-        self.qty_hint.config(
-            text=self.lang.get(
-                "shipment_qty_hint",
-                "(prodotta: {0} | richiesta: {1} | max ordine: {2})",
-            ).format(produced_qty, requested_qty, max_conf)
-        )
-        self.btn_confirm.config(state=tk.NORMAL)
+        self.status_var = tk.StringVar(value="")
+        ttk.Label(main, textvariable=self.status_var, foreground="gray").pack(fill=tk.X, pady=(6, 0))
 
     # ------------------------------------------------------------------ #
-    #  Conferma
+    #  Spedizione corrente: resume / create
     # ------------------------------------------------------------------ #
-    def _confirm_selected(self):
-        sel = self.tree.selection()
-        if not sel:
-            return
-
-        values = self.tree.item(sel[0], "values")
-        rule_id      = values[0]
-        prod_order   = values[1]
-        customer     = values[2]
-        so_number    = values[3]
-        item_code    = values[4]
-        item_name    = values[5]
-        date_to_ship = values[6]
-        requested_qty = int(values[7]) if values[7] else 0
-        produced_qty  = int(values[8]) if values[8] else 0
-        remain_po     = int(values[9]) if values[9] else 0
-        ship_to       = values[10]
-
-        # --- Validazione quantità ---
-        qty_str = self.qty_var.get().strip()
-        if not qty_str:
-            messagebox.showwarning(
-                self.lang.get("warning", "Attenzione"),
-                self.lang.get("qty_required", "Inserire la quantità confermata."),
-                parent=self,
-            )
-            return
-        try:
-            confirmed_qty = int(qty_str)
-        except ValueError:
-            messagebox.showwarning(
-                self.lang.get("warning", "Attenzione"),
-                self.lang.get("qty_invalid", "Quantità non valida."),
-                parent=self,
-            )
-            return
-        if confirmed_qty <= 0:
-            messagebox.showwarning(
-                self.lang.get("warning", "Attenzione"),
-                self.lang.get("qty_positive", "La quantità deve essere maggiore di zero."),
-                parent=self,
-            )
-            return
-
-        # La quantità confermata può superare la quantità richiesta, ma NON la
-        # quantità residua dell'ordine di produzione (Orders.OrderQuantity meno
-        # quanto già spedito/confermato per lo stesso ordine).
-        info = self._rule_info.get(str(rule_id), {})
-        order_qty = info.get("order_qty", 0)
-        already_shipped = info.get("already_shipped", 0)
-        max_confirmable = info.get("max_confirmable", max(0, order_qty - already_shipped))
-        if confirmed_qty > max_confirmable:
-            messagebox.showwarning(
-                self.lang.get("warning", "Attenzione"),
-                self.lang.get(
-                    "shipment_qty_over_order",
-                    "La quantità confermata ({0}) non può superare la quantità residua "
-                    "dell'ordine ({1}) = quantità ordine ({2}) − già spedito ({3}).",
-                ).format(confirmed_qty, max_confirmable, order_qty, already_shipped),
-                parent=self,
-            )
-            return
-
-        # --- Avviso discrepanza ---
-        discrepancy = confirmed_qty != requested_qty
-        if discrepancy:
-            diff = confirmed_qty - requested_qty
-            diff_str = f"+{diff}" if diff > 0 else str(diff)
-            msg = self.lang.get(
-                "shipment_qty_discrepancy",
-                "⚠️  Attenzione: la quantità confermata ({0}) differisce\n"
-                "dalla quantità richiesta ({1})  →  differenza: {2}.\n\n"
-                "Continuare con la conferma?",
-            ).format(confirmed_qty, requested_qty, diff_str)
-            if not messagebox.askyesno(
-                self.lang.get("confirm", "Conferma"), msg, parent=self
-            ):
-                return
-
-        # --- Salvataggio ---
-        confirmed_at = datetime.now()
+    def _resume_or_create_shipment(self):
+        """Riprende l'ultima spedizione OPEN o ne crea una nuova."""
         try:
             self.db.cursor.execute(
                 """
-                UPDATE [Traceability_RS].[dyn].[DynamicShippingRules]
-                SET ConfirmedByUser = ?,
-                    ConfirmedQty   = ?,
-                    ConfirmedAt    = ?
-                WHERE DybamicShippingRuleId = ?
-                """,
-                (self.user_name, confirmed_qty, confirmed_at, rule_id),
+                SELECT TOP 1 ShipmentId, ShipmentDate
+                FROM [Traceability_RS].[dyn].[Shipments]
+                WHERE Status = 'OPEN'
+                ORDER BY CreatedAt DESC
+                """
             )
-            self.db.conn.commit()
-            logger.info(
-                f"Spedizione {rule_id} confermata da {self.user_name} - qty {confirmed_qty}"
-            )
+            row = self.db.cursor.fetchone()
+            if row:
+                self.shipment_id = int(row.ShipmentId)
+                self.shipment_status = "OPEN"
+                if row.ShipmentDate:
+                    self.date_entry.set_date(row.ShipmentDate)
+                logger.info(f"Ripresa spedizione OPEN #{self.shipment_id}")
+            else:
+                self.db.cursor.execute(
+                    """
+                    INSERT INTO [Traceability_RS].[dyn].[Shipments]
+                        (ShipmentDate, Status, CreatedByUser, CreatedAt)
+                    OUTPUT INSERTED.ShipmentId
+                    VALUES (?, 'OPEN', ?, GETDATE())
+                    """,
+                    (date.today(), self.user_name),
+                )
+                self.shipment_id = int(self.db.cursor.fetchone()[0])
+                self.shipment_status = "OPEN"
+                self.db.conn.commit()
+                logger.info(f"Creata nuova spedizione OPEN #{self.shipment_id}")
         except Exception as e:
-            logger.error(f"Errore salvataggio conferma: {e}", exc_info=True)
-            self.db.conn.rollback()
-            messagebox.showerror(
-                self.lang.get("error", "Errore"), str(e), parent=self
+            logger.error(f"Errore apertura/creazione spedizione: {e}", exc_info=True)
+            messagebox.showerror(self.lang.get("error", "Errore"), str(e), parent=self)
+
+    def _set_mode(self, mode):
+        self.mode = mode
+        if mode == "current":
+            self.lbl_mode.config(text="")
+            self.btn_save_corr.pack_forget()
+            self.btn_finalize.pack(side=tk.LEFT, padx=4)
+        else:  # recover
+            self.lbl_mode.config(
+                text=self.lang.get("mode_correction", "MODALITA' CORREZIONE"))
+            self.btn_finalize.pack_forget()
+            self.btn_save_corr.pack(side=tk.LEFT, padx=4)
+        self._update_shipment_label()
+
+    def _update_shipment_label(self):
+        self.lbl_shipment.config(
+            text=self.lang.get("shipment_n", "Spedizione N. {0}  [{1}]").format(
+                self.shipment_id or "-", self.shipment_status or "-")
+        )
+
+    # ------------------------------------------------------------------ #
+    #  Caricamento dati
+    # ------------------------------------------------------------------ #
+    def _refresh_all(self):
+        self._update_shipment_label()
+        if self.mode == "current":
+            self._set_mode("current")
+        self._load_orders()
+        self._load_pallets()
+
+    def _clear_filters(self):
+        self.filter_order_var.set("")
+        self.filter_product_var.set("")
+        self._load_orders()
+
+    def _load_orders(self):
+        for it in self.orders_tree.get_children():
+            self.orders_tree.delete(it)
+        self._order_info = {}
+
+        filters = ""
+        params = []
+        ofil = self.filter_order_var.get().strip()
+        pfil = self.filter_product_var.get().strip()
+        if ofil:
+            filters += " AND PO.ordernumber LIKE ?"
+            params.append(f"%{ofil}%")
+        if pfil:
+            filters += " AND (D.ItemCode LIKE ? OR D.ItemName LIKE ?)"
+            params.extend([f"%{pfil}%", f"%{pfil}%"])
+
+        query = _QUERY_ORDERS.format(filters=filters)
+        try:
+            self.db.cursor.execute(query, tuple(params))
+            rows = self.db.cursor.fetchall()
+            for r in rows:
+                qty_to_ship = int(r.QtyToShipTotal or 0)
+                confirmed = int(r.QtyConfirmedTotal or 0)
+                residual = qty_to_ship - confirmed
+                dpoid = str(r.DPOID)
+                self._order_info[dpoid] = {
+                    "production_order": r.ProductionOrder or "",
+                    "customer": r.CustomerName or "",
+                    "so_number": r.SONumber or "",
+                    "item_code": r.ItemCode or "",
+                    "item_name": r.ItemName or "",
+                    "ship_to": r.ShipTo or "",
+                    "qty_to_ship": qty_to_ship,
+                    "confirmed": confirmed,
+                    "residual": residual,
+                }
+                self.orders_tree.insert(
+                    "", tk.END,
+                    values=(r.DPOID, r.ProductionOrder or "", r.CustomerName or "",
+                            r.SONumber or "", r.ItemCode or "", r.ItemName or "",
+                            r.DateToShipFmt or "", qty_to_ship, confirmed, residual),
+                )
+            self.status_var.set(
+                self.lang.get("orders_count", "{0} ordini da spedire").format(len(rows)))
+        except Exception as e:
+            logger.error(f"Errore caricamento ordini: {e}", exc_info=True)
+            messagebox.showerror(self.lang.get("error", "Errore"), str(e), parent=self)
+
+    def _load_pallets(self):
+        for it in self.pallets_tree.get_children():
+            self.pallets_tree.delete(it)
+        if not self.shipment_id:
+            return
+        try:
+            self.db.cursor.execute(
+                """
+                SELECT ShipmentPalletId, DynamicProductionOrderID, PalletCode,
+                       ProductionOrderNumber, ItemCode, ItemName, ConfirmedQty
+                FROM [Traceability_RS].[dyn].[ShipmentPallets]
+                WHERE ShipmentId = ?
+                ORDER BY PalletCode, ProductionOrderNumber
+                """,
+                (self.shipment_id,),
             )
+            for r in self.db.cursor.fetchall():
+                self.pallets_tree.insert(
+                    "", tk.END,
+                    values=(r.ShipmentPalletId, r.DynamicProductionOrderID,
+                            r.PalletCode or "", r.ProductionOrderNumber or "",
+                            r.ItemCode or "", r.ItemName or "", int(r.ConfirmedQty or 0)),
+                )
+        except Exception as e:
+            logger.error(f"Errore caricamento pallet: {e}", exc_info=True)
+
+        self._suggest_pallet_code()
+
+    def _suggest_pallet_code(self):
+        """Propone il prossimo codice pallet progressivo entro la spedizione."""
+        codes = [self.pallets_tree.set(it, "PalletCode")
+                 for it in self.pallets_tree.get_children()]
+        max_num = 0
+        for c in codes:
+            cs = str(c).strip()
+            if cs.isdigit():
+                max_num = max(max_num, int(cs))
+        suggestion = str(max_num + 1)
+        # Suggerisci solo se il campo e' vuoto (non sovrascrivere quanto digitato)
+        if not self.pallet_var.get().strip():
+            self.pallet_var.set(suggestion)
+
+    # ------------------------------------------------------------------ #
+    #  Selezione ordine
+    # ------------------------------------------------------------------ #
+    def _on_order_select(self, _event=None):
+        sel = self.orders_tree.selection()
+        if not sel:
+            self.btn_add.config(state=tk.DISABLED)
+            self.add_hint.config(text="")
+            return
+        dpoid = str(self.orders_tree.set(sel[0], "DPOID"))
+        info = self._order_info.get(dpoid, {})
+        self.add_hint.config(
+            text=self.lang.get(
+                "order_hint",
+                "da spedire: {0} | confermato: {1} | residuo: {2}",
+            ).format(info.get("qty_to_ship", 0), info.get("confirmed", 0), info.get("residual", 0))
+        )
+        # default qta = residuo (se positivo)
+        residual = info.get("residual", 0)
+        self.add_qty_var.set(str(residual if residual > 0 else 0))
+        self.btn_add.config(state=tk.NORMAL)
+
+    # ------------------------------------------------------------------ #
+    #  Aggiunta pallet
+    # ------------------------------------------------------------------ #
+    def _add_pallet(self):
+        sel = self.orders_tree.selection()
+        if not sel:
+            return
+        dpoid = str(self.orders_tree.set(sel[0], "DPOID"))
+        info = self._order_info.get(dpoid)
+        if not info:
             return
 
-        # --- Email ---
+        pallet_code = self.pallet_var.get().strip()
+        if not pallet_code:
+            messagebox.showwarning(self.lang.get("warning", "Attenzione"),
+                                   self.lang.get("pallet_required", "Inserire il codice pallet."),
+                                   parent=self)
+            return
+        qty_str = self.add_qty_var.get().strip()
+        try:
+            qty = int(qty_str)
+        except ValueError:
+            messagebox.showwarning(self.lang.get("warning", "Attenzione"),
+                                   self.lang.get("qty_invalid", "Quantita' non valida."),
+                                   parent=self)
+            return
+        if qty <= 0:
+            messagebox.showwarning(self.lang.get("warning", "Attenzione"),
+                                   self.lang.get("qty_positive", "La quantita' deve essere maggiore di zero."),
+                                   parent=self)
+            return
+
+        # Avviso eccesso (NON bloccante, decisione utente)
+        new_confirmed_total = info["confirmed"] + qty
+        if new_confirmed_total > info["qty_to_ship"]:
+            diff = new_confirmed_total - info["qty_to_ship"]
+            if not messagebox.askyesno(
+                self.lang.get("confirm", "Conferma"),
+                self.lang.get(
+                    "shipment_excess_warn",
+                    "Attenzione: con questa quantita' il confermato ({0}) supera la "
+                    "quantita' da spedire ({1}) di {2} pezzi.\n\nContinuare comunque?",
+                ).format(new_confirmed_total, info["qty_to_ship"], diff),
+                parent=self,
+            ):
+                return
+
+        try:
+            # Esiste gia' (stessa spedizione, stesso pallet, stesso ordine)? -> somma
+            self.db.cursor.execute(
+                """
+                SELECT ShipmentPalletId, ConfirmedQty
+                FROM [Traceability_RS].[dyn].[ShipmentPallets]
+                WHERE ShipmentId = ? AND PalletCode = ? AND DynamicProductionOrderID = ?
+                """,
+                (self.shipment_id, pallet_code, dpoid),
+            )
+            existing = self.db.cursor.fetchone()
+            if existing:
+                self.db.cursor.execute(
+                    """
+                    UPDATE [Traceability_RS].[dyn].[ShipmentPallets]
+                    SET ConfirmedQty = ConfirmedQty + ?,
+                        ConfirmedByUser = ?, ConfirmedAt = GETDATE()
+                    WHERE ShipmentPalletId = ?
+                    """,
+                    (qty, self.user_name, existing.ShipmentPalletId),
+                )
+            else:
+                self.db.cursor.execute(
+                    """
+                    INSERT INTO [Traceability_RS].[dyn].[ShipmentPallets]
+                        (ShipmentId, PalletCode, DynamicProductionOrderID, ConfirmedQty,
+                         ConfirmedByUser, ConfirmedAt,
+                         ProductionOrderNumber, SONumber, CustomerName, ItemCode, ItemName, ShipTo)
+                    VALUES (?, ?, ?, ?, ?, GETDATE(), ?, ?, ?, ?, ?, ?)
+                    """,
+                    (self.shipment_id, pallet_code, dpoid, qty, self.user_name,
+                     info["production_order"], info["so_number"], info["customer"],
+                     info["item_code"], info["item_name"], info["ship_to"]),
+                )
+            self.db.conn.commit()
+            logger.info(f"Pallet {pallet_code} +{qty} (ordine {info['production_order']}) "
+                        f"su spedizione #{self.shipment_id}")
+        except Exception as e:
+            logger.error(f"Errore aggiunta pallet: {e}", exc_info=True)
+            self.db.conn.rollback()
+            messagebox.showerror(self.lang.get("error", "Errore"), str(e), parent=self)
+            return
+
+        self.pallet_var.set("")          # azzera per riproporre il suggerimento
+        self.add_qty_var.set("")
+        self._load_orders()
+        self._load_pallets()
+
+    def _selected_pallet(self):
+        sel = self.pallets_tree.selection()
+        if not sel:
+            messagebox.showinfo(self.lang.get("info", "Info"),
+                                self.lang.get("select_pallet", "Seleziona un pallet nella lista."),
+                                parent=self)
+            return None
+        return sel[0]
+
+    def _edit_pallet(self):
+        item = self._selected_pallet()
+        if not item:
+            return
+        spid = self.pallets_tree.set(item, "ShipmentPalletId")
+        current_qty = self.pallets_tree.set(item, "Qty")
+        pallet_code = self.pallets_tree.set(item, "PalletCode")
+
+        dlg = _QtyDialog(self, self.lang, pallet_code, current_qty)
+        self.wait_window(dlg)
+        if dlg.result is None:
+            return
+        new_qty = dlg.result
+        try:
+            self.db.cursor.execute(
+                """
+                UPDATE [Traceability_RS].[dyn].[ShipmentPallets]
+                SET ConfirmedQty = ?, ConfirmedByUser = ?, ConfirmedAt = GETDATE()
+                WHERE ShipmentPalletId = ?
+                """,
+                (new_qty, self.user_name, spid),
+            )
+            self.db.conn.commit()
+        except Exception as e:
+            logger.error(f"Errore modifica pallet: {e}", exc_info=True)
+            self.db.conn.rollback()
+            messagebox.showerror(self.lang.get("error", "Errore"), str(e), parent=self)
+            return
+        self._load_orders()
+        self._load_pallets()
+
+    def _delete_pallet(self):
+        item = self._selected_pallet()
+        if not item:
+            return
+        spid = self.pallets_tree.set(item, "ShipmentPalletId")
+        if not messagebox.askyesno(self.lang.get("confirm", "Conferma"),
+                                   self.lang.get("delete_pallet_q", "Eliminare questa riga pallet?"),
+                                   parent=self):
+            return
+        try:
+            self.db.cursor.execute(
+                "DELETE FROM [Traceability_RS].[dyn].[ShipmentPallets] WHERE ShipmentPalletId = ?",
+                (spid,),
+            )
+            self.db.conn.commit()
+        except Exception as e:
+            logger.error(f"Errore eliminazione pallet: {e}", exc_info=True)
+            self.db.conn.rollback()
+            messagebox.showerror(self.lang.get("error", "Errore"), str(e), parent=self)
+            return
+        self._load_orders()
+        self._load_pallets()
+
+    # ------------------------------------------------------------------ #
+    #  Conteggio righe pallet
+    # ------------------------------------------------------------------ #
+    def _pallet_count(self):
+        return len(self.pallets_tree.get_children())
+
+    def _get_shipment_date(self):
+        try:
+            return self.date_entry.get_date()
+        except Exception:
+            return date.today()
+
+    # ------------------------------------------------------------------ #
+    #  Finalizza (modalita' current)
+    # ------------------------------------------------------------------ #
+    def _finalize(self):
+        if self._pallet_count() == 0:
+            messagebox.showwarning(self.lang.get("warning", "Attenzione"),
+                                   self.lang.get("no_pallets", "Nessun pallet inserito nella spedizione."),
+                                   parent=self)
+            return
+        if not messagebox.askyesno(
+            self.lang.get("confirm", "Conferma"),
+            self.lang.get("finalize_q", "Finalizzare la spedizione N. {0}?\nVerranno generati i documenti e inviata l'email.").format(self.shipment_id),
+            parent=self,
+        ):
+            return
+
+        ship_date = self._get_shipment_date()
+        try:
+            self.db.cursor.execute(
+                """
+                UPDATE [Traceability_RS].[dyn].[Shipments]
+                SET Status = 'CLOSED', ShipmentDate = ?, ClosedByUser = ?, ClosedAt = GETDATE()
+                WHERE ShipmentId = ?
+                """,
+                (ship_date, self.user_name, self.shipment_id),
+            )
+            self.db.conn.commit()
+            self.shipment_status = "CLOSED"
+        except Exception as e:
+            logger.error(f"Errore finalizzazione: {e}", exc_info=True)
+            self.db.conn.rollback()
+            messagebox.showerror(self.lang.get("error", "Errore"), str(e), parent=self)
+            return
+
+        self._generate_and_dispatch(is_correction=False)
+        messagebox.showinfo(self.lang.get("success", "Successo"),
+                            self.lang.get("shipment_finalized", "Spedizione finalizzata. Documenti generati ed email in invio."),
+                            parent=self)
+        # Pronti per una nuova spedizione
+        self.shipment_id = None
+        self._resume_or_create_shipment()
+        self._set_mode("current")
+        self._refresh_all()
+
+    # ------------------------------------------------------------------ #
+    #  Correzione (modalita' recover)
+    # ------------------------------------------------------------------ #
+    def _save_corrections(self):
+        if self._pallet_count() == 0:
+            if not messagebox.askyesno(
+                self.lang.get("confirm", "Conferma"),
+                self.lang.get("corr_empty_q", "La spedizione non ha pallet. Salvare comunque la correzione?"),
+                parent=self,
+            ):
+                return
+        ship_date = self._get_shipment_date()
+        try:
+            self.db.cursor.execute(
+                """
+                UPDATE [Traceability_RS].[dyn].[Shipments]
+                SET Status = 'CORRECTED', ShipmentDate = ?,
+                    LastModifiedByUser = ?, LastModifiedAt = GETDATE()
+                WHERE ShipmentId = ?
+                """,
+                (ship_date, self.user_name, self.shipment_id),
+            )
+            self.db.conn.commit()
+            self.shipment_status = "CORRECTED"
+        except Exception as e:
+            logger.error(f"Errore salvataggio correzione: {e}", exc_info=True)
+            self.db.conn.rollback()
+            messagebox.showerror(self.lang.get("error", "Errore"), str(e), parent=self)
+            return
+
+        self._generate_and_dispatch(is_correction=True)
+        messagebox.showinfo(self.lang.get("success", "Successo"),
+                            self.lang.get("corr_saved", "Correzione salvata. Documenti rigenerati ed email di correzione in invio."),
+                            parent=self)
+        self._update_shipment_label()
+
+    # ------------------------------------------------------------------ #
+    #  PDF + email
+    # ------------------------------------------------------------------ #
+    def _generate_and_dispatch(self, is_correction: bool):
+        """Genera i 2 PDF (main thread), salva i path, invia email (thread)."""
+        pallet_pdf = summary_pdf = None
+        try:
+            pallet_pdf, summary_pdf = shipment_pdf.generate_shipment_documents(
+                self.db, self.shipment_id, self.user_name)
+            self.db.cursor.execute(
+                """
+                UPDATE [Traceability_RS].[dyn].[Shipments]
+                SET PdfPalletPath = ?, PdfSummaryPath = ?
+                WHERE ShipmentId = ?
+                """,
+                (pallet_pdf, summary_pdf, self.shipment_id),
+            )
+            self.db.conn.commit()
+        except Exception as e:
+            logger.error(f"Errore generazione documenti: {e}", exc_info=True)
+            messagebox.showerror(self.lang.get("error", "Errore"),
+                                 self.lang.get("pdf_error", "Errore nella generazione dei documenti:\n{0}").format(e),
+                                 parent=self)
+
+        # Stampa locale best-effort
+        for p in (pallet_pdf, summary_pdf):
+            if p:
+                shipment_pdf.print_pdf(p)
+
+        # Snapshot dati per l'email (nel main thread)
+        ship_date = self._get_shipment_date()
+        pallets = self._collect_pallets_for_email()
+
         threading.Thread(
-            target=self._send_confirmation_email,
-            args=(
-                prod_order,
-                customer,
-                so_number,
-                item_code,
-                item_name,
-                date_to_ship,
-                requested_qty,
-                confirmed_qty,
-                produced_qty,
-                remain_po,
-                ship_to,
-                confirmed_at,
-                discrepancy,
-            ),
+            target=self._send_shipment_email,
+            args=(self.shipment_id, ship_date, pallets, is_correction,
+                  [p for p in (pallet_pdf, summary_pdf) if p]),
             daemon=True,
         ).start()
 
-        messagebox.showinfo(
-            self.lang.get("success", "Successo"),
-            self.lang.get(
-                "shipment_confirmed_ok",
-                "Spedizione confermata con successo.",
-            ),
-            parent=self,
-        )
-        self._load_data()
+    def _collect_pallets_for_email(self):
+        rows = []
+        for it in self.pallets_tree.get_children():
+            rows.append({
+                "pallet": self.pallets_tree.set(it, "PalletCode"),
+                "order": self.pallets_tree.set(it, "ProductionOrder"),
+                "item_code": self.pallets_tree.set(it, "ItemCode"),
+                "item_name": self.pallets_tree.set(it, "ItemName"),
+                "qty": self.pallets_tree.set(it, "Qty"),
+            })
+        return rows
 
-    # ------------------------------------------------------------------ #
-    #  Email
-    # ------------------------------------------------------------------ #
-    def _send_confirmation_email(
-        self,
-        prod_order,
-        customer,
-        so_number,
-        item_code,
-        item_name,
-        date_to_ship,
-        requested_qty,
-        confirmed_qty,
-        produced_qty,
-        remain_po,
-        ship_to,
-        confirmed_at: datetime,
-        discrepancy: bool,
-    ):
+    def _send_shipment_email(self, shipment_id, ship_date, pallets, is_correction, attachments):
         try:
-            recipients = utils.get_email_recipients(
-                self.db.conn, "Sys_shipment_email"
-            )
+            recipients = utils.get_email_recipients(self.db.conn, "Sys_shipment_email")
             if not recipients:
-                logger.warning("Nessun destinatario per Sys_shipment_email — email non inviata")
+                logger.warning("Nessun destinatario 'Sys_shipment_email' - email non inviata")
                 return
 
-            diff_row = ""
-            if discrepancy:
-                diff = confirmed_qty - requested_qty
-                diff_str = f"+{diff}" if diff > 0 else str(diff)
-                diff_color = "#c0392b" if diff < 0 else "#e67e22"
-                diff_row = f"""
-                <tr style="background:#fdecea;">
-                  <td style="padding:6px 10px;font-weight:bold;color:{diff_color};">
-                    ⚠️ DISCREPANZA QUANTITÀ
-                  </td>
-                  <td style="padding:6px 10px;color:{diff_color};font-weight:bold;">
-                    Confermata: <strong>{confirmed_qty}</strong> vs Richiesta: <strong>{requested_qty}</strong>
-                    &nbsp;(differenza: {diff_str})
-                  </td>
-                </tr>"""
+            ship_date_str = ship_date.strftime("%d/%m/%Y") if hasattr(ship_date, "strftime") else str(ship_date)
+            total_qty = sum(int(p["qty"] or 0) for p in pallets)
+            n_pallets = len({p["pallet"] for p in pallets})
+            n_orders = len({p["order"] for p in pallets})
 
-            subject_prefix = "⚠️ DISCREPANZA — " if discrepancy else ""
-            subject = (
-                f"{subject_prefix}Conferma Spedizione Urgente: {so_number} / {prod_order}"
+            banner = ("CORREZIONE - " if is_correction else "")
+            subject = f"{banner}Conferma Spedizione N. {shipment_id} del {ship_date_str}"
+
+            rows_html = "".join(
+                f"<tr><td>{p['pallet']}</td><td>{p['order']}</td><td>{p['item_code']}</td>"
+                f"<td>{p['item_name']}</td><td style='text-align:center;'>{p['qty']}</td></tr>"
+                for p in pallets
             )
+            corr_note = ""
+            if is_correction:
+                corr_note = ("<p style='color:#c0392b;font-weight:bold;'>"
+                             "Questa e' una versione CORRETTA della spedizione: "
+                             "sostituisce la precedente.</p>")
 
             body = f"""
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8"/>
-  <style>
-    body {{font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#333;}}
-    table {{border-collapse:collapse;width:100%;max-width:700px;}}
-    th {{background:#1a5276;color:#fff;padding:8px 10px;text-align:left;}}
-    td {{padding:6px 10px;border-bottom:1px solid #ddd;}}
-    tr:nth-child(even){{background:#f8f8f8;}}
-    .header-box {{background:#1a5276;color:#fff;padding:16px;border-radius:4px;margin-bottom:18px;}}
-    .footer {{font-size:11px;color:#888;margin-top:20px;}}
-  </style>
-</head>
-<body>
-  <div class="header-box">
-    <h2 style="margin:0;">📦 Conferma Spedizione Urgente</h2>
-    <p style="margin:4px 0 0;">Registrata il {confirmed_at.strftime('%d/%m/%Y alle %H:%M:%S')}
-       da <strong>{self.user_name}</strong></p>
-  </div>
+<!DOCTYPE html><html><head><meta charset="utf-8"/>
+<style>
+body{{font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#333;}}
+table{{border-collapse:collapse;width:100%;max-width:760px;}}
+th{{background:#1a5276;color:#fff;padding:8px 10px;text-align:left;}}
+td{{padding:6px 10px;border-bottom:1px solid #ddd;}}
+tr:nth-child(even){{background:#f8f8f8;}}
+.header-box{{background:#1a5276;color:#fff;padding:16px;border-radius:4px;margin-bottom:16px;}}
+.footer{{font-size:11px;color:#888;margin-top:18px;}}
+</style></head><body>
+<div class="header-box">
+  <h2 style="margin:0;">{banner}Conferma Spedizione N. {shipment_id}</h2>
+  <p style="margin:4px 0 0;">Data spedizione: <strong>{ship_date_str}</strong> -
+     Operatore: <strong>{self.user_name}</strong></p>
+  <p style="margin:4px 0 0;">Generata il {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}</p>
+</div>
+{corr_note}
+<p>Totali: <strong>{n_pallets}</strong> pallet - <strong>{n_orders}</strong> ordini -
+   <strong>{total_qty}</strong> pezzi.</p>
+<table>
+  <tr><th>Pallet</th><th>Ordine Prod.</th><th>Codice</th><th>Prodotto</th><th>Qta</th></tr>
+  {rows_html}
+</table>
+<p class="footer">In allegato: lista per pallet e riepilogo spedizione (PDF).<br/>
+Email generata automaticamente da TraceabilityRS - non rispondere.</p>
+</body></html>"""
 
-  <table>
-    <tr><th colspan="2">Dettaglio Ordine</th></tr>
-    <tr><td>Cliente</td><td><strong>{customer}</strong></td></tr>
-    <tr><td>Ordine di Vendita</td><td>{so_number}</td></tr>
-    <tr><td>Ordine di Produzione</td><td>{prod_order}</td></tr>
-    <tr><td>Codice Prodotto</td><td>{item_code}</td></tr>
-    <tr><td>Descrizione Prodotto</td><td>{item_name}</td></tr>
-    <tr><td>Data Spedizione Richiesta</td><td>{date_to_ship}</td></tr>
-    <tr><td>Destinazione</td><td>{ship_to}</td></tr>
-    <tr><th colspan="2" style="padding-top:12px;">Quantità</th></tr>
-    <tr><td>Quantità Richiesta</td><td>{requested_qty}</td></tr>
-    <tr><td>Quantità Prodotta (OutOfBox)</td><td>{produced_qty}</td></tr>
-    <tr><td>Rimanenti su PO</td><td>{remain_po}</td></tr>
-    <tr><td>Quantità <strong>Confermata</strong> per Spedizione</td>
-        <td><strong>{confirmed_qty}</strong></td></tr>
-    {diff_row}
-    <tr><th colspan="2" style="padding-top:12px;">Conferma</th></tr>
-    <tr><td>Confermato Da</td><td><strong>{self.user_name}</strong></td></tr>
-    <tr><td>Data / Ora Conferma</td><td>{confirmed_at.strftime('%d/%m/%Y %H:%M:%S')}</td></tr>
-  </table>
-
-  <p class="footer">Email generata automaticamente da TraceabilityRS — non rispondere a questo messaggio.</p>
-</body>
-</html>"""
-
-            utils.send_email(recipients, subject, body, is_html=True)
-            logger.info(f"Email conferma spedizione inviata a {recipients}")
+            utils.send_email(recipients, subject, body, is_html=True, attachments=attachments)
+            logger.info(f"Email spedizione #{shipment_id} inviata a {recipients} "
+                        f"(correzione={is_correction})")
         except Exception as e:
-            logger.error(f"Errore invio email conferma spedizione: {e}", exc_info=True)
+            logger.error(f"Errore invio email spedizione: {e}", exc_info=True)
+
+    # ------------------------------------------------------------------ #
+    #  Recupero / correzione spedizione
+    # ------------------------------------------------------------------ #
+    def _open_recover_dialog(self):
+        dlg = _RecoverDialog(self, self.db, self.lang)
+        self.wait_window(dlg)
+        if dlg.selected_shipment_id is None:
+            return
+        self._load_shipment_for_correction(dlg.selected_shipment_id)
+
+    def _load_shipment_for_correction(self, shipment_id):
+        try:
+            self.db.cursor.execute(
+                """
+                SELECT ShipmentId, ShipmentDate, Status
+                FROM [Traceability_RS].[dyn].[Shipments]
+                WHERE ShipmentId = ?
+                """,
+                (shipment_id,),
+            )
+            row = self.db.cursor.fetchone()
+            if not row:
+                return
+            self.shipment_id = int(row.ShipmentId)
+            self.shipment_status = row.Status
+            if row.ShipmentDate:
+                self.date_entry.set_date(row.ShipmentDate)
+        except Exception as e:
+            logger.error(f"Errore caricamento spedizione {shipment_id}: {e}", exc_info=True)
+            messagebox.showerror(self.lang.get("error", "Errore"), str(e), parent=self)
+            return
+        self._set_mode("recover")
+        self._load_orders()
+        self._load_pallets()
+        self.status_var.set(
+            self.lang.get("loaded_shipment", "Caricata spedizione N. {0} per correzione").format(shipment_id))
+
+    # ------------------------------------------------------------------ #
+    #  Chiusura finestra
+    # ------------------------------------------------------------------ #
+    def _on_close(self):
+        # Pulisci la spedizione OPEN se vuota (evita header orfani)
+        try:
+            if (self.mode == "current" and self.shipment_id
+                    and self.shipment_status == "OPEN" and self._pallet_count() == 0):
+                self.db.cursor.execute(
+                    "DELETE FROM [Traceability_RS].[dyn].[Shipments] WHERE ShipmentId = ? AND Status = 'OPEN'",
+                    (self.shipment_id,),
+                )
+                self.db.conn.commit()
+                logger.info(f"Rimossa spedizione OPEN vuota #{self.shipment_id}")
+        except Exception as e:
+            logger.warning(f"Cleanup spedizione vuota fallito: {e}")
+        self.destroy()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Dialog: modifica quantita'
+# ─────────────────────────────────────────────────────────────────────────────
+class _QtyDialog(tk.Toplevel):
+    def __init__(self, master, lang, pallet_code, current_qty):
+        super().__init__(master)
+        self.lang = lang
+        self.result = None
+        self.title(lang.get("edit_qty_title", "Modifica quantita'"))
+        self.transient(master)
+        self.grab_set()
+        self.resizable(False, False)
+
+        frm = ttk.Frame(self, padding=14)
+        frm.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frm, text=lang.get("pallet_code", "Codice Pallet:") + f" {pallet_code}").grid(
+            row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 8))
+        ttk.Label(frm, text=lang.get("new_qty", "Nuova quantita':")).grid(row=1, column=0, sticky=tk.W)
+        self.var = tk.StringVar(value=str(current_qty))
+        ent = ttk.Entry(frm, textvariable=self.var, width=10)
+        ent.grid(row=1, column=1, padx=(6, 0))
+        ent.focus_set()
+        ent.select_range(0, tk.END)
+
+        btns = ttk.Frame(frm)
+        btns.grid(row=2, column=0, columnspan=2, pady=(12, 0))
+        ttk.Button(btns, text=lang.get("ok", "OK"), command=self._ok).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text=lang.get("cancel", "Annulla"), command=self.destroy).pack(side=tk.LEFT, padx=4)
+        ent.bind("<Return>", lambda _e: self._ok())
+
+    def _ok(self):
+        try:
+            v = int(self.var.get().strip())
+        except ValueError:
+            messagebox.showwarning(self.lang.get("warning", "Attenzione"),
+                                   self.lang.get("qty_invalid", "Quantita' non valida."), parent=self)
+            return
+        if v <= 0:
+            messagebox.showwarning(self.lang.get("warning", "Attenzione"),
+                                   self.lang.get("qty_positive", "La quantita' deve essere maggiore di zero."), parent=self)
+            return
+        self.result = v
+        self.destroy()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Dialog: recupero spedizione per data
+# ─────────────────────────────────────────────────────────────────────────────
+class _RecoverDialog(tk.Toplevel):
+    def __init__(self, master, db, lang):
+        super().__init__(master)
+        self.db = db
+        self.lang = lang
+        self.selected_shipment_id = None
+
+        self.title(lang.get("recover_title", "Recupera spedizione"))
+        self.geometry("760x420")
+        self.transient(master)
+        self.grab_set()
+
+        frm = ttk.Frame(self, padding=10)
+        frm.pack(fill=tk.BOTH, expand=True)
+
+        flt = ttk.Frame(frm)
+        flt.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(flt, text=lang.get("date_from", "Dal:")).pack(side=tk.LEFT)
+        self.from_entry = DateEntry(flt, width=12, date_pattern="dd/mm/yyyy")
+        self.from_entry.pack(side=tk.LEFT, padx=(4, 12))
+        ttk.Label(flt, text=lang.get("date_to", "Al:")).pack(side=tk.LEFT)
+        self.to_entry = DateEntry(flt, width=12, date_pattern="dd/mm/yyyy")
+        self.to_entry.pack(side=tk.LEFT, padx=(4, 12))
+        ttk.Button(flt, text=lang.get("btn_search", "Cerca"), command=self._search).pack(side=tk.LEFT, padx=4)
+
+        cols = ("ShipmentId", "ShipmentDate", "Status", "Pallets", "Qty", "ClosedBy")
+        self.tree = ttk.Treeview(frm, columns=cols, show="headings", selectmode="browse")
+        _rcols = {
+            "ShipmentId":   ("rcol_id", "N.", 60),
+            "ShipmentDate": ("rcol_date", "Data", 100),
+            "Status":       ("rcol_status", "Stato", 90),
+            "Pallets":      ("rcol_pallets", "Pallet", 70),
+            "Qty":          ("rcol_qty", "Pezzi", 70),
+            "ClosedBy":     ("rcol_closedby", "Chiusa da", 160),
+        }
+        for c, (key, lbl, w) in _rcols.items():
+            self.tree.heading(c, text=lang.get(key, lbl))
+            self.tree.column(c, width=w, anchor=tk.CENTER if c != "ClosedBy" else tk.W)
+        self.tree.pack(fill=tk.BOTH, expand=True)
+        self.tree.bind("<Double-1>", lambda _e: self._load())
+
+        btns = ttk.Frame(frm)
+        btns.pack(fill=tk.X, pady=(8, 0))
+        ttk.Button(btns, text=lang.get("btn_load", "Carica per correzione"), command=self._load).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text=lang.get("cancel", "Annulla"), command=self.destroy).pack(side=tk.RIGHT, padx=4)
+
+        self._search()
+
+    def _search(self):
+        for it in self.tree.get_children():
+            self.tree.delete(it)
+        try:
+            self.db.cursor.execute(
+                """
+                SELECT s.ShipmentId, s.ShipmentDate, s.Status, s.ClosedByUser,
+                       (SELECT COUNT(DISTINCT sp.PalletCode)
+                        FROM [Traceability_RS].[dyn].[ShipmentPallets] sp
+                        WHERE sp.ShipmentId = s.ShipmentId) AS Pallets,
+                       ISNULL((SELECT SUM(sp.ConfirmedQty)
+                        FROM [Traceability_RS].[dyn].[ShipmentPallets] sp
+                        WHERE sp.ShipmentId = s.ShipmentId), 0) AS Qty
+                FROM [Traceability_RS].[dyn].[Shipments] s
+                WHERE s.ShipmentDate >= ? AND s.ShipmentDate <= ?
+                  AND s.Status <> 'OPEN'
+                ORDER BY s.ShipmentDate DESC, s.ShipmentId DESC
+                """,
+                (self.from_entry.get_date(), self.to_entry.get_date()),
+            )
+            for r in self.db.cursor.fetchall():
+                sd = r.ShipmentDate.strftime("%d/%m/%Y") if r.ShipmentDate else ""
+                self.tree.insert("", tk.END, values=(
+                    r.ShipmentId, sd, r.Status, r.Pallets, int(r.Qty or 0), r.ClosedByUser or ""))
+        except Exception as e:
+            logger.error(f"Errore ricerca spedizioni: {e}", exc_info=True)
+            messagebox.showerror(self.lang.get("error", "Errore"), str(e), parent=self)
+
+    def _load(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        self.selected_shipment_id = int(self.tree.set(sel[0], "ShipmentId"))
+        self.destroy()
 
 
 def open_shipment_confirmation_window(master, db, lang, user_name: str):

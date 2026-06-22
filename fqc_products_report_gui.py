@@ -45,13 +45,15 @@ LEFT  JOIN Traceability_RS.dbo.Clients    c ON c.IDClient    = p.IDClient
 WHERE ll.DateCheckList >= ? AND ll.DateCheckList < ?
 {code_filter}
 {label_filter}
+{order_filter}
 GROUP BY ll.IDLabelCode, l.LabelCod, o.OrderNumber, p.ProductCode, c.ClientName
 ORDER BY MAX(ll.DateCheckList) DESC, l.LabelCod
 """
 
 
 def _run_query(conn, date_from: datetime.date, date_to: datetime.date,
-               product_code: str = '', labelcode: str = '') -> list[dict]:
+               product_code: str = '', labelcode: str = '',
+               order_number: str = '') -> list[dict]:
     """Esegue la query nel periodo [date_from, date_to] inclusi (giorni interi)."""
     start = datetime.datetime.combine(date_from, datetime.time(0, 0, 0))
     end   = datetime.datetime.combine(date_to + datetime.timedelta(days=1),
@@ -70,8 +72,15 @@ def _run_query(conn, date_from: datetime.date, date_to: datetime.date,
     else:
         label_filter = ''
 
+    if order_number.strip():
+        order_filter = "AND o.OrderNumber LIKE ?"
+        params.append(f'%{order_number.strip()}%')
+    else:
+        order_filter = ''
+
     sql = _Q_VALIDATED_CARDS.format(code_filter=code_filter,
-                                    label_filter=label_filter)
+                                    label_filter=label_filter,
+                                    order_filter=order_filter)
     cur = conn.cursor()
     cur.execute(sql, params)
     cols = [d[0] for d in cur.description]
@@ -258,14 +267,22 @@ class FqcProductsReportWindow(tk.Toplevel):
         label_entry = ttk.Entry(filter_frame, textvariable=self._var_label, width=18)
         label_entry.grid(row=0, column=7, padx=4, pady=6)
 
+        # Filtro Ordine (seconda riga)
+        ttk.Label(filter_frame,
+                  text=self.lang.get('fqc_report_order', 'Ordine:')).grid(
+            row=1, column=0, sticky='w', padx=8, pady=6)
+        self._var_order = tk.StringVar()
+        order_entry = ttk.Entry(filter_frame, textvariable=self._var_order, width=18)
+        order_entry.grid(row=1, column=1, padx=4, pady=6)
+
         ttk.Button(
             filter_frame,
             text=self.lang.get('fqc_report_btn_search', '🔍 Cerca'),
             command=self._do_search
-        ).grid(row=0, column=8, padx=12, pady=6)
+        ).grid(row=0, column=8, rowspan=2, padx=12, pady=6)
 
         # Invio = cerca
-        for w in (label_entry,):
+        for w in (label_entry, order_entry):
             w.bind('<Return>', lambda e: self._do_search())
 
         # Treeview
@@ -355,7 +372,8 @@ class FqcProductsReportWindow(tk.Toplevel):
         try:
             self._rows = _run_query(
                 self.db.conn, date_from, date_to,
-                self._var_code.get(), self._var_label.get()
+                self._var_code.get(), self._var_label.get(),
+                self._var_order.get()
             )
         except Exception as exc:
             logger.error(f'FqcProductsReportWindow search: {exc}', exc_info=True)

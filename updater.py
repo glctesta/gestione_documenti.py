@@ -43,35 +43,48 @@ class UpdateProgressWindow(tk.Tk):
         self._file_var = tk.StringVar(value="")
         self._cancelled = False
 
+        self._stats_var = tk.StringVar(value="")
+
         self.title("Aggiornamento Applicazione")
-        self.geometry("450x150")
+        self.geometry("500x210")
         self.resizable(False, False)
         self.eval('tk::PlaceWindow . center')
 
         # Frame principale
         main_frame = ttk.Frame(self)
-        main_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        main_frame.pack(fill='both', expand=True, padx=12, pady=10)
 
-        # Label del progresso
+        # Label del progresso (percentuale)
         self.progress_label = ttk.Label(
             main_frame,
             text="Aggiornamento in corso, attendere...",
-            font=("Helvetica", 10)
+            font=("Helvetica", 11, "bold")
         )
-        self.progress_label.pack(pady=(5, 10))
+        self.progress_label.pack(anchor='w', pady=(2, 8))
 
-        # Barra di progresso
+        # Barra di progresso (0-100%)
         self.progress_bar = ttk.Progressbar(
             main_frame,
             orient="horizontal",
-            length=400,
-            mode="determinate"
+            length=460,
+            mode="determinate",
+            maximum=100
         )
-        self.progress_bar.pack(pady=5)
+        self.progress_bar.pack(fill='x', pady=(0, 8))
+
+        # Label statistiche: velocità, tempo rimanente, elementi/MB rimanenti
+        self.stats_label = ttk.Label(
+            main_frame,
+            textvariable=self._stats_var,
+            font=("Helvetica", 9),
+            foreground="#1F3864",
+            anchor="w"
+        )
+        self.stats_label.pack(fill='x', pady=(0, 4))
 
         # Frame per il nome del file (con altezza fissa)
         file_frame = ttk.Frame(main_frame, height=20)
-        file_frame.pack(fill='x', pady=5)
+        file_frame.pack(fill='x', pady=2)
         file_frame.pack_propagate(False)
 
         # Label per il nome del file — usa StringVar per aggiornamenti da altri thread
@@ -81,7 +94,7 @@ class UpdateProgressWindow(tk.Tk):
             font=("Helvetica", 8),
             foreground="grey",
             anchor="w",
-            width=80
+            width=90
         )
         self.file_label.pack(fill='x')
 
@@ -99,10 +112,40 @@ class UpdateProgressWindow(tk.Tk):
                 "L'aggiornamento è in corso. Attendere il completamento."
             )
 
-    def _set_progress(self, value, file_text=""):
-        """Aggiorna la barra di progresso e il testo del file (thread-safe via after)."""
-        self.progress_bar["value"] = value
-        self._file_var.set(file_text)
+    @staticmethod
+    def _fmt_bytes(n):
+        """Formatta un numero di byte in B/KB/MB/GB."""
+        n = float(n or 0)
+        for unit in ('B', 'KB', 'MB', 'GB'):
+            if n < 1024 or unit == 'GB':
+                return f"{int(n)} B" if unit == 'B' else f"{n:.1f} {unit}"
+            n /= 1024
+
+    @staticmethod
+    def _fmt_eta(secs):
+        """Formatta i secondi rimanenti in un testo leggibile."""
+        if secs is None or secs == float('inf'):
+            return "calcolo..."
+        secs = int(max(0, secs))
+        if secs < 60:
+            return f"{secs} s"
+        m, s = divmod(secs, 60)
+        if m < 60:
+            return f"{m} min {s} s"
+        h, m = divmod(m, 60)
+        return f"{h} h {m} min"
+
+    def _update_stats(self, percent, name, speed_bps, eta_s,
+                      remaining_files, remaining_bytes):
+        """Aggiorna barra, percentuale, velocità ed ETA (thread-safe via after)."""
+        self.progress_bar["value"] = percent
+        self.progress_label.config(text=f"{percent:.0f}% completato")
+        self._stats_var.set(
+            f"Velocità: {self._fmt_bytes(speed_bps)}/s        "
+            f"Tempo rimanente: {self._fmt_eta(eta_s)}        "
+            f"Rimanenti: {remaining_files} file ({self._fmt_bytes(remaining_bytes)})"
+        )
+        self._file_var.set(f"Nome: {name}" if name else "")
 
     # File da NON sovrascrivere (configurazioni locali + DLL di runtime bloccate dal processo)
     PRESERVE_FILES = {
@@ -152,54 +195,85 @@ class UpdateProgressWindow(tk.Tk):
         errors = []
         skipped = 0
         total = len(file_list)
-        log(f"_copy_worker: avvio copia di {total} file")
+        total_bytes = getattr(self, "_total_bytes", 0)
+        log(f"_copy_worker: avvio copia di {total} file ({self._fmt_bytes(total_bytes)})")
+
+        processed_bytes = 0      # byte processati (copiati + saltati) → progresso/ETA
+        transferred_bytes = 0    # byte realmente copiati → velocità di trasferimento
+        t0 = time.monotonic()
+        last_ui_t = 0.0
+        last_transferred = 0
+        cur_speed = 0.0          # media mobile esponenziale della velocità
 
         for i, (root, name) in enumerate(file_list):
-            # Aggiorna la GUI tramite after (thread-safe)
-            self.after(0, self._set_progress, i + 1, f"Copia di: {name}")
+            source_file = os.path.join(root, name)
+            try:
+                size = os.path.getsize(source_file)
+            except OSError:
+                size = 0
 
             # Log periodico ogni 50 file
             if (i + 1) % 50 == 0:
                 log(f"_copy_worker: progresso {i + 1}/{total}")
 
-            # Salta file di configurazione locale che non devono essere sovrascritti
-            if name.lower() in self.PRESERVE_FILES:
-                log(f"Preservato file locale: {name}")
-                continue
-
             try:
-                source_file = os.path.join(root, name)
-                relative_path = os.path.relpath(root, self.source_path)
-                dest_dir = os.path.join(self.dest_path, relative_path)
+                # Salta file di configurazione locale che non devono essere sovrascritti
+                if name.lower() in self.PRESERVE_FILES:
+                    log(f"Preservato file locale: {name}")
+                else:
+                    relative_path = os.path.relpath(root, self.source_path)
+                    dest_dir = os.path.join(self.dest_path, relative_path)
+                    os.makedirs(dest_dir, exist_ok=True)
+                    dest_file = os.path.join(dest_dir, name)
 
-                os.makedirs(dest_dir, exist_ok=True)
-                dest_file = os.path.join(dest_dir, name)
-
-                # (A) Salta i file con CONTENUTO identico: niente copia, niente lock.
-                # filecmp confronta size + byte (gli mtime cambiano a ogni build).
-                # Un .pyd caricato in memoria resta comunque LEGGIBILE (FILE_SHARE_READ),
-                # quindi il confronto riesce anche se il file è "in uso".
-                if self._same_content(source_file, dest_file):
-                    skipped += 1
-                    continue
-
-                # Retry in caso di PermissionError (file temporaneamente in uso)
-                max_retries = 3
-                for attempt in range(max_retries):
-                    try:
-                        shutil.copy2(source_file, dest_file)
-                        break
-                    except PermissionError:
-                        if attempt < max_retries - 1:
-                            log(f"PermissionError su {name}, tentativo {attempt + 1}/{max_retries}")
-                            time.sleep(1)
-                        else:
-                            raise
+                    # (A) Salta i file con CONTENUTO identico: niente copia, niente lock.
+                    # filecmp confronta size + byte (gli mtime cambiano a ogni build).
+                    # Un .pyd caricato in memoria resta comunque LEGGIBILE (FILE_SHARE_READ),
+                    # quindi il confronto riesce anche se il file è "in uso".
+                    if self._same_content(source_file, dest_file):
+                        skipped += 1
+                    else:
+                        # Retry in caso di PermissionError (file temporaneamente in uso)
+                        max_retries = 3
+                        for attempt in range(max_retries):
+                            try:
+                                shutil.copy2(source_file, dest_file)
+                                transferred_bytes += size
+                                break
+                            except PermissionError:
+                                if attempt < max_retries - 1:
+                                    log(f"PermissionError su {name}, tentativo {attempt + 1}/{max_retries}")
+                                    time.sleep(1)
+                                else:
+                                    raise
 
             except Exception as e:
                 msg = f"Errore nella copia di {name}: {e}"
                 log(msg)
                 errors.append(msg)
+
+            processed_bytes += size
+
+            # Aggiornamento UI throttled (~ ogni 0.25 s) oppure all'ultimo file
+            now = time.monotonic()
+            if now - last_ui_t >= 0.25 or i == total - 1:
+                dt = (now - last_ui_t) if last_ui_t > 0 else (now - t0)
+                inst_speed = (transferred_bytes - last_transferred) / dt if dt > 0 else 0
+                # media mobile esponenziale per stabilizzare la velocità mostrata
+                cur_speed = inst_speed if cur_speed == 0 else (0.6 * cur_speed + 0.4 * inst_speed)
+                last_transferred = transferred_bytes
+                last_ui_t = now
+
+                elapsed = now - t0
+                overall_rate = processed_bytes / elapsed if elapsed > 0 else 0
+                remaining_bytes = max(0, total_bytes - processed_bytes)
+                eta = remaining_bytes / overall_rate if overall_rate > 0 else None
+                percent = (processed_bytes / total_bytes * 100) if total_bytes > 0 \
+                    else ((i + 1) / total * 100)
+                remaining_files = total - (i + 1)
+
+                self.after(0, self._update_stats, percent, name, cur_speed,
+                           eta, remaining_files, remaining_bytes)
 
         log(f"_copy_worker: copia completata. {total - len(errors) - skipped} copiati, "
             f"{skipped} invariati (saltati), {len(errors)} errori")
@@ -222,7 +296,9 @@ class UpdateProgressWindow(tk.Tk):
         else:
             log("Aggiornamento completato con successo.")
 
+        self.progress_bar["value"] = 100
         self.progress_label.config(text="Aggiornamento completato con successo!")
+        self._stats_var.set("")
         self._file_var.set("")
 
         if messagebox.askyesno("Riavvio", "Aggiornamento completato. Vuoi riavviare l'applicazione ora?"):
@@ -263,20 +339,27 @@ class UpdateProgressWindow(tk.Tk):
 
             log("_perform_update: inizio scansione file (os.walk)...")
 
-            # Crea la lista dei file da copiare
+            # Crea la lista dei file da copiare e calcola la dimensione totale
             file_list = []
+            total_bytes = 0
             for root, _, files in os.walk(self.source_path):
                 for name in files:
+                    try:
+                        total_bytes += os.path.getsize(os.path.join(root, name))
+                    except OSError:
+                        pass
                     file_list.append((root, name))
 
-            log(f"_perform_update: scansione completata, trovati {len(file_list)} file")
+            self._total_bytes = total_bytes
+            log(f"_perform_update: scansione completata, trovati {len(file_list)} file "
+                f"({self._fmt_bytes(total_bytes)})")
 
             if not file_list:
                 raise Exception("Nessun file trovato nella directory sorgente")
 
             log(f"Inizio copia di {len(file_list)} file da '{self.source_path}' a '{self.dest_path}'")
 
-            self.progress_bar["maximum"] = len(file_list)
+            self.progress_bar["maximum"] = 100
             self.progress_bar["value"] = 0
 
             # Avvia la copia in un thread separato per non bloccare la GUI

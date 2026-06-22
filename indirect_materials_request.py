@@ -751,6 +751,15 @@ class RequestHistoryWindow(tk.Toplevel):
             return
         if ok:
             self._load_history()
+        elif msg == 'scrap_not_confirmed':
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('ind_req_scrap_not_confirmed',
+                              'Impossibile preparare: le scorie/rientri collegati a questo '
+                              'materiale non sono stati confermati dal controllore.\n'
+                              'Usare "Convalida Quantità Dichiarate" per confermarli.'),
+                parent=self
+            )
         else:
             messagebox.showwarning(
                 self.lang.get('warning', 'Attenzione'),
@@ -795,6 +804,15 @@ class RequestHistoryWindow(tk.Toplevel):
             messagebox.showwarning(
                 self.lang.get('warning', 'Attenzione'),
                 self.lang.get('ind_req_is_cancelled', 'La richiesta è annullata.'),
+                parent=self
+            )
+        elif code == 'scrap_not_confirmed':
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('ind_req_scrap_not_confirmed',
+                              'Impossibile rilasciare: le scorie/rientri collegati a questo '
+                              'materiale non sono stati confermati dal controllore.\n'
+                              'Usare "Convalida Quantità Dichiarate" per confermarli.'),
                 parent=self
             )
         else:

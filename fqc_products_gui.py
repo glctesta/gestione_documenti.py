@@ -448,6 +448,8 @@ class FqcExecutionForm(_ClientProductMixin, tk.Toplevel):
         self._current_label_info: Optional[dict] = None
         self._labelcode_var = tk.StringVar()
         self._labelcode_validated = False
+        self._only_with_plan = tk.BooleanVar(value=False)   # filtro: solo codici con piano
+        self._labels_with_plan: set = set()                 # label prodotto con checklist attiva
 
         self.title(self.lang.get('fqc_exec_title', 'FQC Products — Checklist Execution'))
         self.configure(bg=_C_BG)
@@ -483,6 +485,19 @@ class FqcExecutionForm(_ClientProductMixin, tk.Toplevel):
         # Selection card
         _, sel = _card(body, self.lang.get('fqc_selection', 'PRODUCT SELECTION'))
         self._build_cp_grid(sel)
+
+        # Filtro: mostra solo i codici prodotto con un piano di verifica caricato
+        plan_row = tk.Frame(sel, bg=_C_CARD)
+        plan_row.pack(fill=tk.X, pady=(4, 0))
+        tk.Checkbutton(
+            plan_row,
+            text=self.lang.get('fqc_only_with_plan',
+                               'Solo codici con piano di verifica caricato'),
+            variable=self._only_with_plan,
+            command=self._on_plan_filter_toggle,
+            bg=_C_CARD, fg=_C_TEXT, activebackground=_C_CARD,
+            selectcolor=_C_CARD, font=('Segoe UI', 9)
+        ).pack(side=tk.LEFT)
 
         label_row = tk.Frame(sel, bg=_C_CARD)
         label_row.pack(fill=tk.X, pady=(8, 0))
@@ -613,7 +628,21 @@ class FqcExecutionForm(_ClientProductMixin, tk.Toplevel):
                 self._product_map[code] = pid
                 self._all_products.append(code)
 
-            self._product_combo['values'] = self._all_products
+            # Prodotti che hanno un piano di verifica (checklist) attivo
+            try:
+                cur.execute(
+                    "SELECT DISTINCT IdProduct "
+                    "FROM [Traceability_RS].[chk].[ProductCheckLists] WHERE DateOut IS NULL"
+                )
+                plan_ids = {r[0] for r in cur.fetchall()}
+            except Exception as exc_plan:
+                logger.error(f"FqcExecutionForm plan ids: {exc_plan}")
+                plan_ids = set()
+            self._labels_with_plan = {
+                lbl for lbl in self._all_products if self._product_map.get(lbl) in plan_ids
+            }
+
+            self._product_combo['values'] = self._plan_base_list()
             self._product_combo['state']  = 'normal'
             self._product_combo.set('')
 
@@ -632,9 +661,21 @@ class FqcExecutionForm(_ClientProductMixin, tk.Toplevel):
     def _on_product_filter(self, event=None):
         """Override: search ignores ★ prefix."""
         typed = self._product_combo.get().upper().lstrip('\u2605').strip()
+        base = self._plan_base_list()
         self._product_combo['values'] = (
-            [p for p in self._all_products if typed in p.upper()] or self._all_products
+            [p for p in base if typed in p.upper()] or base
         )
+
+    def _plan_base_list(self):
+        """Lista prodotti base, ridotta ai soli con piano di verifica se il filtro e' attivo."""
+        if getattr(self, '_only_with_plan', None) and self._only_with_plan.get():
+            return [p for p in self._all_products if p in self._labels_with_plan]
+        return list(self._all_products)
+
+    def _on_plan_filter_toggle(self):
+        """Toggle del checkbox 'solo codici con piano di verifica'."""
+        self._product_combo.set('')
+        self._product_combo['values'] = self._plan_base_list()
 
     def _on_product_selected(self, event=None):
         raw = self._product_combo.get()
@@ -1014,10 +1055,28 @@ class FqcExecutionForm(_ClientProductMixin, tk.Toplevel):
                 self.lang.get('success', 'Success'),
                 self.lang.get('fqc_saved', 'Checklist results saved successfully.'),
                 parent=self)
-            self.destroy()
+            # La form NON si chiude: si azzera per la verifica successiva
+            self._reset_after_save()
         except Exception as exc:
             logger.error(f"FqcExecutionForm _on_save: {exc}", exc_info=True)
             messagebox.showerror('Error', str(exc), parent=self)
+
+    def _reset_after_save(self):
+        """Dopo un salvataggio riuscito azzera LabelCode ed esiti, mantenendo
+        cliente/prodotto/checklist selezionati, pronta per la scheda successiva."""
+        try:
+            self._reset_labelcode_validation(clear_entry=True)
+            for it in self._items:
+                if 'ok_var' in it:
+                    it['ok_var'].set(-1)
+                if 'note_var' in it:
+                    it['note_var'].set('')
+            if hasattr(self, '_save_btn'):
+                self._save_btn.config(state='disabled')
+            if hasattr(self, '_labelcode_entry'):
+                self._labelcode_entry.focus_set()
+        except Exception as exc:
+            logger.error(f"FqcExecutionForm _reset_after_save: {exc}", exc_info=True)
 
 
 # ╔════════════════════════════════════════════════════════════════════════════╗

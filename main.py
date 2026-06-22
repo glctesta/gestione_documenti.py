@@ -309,7 +309,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.2.0'  # Versione aggiornata
+APP_VERSION = '2.4.2.2.3'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -13196,44 +13196,51 @@ class App(tk.Tk):
         destination = os.path.dirname(sys.executable)
         exe_name = os.path.basename(sys.executable)
 
-        # --- Percorso updater: prima cerca la versione onedir (consigliata), poi la onefile ---
-        updater_path = os.path.join(destination, "_internal", "updater", "updater.exe")
-        if not os.path.exists(updater_path):
-            # fallback al vecchio percorso onefile
-            updater_path = os.path.join(destination, "_internal", "updater.exe")
+        # --- Percorsi updater (onedir consigliata, onefile legacy) ---
+        dest_updater_onedir   = os.path.join(destination, "_internal", "updater", "updater.exe")
+        dest_updater_legacy   = os.path.join(destination, "_internal", "updater.exe")
+        source_updater_dir    = os.path.join(source, "_internal", "updater")
+        source_updater_onedir = os.path.join(source_updater_dir, "updater.exe")
+        source_updater_legacy = os.path.join(source, "_internal", "updater.exe")
 
-        if not os.path.exists(updater_path):
-            # Tenta di copiare updater dal percorso sorgente (server)
-            source_updater_onedir = os.path.join(source, "_internal", "updater", "updater.exe")
-            source_updater_legacy = os.path.join(source, "_internal", "updater.exe")
-            dest_updater_onedir  = os.path.join(destination, "_internal", "updater", "updater.exe")
-            dest_updater_legacy  = os.path.join(destination, "_internal", "updater.exe")
-
-            logger.info(f"_trigger_update: updater non trovato in locale, provo copia dal sorgente")
-            try:
-                if os.path.exists(source_updater_onedir):
-                    os.makedirs(os.path.dirname(dest_updater_onedir), exist_ok=True)
-                    shutil.copytree(
-                        os.path.join(source, "_internal", "updater"),
-                        os.path.join(destination, "_internal", "updater"),
-                        dirs_exist_ok=True
-                    )
-                    updater_path = dest_updater_onedir
-                    logger.info(f"_trigger_update: updater onedir copiato da sorgente")
-                elif os.path.exists(source_updater_legacy):
-                    shutil.copy2(source_updater_legacy, dest_updater_legacy)
-                    updater_path = dest_updater_legacy
-                    logger.info(f"_trigger_update: updater.exe (legacy) copiato da sorgente")
-                else:
-                    raise FileNotFoundError(f"updater non trovato neanche in {source}")
-            except Exception as copy_err:
-                logger.error(f"_trigger_update: impossibile ottenere updater: {copy_err}")
-                messagebox.showerror(
-                    self.lang.get('error', 'Errore'),
-                    f"File updater non trovato!\n\nImpossibile aggiornare.",
-                    parent=self
+        # IMPORTANTE: rinfresca SEMPRE l'updater dal sorgente prima di lanciarlo.
+        # In questo momento l'updater NON e' in esecuzione, quindi possiamo
+        # sovrascriverlo (su Windows un .exe in esecuzione non puo' sovrascrivere se
+        # stesso: per questo l'updater si auto-preserva durante la copia). Cosi' le
+        # modifiche all'updater (es. nuova UI di copia) raggiungono gli utenti.
+        updater_path = None
+        try:
+            if os.path.isdir(source_updater_dir) and os.path.exists(source_updater_onedir):
+                shutil.copytree(
+                    source_updater_dir,
+                    os.path.join(destination, "_internal", "updater"),
+                    dirs_exist_ok=True
                 )
-                return False
+                updater_path = dest_updater_onedir
+                logger.info("_trigger_update: updater onedir aggiornato dal sorgente")
+            elif os.path.exists(source_updater_legacy):
+                os.makedirs(os.path.dirname(dest_updater_legacy), exist_ok=True)
+                shutil.copy2(source_updater_legacy, dest_updater_legacy)
+                updater_path = dest_updater_legacy
+                logger.info("_trigger_update: updater.exe (legacy) aggiornato dal sorgente")
+        except Exception as refresh_err:
+            logger.warning(f"_trigger_update: refresh updater dal sorgente fallito: {refresh_err}")
+
+        # Se il refresh non e' riuscito, usa l'updater locale esistente
+        if not updater_path or not os.path.exists(updater_path):
+            if os.path.exists(dest_updater_onedir):
+                updater_path = dest_updater_onedir
+            elif os.path.exists(dest_updater_legacy):
+                updater_path = dest_updater_legacy
+
+        if not updater_path or not os.path.exists(updater_path):
+            logger.error(f"_trigger_update: updater non trovato (ne' locale ne' sorgente {source})")
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                "File updater non trovato!\n\nImpossibile aggiornare.",
+                parent=self
+            )
+            return False
 
         # ── Verifica integrità file sorgente ──────────────────────────────────
         file_ready, reason = self._is_source_file_ready(source, exe_name)
@@ -16403,6 +16410,14 @@ class App(tk.Tk):
             label=self.lang.get('submenu_confirm_materials', 'Conferma Materiali'),
             command=self._open_confirm_indirect_materials
         )
+        indirect_materials_menu.add_command(
+            label=self.lang.get('submenu_manage_scrap_returns', 'Gestione Scorie / Rientri'),
+            command=self.open_scrap_returns_with_login
+        )
+        indirect_materials_menu.add_command(
+            label=self.lang.get('submenu_validate_scrap', '✔ Convalida Quantità Dichiarate'),
+            command=self.open_scrap_returns_with_login
+        )
         indirect_materials_menu.add_separator()
         indirect_materials_menu.add_command(
             label=self.lang.get('submenu_check_stock', '📦 Verifica Giacenze'),
@@ -17003,8 +17018,7 @@ class App(tk.Tk):
                                   command=self.open_add_maintenance_tasks_with_login)
         tasks_submenu.add_command(label=self.lang.get('submenu_manage_task_cycles', "Gestione Voci Task"),
                                   command=self.open_task_cycles_manager_with_login)
-        tasks_submenu.add_command(label=self.lang.get('submenu_manage_scrap_returns', "Gestione scorie"),
-                                  command=self.open_scrap_returns_with_login)
+        # NB: "Gestione scorie" spostata nel menu Materiali Indiretti (Operazioni > Materiali)
         tasks_submenu.add_command(label=self.lang.get('submenu_assign_responsibles', "Assegna Responsabili"),
                                   command=self.open_assign_responsibles_with_login)
 
@@ -19390,6 +19404,7 @@ class App(tk.Tk):
 
     def _open_change_password(self):
         """Apre la finestra per il cambio password"""
+        logger.info("Aperura Menu Cambio password")
         import change_password_gui
         change_password_gui.open_change_password_window(
             self, self.db, self.lang, user_id=None, force_change=False
@@ -19723,18 +19738,20 @@ class App(tk.Tk):
             messagebox.showerror(self.lang.get('error', 'Errore'), f"Impossibile aprire le statistiche:\n{e}", parent=self)
 
     def _open_confirm_indirect_materials(self):
-        """Apre lo storico richieste materiali / conferma."""
-        try:
-            from indirect_materials_request import RequestHistoryWindow
-            user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
-            RequestHistoryWindow(self, self.db, self.lang, user_name)
-        except Exception as e:
-            logger.error(f"Errore apertura Conferma Materiali: {e}", exc_info=True)
-            messagebox.showerror(
-                self.lang.get('error', 'Errore'),
-                f"Impossibile aprire Conferma Materiali:\n{e}",
-                parent=self
-            )
+        """Apre lo storico richieste materiali / conferma (con autorizzazione 'rilascia_materiali')."""
+        def authorized_action():
+            try:
+                from indirect_materials_request import RequestHistoryWindow
+                user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
+                RequestHistoryWindow(self, self.db, self.lang, user_name)
+            except Exception as e:
+                logger.error(f"Errore apertura Conferma Materiali: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire Conferma Materiali:\n{e}",
+                    parent=self
+                )
+        self._execute_authorized_action('rilascia_materiali', authorized_action)
 
     def _open_indirect_materials_consumption(self):
         """Apre l'analisi consumi & budget materiali indiretti."""

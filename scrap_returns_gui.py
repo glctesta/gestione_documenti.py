@@ -30,7 +30,7 @@ class ScrapReturnsWindow(tk.Toplevel):
         self._preselect = preselect_must_code_id
 
         self.title(lang.get('scrap_title', 'Gestione Scorie / Rientri Materiali'))
-        self.geometry("680x520")
+        self.geometry("720x620")
         self.resizable(True, True)
         self.transient(master)
         self.grab_set()
@@ -84,20 +84,37 @@ class ScrapReturnsWindow(tk.Toplevel):
         # Storico registrazioni del materiale selezionato
         hist = ttk.LabelFrame(main, text=self.lang.get('scrap_history', 'Registrazioni'), padding=8)
         hist.pack(fill="both", expand=True, pady=(12, 0))
-        cols = ('data', 'peso', 'utente', 'stato')
+        cols = ('rmid', 'data', 'peso', 'utente', 'stato', 'confermato')
         self.tree = ttk.Treeview(hist, columns=cols, show='headings', height=8)
+        self.tree.heading('rmid', text='')
         self.tree.heading('data', text=self.lang.get('scrap_col_date', 'Data'))
-        self.tree.heading('peso', text=self.lang.get('scrap_col_weight', 'Peso (kg)'))
+        self.tree.heading('peso', text=self.lang.get('scrap_col_weight', 'Peso dich. (kg)'))
         self.tree.heading('utente', text=self.lang.get('scrap_col_user', 'Utente'))
         self.tree.heading('stato', text=self.lang.get('scrap_col_status', 'Stato'))
-        self.tree.column('data', width=110)
-        self.tree.column('peso', width=90, anchor="e")
-        self.tree.column('utente', width=160)
-        self.tree.column('stato', width=140, anchor="center")
+        self.tree.heading('confermato', text=self.lang.get('scrap_col_confirmed', 'Convalida'))
+        self.tree.column('rmid', width=0, stretch=False)
+        self.tree.column('data', width=95)
+        self.tree.column('peso', width=95, anchor="e")
+        self.tree.column('utente', width=130)
+        self.tree.column('stato', width=120, anchor="center")
+        self.tree.column('confermato', width=150, anchor="center")
         sb = ttk.Scrollbar(hist, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
+
+        # Pannello convalida (controllore): pesa reale + conferma
+        valid = ttk.LabelFrame(main, text=self.lang.get('scrap_validate_panel',
+                                                        'Convalida quantità dichiarata (controllo)'),
+                               padding=8)
+        valid.pack(fill="x", pady=(8, 0))
+        ttk.Label(valid, text=self.lang.get('scrap_confirmed_weight', 'Peso rilevato (kg):')).pack(
+            side="left", padx=(0, 6))
+        self.confirm_weight_var = tk.StringVar(value="")
+        ttk.Entry(valid, textvariable=self.confirm_weight_var, width=12).pack(side="left", padx=(0, 12))
+        ttk.Button(valid, text=self.lang.get('scrap_btn_validate', '✔ Convalida selezionata'),
+                   command=self._validate_selected).pack(side="left")
+        self.tree.bind('<<TreeviewSelect>>', self._on_history_select)
 
     def _make_date_entry(self, parent):
         try:
@@ -179,17 +196,106 @@ class ScrapReturnsWindow(tk.Toplevel):
     def _load_history(self, must_code_id):
         self.tree.delete(*self.tree.get_children())
         rows = self._fetch(
-            "SELECT DateReturn, ReturWeight, UserRetur, RichiestaId "
+            "SELECT ReturnMaterialId, DateReturn, ReturWeight, UserRetur, RichiestaId, "
+            "       ComfirmedBY, ConfirmedWeight, IsOk "
             "FROM dbo.ReturnMaterials WHERE MateriaId = ? AND DateOut IS NULL "
             "ORDER BY DateReturn DESC, ReturnMaterialId DESC",
             (must_code_id,)
         ) or []
         consumed = self.lang.get('scrap_status_consumed', 'Consumata (rich. {0})')
         available = self.lang.get('scrap_status_available', 'Disponibile')
+        to_confirm = self.lang.get('scrap_to_confirm', 'Da confermare')
+        ok_txt = self.lang.get('scrap_confirmed_ok', '✔ OK ({0} kg)')
+        ko_txt = self.lang.get('scrap_confirmed_ko', 'X NON conforme ({0} kg)')
         for r in rows:
-            d = r[0].strftime('%d/%m/%Y') if r[0] else ''
-            stato = consumed.format(r[3]) if r[3] is not None else available
-            self.tree.insert('', 'end', values=(d, f"{float(r[1] or 0):.1f}", r[2] or '', stato))
+            rmid = r[0]
+            d = r[1].strftime('%d/%m/%Y') if r[1] else ''
+            stato = consumed.format(r[4]) if r[4] is not None else available
+            confirmed_by = r[5]
+            confirmed_w = r[6]
+            is_ok = r[7]
+            if confirmed_by is None and is_ok is None:
+                conferma = to_confirm
+            else:
+                cw = f"{float(confirmed_w or 0):.1f}"
+                conferma = ok_txt.format(cw) if is_ok else ko_txt.format(cw)
+            self.tree.insert('', 'end', values=(
+                rmid, d, f"{float(r[2] or 0):.1f}", r[3] or '', stato, conferma))
+
+    def _on_history_select(self, event=None):
+        """Pre-compila il peso rilevato con il peso dichiarato della riga selezionata."""
+        sel = self.tree.selection()
+        if not sel:
+            return
+        vals = self.tree.item(sel[0], 'values')
+        # vals: (rmid, data, peso_dich, utente, stato, conferma)
+        if not self.confirm_weight_var.get().strip():
+            self.confirm_weight_var.set(str(vals[2]))
+
+    def _validate_selected(self):
+        """Convalida la riga selezionata: registra peso rilevato, ComfirmedBY e IsOk."""
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning(self.lang.get('warning', 'Attenzione'),
+                                   self.lang.get('scrap_select_row', 'Seleziona una registrazione da convalidare.'),
+                                   parent=self)
+            return
+        vals = self.tree.item(sel[0], 'values')
+        rmid = vals[0]
+        try:
+            declared = round(float(str(vals[2]).replace(',', '.')), 1)
+        except ValueError:
+            declared = None
+        try:
+            confirmed = round(float(self.confirm_weight_var.get().replace(',', '.')), 1)
+        except ValueError:
+            messagebox.showerror(self.lang.get('error', 'Errore'),
+                                 self.lang.get('scrap_invalid_weight', 'Peso non valido.'), parent=self)
+            return
+        if confirmed < 0:
+            messagebox.showerror(self.lang.get('error', 'Errore'),
+                                 self.lang.get('scrap_weight_positive', 'Il peso deve essere maggiore di 0.'),
+                                 parent=self)
+            return
+
+        is_ok = 1 if (declared is not None and abs(confirmed - declared) < 0.05) else 0
+        if not is_ok:
+            if not messagebox.askyesno(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('scrap_mismatch_confirm',
+                              'Il peso rilevato ({0} kg) NON corrisponde al dichiarato ({1} kg).\n'
+                              'Registrare comunque come NON conforme?').format(
+                              f"{confirmed:.1f}", f"{declared:.1f}" if declared is not None else "?"),
+                parent=self):
+                return
+
+        try:
+            self.db._ensure_connection()
+            with self.db._lock:
+                self.db.cursor.execute(
+                    "UPDATE dbo.ReturnMaterials "
+                    "SET ConfirmedWeight = ?, ComfirmedBY = ?, IsOk = ? "
+                    "WHERE ReturnMaterialId = ?",
+                    (confirmed, self.user_name, is_ok, rmid)
+                )
+                self.db.conn.commit()
+            logger.info("Scoria convalidata: ReturnMaterialId=%s peso_rilevato=%.1f IsOk=%s da %s",
+                        rmid, confirmed, is_ok, self.user_name)
+            messagebox.showinfo(self.lang.get('info', 'Info'),
+                                self.lang.get('scrap_validated_ok', 'Convalida registrata.'), parent=self)
+            self.confirm_weight_var.set("")
+            m = self._current_material()
+            if m:
+                self._load_history(m['must_code_id'])
+        except Exception as e:
+            try:
+                self.db.conn.rollback()
+            except Exception:
+                pass
+            logger.error("Errore convalida scoria: %s", e, exc_info=True)
+            messagebox.showerror(self.lang.get('error', 'Errore'),
+                                 f"{self.lang.get('scrap_save_error', 'Errore salvataggio')}:\n{e}",
+                                 parent=self)
 
     # ------------------------------------------------------------------ #
     def _save(self):
