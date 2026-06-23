@@ -309,11 +309,11 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.2.3'  # Versione aggiornata
+APP_VERSION = '2.4.2.2.5'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
-# # --- CONFIGURAZIONE DATABASE ---
+# # --- CONFIGURAZIONE DATABASE ---u
 # Carica le credenziali dal sistema criptato
 from config_manager import ConfigManager
 
@@ -16294,6 +16294,10 @@ class App(tk.Tk):
             label=self.lang.get('submenu_shipment_confirm', '✅ Conferma Shipping'),
             command=self._open_shipment_confirmation
         )
+        self.shipments_submenu.add_command(
+            label=self.lang.get('submenu_account_managers', '👤 Account Manager Clienti'),
+            command=self._open_client_account_managers
+        )
 
         # Comandi del menu NPI
 
@@ -19637,6 +19641,26 @@ class App(tk.Tk):
                 open_shipment_confirmation_window(self, self.db, self.lang, user_name)
             except Exception as e:
                 logger.error(f"Errore apertura conferma spedizioni: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire la finestra:\n{e}",
+                    parent=self
+                )
+
+        self._execute_authorized_action(
+            menu_translation_key='conferma_spedizioni',
+            action_callback=authorized_action
+        )
+
+    def _open_client_account_managers(self):
+        """Apre la gestione Account Manager clienti / preferenze email spedizioni (con autorizzazione)."""
+        def authorized_action():
+            try:
+                import client_account_managers_gui
+                user_name = getattr(self, 'last_authenticated_user_name', 'Unknown')
+                client_account_managers_gui.open_client_account_managers(self, self.db, self.lang, user_name)
+            except Exception as e:
+                logger.error(f"Errore apertura Account Manager clienti: {e}", exc_info=True)
                 messagebox.showerror(
                     self.lang.get('error', 'Errore'),
                     f"Impossibile aprire la finestra:\n{e}",

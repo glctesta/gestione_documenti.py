@@ -750,11 +750,75 @@ class ShipmentConfirmationWindow(tk.Toplevel):
             })
         return rows
 
+    def _gather_recipients(self, shipment_id):
+        """Ritorna (am_emails, cc_emails) per la spedizione in base ai clienti finali
+        coinvolti e ai toggle per cliente (dbo.ClientShipmentEmailPrefs):
+          - TO: email degli Account Manager dei clienti finali con SendToAccountManager=1;
+          - CC: settings 'Sys_email_<FinalClientName>' dei clienti finali con SendToCc=1.
+        Riga prefs assente => entrambi attivi (default)."""
+        def _dedupe_ci(items):
+            seen, out = set(), []
+            for x in items:
+                x = (x or '').strip()
+                if x and x.lower() not in seen:
+                    seen.add(x.lower())
+                    out.append(x)
+            return out
+
+        am, cc = [], []
+        try:
+            cur = self.db.conn.cursor()
+            cur.execute(
+                "SELECT DISTINCT fc.IDFinalClient, fc.FinalClientName "
+                "FROM [Traceability_RS].[dyn].[ShipmentPallets] sp "
+                "JOIN [Traceability_RS].[dyn].[DynamicProductionOrders] dpo "
+                "  ON dpo.DynamicProductionOrderID = sp.DynamicProductionOrderID "
+                "JOIN [Traceability_RS].[dbo].[Orders] o ON o.IDOrder = dpo.IdOrder "
+                "JOIN [Traceability_RS].[dbo].[Products] p ON p.IDProduct = o.IDProduct "
+                "JOIN [Traceability_RS].[dbo].[FinalClients] fc ON fc.IDFinalClient = p.IdFinalClient "
+                "WHERE sp.ShipmentId = ?", (shipment_id,))
+            clients = [(r[0], r[1]) for r in cur.fetchall()]
+            for idfc, name in clients:
+                cur.execute("SELECT SendToAccountManager, SendToCc "
+                            "FROM [Traceability_RS].[dbo].[ClientShipmentEmailPrefs] WHERE IDFinalClient = ?",
+                            (idfc,))
+                pr = cur.fetchone()
+                send_am = True if pr is None else bool(pr[0])
+                send_cc = True if pr is None else bool(pr[1])
+                if send_am:
+                    cur.execute(
+                        "SELECT cam.WorkEmail FROM [Traceability_RS].[dbo].[ClientAccountLists] cal "
+                        "JOIN [Traceability_RS].[dbo].[ClientAccountManagers] cam "
+                        "  ON cam.ClientAccountManagerId = cal.ClientAccountManagerId "
+                        "WHERE cal.IDFinalClient = ? AND cal.Dateout IS NULL AND cam.Dateout IS NULL "
+                        "  AND cam.WorkEmail IS NOT NULL", (idfc,))
+                    am.extend([r[0] for r in cur.fetchall()])
+                if send_cc and name:
+                    cur.execute("SELECT Value FROM [Traceability_RS].[dbo].[Settings] WHERE Atribute = ?",
+                                (f"Sys_email_{name}",))
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        cc.extend(str(row[0]).replace(',', ';').split(';'))
+            cur.close()
+        except Exception as e:
+            logger.error(f"_gather_recipients spedizione {shipment_id}: {e}", exc_info=True)
+        return _dedupe_ci(am), _dedupe_ci(cc)
+
     def _send_shipment_email(self, shipment_id, ship_date, pallets, is_correction, attachments):
         try:
-            recipients = utils.get_email_recipients(self.db.conn, "Sys_shipment_email")
+            base = utils.get_email_recipients(self.db.conn, "Sys_shipment_email") or []
+            am_emails, cc_emails = self._gather_recipients(shipment_id)
+            # TO = lista globale spedizioni + account manager; dedup case-insensitive
+            recipients, seen = [], set()
+            for r in list(base) + am_emails:
+                r = (r or '').strip()
+                if r and r.lower() not in seen:
+                    seen.add(r.lower())
+                    recipients.append(r)
+            # CC = Sys_email_<cliente>, escludendo chi e' gia' in TO
+            cc_emails = [c for c in cc_emails if c.lower() not in seen]
             if not recipients:
-                logger.warning("Nessun destinatario 'Sys_shipment_email' - email non inviata")
+                logger.warning("Nessun destinatario (Sys_shipment_email + account manager) - email non inviata")
                 return
 
             ship_date_str = ship_date.strftime("%d/%m/%Y") if hasattr(ship_date, "strftime") else str(ship_date)
@@ -804,8 +868,9 @@ tr:nth-child(even){{background:#f8f8f8;}}
 Email generata automaticamente da TraceabilityRS - non rispondere.</p>
 </body></html>"""
 
-            utils.send_email(recipients, subject, body, is_html=True, attachments=attachments)
-            logger.info(f"Email spedizione #{shipment_id} inviata a {recipients} "
+            utils.send_email(recipients, subject, body, is_html=True,
+                             attachments=attachments, cc_emails=cc_emails or None)
+            logger.info(f"Email spedizione #{shipment_id} inviata - TO={recipients} CC={cc_emails} "
                         f"(correzione={is_correction})")
         except Exception as e:
             logger.error(f"Errore invio email spedizione: {e}", exc_info=True)

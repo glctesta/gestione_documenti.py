@@ -456,31 +456,9 @@ def _send_ip_change_notification(db, change_type, program_name, ip, port, path='
         try:
             from email_connector import EmailSender
 
-            # 1. Query destinatari
-            cursor = db.conn.cursor()
-            cursor.execute("""
-                SELECT e.employeename + ' ' + e.employeesurname AS Employee,
-                       aa.WorkEmail
-                FROM [Employee].[sks].[AppUsers] A
-                INNER JOIN Employee.dbo.EmployeeHireHistory H
-                    ON a.employeeid = h.employeeHireHistoryId
-                    AND h.EndWorkDate IS NULL AND h.EmployeeRId = 2
-                INNER JOIN Employee.dbo.Employees e
-                    ON e.employeeid = h.employeeid AND a.IsActive = 1
-                INNER JOIN Employee.dbo.EmployeeAddress AA
-                    ON AA.EmployeeId = e.employeeid AND aa.DateOut IS NULL
-                WHERE LEN(ISNULL(aa.WorkEmail, '')) > 0
-            """)
-            rows = cursor.fetchall()
-            cursor.close()
-
-            if not rows:
-                logger.warning("IP change notification: nessun destinatario trovato")
-                return
-
-            emails = [r.WorkEmail.strip() for r in rows if r.WorkEmail and r.WorkEmail.strip()]
-            if not emails:
-                return
+            # 1. Destinatario FISSO: solo la lista di distribuzione di Ghiroda.
+            #    Per questa notifica non viene prelevato alcun altro indirizzo.
+            emails = ["All-Ghiroda@Vandewiele.com"]
 
             # 2. Costruisci contenuto email
             change_label = {
