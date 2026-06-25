@@ -309,7 +309,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.2.8'  # Versione aggiornata
+APP_VERSION = '2.4.2.2.9'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -14138,6 +14138,62 @@ class App(tk.Tk):
         import fqc_products_report_gui
         fqc_products_report_gui.open_fqc_products_report(self, self.db, self.lang)
 
+    # ── Touch-up ──────────────────────────────────────────────────────────────
+    def _open_touchup_operator(self):
+        """Menu Touch-up 1 - Problemi rivelati (auth 'operatore_touchup')."""
+        def authorized_action():
+            try:
+                import touchup_operator_gui
+                un = getattr(self, 'last_authenticated_user_name', 'Unknown')
+                touchup_operator_gui.open_touchup_operator(self, self.db, self.lang, un)
+            except Exception as e:
+                logger.error(f"Errore apertura Touch-up Problemi: {e}", exc_info=True)
+                messagebox.showerror(self.lang.get('error', 'Errore'), str(e), parent=self)
+        self._execute_authorized_action('operatore_touchup', authorized_action)
+
+    def _open_touchup_response(self):
+        """Menu Touch-up 2 - Soluzioni adottate (auth 'tecnico_risponde_touchup')."""
+        def authorized_action():
+            try:
+                import touchup_response_gui
+                un = getattr(self, 'last_authenticated_user_name', 'Unknown')
+                touchup_response_gui.open_touchup_response(self, self.db, self.lang, un)
+            except Exception as e:
+                logger.error(f"Errore apertura Touch-up Soluzioni: {e}", exc_info=True)
+                messagebox.showerror(self.lang.get('error', 'Errore'), str(e), parent=self)
+        self._execute_authorized_action('tecnico_risponde_touchup', authorized_action)
+
+    def _open_touchup_reports(self):
+        """Menu Touch-up 3 - Rapporti (senza login, in arrivo)."""
+        messagebox.showinfo(
+            self.lang.get('info', 'Info'),
+            self.lang.get('touchup_reports_soon', 'Sezione Rapporti Touch-up in arrivo.'),
+            parent=self)
+
+    def _open_touchup_workstation(self):
+        """Menu Touch-up 4 - Setup workstation (auth 'attiva_workstation_tecnici')."""
+        def authorized_action():
+            try:
+                import touchup_workstation_config
+                un = getattr(self, 'last_authenticated_user_name', 'Unknown')
+                touchup_workstation_config.open_touchup_workstation_config(self, self.db, self.lang, un)
+            except Exception as e:
+                logger.error(f"Errore apertura Touch-up Setup WS: {e}", exc_info=True)
+                messagebox.showerror(self.lang.get('error', 'Errore'), str(e), parent=self)
+        self._execute_authorized_action('attiva_workstation_tecnici', authorized_action)
+
+    def _open_touchup_setup(self):
+        """Menu Touch-up 5 - Gestione (auth 'set_up_touchup')."""
+        def authorized_action():
+            try:
+                import touchup_setup_gui
+                un = getattr(self, 'last_authenticated_user_name', 'Unknown')
+                touchup_setup_gui.open_touchup_setup(self, self.db, self.lang, un)
+            except Exception as e:
+                logger.error(f"Errore apertura Touch-up Gestione: {e}", exc_info=True)
+                messagebox.showerror(self.lang.get('error', 'Errore'), str(e), parent=self)
+        self._execute_authorized_action('set_up_touchup', authorized_action)
+
     def _open_label_config_placeholder(self):
         """Apre la finestra di configurazione etichetta."""
         def action():
@@ -16625,6 +16681,34 @@ class App(tk.Tk):
                 '_open_fqc_products_report',
                 self.lang.get('menu_fqc_report', '\U0001f4ca Report Schede Validate')
             )
+        )
+
+        # ── Touch-up ──────────────────────────────────────────────────────────
+        self.declarations_submenu.add_separator()
+        touchup_submenu = tk.Menu(self.declarations_submenu, tearoff=0)
+        self.declarations_submenu.add_cascade(
+            label=self.lang.get('menu_touchup', 'Touch-up'),
+            menu=touchup_submenu
+        )
+        touchup_submenu.add_command(
+            label=self.lang.get('menu_touchup_problems', 'Problemi rivelati'),
+            command=self._open_touchup_operator
+        )
+        touchup_submenu.add_command(
+            label=self.lang.get('menu_touchup_responses', 'Soluzioni adottate'),
+            command=self._open_touchup_response
+        )
+        touchup_submenu.add_command(
+            label=self.lang.get('menu_touchup_reports', 'Rapporti'),
+            command=self._open_touchup_reports
+        )
+        touchup_submenu.add_command(
+            label=self.lang.get('menu_touchup_workstation', 'Setup workstation'),
+            command=self._open_touchup_workstation
+        )
+        touchup_submenu.add_command(
+            label=self.lang.get('menu_touchup_setup', 'Gestione'),
+            command=self._open_touchup_setup
         )
 
         # Cambio Turno
@@ -20076,6 +20160,42 @@ class App(tk.Tk):
         except Exception as e:
             logger.error(f"Errore avvio monitor spedizioni urgenti: {e}", exc_info=True)
             self._shipment_monitor = None
+
+        # Monitor Touch-up
+        try:
+            from touchup_workstation_config import is_touchup_workstation
+            from touchup_monitor import TouchUpMonitor
+            if is_touchup_workstation():
+                self._touchup_monitor = TouchUpMonitor(self, self.db, self.lang)
+                logger.info("TouchUpMonitor avviato (questo PC è postazione Touch-up)")
+            else:
+                self._touchup_monitor = None
+        except Exception as e:
+            logger.error(f"Errore avvio monitor Touch-up: {e}", exc_info=True)
+            self._touchup_monitor = None
+
+        # Scheduler escalation Touch-up per NO-RISPOSTA (claim atomico: gira su tutti i client)
+        try:
+            self._touchup_noresponse_running = True
+            self.after(120_000, self._touchup_noresponse_tick)
+        except Exception as e:
+            logger.error(f"Errore avvio scheduler escalation Touch-up: {e}", exc_info=True)
+
+    def _touchup_noresponse_tick(self):
+        """Controlla periodicamente le segnalazioni Touch-up senza risposta ed escala al responsabile."""
+        if getattr(self, '_closing', False) or not getattr(self, '_touchup_noresponse_running', False):
+            return
+        def _work():
+            try:
+                import touchup_logic
+                touchup_logic.escalate_unanswered_reports(self.db)
+            except Exception as e:
+                logger.error(f"Touch-up escalation no-risposta tick: {e}", exc_info=True)
+        try:
+            threading.Thread(target=_work, daemon=True).start()
+        finally:
+            if not getattr(self, '_closing', False) and getattr(self, '_touchup_noresponse_running', False):
+                self.after(300_000, self._touchup_noresponse_tick)  # ogni 5 minuti
 
     def _on_closing(self, force_quit=False):
         """Gestisce la chiusura dell'applicazione."""
