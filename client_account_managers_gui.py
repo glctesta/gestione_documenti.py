@@ -88,6 +88,14 @@ class ClientAccountManagersWindow(tk.Toplevel):
         self.fc_tree.pack(fill=tk.Y, expand=True)
         self.fc_tree.bind('<<TreeviewSelect>>', self._on_client_select)
 
+        # Pulsanti gestione clienti finali (aggiungere clienti mancanti + ricarica)
+        fc_btns = ttk.Frame(left)
+        fc_btns.pack(fill=tk.X, pady=(6, 0))
+        ttk.Button(fc_btns, text=self.lang.get('cam_manage_clients', '➕ Aggiungi/Gestisci Clienti'),
+                   command=self._open_manage_customers).pack(side=tk.LEFT, padx=2)
+        ttk.Button(fc_btns, text=self.lang.get('btn_refresh', '🔄 Aggiorna'),
+                   command=self._load_final_clients).pack(side=tk.LEFT, padx=2)
+
         # ── Destra ──
         right = ttk.Frame(main)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -180,6 +188,27 @@ class ClientAccountManagersWindow(tk.Toplevel):
             cur.close()
         except Exception as e:
             logger.error(f"CAM _load_final_clients: {e}", exc_info=True)
+            messagebox.showerror(self.lang.get('error_title', 'Errore'), str(e), parent=self)
+
+    def _open_manage_customers(self):
+        """Apre la gestione Clienti Finali (con login) per aggiungere clienti mancanti.
+        Rilascia il grab modale di questa finestra cosi' la form clienti resta utilizzabile;
+        al ritorno usare 'Aggiorna' per ricaricare la lista."""
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        opener = getattr(self.master, 'open_manage_customers_with_login', None)
+        if not callable(opener):
+            messagebox.showwarning(self.lang.get('warning_title', 'Attenzione'),
+                                   self.lang.get('cam_no_manage_customers',
+                                                 'Funzione gestione clienti non disponibile.'),
+                                   parent=self)
+            return
+        try:
+            opener()
+        except Exception as e:
+            logger.error(f"CAM _open_manage_customers: {e}", exc_info=True)
             messagebox.showerror(self.lang.get('error_title', 'Errore'), str(e), parent=self)
 
     def _on_client_select(self, _event=None):

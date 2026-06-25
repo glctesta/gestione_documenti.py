@@ -641,12 +641,51 @@ class RequestHistoryWindow(tk.Toplevel):
             command=self._cancel_request
         ).pack(side="right", padx=5)
 
+        # --- Filtri ---
+        from datetime import date, timedelta
+        try:
+            from tkcalendar import DateEntry
+            self._has_dateentry = True
+        except Exception:
+            DateEntry = None
+            self._has_dateentry = False
+
+        filt = ttk.Frame(main)
+        filt.pack(fill="x", pady=(0, 8))
+        ttk.Label(filt, text=self.lang.get('ind_req_filter_from', 'Da:')).pack(side="left")
+        if self._has_dateentry:
+            self.f_from = DateEntry(filt, width=11, date_pattern='dd/mm/yyyy')
+            self.f_from.set_date(date.today() - timedelta(days=30))
+        else:
+            self.f_from = ttk.Entry(filt, width=12)
+            self.f_from.insert(0, (date.today() - timedelta(days=30)).strftime('%d/%m/%Y'))
+        self.f_from.pack(side="left", padx=(4, 10))
+        ttk.Label(filt, text=self.lang.get('ind_req_filter_to', 'A:')).pack(side="left")
+        if self._has_dateentry:
+            self.f_to = DateEntry(filt, width=11, date_pattern='dd/mm/yyyy')
+            self.f_to.set_date(date.today())
+        else:
+            self.f_to = ttk.Entry(filt, width=12)
+            self.f_to.insert(0, date.today().strftime('%d/%m/%Y'))
+        self.f_to.pack(side="left", padx=(4, 10))
+        ttk.Label(filt, text=self.lang.get('ind_req_filter_code', 'Codice:')).pack(side="left")
+        self.f_code = tk.StringVar()
+        ttk.Entry(filt, textvariable=self.f_code, width=14).pack(side="left", padx=(4, 10))
+        ttk.Label(filt, text=self.lang.get('ind_req_filter_requester', 'Richiedente:')).pack(side="left")
+        self.f_req = tk.StringVar()
+        ttk.Entry(filt, textvariable=self.f_req, width=18).pack(side="left", padx=(4, 10))
+        ttk.Button(filt, text=self.lang.get('btn_filter', 'Filtra'),
+                   command=self._load_history).pack(side="left", padx=4)
+        ttk.Button(filt, text=self.lang.get('btn_clear', 'Pulisci'),
+                   command=self._clear_filters).pack(side="left", padx=4)
+
         # Treeview
         tree_frame = ttk.Frame(main)
         tree_frame.pack(fill="both", expand=True)
 
-        columns = ('id', 'data', 'codice', 'descrizione', 'qty', 'stato', 'richiedente', 'preparatore')
-        self.tree = ttk.Treeview(tree_frame, columns=columns, show='headings', selectmode='browse')
+        columns = ('id', 'data', 'codice', 'descrizione', 'qty', 'stato',
+                   'richiedente', 'preparatore', 'stampe')
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show='headings', selectmode='extended')
         self.tree.heading('id', text='ID')
         self.tree.heading('data', text=self.lang.get('ind_req_col_date', 'Data'))
         self.tree.heading('codice', text=self.lang.get('ind_import_col_code', 'Codice'))
@@ -655,35 +694,90 @@ class RequestHistoryWindow(tk.Toplevel):
         self.tree.heading('stato', text=self.lang.get('ind_req_col_status', 'Stato'))
         self.tree.heading('richiedente', text=self.lang.get('ind_req_col_requester', 'Richiedente'))
         self.tree.heading('preparatore', text=self.lang.get('ind_req_col_preparer', 'Preparatore'))
+        self.tree.heading('stampe', text=self.lang.get('ind_req_col_prints', 'Stampe'))
 
         self.tree.column('id', width=50)
         self.tree.column('data', width=130)
         self.tree.column('codice', width=100)
-        self.tree.column('descrizione', width=250)
+        self.tree.column('descrizione', width=240)
         self.tree.column('qty', width=70, anchor="e")
-        self.tree.column('stato', width=100)
+        self.tree.column('stato', width=95)
         self.tree.column('richiedente', width=100)
         self.tree.column('preparatore', width=100)
+        self.tree.column('stampe', width=55, anchor="center")
 
         scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
         self.tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
+    def _get_filter_date(self, widget):
+        """Ritorna la date dal widget filtro (DateEntry o Entry testuale)."""
+        from datetime import datetime as _dt
+        if hasattr(widget, 'get_date'):
+            return widget.get_date()
+        txt = widget.get().strip()
+        for fmt in ('%d/%m/%Y', '%Y-%m-%d', '%d-%m-%Y'):
+            try:
+                return _dt.strptime(txt, fmt).date()
+            except ValueError:
+                pass
+        return None
+
+    def _clear_filters(self):
+        """Reimposta i filtri ai valori predefiniti e ricarica."""
+        from datetime import date, timedelta
+        try:
+            if hasattr(self.f_from, 'set_date'):
+                self.f_from.set_date(date.today() - timedelta(days=30))
+                self.f_to.set_date(date.today())
+            else:
+                self.f_from.delete(0, tk.END); self.f_from.insert(0, (date.today() - timedelta(days=30)).strftime('%d/%m/%Y'))
+                self.f_to.delete(0, tk.END); self.f_to.insert(0, date.today().strftime('%d/%m/%Y'))
+        except Exception:
+            pass
+        self.f_code.set('')
+        self.f_req.set('')
+        self._load_history()
+
     def _load_history(self):
+        from datetime import datetime as _dt, time as _time, timedelta as _td
         try:
             self.tree.delete(*self.tree.get_children())
-            query = """
+
+            where = []
+            params = []
+            d_from = self._get_filter_date(self.f_from)
+            d_to = self._get_filter_date(self.f_to)
+            if d_from:
+                where.append("r.DataRichiesta >= ?")
+                params.append(_dt.combine(d_from, _time.min))
+            if d_to:
+                where.append("r.DataRichiesta < ?")
+                params.append(_dt.combine(d_to + _td(days=1), _time.min))
+            code = self.f_code.get().strip()
+            if code:
+                where.append("m.CodiceMateriale LIKE ?")
+                params.append(f"%{code}%")
+            req = self.f_req.get().strip()
+            if req:
+                where.append("r.RichiestoDa LIKE ?")
+                params.append(f"%{req}%")
+            where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+
+            query = f"""
                 SELECT r.RichiestaId, r.DataRichiesta,
                        m.CodiceMateriale, m.DescrizioneMateriale,
-                       r.QtaRichiesta, r.Stato, r.RichiestoDa, r.PreparatoDa
+                       r.QtaRichiesta, r.Stato, r.RichiestoDa, r.PreparatoDa,
+                       ISNULL(r.StampeRicezione, 0)
                 FROM ind.MaterialiRichieste r
                 JOIN ind.Materiali m ON r.MaterialeId = m.MaterialeId
+                {where_sql}
                 ORDER BY r.DataRichiesta DESC
             """
             self.db._ensure_connection()
             with self.db._lock:
-                self.db.cursor.execute(query)
+                self.db.cursor.execute(query, tuple(params))
                 rows = self.db.cursor.fetchall()
 
             for row in (rows or []):
@@ -691,7 +785,7 @@ class RequestHistoryWindow(tk.Toplevel):
                 self.tree.insert('', 'end', iid=str(row[0]), values=(
                     row[0], data_str, row[2] or '', row[3] or '',
                     f"{row[4]:.2f}" if row[4] else '0', row[5] or '',
-                    row[6] or '', row[7] or ''
+                    row[6] or '', row[7] or '', row[8]
                 ))
         except Exception as e:
             logger.error(f"Errore caricamento storico: {e}", exc_info=True)
@@ -706,13 +800,16 @@ class RequestHistoryWindow(tk.Toplevel):
             )
             return
 
-        richiesta_id = int(selection[0])
+        # Selezione multipla consentita: si stampa UNA lista per ogni richiedente
+        # (un richiedente con N richieste in una sola lista; mai piu' richiedenti insieme).
+        richiesta_ids = [int(iid) for iid in selection]
         try:
-            from indirect_materials_pdf import generate_and_print_request_pdf
-            generate_and_print_request_pdf(self.db, richiesta_id, print_now=True)
+            from indirect_materials_pdf import generate_and_print_batch_pdf
+            paths = generate_and_print_batch_pdf(self.db, richiesta_ids, print_now=True)
             messagebox.showinfo(
                 self.lang.get('info', 'Info'),
-                self.lang.get('ind_req_reprint_ok', 'PDF generato e inviato in stampa.'),
+                self.lang.get('ind_req_reprint_by_requester_ok',
+                              '{0} lista/e generata/e (una per richiedente) e inviata/e in stampa.').format(len(paths)),
                 parent=self
             )
         except Exception as e:

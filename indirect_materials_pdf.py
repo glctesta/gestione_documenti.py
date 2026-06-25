@@ -71,7 +71,7 @@ def generate_batch_pdf(db, richiesta_ids):
         FROM ind.MaterialiRichieste r
         JOIN ind.Materiali m ON r.MaterialeId = m.MaterialeId
         WHERE r.RichiestaId IN ({placeholders})
-        ORDER BY r.RichiestaId
+        ORDER BY r.DataRichiesta, r.RichiestaId
     """
     if hasattr(db, 'fetch_all'):
         rows = db.fetch_all(query, tuple(richiesta_ids))
@@ -109,7 +109,7 @@ def generate_batch_pdf(db, richiesta_ids):
     if logo_path:
         try:
             c.drawImage(logo_path, 2 * cm, height - 3.5 * cm,
-                        width=4 * cm, preserveAspectRatio=True)
+                        width=4 * cm, preserveAspectRatio=True, mask='auto')
         except Exception as e:
             logger.warning(f"Impossibile caricare logo: {e}")
 
@@ -194,6 +194,76 @@ def generate_batch_pdf(db, richiesta_ids):
     y -= 0.5 * cm
     c.drawString(2 * cm, y, "___________________")
     c.drawString(11 * cm, y, "___________________")
+    y -= 1.2 * cm
+
+    # ── Ultimi 10 prelievi del richiedente (sotto le firme) ───────────────
+    last10 = []
+    try:
+        q10 = """
+            SELECT TOP 10 m.CodiceMateriale, m.DescrizioneMateriale,
+                   r.QtaRichiesta, r.DataPrelievo
+            FROM ind.MaterialiRichieste r
+            JOIN ind.Materiali m ON m.MaterialeId = r.MaterialeId
+            WHERE r.RichiestoDa = ? AND r.Stato = 'PRELEVATA'
+            ORDER BY r.DataPrelievo DESC
+        """
+        if hasattr(db, 'fetch_all'):
+            last10 = db.fetch_all(q10, (richiedente,))
+        else:
+            db._ensure_connection()
+            with db._lock:
+                db.cursor.execute(q10, (richiedente,))
+                last10 = db.cursor.fetchall()
+    except Exception as exc10:
+        logger.warning(f"Ultimi 10 prelievi non disponibili: {exc10}")
+        last10 = []
+
+    if last10:
+        def _l10_header(yy):
+            c.setFont(font_name, 11)
+            c.drawString(2 * cm, yy, f"Ultimele 10 ridicări ale solicitantului: {richiedente}")
+            return yy - 0.5 * cm
+
+        if y < 6 * cm:                      # poco spazio: nuova pagina
+            c.showPage()
+            y = height - 2.5 * cm
+        y = _l10_header(y)
+
+        l10_data = [[
+            Paragraph('Cod', hdr_style),
+            Paragraph('Descriere', hdr_style),
+            Paragraph('Cant.', hdr_style),
+            Paragraph('Data ridicării', hdr_style),
+        ]]
+        for r10 in last10:
+            d10 = r10[3].strftime('%d/%m/%Y %H:%M') if r10[3] else ''
+            l10_data.append([
+                r10[0] or '',
+                Paragraph(r10[1] or '', desc_style),
+                f"{r10[2]:.2f}" if r10[2] is not None else '-',
+                d10,
+            ])
+        t10 = Table(l10_data, colWidths=[3.5 * cm, 7 * cm, 2.5 * cm, 4 * cm])
+        t10.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#34495e')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('FONTNAME', (0, 0), (-1, -1), font_name),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('ALIGN', (2, 1), (2, -1), 'CENTER'),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f2f2f2')]),
+            ('BOX', (0, 0), (-1, -1), 0.8, colors.black),
+            ('INNERGRID', (0, 0), (-1, -1), 0.4, colors.grey),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 5),
+        ]))
+        _w10, h10 = t10.wrap(width - 4 * cm, height)
+        if y - h10 < 2 * cm:               # non ci sta: nuova pagina
+            c.showPage()
+            y = _l10_header(height - 2.5 * cm)
+            _w10, h10 = t10.wrap(width - 4 * cm, height)
+        t10.drawOn(c, 2 * cm, y - h10)
 
     # ── Footer ────────────────────────────────────────────────────────────
     c.setFont(font_name, 8)
@@ -230,22 +300,79 @@ def generate_and_print_request_pdf(db, richiesta_id, print_now=True):
         except Exception as e:
             logger.error(f"Errore stampa PDF: {e}", exc_info=True)
             os.startfile(pdf_path)
+        _increment_print_count(db, [richiesta_id])
     return pdf_path
+
+
+def _group_ids_by_requester(db, richiesta_ids):
+    """Raggruppa gli ID richiesta per richiedente (RichiestoDa).
+    Ritorna dict {richiedente: [richiesta_ids]} preservando l'ordine d'arrivo."""
+    placeholders = ', '.join(['?'] * len(richiesta_ids))
+    q = (f"SELECT RichiestaId, ISNULL(RichiestoDa, '') "
+         f"FROM ind.MaterialiRichieste WHERE RichiestaId IN ({placeholders})")
+    if hasattr(db, 'fetch_all'):
+        rows = db.fetch_all(q, tuple(richiesta_ids))
+    else:
+        db._ensure_connection()
+        with db._lock:
+            db.cursor.execute(q, tuple(richiesta_ids))
+            rows = db.cursor.fetchall()
+    by_req = {r[0]: (r[1] or '(senza richiedente)') for r in (rows or [])}
+    groups = {}
+    for rid in richiesta_ids:                      # mantiene l'ordine di selezione
+        req = by_req.get(rid, '(senza richiedente)')
+        groups.setdefault(req, []).append(rid)
+    return groups
+
+
+def _increment_print_count(db, richiesta_ids):
+    """Incrementa di 1 il contatore StampeRicezione per gli ID indicati."""
+    if not richiesta_ids:
+        return
+    placeholders = ', '.join(['?'] * len(richiesta_ids))
+    q = (f"UPDATE ind.MaterialiRichieste "
+         f"SET StampeRicezione = ISNULL(StampeRicezione, 0) + 1 "
+         f"WHERE RichiestaId IN ({placeholders})")
+    try:
+        if hasattr(db, 'execute_query'):
+            db.execute_query(q, tuple(richiesta_ids))
+        else:
+            db._ensure_connection()
+            with db._lock:
+                db.cursor.execute(q, tuple(richiesta_ids))
+                db.conn.commit()
+    except Exception as e:
+        logger.error(f"Incremento conteggio stampe fallito {richiesta_ids}: {e}", exc_info=True)
 
 
 def generate_and_print_batch_pdf(db, richiesta_ids, print_now=True):
     """
-    Genera un unico PDF per N richieste e lo stampa una volta sola.
-    Entry-point principale per il WHMonitor quando processa un batch.
+    Genera/stampa una lista SEPARATA per OGNI richiedente: un richiedente (con le sue
+    N richieste) = una sola lista; mai piu' richiedenti nello stesso documento da
+    far firmare per la conferma di ricezione.
+
+    Entry-point principale per il WHMonitor e per la ristampa.
+    Ritorna la lista dei path PDF generati (uno per richiedente).
     """
     if not richiesta_ids:
-        return None
-    pdf_path = generate_batch_pdf(db, richiesta_ids)
-    if print_now:
-        try:
-            os.startfile(pdf_path, 'print')
-            logger.info(f"PDF batch inviato in stampa ({len(richiesta_ids)} materiali): {pdf_path}")
-        except Exception as e:
-            logger.error(f"Errore stampa PDF batch: {e}", exc_info=True)
-            os.startfile(pdf_path)
-    return pdf_path
+        return []
+    groups = _group_ids_by_requester(db, richiesta_ids)
+    paths = []
+    for requester, ids in groups.items():
+        if not ids:
+            continue
+        pdf_path = generate_batch_pdf(db, ids)
+        paths.append(pdf_path)
+        if print_now:
+            try:
+                os.startfile(pdf_path, 'print')
+                logger.info(f"PDF richiedente '{requester}' inviato in stampa "
+                            f"({len(ids)} richieste): {pdf_path}")
+            except Exception as e:
+                logger.error(f"Errore stampa PDF richiedente '{requester}': {e}", exc_info=True)
+                try:
+                    os.startfile(pdf_path)
+                except Exception:
+                    pass
+            _increment_print_count(db, ids)
+    return paths

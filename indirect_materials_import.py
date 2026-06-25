@@ -7,6 +7,7 @@ nella tabella ind.Materiali con logica soft-delete.
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import logging
+import socket
 import openpyxl
 from datetime import datetime
 
@@ -343,7 +344,20 @@ class ImportIndirectMaterialsWindow(tk.Toplevel):
                         )
                         logger.info(f"Soft-close giacenze attive per {len(valid_ids)} materiali importati")
 
-                    # 3. Insert nuove giacenze in ind.MaterialiStock
+                    # Giacenza corrente PRIMA dell'import (dal libro movimenti) per calcolare il delta.
+                    # NB: la giacenza visualizzata = SUM(ind.MaterialiMovimenti.Qty) via ind.vw_GiacenzaCorrente;
+                    # ind.MaterialiStock NON entra nel calcolo, quindi va aggiornato anche il libro movimenti.
+                    giac_map = {}
+                    if valid_ids:
+                        ph = ','.join('?' * len(valid_ids))
+                        cursor.execute(
+                            f"SELECT MaterialeId, Giacenza FROM ind.vw_GiacenzaCorrente WHERE MaterialeId IN ({ph})",
+                            valid_ids
+                        )
+                        giac_map = {r[0]: float(r[1] or 0) for r in cursor.fetchall()}
+                    hostname = socket.gethostname()
+
+                    # 3. Insert nuove giacenze in ind.MaterialiStock + allineamento libro movimenti
                     for item in self.import_data:
                         if item.get('materiale_id') is None:
                             processed += 1
@@ -356,6 +370,19 @@ class ImportIndirectMaterialsWindow(tk.Toplevel):
                                 "VALUES (?, ?, GETDATE(), NULL, ?)",
                                 (item['materiale_id'], item['qta_stock'], self.user_name)
                             )
+                            # Allinea la giacenza (libro movimenti) al valore importato:
+                            # movimento INVENTARIO con il delta necessario a raggiungere la quantita' importata.
+                            target = float(item['qta_stock'] or 0)
+                            current = giac_map.get(item['materiale_id'], 0.0)
+                            delta = round(target - current, 4)
+                            if delta != 0:
+                                cursor.execute(
+                                    "INSERT INTO ind.MaterialiMovimenti "
+                                    "(MaterialeId, Qty, TipoMovimento, EseguitoDa, ComputerSrc, Note) "
+                                    "VALUES (?, ?, 'INVENTARIO', ?, ?, ?)",
+                                    (item['materiale_id'], delta, self.user_name, hostname,
+                                     'Allineamento giacenza da import Excel')
+                                )
                             stock_inserted += 1
                         except Exception as e:
                             errors += 1

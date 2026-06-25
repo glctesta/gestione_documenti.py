@@ -309,7 +309,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.2.5'  # Versione aggiornata
+APP_VERSION = '2.4.2.2.8'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -15503,7 +15503,7 @@ class App(tk.Tk):
         caller_function = caller_frame.function
         caller_filename = caller_frame.filename
         caller_lineno = caller_frame.lineno
-        logger.info("_execute_authorized_action called by function '%s' at %s:%d; menu_translation_key=%r", 
+        logger.info("_execute_authorized_action called by function '%s' at %s:%d; menu_translation_key=%r",
                     caller_function, caller_filename, caller_lineno, menu_translation_key)
 
         cached_auth = self._get_cached_authorized_action(menu_translation_key)

@@ -523,7 +523,8 @@ class TraceabilityManager:
 
         # Tabella prodotti
         columns = ('id', 'code', 'name', 'is_final', 'customer_code', 'client_name', 'acronim', 'version')
-        self.products_tree = ttk.Treeview(main_frame, columns=columns, show='headings', height=20)
+        self.products_tree = ttk.Treeview(main_frame, columns=columns, show='headings', height=20,
+                                          selectmode='extended')
 
         # Intestazioni colonne cliccabili per l'ordinamento
         col_headers = {
@@ -559,9 +560,19 @@ class TraceabilityManager:
         self.products_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Pulsante modifica
-        ttk.Button(main_frame, text=self.lang.get('button_edit', "Modifica"),
-                   command=self._edit_product_final_info).pack(pady=10)
+        # Pulsanti azione
+        btn_bar = ttk.Frame(main_frame)
+        btn_bar.pack(pady=10)
+        ttk.Button(btn_bar, text=self.lang.get('button_edit', "Modifica"),
+                   command=self._edit_product_final_info).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_bar,
+                   text=self.lang.get('button_assign_client_multi', "Assegna Cliente a Selezionati"),
+                   command=self._assign_client_to_selected).pack(side=tk.LEFT, padx=5)
+        ttk.Label(main_frame,
+                  text=self.lang.get('assign_client_hint',
+                                     "Selezione multipla: Ctrl/Shift + clic. Il codice cliente sara' impostato "
+                                     "uguale al codice prodotto (modificabile poi singolarmente)."),
+                  foreground="gray").pack(pady=(0, 4))
 
         # Bind doppio click per modifica
         self.products_tree.bind('<Double-1>', lambda e: self._edit_product_final_info())
@@ -684,6 +695,75 @@ class TraceabilityManager:
 
         if product:
             self._open_product_final_form(self.products_tree.winfo_toplevel(), product)
+
+    def _assign_client_to_selected(self):
+        """Assegna lo stesso cliente finale a piu' prodotti selezionati.
+        Imposta IsFinalProduct=1, il cliente scelto e il codice cliente = codice prodotto
+        (ProductCodClienteFinal), modificabile poi singolarmente. La versione e' preservata."""
+        parent = self.products_tree.winfo_toplevel()
+        selection = self.products_tree.selection()
+        if not selection:
+            messagebox.showwarning(
+                "Attenzione",
+                "Seleziona uno o piu' prodotti (Ctrl/Shift + clic per la selezione multipla).",
+                parent=parent)
+            return
+
+        clients = self.db.fetch_final_clients_for_products()
+        if not clients:
+            messagebox.showwarning("Attenzione", "Nessun cliente finale disponibile.", parent=parent)
+            return
+        client_names = [f"{c.FinalClientName} ({c.AcronimForCode})" for c in clients]
+        client_dict = {f"{c.FinalClientName} ({c.AcronimForCode})": c.IDFinalClient for c in clients}
+
+        dlg = tk.Toplevel(parent)
+        dlg.title("Assegna Cliente a Prodotti Selezionati")
+        dlg.geometry("480x210")
+        dlg.transient(parent)
+        dlg.grab_set()
+        frm = ttk.Frame(dlg, padding=16)
+        frm.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frm, text=f"Prodotti selezionati: {len(selection)}",
+                  font=("Helvetica", 10, "bold")).pack(anchor=tk.W)
+        ttk.Label(frm, text="Il codice cliente verra' impostato = codice prodotto\n"
+                            "(potrai modificarlo singolarmente con 'Modifica').",
+                  foreground="gray").pack(anchor=tk.W, pady=(2, 10))
+        ttk.Label(frm, text="Cliente finale:").pack(anchor=tk.W)
+        cvar = tk.StringVar()
+        combo = ttk.Combobox(frm, textvariable=cvar, values=client_names, state="readonly", width=44)
+        combo.pack(anchor=tk.W, pady=(2, 12))
+
+        def do_assign():
+            cid = client_dict.get(cvar.get())
+            if not cid:
+                messagebox.showwarning("Attenzione", "Seleziona un cliente finale.", parent=dlg)
+                return
+            ok_count = err_count = 0
+            for iid in selection:
+                vals = self.products_tree.item(iid)['values']
+                try:
+                    pid = vals[0]
+                    pcode = str(vals[1]) if len(vals) > 1 else ''
+                    pver = vals[7] if len(vals) > 7 and str(vals[7]).strip() else None
+                    success, _ = self.db.update_product_final_info(pid, True, cid, pcode, pver)
+                    if success:
+                        ok_count += 1
+                    else:
+                        err_count += 1
+                except Exception as exc:
+                    err_count += 1
+                    logger.error(f"Assegnazione cliente prodotto fallita ({vals}): {exc}", exc_info=True)
+            dlg.destroy()
+            messagebox.showinfo("Risultato",
+                                f"Prodotti assegnati: {ok_count}\nErrori: {err_count}", parent=parent)
+            self.all_products = self.db.fetch_final_products()
+            self._load_products()
+
+        btns = ttk.Frame(frm)
+        btns.pack(anchor=tk.E)
+        ttk.Button(btns, text="Assegna", command=do_assign).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text="Annulla", command=dlg.destroy).pack(side=tk.LEFT)
 
     def _open_product_final_form(self, parent, product):
         """Apre il form per modificare le informazioni di prodotto finale"""
