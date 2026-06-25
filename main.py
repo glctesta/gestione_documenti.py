@@ -309,7 +309,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.2.9'  # Versione aggiornata
+APP_VERSION = '2.4.2.3.1'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -377,6 +377,25 @@ def load_update_skip_count():
     except Exception as e:
         logger.warning(f"Errore nel caricamento del file di rinvio update: {e}")
         return 0, ''
+
+
+def load_last_skip_date():
+    """Restituisce il datetime dell'ultimo rinvio update, o None."""
+    skip_file = get_update_skip_file_path()
+    try:
+        if os.path.exists(skip_file):
+            with open(skip_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                ds = data.get('last_skip_date')
+                if ds:
+                    return datetime.fromisoformat(ds)
+    except Exception as e:
+        logger.warning(f"Errore lettura last_skip_date: {e}")
+    return None
+
+
+# Intervallo promemoria update NON obbligatorio (4 ore)
+OPTIONAL_UPDATE_REMINDER_SECONDS = 4 * 60 * 60
 
 
 def save_update_skip_count(skip_count, version_str):
@@ -13478,6 +13497,19 @@ class App(tk.Tk):
                     self.periodic_check_job_id = self.after(15 * 60 * 1000, self._periodic_version_check)
                 return
 
+            # Update opzionale: se l'utente lo ha già rinviato da meno di 4 ore
+            # (anche al login), NON riproporre il promemoria; ripianifica sul tempo residuo.
+            last_skip = load_last_skip_date()
+            if skip_count > 0 and last_skip:
+                elapsed = (datetime.now() - last_skip).total_seconds()
+                remaining = OPTIONAL_UPDATE_REMINDER_SECONDS - elapsed
+                if remaining > 0:
+                    logger.info(
+                        f"_periodic_version_check: update opzionale già rinviato {int(elapsed)}s fa; "
+                        f"prossimo promemoria tra {int(remaining)}s")
+                    self.periodic_check_job_id = self.after(int(remaining * 1000), self._periodic_version_check)
+                    return
+
             # Update opzionale: chiedi all'utente
             # Porta la finestra principale in primo piano prima del messagebox
             self.lift()
@@ -13503,8 +13535,8 @@ class App(tk.Tk):
                 skip_count += 1
                 save_update_skip_count(skip_count, version_info.Version)
                 logger.info(f"Controllo versione periodico: update rinviato ({skip_count}/3)")
-                # Ripianifica tra 15 minuti
-                self.periodic_check_job_id = self.after(15 * 60 * 1000, self._periodic_version_check)
+                # Update NON obbligatorio: ripianifica il promemoria tra 4 ore (non pochi minuti)
+                self.periodic_check_job_id = self.after(OPTIONAL_UPDATE_REMINDER_SECONDS * 1000, self._periodic_version_check)
 
         except Exception as e:
             logger.error(f"Errore in _periodic_version_check: {e}", exc_info=True)
@@ -14176,7 +14208,7 @@ class App(tk.Tk):
             try:
                 import touchup_workstation_config
                 un = getattr(self, 'last_authenticated_user_name', 'Unknown')
-                touchup_workstation_config.open_touchup_workstation_config(self, self.db, self.lang, un)
+                touchup_workstation_config.open_touchup_workstation_config(self, self.lang, un)
             except Exception as e:
                 logger.error(f"Errore apertura Touch-up Setup WS: {e}", exc_info=True)
                 messagebox.showerror(self.lang.get('error', 'Errore'), str(e), parent=self)

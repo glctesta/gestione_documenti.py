@@ -17,7 +17,7 @@ import winsound
 import threading
 
 import touchup_logic as tl
-from touchup_workstation_config import is_touchup_workstation, get_touchup_departments
+from touchup_workstation_config import is_touchup_workstation
 
 logger = logging.getLogger(__name__)
 
@@ -89,9 +89,8 @@ class TouchUpMonitor:
         _, reappear_min = _read_config()
         if self._last_popup_shown and (time.monotonic() - self._last_popup_shown) < reappear_min * 60:
             return
-        cdc_ids, sub_ids = get_touchup_departments()
         try:
-            rows = tl.get_pending_reports(self.db, cdc_ids, sub_ids)
+            rows = tl.list_open_reports(self.db)
         except Exception as e:
             logger.error(f"TouchUpMonitor query error: {e}", exc_info=True)
             return

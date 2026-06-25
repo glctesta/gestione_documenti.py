@@ -58,11 +58,33 @@ def server_heartbeat_fresh(conn, cfg: dict) -> bool:
         return False
 
 
-def _alert_window_key(now: datetime, minutes: int = 10) -> str:
-    """Chiave di dedup per finestra temporale (default 10 min)."""
-    bucket = now.replace(minute=(now.minute // minutes) * minutes,
-                         second=0, microsecond=0)
-    return "SERVER_DOWN|" + bucket.strftime("%Y-%m-%dT%H:%M")
+ALERT_THROTTLE_DAYS = 5  # un solo warning ogni 5 giorni (richiesta utente)
+
+
+def _alert_window_key(now: datetime, days: int = ALERT_THROTTLE_DAYS) -> str:
+    """Chiave di dedup per finestra di N giorni. Il bucket (ordinale//N) rende
+    la PK `alert_key` atomica: un solo alert per finestra fra tutti i watcher."""
+    bucket = now.toordinal() // max(1, days)
+    return f"SERVER_DOWN|D{bucket}"
+
+
+def watcher_enabled(conn) -> bool:
+    """False se l'alert Kit Dashboard è stato disattivato centralmente
+    (Settings.Sys_kit_dashboard_watcher = OFF/0/no/false/disabled).
+    Default: abilitato (retro-compatibile)."""
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT TOP 1 Value FROM Traceability_RS.dbo.Settings "
+                    "WHERE Atribute = 'Sys_kit_dashboard_watcher'")
+        r = cur.fetchone()
+        if r and r[0] is not None:
+            val = str(r[0]).strip().lower()
+            if val in ('0', 'off', 'no', 'false', 'disabled', 'disattivo', 'spento'):
+                return False
+        return True
+    except Exception as e:
+        logger.debug("watcher_enabled check fallito (%s): assumo abilitato", e)
+        return True
 
 
 def claim_alert(conn, key: str, host: str) -> bool:
@@ -110,7 +132,10 @@ def send_alert(conn, cfg: dict):
 
 
 def handle_down(conn, cfg: dict):
-    """Gestisce un server DOWN: dedup + alert."""
+    """Gestisce un server DOWN: gate centralizzato + dedup (5 giorni) + alert."""
+    if not watcher_enabled(conn):
+        logger.info("Kit Dashboard watcher disattivato (Sys_kit_dashboard_watcher): nessun alert.")
+        return
     host = socket.gethostname()
     key = _alert_window_key(datetime.now())
     try:
@@ -118,6 +143,6 @@ def handle_down(conn, cfg: dict):
             logger.warning("Kit Dashboard DOWN: invio alert (%s)", key)
             send_alert(conn, cfg)
         else:
-            logger.info("Kit Dashboard DOWN: alert già inviato in questa finestra")
+            logger.info("Kit Dashboard DOWN: alert già inviato negli ultimi %d giorni", ALERT_THROTTLE_DAYS)
     except Exception as e:
         logger.error("handle_down errore: %s", e, exc_info=True)
