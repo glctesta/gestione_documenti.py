@@ -17500,6 +17500,25 @@ class App(tk.Tk):
         decl_manual_menu.add_command(
             label=self.lang.get('cambio_turni', '🔄 Cambio Turno'),
             command=self._open_shift_handover_manual)
+        # Touch-up (sotto-cascata, voci come nel menu applicativo)
+        touchup_manual_menu = tk.Menu(decl_manual_menu, tearoff=0)
+        decl_manual_menu.add_cascade(
+            label=self.lang.get('menu_touchup', 'Touch-up'), menu=touchup_manual_menu)
+        touchup_manual_menu.add_command(
+            label=self.lang.get('menu_touchup_problems', 'Problemi rivelati'),
+            command=lambda: self._open_manual('operazioni_touchup_problemi'))
+        touchup_manual_menu.add_command(
+            label=self.lang.get('menu_touchup_responses', 'Soluzioni adottate'),
+            command=lambda: self._open_manual('operazioni_touchup_soluzioni'))
+        touchup_manual_menu.add_command(
+            label=self.lang.get('menu_touchup_reports', 'Rapporti'),
+            command=lambda: self._open_manual('operazioni_touchup_rapporti'))
+        touchup_manual_menu.add_command(
+            label=self.lang.get('menu_touchup_workstation', 'Setup workstation'),
+            command=lambda: self._open_manual('operazioni_touchup_workstation'))
+        touchup_manual_menu.add_command(
+            label=self.lang.get('menu_touchup_setup', 'Gestione'),
+            command=lambda: self._open_manual('operazioni_touchup_gestione'))
         # Discrepanțe Plan Producție
         prod_manual_menu.add_command(
             label=self.lang.get('manual_plan_discrepancy', 'Discrepanțe Plan Producție'),
