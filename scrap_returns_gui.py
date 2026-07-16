@@ -114,6 +114,8 @@ class ScrapReturnsWindow(tk.Toplevel):
         ttk.Entry(valid, textvariable=self.confirm_weight_var, width=12).pack(side="left", padx=(0, 12))
         ttk.Button(valid, text=self.lang.get('scrap_btn_validate', '✔ Convalida selezionata'),
                    command=self._validate_selected).pack(side="left")
+        ttk.Button(valid, text=self.lang.get('scrap_btn_override', '⚠ Forza conforme'),
+                   command=self._force_conform).pack(side="left", padx=(12, 0))
         self.tree.bind('<<TreeviewSelect>>', self._on_history_select)
 
     def _make_date_entry(self, parent):
@@ -197,7 +199,7 @@ class ScrapReturnsWindow(tk.Toplevel):
         self.tree.delete(*self.tree.get_children())
         rows = self._fetch(
             "SELECT ReturnMaterialId, DateReturn, ReturWeight, UserRetur, RichiestaId, "
-            "       ComfirmedBY, ConfirmedWeight, IsOk "
+            "       ComfirmedBY, ConfirmedWeight, IsOk, OverrideBy, OverrideReason "
             "FROM dbo.ReturnMaterials WHERE MateriaId = ? AND DateOut IS NULL "
             "ORDER BY DateReturn DESC, ReturnMaterialId DESC",
             (must_code_id,)
@@ -207,6 +209,7 @@ class ScrapReturnsWindow(tk.Toplevel):
         to_confirm = self.lang.get('scrap_to_confirm', 'Da confermare')
         ok_txt = self.lang.get('scrap_confirmed_ok', '✔ OK ({0} kg)')
         ko_txt = self.lang.get('scrap_confirmed_ko', 'X NON conforme ({0} kg)')
+        override_txt = self.lang.get('scrap_confirmed_override', '✔ Forzato ({0} kg)')
         for r in rows:
             rmid = r[0]
             d = r[1].strftime('%d/%m/%Y') if r[1] else ''
@@ -214,11 +217,17 @@ class ScrapReturnsWindow(tk.Toplevel):
             confirmed_by = r[5]
             confirmed_w = r[6]
             is_ok = r[7]
-            if confirmed_by is None and is_ok is None:
+            override_by = r[8]
+            if confirmed_by is None and is_ok is None and override_by is None:
                 conferma = to_confirm
             else:
                 cw = f"{float(confirmed_w or 0):.1f}"
-                conferma = ok_txt.format(cw) if is_ok else ko_txt.format(cw)
+                if is_ok and override_by:
+                    conferma = override_txt.format(cw)
+                elif is_ok:
+                    conferma = ok_txt.format(cw)
+                else:
+                    conferma = ko_txt.format(cw)
             self.tree.insert('', 'end', values=(
                 rmid, d, f"{float(r[2] or 0):.1f}", r[3] or '', stato, conferma))
 
@@ -296,6 +305,106 @@ class ScrapReturnsWindow(tk.Toplevel):
             messagebox.showerror(self.lang.get('error', 'Errore'),
                                  f"{self.lang.get('scrap_save_error', 'Errore salvataggio')}:\n{e}",
                                  parent=self)
+
+    def _force_conform(self):
+        """Sblocca una riga NON conforme forzando IsOk=1 con motivazione obbligatoria.
+        Richiede autorizzazione supervisore (chiave 'override_convalida_scorie') e
+        traccia chi/perche'/quando in OverrideBy/OverrideReason/OverrideDate. Non
+        sovrascrive ComfirmedBY/ConfirmedWeight (resta la prova del mismatch rilevato)."""
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning(self.lang.get('warning', 'Attenzione'),
+                                   self.lang.get('scrap_select_row', 'Seleziona una registrazione da convalidare.'),
+                                   parent=self)
+            return
+        rmid = self.tree.item(sel[0], 'values')[0]
+        # Stato reale dal DB: l'override si applica SOLO alle righe NON conformi (IsOk=0).
+        row = self._fetch("SELECT IsOk FROM dbo.ReturnMaterials WHERE ReturnMaterialId = ?", (rmid,))
+        is_ok = row[0][0] if row else None
+        if is_ok == 1:
+            messagebox.showinfo(self.lang.get('info', 'Info'),
+                                self.lang.get('scrap_override_already_ok', 'La riga è già conforme.'),
+                                parent=self)
+            return
+        if is_ok is None:
+            messagebox.showwarning(self.lang.get('warning', 'Attenzione'),
+                                   self.lang.get('scrap_override_only_ko',
+                                                 "L'override si applica solo alle righe NON conformi.\n"
+                                                 "Convalida prima la riga con il peso rilevato."),
+                                   parent=self)
+            return
+        # Motivazione obbligatoria
+        from tkinter import simpledialog
+        reason = simpledialog.askstring(
+            self.lang.get('scrap_override_title', 'Forza conforme'),
+            self.lang.get('scrap_override_reason', 'Motivazione (obbligatoria):'),
+            parent=self)
+        if reason is None:
+            return
+        reason = reason.strip()
+        if not reason:
+            messagebox.showwarning(self.lang.get('warning', 'Attenzione'),
+                                   self.lang.get('scrap_override_reason_required', 'La motivazione è obbligatoria.'),
+                                   parent=self)
+            return
+        if not messagebox.askyesno(
+                self.lang.get('scrap_override_title', 'Forza conforme'),
+                self.lang.get('scrap_override_confirm',
+                              'Forzare la riga come CONFORME? La richiesta collegata potrà essere rilasciata.'),
+                parent=self):
+            return
+
+        def do_override():
+            supervisor = getattr(self.master, 'last_authenticated_user_name', None) or self.user_name
+            try:
+                self.db._ensure_connection()
+                with self.db._lock:
+                    self.db.cursor.execute(
+                        "UPDATE dbo.ReturnMaterials "
+                        "SET IsOk = 1, OverrideBy = ?, OverrideReason = ?, OverrideDate = GETDATE() "
+                        "WHERE ReturnMaterialId = ?",
+                        (supervisor, reason, rmid)
+                    )
+                    self.db.conn.commit()
+                logger.info("Scoria FORZATA conforme: ReturnMaterialId=%s da %s motivo=%r",
+                            rmid, supervisor, reason)
+                messagebox.showinfo(self.lang.get('info', 'Info'),
+                                    self.lang.get('scrap_override_done',
+                                                  'Override registrato. La riga è ora conforme.'),
+                                    parent=self)
+                m = self._current_material()
+                if m:
+                    self._load_history(m['must_code_id'])
+            except Exception as e:
+                try:
+                    self.db.conn.rollback()
+                except Exception:
+                    pass
+                logger.error("Errore override scoria: %s", e, exc_info=True)
+                messagebox.showerror(self.lang.get('error', 'Errore'),
+                                     f"{self.lang.get('scrap_save_error', 'Errore salvataggio')}:\n{e}",
+                                     parent=self)
+
+        # Autorizzazione supervisore tramite il flusso standard dell'app.
+        # Rilascio temporaneamente il grab della form per non bloccare la LoginWindow.
+        master = self.master
+        if not hasattr(master, '_execute_authorized_action'):
+            messagebox.showerror(self.lang.get('error', 'Errore'),
+                                 self.lang.get('scrap_override_no_auth',
+                                               'Funzione di autorizzazione non disponibile.'),
+                                 parent=self)
+            return
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        try:
+            master._execute_authorized_action('override_convalida_scorie', do_override)
+        finally:
+            try:
+                self.grab_set()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ #
     def _save(self):
