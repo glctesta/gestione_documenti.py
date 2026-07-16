@@ -125,10 +125,15 @@ def scorie_confermate_per_richiesta(db, richiesta_id):
 
     Una richiesta il cui materiale ha una regola attiva in dbo.MaterialRules
     (cioe' e' legato al ritorno di un altro materiale o dello stesso codice)
-    puo' essere preparata/rilasciata SOLO se le scorie collegate alla richiesta
-    (dbo.ReturnMaterials.RichiestaId = richiesta) sono state CONFERMATE dal
-    controllore, cioe' esiste almeno una riga collegata e tutte hanno IsOk = 1
-    (peso rilevato corrispondente).
+    puo' essere preparata/rilasciata SOLO se:
+      1) esiste almeno una scoria collegata alla richiesta
+         (dbo.ReturnMaterials.RichiestaId = richiesta), e
+      2) NON esiste ALCUNA scoria PENDENTE del MustCode collegato al materiale,
+         cioe' nessuna riga dbo.ReturnMaterials del MustCode con IsOk NULL/0 e
+         DateOut IS NULL (a prescindere dall'aggancio alla richiesta).
+    Il punto 2 e' globale sul codice: le quantita' restituite in eccesso (non
+    agganciate per il cap D7) o dichiarate dopo l'invio devono comunque essere
+    validate dal magazzino prima di poter rilasciare lo stesso codice.
 
     Ritorna (allowed: bool, code: str) con code in:
         'ok' | 'scrap_not_confirmed' | 'not_found' | 'error'
@@ -145,26 +150,27 @@ def scorie_confermate_per_richiesta(db, richiesta_id):
                     (SELECT COUNT(*) FROM dbo.ReturnMaterials rm
                        WHERE rm.RichiestaId = ? AND rm.DateOut IS NULL) AS LinkedCount,
                     (SELECT COUNT(*) FROM dbo.ReturnMaterials rm
-                       WHERE rm.RichiestaId = ? AND rm.DateOut IS NULL
-                         AND ISNULL(rm.IsOk, 0) = 0) AS NotOkCount
+                       INNER JOIN dbo.MaterialRules mr2 ON mr2.MustCodeId = rm.MateriaId
+                       WHERE mr2.MaterialeId = r.MaterialeId AND mr2.DateOut IS NULL
+                         AND rm.DateOut IS NULL AND ISNULL(rm.IsOk, 0) = 0) AS PendingCount
                 FROM ind.MaterialiRichieste r
                 WHERE r.RichiestaId = ?
                 """,
-                (richiesta_id, richiesta_id, richiesta_id)
+                (richiesta_id, richiesta_id)
             )
             row = cur.fetchone()
         if not row:
             return False, 'not_found'
         has_rule = int(row[0] or 0)
         linked = int(row[1] or 0)
-        not_ok = int(row[2] or 0)
+        pending = int(row[2] or 0)               # scorie pendenti del MustCode (globale sul codice)
         if has_rule == 0:
             return True, 'ok'                      # materiale non legato a ritorni
-        if linked > 0 and not_ok == 0:
-            return True, 'ok'                      # scorie collegate e tutte confermate
+        if linked > 0 and pending == 0:
+            return True, 'ok'                      # scoria agganciata e nessuna pendente sul codice
         logger.info(
             f"[ScrapGate] Richiesta {richiesta_id} BLOCCATA: has_rule={has_rule}, "
-            f"linked={linked}, non_confermate={not_ok}"
+            f"linked={linked}, pendenti_codice={pending}"
         )
         return False, 'scrap_not_confirmed'
     except Exception as e:

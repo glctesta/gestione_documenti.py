@@ -16,7 +16,7 @@ class TranslationsManagerWindow(tk.Toplevel):
         self.lang = lang
         
         self.title(self.lang.get('translations_manager_title', 'Gestione Traduzioni'))
-        self.geometry('1400x800')
+        self.geometry('1300x800')
         
         # Variabili per i filtri
         self.filter_language = tk.StringVar()
@@ -417,7 +417,7 @@ class TranslationDialog(tk.Toplevel):
         
         title = self.lang.get('add_translation', 'Aggiungi Traduzione') if mode == 'add' else self.lang.get('edit_translation', 'Modifica Traduzione')
         self.title(title)
-        self.geometry('500x300')
+        self.geometry('1500x1300')
         self.resizable(False, False)
         
         self._create_widgets()
