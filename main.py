@@ -309,7 +309,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.3.1'  # Versione aggiornata
+APP_VERSION = '2.4.2.4.3'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -13991,6 +13991,49 @@ class App(tk.Tk):
             )
         )
 
+    def open_auto_email_settings_with_login(self):
+        """Iscrizioni email automatiche: l'utente loggato (chiave 'modifica_invoi_email_auto')
+        vede solo i servizi Employeerid=2 di cui è destinatario e può disiscriversi; i servizi
+        obbligatori (IsBlocked=1) e la gestione servizi richiedono il super user
+        'permetti_modifica_auormail_obbligatorie'."""
+        def authorized_action():
+            try:
+                import auto_email_settings_gui
+                un = getattr(self, 'last_authenticated_user_name', None) or 'Unknown'
+                auto_email_settings_gui.open_auto_email_settings(self, self.db, self.lang, un)
+            except Exception as e:
+                logger.error(f"Errore apertura Iscrizioni email automatiche: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"{self.lang.get('aes_open_error', 'Impossibile aprire le iscrizioni email')}:\n{e}",
+                    parent=self)
+        self._execute_authorized_action('modifica_invoi_email_auto', authorized_action)
+
+    def open_attribuisci_cdc_with_login(self):
+        """Attribuisci CDC: il capo dipartimento (chiave 'gestisci_cdc_operatore') riassegna il
+        sotto-reparto di un dipendente subordinato. Dal login si passa l'EmployeeHireHistoryId
+        del capo (last_authorized_user_id) per filtrare i subordinati."""
+        def authorized_action():
+            try:
+                import attribuisci_cdc_gui
+                head_ehh = getattr(self, 'last_authorized_user_id', None)
+                un = getattr(self, 'last_authenticated_user_name', None) or 'Unknown'
+                if not head_ehh:
+                    messagebox.showerror(
+                        self.lang.get('error', 'Errore'),
+                        self.lang.get('acdc_no_head_story',
+                                      'Impossibile determinare reparto/funzione del responsabile loggato.'),
+                        parent=self)
+                    return
+                attribuisci_cdc_gui.open_attribuisci_cdc(self, self.db, self.lang, head_ehh, un)
+            except Exception as e:
+                logger.error(f"Errore apertura Attribuisci CDC: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"{self.lang.get('acdc_open_error', 'Impossibile aprire Attribuisci CDC')}:\n{e}",
+                    parent=self)
+        self._execute_authorized_action('gestisci_cdc_operatore', authorized_action)
+
     def open_label_print_with_login(self):
         """Apre la finestra di stampa etichette dopo login."""
         import label_printing_gui
@@ -14196,11 +14239,16 @@ class App(tk.Tk):
         self._execute_authorized_action('tecnico_risponde_touchup', authorized_action)
 
     def _open_touchup_reports(self):
-        """Menu Touch-up 3 - Rapporti (senza login, in arrivo)."""
-        messagebox.showinfo(
-            self.lang.get('info', 'Info'),
-            self.lang.get('touchup_reports_soon', 'Sezione Rapporti Touch-up in arrivo.'),
-            parent=self)
+        """Menu Touch-up 3 - Rapporti (accesso libero, sola lettura)."""
+        try:
+            import touchup_report_gui
+            touchup_report_gui.open_touchup_report(self, self.db, self.lang)
+        except Exception as e:
+            logger.error(f"Errore apertura Report Touch-up: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"{self.lang.get('touchup_report_open_error', 'Impossibile aprire il Report Touch-up')}:\n{e}",
+                parent=self)
 
     def _open_touchup_workstation(self):
         """Menu Touch-up 4 - Setup workstation (auth 'attiva_workstation_tecnici')."""
@@ -17252,6 +17300,11 @@ class App(tk.Tk):
         self.tools_menu.add_separator()
         self.tools_menu.add_command(label=self.lang.get('submenu_settings_email', "Manage setting emails"),
                                     command=self.open_settings_email_with_login)
+        self.tools_menu.add_command(label=self.lang.get('submenu_auto_email_subscriptions',
+                                                        "Iscrizioni email automatiche"),
+                                    command=self.open_auto_email_settings_with_login)
+        self.tools_menu.add_command(label=self.lang.get('submenu_attribuisci_cdc', "Attribuisci cdc"),
+                                    command=self.open_attribuisci_cdc_with_login)
 
     def _update_help_menu(self):
         """Aggiorna il menu Aiuto"""
