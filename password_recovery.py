@@ -25,8 +25,8 @@ class PasswordRecoveryWindow(tk.Toplevel):
         self.lang = lang_manager
 
         self.title(self.lang.get('password_recovery_title', 'Recupera Password'))
-        self.geometry("500x450")
-        self.resizable(False, False)
+        self.geometry("800x580")
+        self.resizable(True, True)
 
         # Variabili per i campi di input
         self.user_id_var = tk.StringVar()
@@ -34,6 +34,15 @@ class PasswordRecoveryWindow(tk.Toplevel):
         self.name_var = tk.StringVar()
         self.email_var = tk.StringVar()
         self.cnp_var = tk.StringVar()
+
+        # Recupero per operatore SENZA email aziendale (richiede autorizzazione capo reparto)
+        self.for_other_var = tk.BooleanVar(value=False)
+        self._authorized_for_other = False
+        self._auth_user = None
+        self.other_userid_var = tk.StringVar()
+        self.other_name_var = tk.StringVar()
+        self.other_dest_email_var = tk.StringVar()
+        self.other_frame = None
 
         self._create_widgets()
 
@@ -64,6 +73,16 @@ class PasswordRecoveryWindow(tk.Toplevel):
             justify=tk.LEFT
         )
         instruction_label.pack(pady=(0, 15))
+
+        # Checkbox: recupero per operatore senza email aziendale
+        self.for_other_check = ttk.Checkbutton(
+            main_frame,
+            text=self.lang.get('recovery_for_other_checkbox',
+                               'Recupero per un operatore SENZA email aziendale (richiede autorizzazione)'),
+            variable=self.for_other_var,
+            command=self._on_toggle_for_other
+        )
+        self.for_other_check.pack(anchor=tk.W, pady=(0, 10))
 
         # Frame per i campi di input
         fields_frame = ttk.Frame(main_frame)
@@ -160,8 +179,245 @@ class PasswordRecoveryWindow(tk.Toplevel):
             command=self.destroy
         ).pack(side=tk.LEFT, padx=5)
 
+        # Frame (nascosto) per il recupero a favore di operatori senza email aziendale
+        self._build_other_frame(main_frame)
+
         # Bind Enter
         self.bind('<Return>', lambda e: self._recover_password())
+
+    # ── Recupero per operatore senza email aziendale ────────────────────────────
+    def _build_other_frame(self, parent):
+        """Crea (nascosto) il pannello per cercare le credenziali di un operatore
+        senza email aziendale, per UserID oppure Cognome+Nome."""
+        self.other_frame = ttk.LabelFrame(
+            parent,
+            text=self.lang.get('recovery_other_title',
+                               'Operatore senza email aziendale (mostra credenziali a schermo)'),
+            padding=10)
+
+        row = ttk.Frame(self.other_frame)
+        row.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(row, text=self.lang.get('recovery_other_userid', 'UserID:')).grid(
+            row=0, column=0, sticky=tk.W, padx=(0, 6), pady=3)
+        ttk.Entry(row, textvariable=self.other_userid_var, width=22).grid(
+            row=0, column=1, sticky=tk.W, pady=3)
+        ttk.Label(row, text=self.lang.get('recovery_other_name', 'oppure Cognome e Nome:')).grid(
+            row=0, column=2, sticky=tk.W, padx=(14, 6), pady=3)
+        ttk.Entry(row, textvariable=self.other_name_var, width=28).grid(
+            row=0, column=3, sticky=tk.W, pady=3)
+        # Indirizzo email a cui inviare le credenziali (l'operatore non ha email aziendale)
+        ttk.Label(row, text=self.lang.get('recovery_other_dest_email', 'Invia a (email):')).grid(
+            row=1, column=0, sticky=tk.W, padx=(0, 6), pady=3)
+        ttk.Entry(row, textvariable=self.other_dest_email_var, width=40).grid(
+            row=1, column=1, columnspan=3, sticky=tk.W, pady=3)
+        ttk.Button(row, text=self.lang.get('recovery_other_search', '🔍 Cerca e invia credenziali'),
+                   command=self._search_other).grid(row=0, column=4, rowspan=2, padx=(14, 0), pady=3)
+
+        cols = ('employee', 'cdc', 'subcdc', 'function', 'user', 'pass')
+        self.other_tree = ttk.Treeview(self.other_frame, columns=cols, show='headings', height=6)
+        for c, h, w in (
+                ('employee', self.lang.get('recovery_other_col_employee', 'Dipendente'), 190),
+                ('cdc', self.lang.get('recovery_other_col_cdc', 'Reparto'), 140),
+                ('subcdc', self.lang.get('recovery_other_col_subcdc', 'Sotto-reparto'), 140),
+                ('function', self.lang.get('recovery_other_col_function', 'Funzione'), 140),
+                ('user', self.lang.get('recovery_other_col_user', 'UserID'), 110),
+                ('pass', self.lang.get('recovery_other_col_pass', 'Password'), 120)):
+            self.other_tree.heading(c, text=h)
+            self.other_tree.column(c, width=w, anchor='w')
+        self.other_tree.tag_configure('pw', foreground='#0066cc')
+        vsb = ttk.Scrollbar(self.other_frame, orient='vertical', command=self.other_tree.yview)
+        self.other_tree.configure(yscrollcommand=vsb.set)
+        self.other_tree.pack(side='left', fill=tk.BOTH, expand=True)
+        vsb.pack(side='right', fill='y')
+
+    def _on_toggle_for_other(self):
+        """Al click sul checkbox: se attivato, richiede l'autorizzazione (capo reparto)
+        con chiave 'recupera_password_per altri' e mostra il pannello."""
+        if not self.for_other_var.get():
+            self._authorized_for_other = False
+            if self.other_frame:
+                self.other_frame.pack_forget()
+            return
+
+        if self._authorized_for_other:
+            self._show_other_frame()
+            return
+
+        master = self.master
+        if not hasattr(master, '_execute_authorized_action'):
+            messagebox.showerror(self.lang.get('error', 'Errore'),
+                                 self.lang.get('recovery_no_auth', 'Autorizzazione non disponibile.'),
+                                 parent=self)
+            self.for_other_var.set(False)
+            return
+
+        def cb():
+            self._authorized_for_other = True
+            self._auth_user = getattr(master, 'last_authenticated_user_name', None)
+            self._show_other_frame()
+
+        ok = master._execute_authorized_action('recupera_password_per_altri', cb)
+        if not ok or not self._authorized_for_other:
+            # non autorizzato o login annullato
+            self.for_other_var.set(False)
+
+    def _show_other_frame(self):
+        if self.other_frame and not self.other_frame.winfo_ismapped():
+            self.other_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+        try:
+            self.geometry("960x640")
+        except Exception:
+            pass
+
+    def _search_other(self):
+        """Cerca le credenziali dell'operatore per UserID o Cognome+Nome e le mostra."""
+        if not self._authorized_for_other:
+            messagebox.showwarning(self.lang.get('warning', 'Attenzione'),
+                                   self.lang.get('recovery_not_authorized',
+                                                 'Autorizzazione richiesta.'), parent=self)
+            return
+        userid = self.other_userid_var.get().strip() or None
+        name = self.other_name_var.get().strip() or None
+        if not userid and not name:
+            messagebox.showinfo(self.lang.get('info', 'Info'),
+                                self.lang.get('recovery_other_need_input',
+                                              'Inserire UserID oppure Cognome e Nome.'), parent=self)
+            return
+        # Email di destinazione OBBLIGATORIA: le credenziali vengono inviate lì (in rumeno)
+        dest_email = self.other_dest_email_var.get().strip()
+        import re as _re
+        if not dest_email or not _re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', dest_email):
+            messagebox.showwarning(self.lang.get('warning', 'Attenzione'),
+                                   self.lang.get('recovery_other_dest_required',
+                                                 "Inserire un indirizzo email valido a cui inviare le credenziali."),
+                                   parent=self)
+            return
+
+        query = """
+            DECLARE @NameUser NVARCHAR(50) = ?;
+            DECLARE @UserId NVARCHAR(20) = ?;
+            SELECT
+                e.EmployeeSurname + ' ' + e.EmployeeName AS Employee,
+                cc.CdcDescription,
+                cs.SubCdcDescription,
+                f.FunctionDescription,
+                k.nomeuser,
+                k.pass AS Pwd
+            FROM employee.dbo.EmployeeHireHistory h
+            INNER JOIN employee.dbo.Employees e ON h.EmployeeId = e.EmployeeId
+            INNER JOIN employee.dbo.EmployeeCdcStories ecs
+                ON ecs.EmployeeHireHistoryId = h.EmployeeHireHistoryId
+            INNER JOIN employee.dbo.CdcSub cs ON ecs.SubCdcId = cs.SubCdcId
+            INNER JOIN employee.dbo.CostCenters cc ON cs.CdcId = cc.CdcId
+            INNER JOIN employee.dbo.Functions f ON ecs.FunctionId = f.FunctionId
+            INNER JOIN resetservices.dbo.tbuserkey k ON e.EmployeeId = k.idanga
+            WHERE h.EmployeerId = 2
+              AND h.EndWorkDate IS NULL
+              AND ecs.DateOut IS NULL
+              AND (
+                (@NameUser IS NOT NULL AND e.EmployeeSurname + ' ' + e.EmployeeName = @NameUser)
+                OR
+                (@UserId IS NOT NULL AND k.nomeuser = @UserId)
+              )
+            ORDER BY cs.SubCdcDescription, f.FunctionCode,
+                     e.EmployeeSurname + ' ' + e.EmployeeName;
+        """
+        try:
+            self.db.cursor.execute(query, name, userid)
+            rows = self.db.cursor.fetchall()
+        except Exception as e:
+            logger.error(f"Recupero password per altri: {e}", exc_info=True)
+            messagebox.showerror(self.lang.get('error', 'Errore'), str(e), parent=self)
+            return
+
+        self.other_tree.delete(*self.other_tree.get_children())
+        if not rows:
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get('password_recovery_not_found',
+                              'Nessun utente trovato con i criteri specificati'), parent=self)
+            return
+        for r in rows:
+            self.other_tree.insert('', 'end', values=(
+                r.Employee or '', r.CdcDescription or '', r.SubCdcDescription or '',
+                r.FunctionDescription or '', r.nomeuser or '', r.Pwd or ''), tags=('pw',))
+        logger.info("Recupero password per altri: autorizzato da '%s', criteri userid=%r nome=%r, %d risultati",
+                    self._auth_user, userid, name, len(rows))
+
+        # Invio email in rumeno all'indirizzo fornito
+        self._send_other_email_ro(rows, dest_email)
+
+    def _send_other_email_ro(self, rows, dest_email):
+        """Invia le credenziali trovate all'indirizzo fornito, con testo in RUMENO."""
+        try:
+            import utils
+            html = self._create_other_email_html_ro(rows)
+            utils.send_email(
+                recipients=[dest_email],
+                subject='Recuperare parolă - Traceability RS',
+                body=html,
+                is_html=True)
+            logger.info("Recupero password per altri: email (RO) inviata a %s (%d righe), autorizzato da '%s'",
+                        dest_email, len(rows), self._auth_user)
+            messagebox.showinfo(
+                self.lang.get('success', 'Successo'),
+                self.lang.get('recovery_other_email_sent',
+                              'Credenziali inviate a: {0}').format(dest_email),
+                parent=self)
+        except Exception as e:
+            logger.error(f"Recupero password per altri - invio email: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"{self.lang.get('recovery_other_email_error', 'Invio email non riuscito')}:\n{e}",
+                parent=self)
+
+    def _create_other_email_html_ro(self, rows):
+        """Corpo HTML in RUMENO con le credenziali trovate (una o più righe)."""
+        logo_base64 = self._get_logo_base64()
+        righe = ""
+        for r in rows:
+            righe += (
+                "<tr>"
+                f"<td style='padding:6px 10px;border-bottom:1px solid #eee'>{r.Employee or ''}</td>"
+                f"<td style='padding:6px 10px;border-bottom:1px solid #eee'>{r.CdcDescription or ''}</td>"
+                f"<td style='padding:6px 10px;border-bottom:1px solid #eee'>{r.SubCdcDescription or ''}</td>"
+                f"<td style='padding:6px 10px;border-bottom:1px solid #eee'>{r.FunctionDescription or ''}</td>"
+                f"<td style='padding:6px 10px;border-bottom:1px solid #eee;font-family:Courier New,monospace'>{r.nomeuser or ''}</td>"
+                f"<td style='padding:6px 10px;border-bottom:1px solid #eee;font-family:Courier New,monospace'>{r.Pwd or ''}</td>"
+                "</tr>")
+        logo_html = (f'<img src="data:image/png;base64,{logo_base64}" alt="Logo" style="max-width:180px">'
+                     if logo_base64 else '')
+        return f"""
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="font-family:Arial,sans-serif;color:#333;max-width:680px;margin:0 auto;padding:20px">
+    <div style="text-align:center;border-bottom:3px solid #0066cc;padding-bottom:16px;margin-bottom:24px">
+        {logo_html}
+        <h2 style="color:#0066cc;margin-top:12px">Recuperare parolă</h2>
+    </div>
+    <p>Bună ziua,</p>
+    <p>Mai jos găsiți datele de autentificare solicitate:</p>
+    <table style="border-collapse:collapse;width:100%;font-size:13px;margin:16px 0">
+        <tr style="background:#0066cc;color:#fff">
+            <th style="padding:8px 10px;text-align:left">Angajat</th>
+            <th style="padding:8px 10px;text-align:left">Departament</th>
+            <th style="padding:8px 10px;text-align:left">Sub-departament</th>
+            <th style="padding:8px 10px;text-align:left">Funcție</th>
+            <th style="padding:8px 10px;text-align:left">Utilizator</th>
+            <th style="padding:8px 10px;text-align:left">Parolă</th>
+        </tr>
+        {righe}
+    </table>
+    <p style="background:#fff3cd;border-left:4px solid #ffc107;padding:12px;border-radius:5px">
+        Vă rugăm să păstrați aceste date în siguranță și să schimbați parola la prima autentificare.
+    </p>
+    <div style="text-align:center;font-size:12px;color:#777;margin-top:26px;padding-top:16px;border-top:1px solid #ddd">
+        <p>Acesta este un email automat. Vă rugăm să nu răspundeți la acest mesaj.</p>
+        <p><strong>Traceability RS</strong> &copy; {self._get_current_year()}</p>
+    </div>
+</body>
+</html>"""
 
     def _normalize_badge(self, badge):
         """Normalizza il numero badge aggiungendo zeri davanti se necessario"""
