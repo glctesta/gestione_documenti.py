@@ -10,8 +10,15 @@ Email contains:
   - New FAILs opened yesterday
   - Boards repaired / scrapped yesterday
   - Rolling month (1st of month → yesterday) and YTD (1 Jan → yesterday) stats
+  - Boards worked and the resulting FAIL rate, per product and per phase
   - Professional HTML with Logo.png embedded as base64
   - Excel attachment with raw + summary data
+
+FAIL rate = FAILs / boards worked, where "worked" is the distinct boards scanned
+at that phase in the period (_Q_WORKED_BREAKDOWN). It is per phase, so the same
+board counts once in every phase it went through — the same unit as the FAIL
+counts. This differs from the "Produced" figure on the KPI cards (_Q_PRODUCED),
+which counts finished boards in closed boxes once each.
 """
 from __future__ import annotations
 import base64
@@ -128,7 +135,63 @@ GROUP BY Products.ProductCode, Phases.PhaseName
 ORDER BY FailCount DESC, Products.ProductCode, Phases.PhaseName
 """
 
+# Boards worked (scanned) in the period: one row per (ProductCode, PhaseName).
+# This is the denominator of the FAIL rate: every board that passed through that
+# phase in the period, whatever the scan outcome.
+_Q_WORKED_BREAKDOWN = """
+SELECT
+    Products.ProductCode,
+    Phases.PhaseName,
+    COUNT(DISTINCT Scannings.IDBoard) AS WorkedCount
+FROM Scannings
+INNER JOIN Boards      ON Boards.IDBoard           = Scannings.IDBoard
+INNER JOIN Orders      ON Orders.IDOrder           = Boards.IDOrder
+INNER JOIN Products    ON Products.IDProduct       = Orders.IDProduct
+INNER JOIN OrderPhases ON OrderPhases.IDOrderPhase = Scannings.IDOrderPhase
+INNER JOIN Phases      ON Phases.IDPhase           = OrderPhases.IDPhase
+WHERE Scannings.ScanTimeFinish BETWEEN ? AND ?
+GROUP BY Products.ProductCode, Phases.PhaseName
+"""
+
 # ─── Data helpers ─────────────────────────────────────────────────────────────
+
+def _worked_maps(rows: list) -> tuple:
+    """
+    Split the worked breakdown into lookup maps.
+    rows: list of (ProductCode, PhaseName, WorkedCount)
+
+    Returns (by_prod_phase, by_prod, by_phase) where by_prod counts each board
+    once per phase it went through — the same unit as the FAIL counts, so the
+    ratios are consistent.
+    """
+    by_prod_phase: dict = {}
+    by_prod: Counter = Counter()
+    by_phase: Counter = Counter()
+    for prod, phase, cnt in rows:
+        cnt = int(cnt or 0)
+        by_prod_phase[(prod, phase)] = cnt
+        by_prod[prod] += cnt
+        by_phase[phase] += cnt
+    return by_prod_phase, by_prod, by_phase
+
+
+def _rate(fails: int, worked: int) -> str:
+    """FAIL rate as a display string; '—' when the denominator is unknown."""
+    if not worked:
+        return '—'
+    return f'{fails / worked * 100:.2f}%'
+
+
+def _rate_color(fails: int, worked: int) -> str:
+    if not worked:
+        return '#999'
+    pct = fails / worked * 100
+    if pct >= 5:
+        return '#c0392b'
+    if pct >= 2:
+        return '#e67e22'
+    return '#27ae60'
+
 
 def _fetch(conn, sql: str, params: tuple) -> list:
     try:
@@ -211,43 +274,76 @@ def _logo_base64() -> str:
         return ''
 
 
-def _top_table(items: list, col1: str, col2: str) -> str:
+def _top_table(items: list, col1: str, col2: str, worked: dict | None = None) -> str:
+    """
+    Simple two-column ranking. When `worked` (name → boards worked) is given,
+    two extra columns show the worked quantity and the FAIL rate.
+    """
     if not items:
         return '<p style="color:#777;font-size:12px">No data</p>'
-    rows = ''.join(
-        f'<tr style="background:{"#f9f9f9" if i%2==0 else "#ffffff"}">'
-        f'<td style="padding:5px 10px;border:1px solid #e0e0e0">{name}</td>'
-        f'<td style="padding:5px 10px;border:1px solid #e0e0e0;text-align:center;font-weight:bold">{cnt}</td>'
-        f'</tr>'
-        for i, (name, cnt) in enumerate(items)
-    )
+    rows = ''
+    for i, (name, cnt) in enumerate(items):
+        bg = '#f9f9f9' if i % 2 == 0 else '#ffffff'
+        extra = ''
+        if worked is not None:
+            w = worked.get(name, 0)
+            extra = (
+                f'<td style="padding:5px 10px;border:1px solid #e0e0e0;'
+                f'text-align:center;color:#555">{w:,}</td>'
+                f'<td style="padding:5px 10px;border:1px solid #e0e0e0;text-align:center;'
+                f'font-weight:bold;color:{_rate_color(cnt, w)}">{_rate(cnt, w)}</td>'
+            )
+        rows += (
+            f'<tr style="background:{bg}">'
+            f'<td style="padding:5px 10px;border:1px solid #e0e0e0">{name}</td>'
+            f'<td style="padding:5px 10px;border:1px solid #e0e0e0;text-align:center;'
+            f'font-weight:bold">{cnt}</td>{extra}</tr>'
+        )
+    extra_head = ''
+    if worked is not None:
+        extra_head = (
+            '<th style="padding:5px 10px;text-align:center">Worked</th>'
+            '<th style="padding:5px 10px;text-align:center">FAIL %</th>'
+        )
     return (
         f'<table style="border-collapse:collapse;font-size:11px;width:100%">'
         f'<tr style="background:#1f3864;color:#fff">'
         f'<th style="padding:5px 10px;text-align:left">{col1}</th>'
         f'<th style="padding:5px 10px;text-align:center">{col2}</th>'
-        f'</tr>{rows}</table>'
+        f'{extra_head}</tr>{rows}</table>'
     )
 
 
-def _product_phase_table(items: list, product_top_phases: dict) -> str:
-    """Products table with top-3 fail phases inline per product row."""
+def _product_phase_table(items: list, product_top_phases: dict,
+                         worked_by_prod: dict | None = None,
+                         worked_by_prod_phase: dict | None = None) -> str:
+    """Products table with worked quantity, FAIL rate and top-3 fail phases inline."""
     if not items:
         return '<p style="color:#777;font-size:12px">No data</p>'
+    wp = worked_by_prod or {}
+    wpp = worked_by_prod_phase or {}
     rows_html = ''
     for i, (name, cnt) in enumerate(items):
         phases = product_top_phases.get(name, [])
-        phase_parts = [
-            f'<span style="color:#666">{ph}</span>:<b>{c}</b>'
-            for ph, c in phases
-        ]
+        phase_parts = []
+        for ph, c in phases:
+            w_ph = wpp.get((name, ph), 0)
+            suffix = (f'/<span style="color:#888">{w_ph:,}</span> '
+                      f'<span style="color:{_rate_color(c, w_ph)}">({_rate(c, w_ph)})</span>'
+                      if w_ph else '')
+            phase_parts.append(f'<span style="color:#666">{ph}</span>:<b>{c}</b>{suffix}')
         phase_text = ' &nbsp;·&nbsp; '.join(phase_parts) if phase_parts else '—'
         bg = '#f9f9f9' if i % 2 == 0 else '#ffffff'
+        w_tot = wp.get(name, 0)
         rows_html += (
             f'<tr style="background:{bg}">'
             f'<td style="padding:4px 10px;border:1px solid #e0e0e0">{name}</td>'
             f'<td style="padding:4px 10px;border:1px solid #e0e0e0;'
             f'text-align:center;font-weight:bold">{cnt}</td>'
+            f'<td style="padding:4px 10px;border:1px solid #e0e0e0;'
+            f'text-align:center;color:#555">{w_tot:,}</td>'
+            f'<td style="padding:4px 10px;border:1px solid #e0e0e0;text-align:center;'
+            f'font-weight:bold;color:{_rate_color(cnt, w_tot)}">{_rate(cnt, w_tot)}</td>'
             f'<td style="padding:4px 10px;border:1px solid #e0e0e0;'
             f'font-size:10px;white-space:nowrap">{phase_text}</td>'
             f'</tr>'
@@ -257,19 +353,27 @@ def _product_phase_table(items: list, product_top_phases: dict) -> str:
         f'<tr style="background:#1f3864;color:#fff">'
         f'<th style="padding:5px 10px;text-align:left">Product</th>'
         f'<th style="padding:5px 10px;text-align:center">FAILs</th>'
-        f'<th style="padding:5px 10px;text-align:left">Top Phases (3)</th>'
+        f'<th style="padding:5px 10px;text-align:center">Worked</th>'
+        f'<th style="padding:5px 10px;text-align:center">FAIL %</th>'
+        f'<th style="padding:5px 10px;text-align:left">Top Phases (3) — FAILs/Worked</th>'
         f'</tr>{rows_html}</table>'
     )
 
 
-def _fail_breakdown_section(rows: list, title: str) -> str:
+def _fail_breakdown_section(rows: list, title: str, worked_rows: list | None = None) -> str:
     """
-    Render a product × phase cross-table.
-    rows: list of (ProductCode, PhaseName, FailCount)
+    Render a product × phase cross-table. Each cell shows FAILs / boards worked
+    and the resulting FAIL rate; the Total column does the same per product.
+    rows:        list of (ProductCode, PhaseName, FailCount)
+    worked_rows: list of (ProductCode, PhaseName, WorkedCount)
     """
     if not rows:
         return ''
-    phases = list(dict.fromkeys(r[1] for r in rows if r[1]))
+    w_by_pp, w_by_prod, _ = _worked_maps(worked_rows or [])
+    # Phases coming only from the worked data still matter: a phase with output
+    # and zero FAILs is a 0% column, not a missing one.
+    phases = list(dict.fromkeys([r[1] for r in rows if r[1]] +
+                                [r[1] for r in (worked_rows or []) if r[1]]))
     prod_totals: Counter = Counter()
     matrix: dict = {}
     for prod, phase, cnt in rows:
@@ -296,30 +400,37 @@ def _fail_breakdown_section(rows: list, title: str) -> str:
         cells = ''
         for ph in phases:
             cnt = matrix.get((prod, ph), 0)
-            if cnt == 0:
-                style, val = 'color:#ccc', '—'
-            elif cnt >= 10:
-                style, val = 'color:#c0392b;font-weight:bold', str(cnt)
-            elif cnt >= 5:
-                style, val = 'color:#e67e22;font-weight:bold', str(cnt)
-            else:
-                style, val = 'color:#27ae60', str(cnt)
+            w = w_by_pp.get((prod, ph), 0)
+            if cnt == 0 and not w:
+                cells += ('<td style="padding:3px 8px;text-align:center;'
+                          'border:1px solid #eee;color:#ccc">—</td>')
+                continue
+            color = _rate_color(cnt, w)
+            weight = 'bold' if cnt else 'normal'
             cells += (
                 f'<td style="padding:3px 8px;text-align:center;border:1px solid #eee;'
-                f'{style}">{val}</td>'
+                f'color:{color};font-weight:{weight};white-space:nowrap">'
+                f'{cnt}<span style="color:#999;font-weight:normal">/{w:,}</span>'
+                f'<br><span style="font-size:9px">{_rate(cnt, w)}</span></td>'
             )
         total_cnt = prod_totals[prod]
+        total_w = w_by_prod.get(prod, 0)
         data_rows += (
             f'<tr style="background:{bg}">'
             f'<td style="padding:3px 10px;border:1px solid #eee;font-size:11px">{prod}</td>'
             f'{cells}'
             f'<td style="padding:3px 8px;text-align:center;border:1px solid #eee;'
-            f'font-weight:bold;color:#c0392b">{total_cnt}</td>'
+            f'font-weight:bold;color:#c0392b;white-space:nowrap">'
+            f'{total_cnt}<span style="color:#999;font-weight:normal">/{total_w:,}</span>'
+            f'<br><span style="font-size:9px;color:{_rate_color(total_cnt, total_w)}">'
+            f'{_rate(total_cnt, total_w)}</span></td>'
             f'</tr>'
         )
     return (
         f'<tr><td colspan="2" style="padding:12px 0 4px">'
-        f'<b style="font-size:13px;color:#1f3864">{title}</b></td></tr>'
+        f'<b style="font-size:13px;color:#1f3864">{title}</b>'
+        f'<div style="font-size:10px;color:#888">'
+        f'Each cell: FAILs / boards worked in that phase — and the FAIL rate.</div></td></tr>'
         f'<tr><td colspan="2" style="overflow-x:auto">'
         f'<table style="border-collapse:collapse;font-size:11px;width:100%">'
         f'{header}{data_rows}'
@@ -365,8 +476,12 @@ def _build_html(
     produced_yesterday: int = 0,
     produced_month:     int = 0,
     produced_ytd:       int = 0,
+    worked_yest_rows:   list | None = None,
+    worked_ytd_rows:    list | None = None,
+    fail_breakdown_ytd: list | None = None,
 ) -> str:
     logo_uri = _logo_base64()
+    w_yest_pp, w_yest_prod, w_yest_phase = _worked_maps(worked_yest_rows or [])
     logo_html = (
         f'<img src="{logo_uri}" alt="Logo" style="height:52px;margin-bottom:4px">'
         if logo_uri else ''
@@ -395,9 +510,14 @@ def _build_html(
 
     def top_section(title: str, stats: dict, show_repairs: bool) -> str:
         phase_col = 'Repairs' if show_repairs else 'FAILs'
+        # Worked quantity / FAIL rate only make sense against FAIL counts,
+        # and only where we have the matching worked breakdown (yesterday).
+        with_rates = not show_repairs and bool(w_yest_pp)
         if not show_repairs and stats.get('product_top_phases'):
             prod_table = _product_phase_table(
-                stats['products'], stats['product_top_phases']
+                stats['products'], stats['product_top_phases'],
+                w_yest_prod if with_rates else None,
+                w_yest_pp if with_rates else None,
             )
         else:
             prod_table = _top_table(stats['products'], 'Product', phase_col)
@@ -410,7 +530,8 @@ def _build_html(
             <div style="font-size:11px;color:#555;margin-bottom:4px">
               Top Phases — {phase_col}
             </div>
-            {_top_table(stats['phases'], 'Phase', phase_col)}
+            {_top_table(stats['phases'], 'Phase', phase_col,
+                        worked=dict(w_yest_phase) if with_rates else None)}
           </td>
           <td style="padding:4px 0 4px 8px;vertical-align:top;width:60%">
             <div style="font-size:11px;color:#555;margin-bottom:4px">
@@ -454,6 +575,9 @@ def _build_html(
                    repair_yesterday, True)}
       {top_section(f'Month to Date ({month_label})', repair_month, True)}
       {top_section(f'Year to Date ({year_label})',   repair_ytd,   True)}
+      {_fail_breakdown_section(fail_breakdown_ytd or [],
+                               f'FAILs by Product &amp; Phase — Year to Date ({year_label})',
+                               worked_ytd_rows)}
     </table>
   </div>
 
@@ -482,6 +606,11 @@ def _build_excel(
     month_label:          str,
     year_label:           str,
     fail_breakdown_ytd:   list | None = None,
+    worked_yest_rows:     list | None = None,
+    worked_month_rows:    list | None = None,
+    worked_ytd_rows:      list | None = None,
+    fail_breakdown_yest:  list | None = None,
+    fail_breakdown_month: list | None = None,
 ) -> bytes:
     try:
         import openpyxl
@@ -575,6 +704,7 @@ def _build_excel(
     # ── Sheet 5: FAILs by Product × Phase (YTD) ──────────────────────────────
     if fail_breakdown_ytd:
         bd_rows = fail_breakdown_ytd
+        w_ytd_pp, w_ytd_prod, _ = _worked_maps(worked_ytd_rows or [])
         phases = list(dict.fromkeys(r[1] for r in bd_rows if r[1]))
         prod_totals_bd: Counter = Counter()
         matrix_bd: dict = {}
@@ -584,8 +714,8 @@ def _build_excel(
         products_sorted_bd = [p for p, _ in prod_totals_bd.most_common()]
 
         ws_bd = wb.create_sheet(f'FAIL Breakdown YTD ({year_label})')
-        # header row: Product | phase1 | phase2 | ... | Total
-        headers_bd = ['Product'] + phases + ['Total']
+        # header row: Product | phase1 | phase2 | ... | Total FAILs | Worked | FAIL %
+        headers_bd = ['Product'] + phases + ['Total FAILs', 'Total Worked', 'FAIL %']
         _header(ws_bd, headers_bd)
         RED_FILL   = PatternFill('solid', fgColor='FADADD')
         ORG_FILL   = PatternFill('solid', fgColor='FCE4D6')
@@ -594,7 +724,11 @@ def _build_excel(
             ws_bd.cell(ri_bd, 1, prod).border = THIN
             for ci_bd, ph in enumerate(phases, 2):
                 cnt_bd = matrix_bd.get((prod, ph), 0)
-                cell = ws_bd.cell(ri_bd, ci_bd, cnt_bd if cnt_bd else None)
+                w_bd = w_ytd_pp.get((prod, ph), 0)
+                # "3 / 120" keeps both numbers visible in the matrix; the flat
+                # FAIL Rate sheet carries the numeric values for filtering.
+                val = f'{cnt_bd} / {w_bd:,}' if (cnt_bd or w_bd) else None
+                cell = ws_bd.cell(ri_bd, ci_bd, val)
                 cell.border = THIN
                 cell.alignment = Alignment(horizontal='center')
                 if cnt_bd >= 10:
@@ -603,12 +737,59 @@ def _build_excel(
                     cell.fill = ORG_FILL
                 elif cnt_bd > 0:
                     cell.fill = GRN_FILL
-            tot_cell = ws_bd.cell(ri_bd, len(headers_bd), prod_totals_bd[prod])
+            base_col = len(phases) + 2
+            tot_cell = ws_bd.cell(ri_bd, base_col, prod_totals_bd[prod])
             tot_cell.border = THIN
             tot_cell.font   = Font(bold=True)
             tot_cell.alignment = Alignment(horizontal='center')
+            w_prod = w_ytd_prod.get(prod, 0)
+            w_cell = ws_bd.cell(ri_bd, base_col + 1, w_prod or None)
+            w_cell.border = THIN
+            w_cell.alignment = Alignment(horizontal='center')
+            r_cell = ws_bd.cell(ri_bd, base_col + 2,
+                                prod_totals_bd[prod] / w_prod if w_prod else None)
+            r_cell.border = THIN
+            r_cell.number_format = '0.00%'
+            r_cell.alignment = Alignment(horizontal='center')
         ws_bd.freeze_panes = 'B2'
         _autofit(ws_bd)
+
+    # ── Sheet: FAIL rate per Product × Phase, all periods (flat & filterable) ─
+    rate_sources = [
+        (yesterday.strftime('%d/%m/%Y'), fail_breakdown_yest, worked_yest_rows),
+        (month_label,                    fail_breakdown_month, worked_month_rows),
+        (year_label,                     fail_breakdown_ytd,   worked_ytd_rows),
+    ]
+    if any(f or w for _, f, w in rate_sources):
+        ws_rate = wb.create_sheet('FAIL Rate by Product-Phase')
+        _header(ws_rate, ['Period', 'Product', 'Phase', 'Worked', 'FAILs', 'FAIL %'])
+        ri_rate = 2
+        for period, fail_rows_p, worked_rows_p in rate_sources:
+            w_pp, _, _ = _worked_maps(worked_rows_p or [])
+            fails_pp = {(r[0], r[1]): int(r[2] or 0) for r in (fail_rows_p or [])}
+            for key in sorted(set(w_pp) | set(fails_pp),
+                              key=lambda k: (-fails_pp.get(k, 0), k[0] or '', k[1] or '')):
+                prod, phase = key
+                worked = w_pp.get(key, 0)
+                fails  = fails_pp.get(key, 0)
+                for ci_rate, v in enumerate(
+                        [period, prod, phase, worked or None, fails,
+                         fails / worked if worked else None], 1):
+                    cell = ws_rate.cell(ri_rate, ci_rate, v)
+                    cell.border = THIN
+                    if ci_rate == 6:
+                        cell.number_format = '0.00%'
+                        cell.alignment = Alignment(horizontal='center')
+                        if worked and fails / worked >= 0.05:
+                            cell.fill = S_FILL
+                        elif worked and fails / worked >= 0.02:
+                            cell.fill = F_FILL
+                    elif ci_rate == 5:
+                        cell.font = Font(bold=True)
+                ri_rate += 1
+        ws_rate.freeze_panes = 'A2'
+        ws_rate.auto_filter.ref = f'A1:F{max(ri_rate - 1, 1)}'
+        _autofit(ws_rate)
 
     # ── Sheet 6: Top FAILs by Product × Phase (yesterday) ────────────────────
     if fail_rows:
@@ -628,25 +809,35 @@ def _build_excel(
         prod_sorted_pp = sorted(
             fail_by_prod.items(), key=lambda x: -x[1]['total']
         )
+        w_y_pp, w_y_prod, _ = _worked_maps(worked_yest_rows or [])
         ws_pp = wb.create_sheet(
             f'Top FAILs by Product {yesterday.strftime("%d-%m")}'
         )
         hdrs_pp = [
-            'Product', 'Total FAILs',
-            'Phase 1', 'Count 1', 'Phase 2', 'Count 2', 'Phase 3', 'Count 3',
+            'Product', 'Total FAILs', 'Total Worked', 'FAIL %',
+            'Phase 1', 'FAILs 1', 'Worked 1', 'FAIL % 1',
+            'Phase 2', 'FAILs 2', 'Worked 2', 'FAIL % 2',
+            'Phase 3', 'FAILs 3', 'Worked 3', 'FAIL % 3',
         ]
         _header(ws_pp, hdrs_pp)
+        pct_cols = {4, 8, 12, 16}
         for ri_pp, (prod, data) in enumerate(prod_sorted_pp, 2):
             top3 = data['phases'].most_common(3)
-            row_vals: list = [prod, data['total']]
+            w_prod = w_y_prod.get(prod, 0)
+            row_vals: list = [prod, data['total'], w_prod or None,
+                              data['total'] / w_prod if w_prod else None]
             for ph, c in top3:
-                row_vals.extend([ph, c])
+                w_ph = w_y_pp.get((prod, ph), 0)
+                row_vals.extend([ph, c, w_ph or None, c / w_ph if w_ph else None])
             while len(row_vals) < len(hdrs_pp):
                 row_vals.append(None)
             for ci_pp, v in enumerate(row_vals, 1):
                 cell = ws_pp.cell(ri_pp, ci_pp, v)
                 cell.border = THIN
-                if ci_pp == 2:
+                if ci_pp in pct_cols:
+                    cell.number_format = '0.00%'
+                    cell.alignment = Alignment(horizontal='center')
+                elif ci_pp == 2:
                     cell.font = Font(bold=True)
         ws_pp.freeze_panes = 'A2'
         _autofit(ws_pp)
@@ -749,8 +940,14 @@ def run_fails_daily_email(db: Any) -> None:
         produced_month     = _produced(month_start, yest_end)
         produced_ytd       = _produced(ytd_start, yest_end)
 
-        # FAILs by Product × Phase (YTD)
-        fail_breakdown_ytd = _fetch(conn, _Q_FAIL_BREAKDOWN, (ytd_start, yest_end))
+        # FAILs by Product × Phase, and the matching worked quantity used as
+        # the denominator of the FAIL rate.
+        fail_breakdown_yest  = _fetch(conn, _Q_FAIL_BREAKDOWN, (yest_start, yest_end))
+        fail_breakdown_month = _fetch(conn, _Q_FAIL_BREAKDOWN, (month_start, yest_end))
+        fail_breakdown_ytd   = _fetch(conn, _Q_FAIL_BREAKDOWN, (ytd_start, yest_end))
+        worked_yest_rows  = _fetch(conn, _Q_WORKED_BREAKDOWN, (yest_start, yest_end))
+        worked_month_rows = _fetch(conn, _Q_WORKED_BREAKDOWN, (month_start, yest_end))
+        worked_ytd_rows   = _fetch(conn, _Q_WORKED_BREAKDOWN, (ytd_start, yest_end))
 
         # ── Build stats ───────────────────────────────────────────────────────
         fail_stats_y   = _fail_stats(fail_rows_yest)
@@ -777,6 +974,9 @@ def run_fails_daily_email(db: Any) -> None:
             produced_yesterday=produced_yesterday,
             produced_month=produced_month,
             produced_ytd=produced_ytd,
+            worked_yest_rows=worked_yest_rows,
+            worked_ytd_rows=worked_ytd_rows,
+            fail_breakdown_ytd=fail_breakdown_ytd,
         )
 
         # ── Build Excel ───────────────────────────────────────────────────────
@@ -789,6 +989,11 @@ def run_fails_daily_email(db: Any) -> None:
             month_label,
             year_label,
             fail_breakdown_ytd=fail_breakdown_ytd,
+            worked_yest_rows=worked_yest_rows,
+            worked_month_rows=worked_month_rows,
+            worked_ytd_rows=worked_ytd_rows,
+            fail_breakdown_yest=fail_breakdown_yest,
+            fail_breakdown_month=fail_breakdown_month,
         )
 
         # ── Send email ────────────────────────────────────────────────────────
