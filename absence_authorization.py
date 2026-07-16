@@ -155,12 +155,127 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
         )
         close_btn.pack(side=tk.RIGHT, padx=5)
         
+    def _resolve_authorization_rule(self, employee_hire_history_id):
+        """Regola di visibilità applicabile all'utente loggato, o None.
+
+        Le regole stanno in Employee.dbo.AbsenceAuthorizationRules e si valutano
+        per Priority crescente: vince la prima che combacia su FunctionCode e/o
+        SubCdcId. Chi non combacia con nessuna regola non vede alcuna richiesta —
+        questo sostituisce il gate 'FunctionCode >= 70' che prima era cablato qui
+        e che avrebbe escluso un impiegato HR con FunctionCode basso.
+
+        Il dipartimento è il CdcId e il capo è chi ha il FunctionCode più alto,
+        per questo il contesto utente prende la storia con FunctionCode massimo.
+        """
+        ctx_query = """
+            SELECT TOP 1 f.FunctionCode, cs.SubCdcId, s.CdcId
+            FROM Employee.dbo.EmployeeCdcStories cs
+            INNER JOIN Employee.dbo.Functions f ON cs.FunctionId = f.FunctionId
+            INNER JOIN Employee.dbo.CdcSub s ON s.SubCdcId = cs.SubCdcId
+            WHERE cs.EmployeeHireHistoryId = ?
+              AND cs.DateOut IS NULL
+            ORDER BY f.FunctionCode DESC
+        """
+        rule_query = """
+            SELECT TOP 1 RuleId, RuleName, ScopeAllDepartments,
+                   MaxSubordinateFunctionCode
+            FROM Employee.dbo.AbsenceAuthorizationRules
+            WHERE DateOut IS NULL
+              AND (MatchFunctionCode IS NULL OR MatchFunctionCode = ?)
+              AND (MatchSubCdcId IS NULL OR MatchSubCdcId = ?)
+            ORDER BY Priority
+        """
+        excl_query = """
+            SELECT CdcId
+            FROM Employee.dbo.AbsenceAuthorizationRuleExclusions
+            WHERE RuleId = ?
+        """
+        try:
+            with self.db._lock:
+                self.db.cursor.execute(ctx_query, employee_hire_history_id)
+                ctx = self.db.cursor.fetchone()
+            if not ctx:
+                logger.warning(
+                    f"Nessuna EmployeeCdcStories attiva per "
+                    f"{employee_hire_history_id}: nessuna richiesta visibile")
+                return None
+
+            with self.db._lock:
+                self.db.cursor.execute(rule_query, (ctx.FunctionCode, ctx.SubCdcId))
+                rule_row = self.db.cursor.fetchone()
+            if not rule_row:
+                logger.warning(
+                    f"Utente {employee_hire_history_id} "
+                    f"(FunctionCode={ctx.FunctionCode}, SubCdcId={ctx.SubCdcId}) "
+                    f"non combacia con alcuna regola di autorizzazione assenze")
+                return None
+
+            with self.db._lock:
+                self.db.cursor.execute(excl_query, rule_row.RuleId)
+                excluded = [r[0] for r in self.db.cursor.fetchall()]
+
+            return {
+                'RuleId': rule_row.RuleId,
+                'RuleName': rule_row.RuleName,
+                'ScopeAllDepartments': bool(rule_row.ScopeAllDepartments),
+                'MaxSubordinateFunctionCode': rule_row.MaxSubordinateFunctionCode,
+                'ExcludedCdcIds': excluded,
+                'FunctionCode': ctx.FunctionCode,
+                'CdcId': ctx.CdcId,
+                'SubCdcId': ctx.SubCdcId,
+            }
+        except Exception as e:
+            logger.error(
+                f"Errore risoluzione regola autorizzazione per "
+                f"{employee_hire_history_id}: {e}", exc_info=True)
+            return None
+
+    def _load_subordinate_ids(self, rule, employee_hire_history_id):
+        """EmployeeHireHistoryId dei dipendenti visibili secondo la regola."""
+        sql = """
+            SELECT DISTINCT h.EmployeeHireHistoryId
+            FROM employee.dbo.EmployeeHireHistory h
+            INNER JOIN employee.dbo.EmployeeCdcStories css
+                ON h.EmployeeHireHistoryId = css.EmployeeHireHistoryId
+                AND css.DateOut IS NULL
+                AND h.EndWorkDate IS NULL
+                AND h.employeerid = 2
+            INNER JOIN employee.dbo.CdcSub s ON s.SubCdcId = css.SubCdcId
+            INNER JOIN employee.dbo.Functions f ON f.FunctionId = css.FunctionId
+            WHERE h.EmployeeHireHistoryId != ?
+        """
+        params = [employee_hire_history_id]
+
+        if not rule['ScopeAllDepartments']:
+            sql += " AND s.CdcId = ?"
+            params.append(rule['CdcId'])
+
+        if rule['MaxSubordinateFunctionCode'] is not None:
+            sql += " AND f.FunctionCode < ?"
+            params.append(rule['MaxSubordinateFunctionCode'])
+
+        if rule['ExcludedCdcIds']:
+            placeholders = ", ".join(["?"] * len(rule['ExcludedCdcIds']))
+            sql += f" AND s.CdcId NOT IN ({placeholders})"
+            params.extend(rule['ExcludedCdcIds'])
+
+        try:
+            with self.db._lock:
+                self.db.cursor.execute(sql, tuple(params))
+                return [r[0] for r in self.db.cursor.fetchall()
+                        if r and r[0] is not None]
+        except Exception as e:
+            logger.error(f"Errore caricamento subordinati: {e}", exc_info=True)
+            return []
+
     def _load_pending_requests(self):
         """Carica le richieste di assenza pendenti autorizzabili dal capo loggato."""
         try:
             logger.info(f"Caricamento richieste per ID login: {self.authorized_user_id}")
 
             # STEP 1: risolve EmployeeHireHistoryId del capo loggato.
+            # (i metodi _resolve_authorization_rule / _load_subordinate_ids sono
+            #  definiti sotto e implementano le regole di visibilità)
             employee_hire_history_id = None
             direct_id_query = """
                 SELECT TOP 1 EmployeeHireHistoryId
@@ -197,114 +312,52 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
                 self._populate_tree([])
                 return
 
-            # STEP 2: Verifica autorizzazione e determina livello
-            # FunctionCode >= 70 → può autorizzare subordinati nello stesso CdcId
-            # FunctionCode = 100 → può autorizzare CHIUNQUE di qualunque CdcId
-            auth_check_query = """
-                SELECT TOP 1
-                    f.FunctionCode,
-                    CASE WHEN f.FunctionCode = 100 THEN 1 ELSE 0 END AS IsGlobalAdmin,
-                    cs.SubCdcId,
-                    s.CdcId
-                FROM Employee.dbo.EmployeeCdcStories cs
-                INNER JOIN Employee.dbo.Functions f ON cs.FunctionId = f.FunctionId
-                INNER JOIN Employee.dbo.CdcSub s ON s.SubCdcId = cs.SubCdcId
-                WHERE cs.EmployeeHireHistoryId = ?
-                  AND cs.DateOut IS NULL
-                ORDER BY f.FunctionCode DESC
-            """
-            with self.db._lock:
-                self.db.cursor.execute(auth_check_query, employee_hire_history_id)
-                auth_row = self.db.cursor.fetchone()
+            # STEP 2: regola di visibilità applicabile all'utente loggato.
+            # Le regole vivono in Employee.dbo.AbsenceAuthorizationRules (vedi
+            # add_absence_authorization_rules.sql): chi non combacia con nessuna
+            # regola non vede nulla.
+            rule = self._resolve_authorization_rule(employee_hire_history_id)
 
-            if not auth_row or auth_row.FunctionCode < 70:
-                logger.warning(
-                    f"Utente {employee_hire_history_id} ha FunctionCode="
-                    f"{auth_row.FunctionCode if auth_row else 'N/A'} "
-                    f"(< 70): non autorizzato ad approvare assenze")
+            if rule is None:
                 messagebox.showwarning(
                     self.lang.get('warning', 'Attenzione'),
                     self.lang.get(
                         'no_authorization_absence',
                         'Non si dispone delle autorizzazioni necessarie '
-                        'per approvare richieste di assenza.\n\n'
-                        'È richiesto un FunctionCode ≥ 70.'),
+                        'per approvare richieste di assenza.'),
                     parent=self
                 )
                 self.pending_requests = []
                 self._populate_tree([])
                 return
 
-            is_admin = bool(auth_row.IsGlobalAdmin == 1)  # FunctionCode = 100
-            manager_function_code = auth_row.FunctionCode
-            manager_cdc_id = auth_row.CdcId
             logger.info(
                 f"EmployeeHireHistoryId={employee_hire_history_id}, "
-                f"FunctionCode={manager_function_code}, "
-                f"CdcId={manager_cdc_id}, IsGlobalAdmin={is_admin}")
+                f"FunctionCode={rule['FunctionCode']}, CdcId={rule['CdcId']}, "
+                f"SubCdcId={rule['SubCdcId']} → regola '{rule['RuleName']}' "
+                f"(ambito={'tutti i CdC' if rule['ScopeAllDepartments'] else 'proprio CdC'}, "
+                f"maxFC={rule['MaxSubordinateFunctionCode']}, "
+                f"esclusi={rule['ExcludedCdcIds'] or '-'})")
 
-            # STEP 3: costruisce filtro gerarchia
-            subordinate_filter = ""
-            subordinate_ids = []
-            if not is_admin:
-                # FC 70-99: subordinati SOLO nel PROPRIO CdcId con FunctionCode inferiore
-                subordinate_query = """
-                SELECT h.EmployeeHireHistoryId
-                FROM employee.dbo.EmployeeHireHistory h
-                INNER JOIN employee.dbo.EmployeeCdcStories css
-                    ON h.EmployeeHireHistoryId = css.EmployeeHireHistoryId
-                    AND css.DateOut IS NULL
-                    AND h.EndWorkDate IS NULL
-                    AND h.employeerid = 2
-                INNER JOIN employee.dbo.CdcSub s ON s.SubCdcId = css.SubCdcId
-                INNER JOIN employee.dbo.Functions f ON f.FunctionId = css.FunctionId
-                WHERE s.CdcId = ?
-                  AND f.FunctionCode < ?
-                  AND h.EmployeeHireHistoryId != ?
-                """
-                with self.db._lock:
-                    self.db.cursor.execute(
-                        subordinate_query,
-                        (manager_cdc_id, manager_function_code, employee_hire_history_id))
-                    sub_rows = self.db.cursor.fetchall()
+            # STEP 3: costruisce filtro gerarchia secondo la regola.
+            # "Vede tutti" = ambito globale, nessun tetto di FunctionCode, nessuna
+            # esclusione: in quel caso basta escludere se stesso, senza enumerare.
+            sees_everyone = (
+                rule['ScopeAllDepartments']
+                and rule['MaxSubordinateFunctionCode'] is None
+                and not rule['ExcludedCdcIds']
+            )
 
-                subordinate_ids = [row[0] for row in sub_rows if row and row[0] is not None]
-
-                # FALLBACK: verifica anche tramite SP GetManagerForSingleEmployee
-                # per dipendenti con richieste pendenti che non appaiono nella CTE subordinati
-                try:
-                    pending_emp_query = """
-                        SELECT DISTINCT AR.EmployrrHireHistoryId
-                        FROM [Employee].[dbo].[AbsenceRequestes] AR
-                        WHERE AR.Approved = '1900-01-01 00:00:00.000'
-                          AND AR.EmployrrHireHistoryId NOT IN ({})
-                    """.format(', '.join(['?'] * len(subordinate_ids)) if subordinate_ids else '-1')
-                    
-                    with self.db._lock:
-                        self.db.cursor.execute(pending_emp_query, subordinate_ids if subordinate_ids else [])
-                        pending_rows = self.db.cursor.fetchall()
-
-                    for prow in pending_rows:
-                        emp_id = prow[0]
-                        try:
-                            with self.db._lock:
-                                self.db.cursor.execute(
-                                    "EXEC Employee.dbo.GetManagerForSingleEmployee @EmployeeHireHistoryId = ?",
-                                    emp_id
-                                )
-                                mgr_rows = self.db.cursor.fetchall()
-                            
-                            # Se il manager trovato dalla SP corrisponde al loggato, aggiungi
-                            for mr in mgr_rows:
-                                if mr[0] == employee_hire_history_id and emp_id not in subordinate_ids:
-                                    subordinate_ids.append(emp_id)
-                                    logger.info(f"Fallback SP: aggiunto subordinato {emp_id} via GetManagerForSingleEmployee")
-                        except Exception as sp_err:
-                            logger.debug(f"SP GetManagerForSingleEmployee non disponibile per {emp_id}: {sp_err}")
-                except Exception as fb_err:
-                    logger.warning(f"Fallback ricerca subordinati: {fb_err}")
-
-                logger.info(f"Subalterni trovati per {employee_hire_history_id}: {subordinate_ids}")
+            if sees_everyone:
+                subordinate_filter = ""
+                self_exclude_filter = "AND H.EmployeeHireHistoryId != ?"
+                query_params = [employee_hire_history_id]
+            else:
+                subordinate_ids = self._load_subordinate_ids(
+                    rule, employee_hire_history_id)
+                logger.info(
+                    f"Subalterni per {employee_hire_history_id} "
+                    f"({rule['RuleName']}): {len(subordinate_ids)}")
 
                 if not subordinate_ids:
                     logger.info("Nessun subalterno trovato, lista richieste vuota")
@@ -314,17 +367,11 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
 
                 placeholders = ", ".join(["?"] * len(subordinate_ids))
                 subordinate_filter = f"AND H.EmployeeHireHistoryId IN ({placeholders})"
-
-            # STEP 4: Query principale con filtro gerarchia
-            # L'admin (FC=100) vede tutti MA non se stesso.
-            # Il non-admin è già escluso dalla lista subordinate_ids (AND EmployeeHireHistoryId != ?).
-            # Per l'admin aggiungiamo il filtro esplicito di auto-esclusione.
-            if is_admin:
-                self_exclude_filter = "AND H.EmployeeHireHistoryId != ?"
-                query_params = [employee_hire_history_id]  # primo param: esclusione self
-            else:
+                # L'auto-esclusione è già dentro _load_subordinate_ids
                 self_exclude_filter = ""
                 query_params = list(subordinate_ids)
+
+            # STEP 4: Query principale con filtro gerarchia
 
             query = f"""
                 SELECT
