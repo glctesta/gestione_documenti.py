@@ -603,6 +603,7 @@ class DynamicShippingWindow(tk.Toplevel):
         adj_sel = ("ISNULL(a.AdjQty, 0)" if has_adj else "0")
 
         sql = f"""
+        SET NOCOUNT ON;
         DECLARE @from date = ?, @to date = ?;
         DECLARE @floor date;
         SELECT @floor = TRY_CAST(Value AS date)
@@ -655,12 +656,19 @@ class DynamicShippingWindow(tk.Toplevel):
         LEFT JOIN URGENT u ON u.IdOrder = wh.IDOrder
 {adj_join}        ORDER BY IsUrgent DESC, Residua DESC
         """
+        # IMPORTANTE: cursore DEDICATO. Questo è un batch multi-istruzione
+        # (DECLARE/SELECT-into-variable/SELECT); eseguirlo sul cursore condiviso
+        # dell'app lo lascia con result-set pendenti e rompe la fetch successiva
+        # ("Invalid cursor state"). Il cursore dedicato viene chiuso subito.
+        cur = None
         try:
             date_from = self.date_from.get_date()
             date_to = self.date_to.get_date()
-            self.db.cursor.execute(sql, (date_from, date_to))
+            cur = self.db.conn.cursor()
+            cur.execute(sql, (date_from, date_to))
+            rows = cur.fetchall()
             out = []
-            for r in self.db.cursor.fetchall():
+            for r in rows:
                 out.append({
                     'IDOrder': r.IDOrder,
                     'ProductCode': r.ProductCode,
@@ -677,15 +685,30 @@ class DynamicShippingWindow(tk.Toplevel):
         except Exception as e:
             logger.error(f"Errore lettura ordini a magazzino (FASE 1): {e}", exc_info=True)
             return []
+        finally:
+            if cur is not None:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
 
     def _adjustments_table_exists(self):
-        """True se il ledger dyn.WarehouseShippedAdjustments è già stato creato."""
+        """True se il ledger dyn.WarehouseShippedAdjustments è già stato creato.
+        Usa un cursore dedicato per non disturbare quello condiviso dell'app."""
+        cur = None
         try:
-            self.db.cursor.execute(
+            cur = self.db.conn.cursor()
+            cur.execute(
                 "SELECT OBJECT_ID('Traceability_RS.dyn.WarehouseShippedAdjustments')")
-            return self.db.cursor.fetchone()[0] is not None
+            return cur.fetchone()[0] is not None
         except Exception:
             return False
+        finally:
+            if cur is not None:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
 
     def _add_shipped_adjustment(self, id_order, product_code, qty, note):
         """Registra una correzione 'già spedito' per un ordine di produzione.
