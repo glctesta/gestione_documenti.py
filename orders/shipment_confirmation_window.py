@@ -750,6 +750,24 @@ class ShipmentConfirmationWindow(tk.Toplevel):
             })
         return rows
 
+    def _shipto_map(self, shipment_id):
+        """Mappa (PalletCode, ProductionOrderNumber) -> ShipTo per la spedizione.
+        La destinazione (Normal Shipment / Direct to final Customer) è snapshot su
+        dyn.ShipmentPallets; serve a mostrarla nel corpo email (FASE 3)."""
+        out = {}
+        try:
+            cur = self.db.conn.cursor()
+            cur.execute(
+                "SELECT PalletCode, ProductionOrderNumber, ShipTo "
+                "FROM [Traceability_RS].[dyn].[ShipmentPallets] WHERE ShipmentId = ?",
+                (shipment_id,))
+            for r in cur.fetchall():
+                out[(str(r[0] or ''), str(r[1] or ''))] = (r[2] or '').strip()
+            cur.close()
+        except Exception as e:
+            logger.error(f"_shipto_map spedizione {shipment_id}: {e}", exc_info=True)
+        return out
+
     def _gather_recipients(self, shipment_id):
         """Ritorna (am_emails, cc_emails) per la spedizione in base ai clienti finali
         coinvolti e ai toggle per cliente (dbo.ClientShipmentEmailPrefs):
@@ -829,9 +847,21 @@ class ShipmentConfirmationWindow(tk.Toplevel):
             banner = ("CORREZIONE - " if is_correction else "")
             subject = f"{banner}Conferma Spedizione N. {shipment_id} del {ship_date_str}"
 
+            # FASE 3: destinazione (direct/normal) per riga, da dyn.ShipmentPallets.
+            shipto_map = self._shipto_map(shipment_id)
+
+            def _shipto_cell(ship_to):
+                if not ship_to:
+                    return "<td></td>"
+                # Evidenzia la spedizione diretta al cliente finale.
+                if 'direct' in ship_to.lower():
+                    return (f"<td style='color:#c0392b;font-weight:bold;'>{ship_to}</td>")
+                return f"<td>{ship_to}</td>"
+
             rows_html = "".join(
                 f"<tr><td>{p['pallet']}</td><td>{p['order']}</td><td>{p['item_code']}</td>"
-                f"<td>{p['item_name']}</td><td style='text-align:center;'>{p['qty']}</td></tr>"
+                f"<td>{p['item_name']}</td><td style='text-align:center;'>{p['qty']}</td>"
+                f"{_shipto_cell(shipto_map.get((str(p['pallet']), str(p['order'])), ''))}</tr>"
                 for p in pallets
             )
             corr_note = ""
@@ -861,7 +891,7 @@ tr:nth-child(even){{background:#f8f8f8;}}
 <p>Totali: <strong>{n_pallets}</strong> pallet - <strong>{n_orders}</strong> ordini -
    <strong>{total_qty}</strong> pezzi.</p>
 <table>
-  <tr><th>Pallet</th><th>Ordine Prod.</th><th>Codice</th><th>Prodotto</th><th>Qta</th></tr>
+  <tr><th>Pallet</th><th>Ordine Prod.</th><th>Codice</th><th>Prodotto</th><th>Qta</th><th>Destinazione</th></tr>
   {rows_html}
 </table>
 <p class="footer">In allegato: lista per pallet e riepilogo spedizione (PDF).<br/>
