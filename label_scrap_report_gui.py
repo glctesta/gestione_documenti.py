@@ -220,11 +220,13 @@ class LabelScrapReportWindow(tk.Toplevel):
             import label_scrap_pdf
             df, dt = self._dates()
             by_reason, by_category, by_operator = self._aggregates()
+            wr = label_scrap_pdf.get_warehouse_responsible(self.db.conn)
             temp_dir = r'c:\Temp'
             os.makedirs(temp_dir, exist_ok=True)
             path = os.path.join(temp_dir, f"ScartiEtichette_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
             label_scrap_pdf.generate_report_pdf(path, df, dt, self._operator(), self._rows,
-                                                by_reason, by_category, by_operator)
+                                                by_reason, by_category, by_operator,
+                                                warehouse_responsible=wr)
             self._offer_open(path)
         except Exception as e:
             logger.error(f"Export PDF: {e}", exc_info=True)

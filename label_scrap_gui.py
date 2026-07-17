@@ -311,8 +311,10 @@ class LabelScrapDeclarationWindow(tk.Toplevel):
             fd, path = tempfile.mkstemp(
                 suffix='.pdf', prefix=f'ScartiEtichette_{self.operator[:20]}_')
             os.close(fd)
+            wr = label_scrap_pdf.get_warehouse_responsible(self.db.conn)
             label_scrap_pdf.generate_declaration_pdf(
-                path, self.operator, self._get_date(), self._session_rows)
+                path, self.operator, self._get_date(), self._session_rows,
+                warehouse_responsible=wr)
             label_scrap_pdf.print_pdf(path)
             # Segna come stampate le righe della sessione
             ids = [r['id'] for r in self._session_rows]

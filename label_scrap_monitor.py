@@ -129,6 +129,7 @@ class LabelScrapMonitor:
 
         # 1) stampa un PDF per ogni operatore (salta chi ha già stampato = non è nella lista)
         import label_scrap_pdf
+        wr = label_scrap_pdf.get_warehouse_responsible(self.db.conn)
         by_op = {}
         for r in rows:
             by_op.setdefault(r.Operator, []).append(r)
@@ -139,7 +140,8 @@ class LabelScrapMonitor:
                 os.close(fd)
                 pdf_rows = [{'label': x.LabelCode, 'reason': x.Reason, 'category': x.Category,
                              'time': x.DateIn.strftime('%H:%M:%S') if x.DateIn else ''} for x in orows]
-                label_scrap_pdf.generate_declaration_pdf(path, operator, now.date(), pdf_rows)
+                label_scrap_pdf.generate_declaration_pdf(path, operator, now.date(), pdf_rows,
+                                                         warehouse_responsible=wr)
                 label_scrap_pdf.print_pdf(path)
                 printed_ids.extend([x.LabelScrapId for x in orows])
             except Exception as e:
@@ -217,8 +219,10 @@ class LabelScrapMonitor:
             import label_scrap_pdf
             fd, pdf_path = tempfile.mkstemp(suffix='.pdf', prefix='ScartiEtichette_')
             os.close(fd)
+            wr = label_scrap_pdf.get_warehouse_responsible(self.db.conn)
             label_scrap_pdf.generate_report_pdf(pdf_path, date_from, date_to, None, detail,
-                                                by_reason, by_category, by_operator)
+                                                by_reason, by_category, by_operator,
+                                                warehouse_responsible=wr)
             attachments.append(pdf_path); tmp.append(pdf_path)
 
             xls_path = self._build_excel(extra_rows_for_excel or detail)

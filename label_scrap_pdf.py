@@ -10,6 +10,7 @@ label_scrap_pdf.py — generazione PDF per gli scarti etichette.
 Riusa il pattern logo/reportlab di orders/shipment_pdf.py.
 """
 import os
+import sys
 import logging
 from datetime import datetime
 
@@ -17,13 +18,78 @@ logger = logging.getLogger(__name__)
 
 
 def _get_logo_path():
-    base = os.path.dirname(os.path.abspath(__file__))
-    for p in (os.path.join(base, "Logo.png"),
-              os.path.join(base, "docs", "Logo.png"),
-              os.path.join(base, "logo.png")):
-        if os.path.isfile(p):
-            return p
+    """Trova Logo.png sia da sorgente sia dall'eseguibile compilato (PyInstaller
+    onedir: accanto all'exe o in _internal; onefile: _MEIPASS)."""
+    bases = [os.path.dirname(os.path.abspath(__file__))]
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        bases += [exe_dir, os.path.join(exe_dir, '_internal')]
+    mei = getattr(sys, '_MEIPASS', None)
+    if mei:
+        bases.append(mei)
+    names = ["Logo.png", "logo.png", os.path.join("docs", "Logo.png")]
+    for b in bases:
+        for n in names:
+            p = os.path.join(b, n)
+            if os.path.isfile(p):
+                return p
+    logger.warning("Logo.png non trovato (percorsi controllati: %s)", bases)
     return None
+
+
+def get_warehouse_responsible(conn):
+    """Nome del responsabile magazzino (Logistica, CdcId=3, FunctionCode>61).
+    Ritorna la stringa nome o '' se non trovato. Richiede una connessione pyodbc."""
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT TOP 1 Employees.EmployeeSurname + ' ' + Employees.EmployeeName AS Employee
+            FROM Employee.dbo.EmployeeHireHistory
+            INNER JOIN Employee.dbo.Employees
+                ON EmployeeHireHistory.EmployeeId = Employees.EmployeeId
+            INNER JOIN Employee.dbo.EmployeeCdcStories
+                ON EmployeeCdcStories.EmployeeHireHistoryId = EmployeeHireHistory.EmployeeHireHistoryId
+            INNER JOIN Employee.dbo.CdcSub ON EmployeeCdcStories.SubCdcId = CdcSub.SubCdcId
+            INNER JOIN Employee.dbo.CostCenters ON CdcSub.CdcId = CostCenters.CdcId
+            INNER JOIN Employee.dbo.Functions ON EmployeeCdcStories.FunctionId = Functions.FunctionId
+            INNER JOIN resetservices.dbo.tbuserkey k ON Employees.employeeid = k.idanga
+            INNER JOIN Employee.dbo.EmployeeAddress A
+                ON A.EmployeeId = Employees.EmployeeId AND A.DateOut IS NULL
+            WHERE EmployeeHireHistory.EmployeerId = 2
+              AND EmployeeHireHistory.EndWorkDate IS NULL
+              AND EmployeeCdcStories.DateOut IS NULL
+              AND CostCenters.cdcid = 3 AND Functions.FunctionCode > 61
+        """)
+        row = cur.fetchone()
+        cur.close()
+        return (row[0] or '') if row else ''
+    except Exception as e:
+        logger.error(f"get_warehouse_responsible: {e}", exc_info=True)
+        return ''
+
+
+def _draw_signatures(c, f, width, operator, warehouse_responsible, y=None):
+    """Disegna due riquadri firma: operatore dichiarante e responsabile magazzino."""
+    from reportlab.lib.units import cm
+    if y is None:
+        y = 3.6 * cm
+    col_w = (width - 4 * cm) / 2
+    for i, (title, name) in enumerate((
+            ("Operatore (dichiarante)", operator or ''),
+            ("Responsabile magazzino", warehouse_responsible or ''))):
+        x = 2 * cm + i * col_w
+        c.setFont(f["b"], 9)
+        c.setFillColorRGB(0.1, 0.1, 0.1)
+        c.drawString(x, y, title)
+        c.setFont(f["n"], 10)
+        c.drawString(x, y - 0.55 * cm, name)
+        # linea per la firma
+        c.setStrokeColorRGB(0.3, 0.3, 0.3)
+        c.setLineWidth(0.6)
+        c.line(x, y - 1.5 * cm, x + col_w - 1 * cm, y - 1.5 * cm)
+        c.setFont(f["n"], 8)
+        c.setFillColorRGB(0.5, 0.5, 0.5)
+        c.drawString(x, y - 1.9 * cm, "Firma")
 
 
 def _register_font():
@@ -118,8 +184,9 @@ def _table(c, f, x, y, headers, rows, col_w, width, height, row_h=0.62):
     return cy
 
 
-def generate_declaration_pdf(pdf_path, operator, scrap_date, rows):
-    """Riepilogo dichiarazione scarti etichette di un operatore.
+def generate_declaration_pdf(pdf_path, operator, scrap_date, rows, warehouse_responsible=''):
+    """Riepilogo dichiarazione scarti etichette di un operatore, con riquadri firma
+    (operatore dichiarante + responsabile magazzino).
     rows: lista di dict con keys: label, reason, category, time.
     """
     from reportlab.pdfgen import canvas
@@ -147,15 +214,20 @@ def generate_declaration_pdf(pdf_path, operator, scrap_date, rows):
     y = _table(c, f, 2 * cm, y, ["#", "Etichetta", "Motivo", "Categoria", "Ora"],
                data, [1.0, 6.5, 5.0, 2.5, 2.0], width, height)
 
+    # Riquadri firma in fondo alla pagina (se lo spazio è poco, nuova pagina).
+    if y < 5.5 * cm:
+        c.showPage()
+    _draw_signatures(c, f, width, operator, warehouse_responsible)
+
     c.setFont(f["n"], 8)
     c.setFillColorRGB(0.5, 0.5, 0.5)
-    c.drawString(2 * cm, 1.5 * cm, "TraceabilityRS — documento generato automaticamente")
+    c.drawString(2 * cm, 1.2 * cm, "TraceabilityRS — documento generato automaticamente")
     c.save()
     return pdf_path
 
 
 def generate_report_pdf(pdf_path, date_from, date_to, operator_filter, detail_rows,
-                        by_reason, by_category, by_operator):
+                        by_reason, by_category, by_operator, warehouse_responsible=''):
     """Report scarti etichette con logo, dettaglio + riepiloghi.
     detail_rows: (date, operator, label, reason, category, shift)
     by_reason/by_category/by_operator: liste di (label, count).
@@ -203,9 +275,14 @@ def generate_report_pdf(pdf_path, date_from, date_to, operator_filter, detail_ro
                ["Data", "Operatore", "Etichetta", "Motivo", "Cat.", "Turno"],
                data, [2.2, 3.0, 3.4, 3.8, 2.0, 1.6], width, height)
 
+    # Riquadri firma (operatore filtrato + responsabile magazzino)
+    if y < 5.5 * cm:
+        c.showPage()
+    _draw_signatures(c, f, width, operator_filter or '', warehouse_responsible)
+
     c.setFont(f["n"], 8)
     c.setFillColorRGB(0.5, 0.5, 0.5)
-    c.drawString(2 * cm, 1.5 * cm,
+    c.drawString(2 * cm, 1.2 * cm,
                  f"TraceabilityRS — generato il {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     c.save()
     return pdf_path
