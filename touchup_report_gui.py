@@ -27,6 +27,10 @@ logger = logging.getLogger("TraceabilityRS")
 
 STATUS_OPEN = ('NEW', 'REOPENED')
 
+# Soglia oltre la quale una coppia (prodotto, errore) è considerata RICORRENTE:
+# se ricorre nonostante le soluzioni dichiarate, le azioni correttive vanno riviste.
+RECUR_THRESHOLD = 3
+
 
 # ─── SQL ──────────────────────────────────────────────────────────────────────
 
@@ -269,6 +273,58 @@ def run_report(conn, filters: dict) -> dict:
         out.sort(key=lambda x: x['key'])
         return out
 
+    def _agg_product_problem():
+        """Ricorrenza per (prodotto, errore) con le soluzioni dichiarate dai tecnici.
+        Se la stessa coppia prodotto+errore ricorre (>= soglia) e continuano a
+        comparire le stesse segnalazioni nonostante le soluzioni, e' segnale che le
+        azioni correttive non sono state valide o non effettivamente attuate."""
+        acc = {}
+        for rep in reports:
+            rid = rep['TouchUpReportId']
+            prods = [x.get('ProductCode') for x in labels_by_rep.get(rid, [])
+                     if x.get('ProductCode')] or ['—']
+            probs = [(p.get('ProblemDescription') or p.get('ProblemCode') or '—')
+                     for p in problems_by_rep.get(rid, [])] or ['—']
+            actions = rep.get('ActionsStr') or ''
+            created = rep['CreatedAt']
+            reopened = (rep['ReopenCount'] or 0) > 0
+            for pc in dict.fromkeys(prods):
+                for pb in dict.fromkeys(probs):
+                    d = acc.setdefault((pc, pb), {'reports': set(), 'reopened': set(),
+                                                  'solutions': [], 'first': None, 'last': None})
+                    d['reports'].add(rid)
+                    if reopened:
+                        d['reopened'].add(rid)
+                    if actions:
+                        d['solutions'].append(actions)
+                    if created:
+                        d['first'] = created if d['first'] is None else min(d['first'], created)
+                        d['last'] = created if d['last'] is None else max(d['last'], created)
+        out = []
+        for (pc, pb), d in acc.items():
+            n = len(d['reports'])
+            sols, seen = [], set()
+            for s in d['solutions']:
+                if s not in seen:
+                    seen.add(s)
+                    sols.append(s)
+            recurring = n >= RECUR_THRESHOLD
+            if recurring and sols:
+                flag = 'RICORRENTE nonostante soluzioni'
+            elif recurring and not sols:
+                flag = 'RICORRENTE senza soluzioni'
+            else:
+                flag = ''
+            out.append({
+                'product': pc, 'problem': pb, 'count': n,
+                'reopened': len(d['reopened']), 'n_solutions': len(sols),
+                'solutions': ' | '.join(sols),
+                'first': d['first'], 'last': d['last'],
+                'recurring': recurring, 'flag': flag,
+            })
+        out.sort(key=lambda x: (x['count'], x['reopened']), reverse=True)
+        return out
+
     return {
         'reports': reports, 'labels': labels, 'problems': problems,
         'responses': responses, 'problems_by_rep': problems_by_rep,
@@ -276,6 +332,7 @@ def run_report(conn, filters: dict) -> dict:
         'by_defect': _agg_defect(),
         'by_client': _agg_by(lambda l: l.get('ClientName')),
         'by_product': _agg_by(lambda l: l.get('ProductCode')),
+        'by_product_problem': _agg_product_problem(),
         'by_dept': _agg_dept(),
         'by_period_day': _agg_period('day'),
         'by_period_week': _agg_period('week'),
@@ -366,6 +423,13 @@ def export_excel(data: dict, meta: dict) -> str:
     _sheet(wb.create_sheet(), 'Per prodotto',
            ['Prodotto', 'Segnalazioni', '%'],
            [[d['key'], d['count'], d['pct']] for d in data['by_product']], [30, 12, 8])
+    _sheet(wb.create_sheet(), 'Ricorrenze prod-errore',
+           ['Prodotto', 'Errore', 'Occorrenze', 'Riaperture', 'N. soluzioni',
+            'Soluzioni dichiarate', 'Prima', 'Ultima', 'Segnale'],
+           [[d['product'], d['problem'], d['count'], d['reopened'], d['n_solutions'],
+             d['solutions'], _fmt_dt(d['first']), _fmt_dt(d['last']), d['flag']]
+            for d in data.get('by_product_problem', [])],
+           [22, 30, 12, 12, 12, 45, 16, 16, 28])
     _sheet(wb.create_sheet(), 'Per reparto',
            ['Reparto', 'Segnalazioni', '%'],
            [[d['key'], d['count'], d['pct']] for d in data['by_dept']], [30, 12, 8])
@@ -455,6 +519,21 @@ def export_pdf(data: dict, meta: dict) -> str:
     story.append(_tbl(['Prodotto', 'Segn.', '%'],
                       [[d['key'], d['count'], d['pct']] for d in data['by_product']],
                       [14 * cm, 2 * cm, 1.6 * cm]))
+    story.append(Spacer(1, 10))
+
+    # Ricorrenze prodotto × errore (validità soluzioni)
+    story.append(Paragraph("Ricorrenze prodotto × errore — validità delle soluzioni", h2))
+    story.append(Paragraph(
+        f"Coppie prodotto+errore ricorrenti (≥{RECUR_THRESHOLD} segnalazioni): se persistono "
+        f"nonostante le soluzioni dichiarate dai tecnici, le azioni correttive vanno verificate.",
+        small))
+    story.append(Spacer(1, 3))
+    story.append(_tbl(
+        ['Prodotto', 'Errore', 'Occ.', 'Riap.', 'N.sol', 'Soluzioni dichiarate', 'Prima', 'Ultima', 'Segnale'],
+        [[d['product'], d['problem'], d['count'], d['reopened'], d['n_solutions'],
+          d['solutions'], _fmt_dt(d['first']), _fmt_dt(d['last']), d['flag']]
+         for d in data.get('by_product_problem', [])],
+        [3.0 * cm, 4.5 * cm, 1.2 * cm, 1.2 * cm, 1.2 * cm, 6.0 * cm, 2.2 * cm, 2.2 * cm, 4.0 * cm]))
     story.append(Spacer(1, 10))
 
     # Dettaglio
@@ -645,6 +724,39 @@ class TouchUpReportWindow(tk.Toplevel):
             ('key', 'count', 'pct'),
             (L('tur_c_dept', 'Reparto'), L('tur_sc_count', 'Segnalazioni'), '%'),
             (340, 110, 70))
+
+        # Ricorrenze prodotto × errore (validità soluzioni tecnici)
+        fr_rec = ttk.Frame(sub)
+        sub.add(fr_rec, text=L('tur_sum_recurr', 'Ricorrenze prodotto×errore'))
+        tk.Label(fr_rec, bg='#FFF8E1', fg='#7B4B00', anchor='w', justify='left', padx=8, pady=4,
+                 text=L('tur_recurr_hint',
+                        'Coppie prodotto+errore che ricorrono (≥{0} segnalazioni): se persistono '
+                        'nonostante le soluzioni dichiarate, le azioni correttive vanno verificate.'
+                        ).format(RECUR_THRESHOLD)).pack(fill=tk.X)
+        rc_cols = ('product', 'problem', 'count', 'reopened', 'nsol', 'solutions', 'first', 'last', 'flag')
+        rc_heads = (L('tur_c_product', 'Prodotto'), L('tur_c_defect', 'Errore'),
+                    L('tur_rc_count', 'Occorrenze'), L('tur_rc_reopen', 'Riaperture'),
+                    L('tur_rc_nsol', 'N. sol.'), L('tur_rc_solutions', 'Soluzioni dichiarate'),
+                    L('tur_rc_first', 'Prima'), L('tur_rc_last', 'Ultima'), L('tur_rc_flag', 'Segnale'))
+        rc_w = (140, 210, 80, 80, 55, 300, 90, 90, 210)
+        rc_wrap = ttk.Frame(fr_rec)
+        rc_wrap.pack(fill=tk.BOTH, expand=True)
+        tv_rec = ttk.Treeview(rc_wrap, columns=rc_cols, show='headings')
+        for c, h, w in zip(rc_cols, rc_heads, rc_w):
+            tv_rec.heading(c, text=h)
+            tv_rec.column(c, width=w,
+                          anchor='w' if c in ('product', 'problem', 'solutions', 'flag') else 'center')
+        tv_rec.tag_configure('recurring', background='#FFEBEE', foreground='#B71C1C')
+        rvsb = ttk.Scrollbar(rc_wrap, orient='vertical', command=tv_rec.yview)
+        rhsb = ttk.Scrollbar(rc_wrap, orient='horizontal', command=tv_rec.xview)
+        tv_rec.configure(yscrollcommand=rvsb.set, xscrollcommand=rhsb.set)
+        tv_rec.grid(row=0, column=0, sticky='nsew')
+        rvsb.grid(row=0, column=1, sticky='ns')
+        rhsb.grid(row=1, column=0, sticky='ew')
+        rc_wrap.rowconfigure(0, weight=1)
+        rc_wrap.columnconfigure(0, weight=1)
+        self._sum_trees['recurr'] = tv_rec
+
         # periodo con selettore granularità
         fr = ttk.Frame(sub)
         sub.add(fr, text=L('tur_sum_period', 'Per periodo'))
@@ -778,6 +890,15 @@ class TouchUpReportWindow(tk.Toplevel):
                                                  r['reopened']))
                 else:
                     tv.insert('', 'end', values=(r['key'], r['count'], r['pct']))
+        # Ricorrenze prodotto × errore
+        tvr = self._sum_trees.get('recurr')
+        if tvr is not None:
+            tvr.delete(*tvr.get_children())
+            for r in d.get('by_product_problem', []):
+                tvr.insert('', 'end', values=(
+                    r['product'], r['problem'], r['count'], r['reopened'], r['n_solutions'],
+                    r['solutions'], _fmt_dt(r['first']), _fmt_dt(r['last']), r['flag']),
+                    tags=('recurring',) if r['recurring'] else ())
         self._fill_period(self._v_period.get())
 
     def _fill_period(self, mode):
