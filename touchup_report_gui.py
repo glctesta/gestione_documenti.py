@@ -310,9 +310,9 @@ def run_report(conn, filters: dict) -> dict:
                     sols.append(s)
             recurring = n >= RECUR_THRESHOLD
             if recurring and sols:
-                flag = 'RICORRENTE nonostante soluzioni'
+                flag = 'RECURRING despite solutions'
             elif recurring and not sols:
-                flag = 'RICORRENTE senza soluzioni'
+                flag = 'RECURRING without solutions'
             else:
                 flag = ''
             out.append({
@@ -407,44 +407,44 @@ def export_excel(data: dict, meta: dict) -> str:
                 rep['ReopenCount'] or 0, 'Sì' if rep['BossEscalated'] else '',
                 rep['ActionsStr'],
             ])
-    _sheet(det, 'Dettaglio',
-           ['Data/ora', 'N°', 'Stato', 'Cliente', 'Prodotto', 'Ordine', 'Scheda',
-            'Difetto', 'Severità', 'Reparto', 'Operatore', '1ª risposta (min)',
-            'Riaperture', 'Escal. capo', 'Azioni'],
+    _sheet(det, 'Detail',
+           ['Date/time', 'No.', 'Status', 'Client', 'Product', 'Order', 'Board',
+            'Defect', 'Severity', 'Department', 'Operator', '1st response (min)',
+            'Reopenings', 'Boss escal.', 'Actions'],
            det_rows, [16, 6, 10, 22, 20, 16, 18, 28, 8, 20, 16, 14, 10, 10, 40])
 
-    _sheet(wb.create_sheet(), 'Per difetto',
-           ['Difetto', 'Segnalazioni', '%', 'Tempo medio (min)', 'Riaperti'],
+    _sheet(wb.create_sheet(), 'By defect',
+           ['Defect', 'Reports', '%', 'Avg time (min)', 'Reopened'],
            [[d['key'], d['count'], d['pct'], d['avg_resp_min'], d['reopened']]
             for d in data['by_defect']], [30, 12, 8, 16, 10])
-    _sheet(wb.create_sheet(), 'Per cliente',
-           ['Cliente', 'Segnalazioni', '%'],
+    _sheet(wb.create_sheet(), 'By client',
+           ['Client', 'Reports', '%'],
            [[d['key'], d['count'], d['pct']] for d in data['by_client']], [30, 12, 8])
-    _sheet(wb.create_sheet(), 'Per prodotto',
-           ['Prodotto', 'Segnalazioni', '%'],
+    _sheet(wb.create_sheet(), 'By product',
+           ['Product', 'Reports', '%'],
            [[d['key'], d['count'], d['pct']] for d in data['by_product']], [30, 12, 8])
-    _sheet(wb.create_sheet(), 'Ricorrenze prod-errore',
-           ['Prodotto', 'Errore', 'Occorrenze', 'Riaperture', 'N. soluzioni',
-            'Soluzioni dichiarate', 'Prima', 'Ultima', 'Segnale'],
+    _sheet(wb.create_sheet(), 'Product-error recurrence',
+           ['Product', 'Error', 'Occurrences', 'Reopenings', 'No. solutions',
+            'Declared solutions', 'First', 'Last', 'Flag'],
            [[d['product'], d['problem'], d['count'], d['reopened'], d['n_solutions'],
              d['solutions'], _fmt_dt(d['first']), _fmt_dt(d['last']), d['flag']]
             for d in data.get('by_product_problem', [])],
            [22, 30, 12, 12, 12, 45, 16, 16, 28])
-    _sheet(wb.create_sheet(), 'Per reparto',
-           ['Reparto', 'Segnalazioni', '%'],
+    _sheet(wb.create_sheet(), 'By department',
+           ['Department', 'Reports', '%'],
            [[d['key'], d['count'], d['pct']] for d in data['by_dept']], [30, 12, 8])
-    _sheet(wb.create_sheet(), 'Per periodo (mese)',
-           ['Periodo', 'Segnalazioni'],
+    _sheet(wb.create_sheet(), 'By period (month)',
+           ['Period', 'Reports'],
            [[d['key'], d['count']] for d in data['by_period_month']], [16, 12])
 
     k = data['kpi']
     _sheet(wb.create_sheet(), 'KPI',
-           ['Indicatore', 'Valore'],
-           [['Totale segnalazioni', k['total']], ['Aperte', k['open']],
-            ['Chiuse', k['closed']], ['Riaperte', k['reopened']],
-            ['Escalation capo', k['boss']],
-            ['Tempo medio 1ª risposta (min)', k['avg_resp_min']],
-            [f"% risposte entro {k['threshold_min']} min", k['pct_within']]],
+           ['Indicator', 'Value'],
+           [['Total reports', k['total']], ['Open', k['open']],
+            ['Closed', k['closed']], ['Reopened', k['reopened']],
+            ['Boss escalation', k['boss']],
+            ['Avg 1st response (min)', k['avg_resp_min']],
+            [f"% responses within {k['threshold_min']} min", k['pct_within']]],
            [34, 14])
 
     wb.save(path)
@@ -475,16 +475,16 @@ def export_pdf(data: dict, meta: dict) -> str:
     small = ParagraphStyle('s', parent=styles['Normal'], fontSize=7)
     story = []
 
-    story.append(Paragraph("Report Touch-up", title_st))
+    story.append(Paragraph("Touch-up Report", title_st))
     story.append(Paragraph(
-        f"Periodo: {meta['date_from']:%d/%m/%Y} → {meta['date_to']:%d/%m/%Y}",
+        f"Period: {meta['date_from']:%d/%m/%Y} → {meta['date_to']:%d/%m/%Y}",
         styles['Normal']))
     k = data['kpi']
     story.append(Paragraph(
-        f"Totale: <b>{k['total']}</b> &nbsp; Aperte: {k['open']} &nbsp; Chiuse: {k['closed']} "
-        f"&nbsp; Riaperte: {k['reopened']} &nbsp; Escalation capo: {k['boss']} &nbsp; "
-        f"Tempo medio 1ª risposta: {k['avg_resp_min'] if k['avg_resp_min'] is not None else '-'} min "
-        f"&nbsp; % entro {k['threshold_min']}min: {k['pct_within'] if k['pct_within'] is not None else '-'}",
+        f"Total: <b>{k['total']}</b> &nbsp; Open: {k['open']} &nbsp; Closed: {k['closed']} "
+        f"&nbsp; Reopened: {k['reopened']} &nbsp; Boss escalation: {k['boss']} &nbsp; "
+        f"Avg 1st response: {k['avg_resp_min'] if k['avg_resp_min'] is not None else '-'} min "
+        f"&nbsp; % within {k['threshold_min']}min: {k['pct_within'] if k['pct_within'] is not None else '-'}",
         styles['Normal']))
     story.append(Spacer(1, 8))
 
@@ -501,43 +501,43 @@ def export_pdf(data: dict, meta: dict) -> str:
         ]))
         return t
 
-    # Sintesi per difetto
-    story.append(Paragraph("Per tipo di difetto", h2))
+    # Summary by defect
+    story.append(Paragraph("By defect type", h2))
     story.append(_tbl(
-        ['Difetto', 'Segn.', '%', 'Tempo medio (min)', 'Riaperti'],
+        ['Defect', 'Reports', '%', 'Avg time (min)', 'Reopened'],
         [[d['key'], d['count'], d['pct'], d['avg_resp_min'], d['reopened']] for d in data['by_defect']],
         [10 * cm, 2 * cm, 1.6 * cm, 3.5 * cm, 2 * cm]))
     story.append(Spacer(1, 8))
 
-    # Cliente + Prodotto affiancati (due tabelle sequenziali)
-    story.append(Paragraph("Per cliente", h2))
-    story.append(_tbl(['Cliente', 'Segn.', '%'],
+    # Client + Product
+    story.append(Paragraph("By client", h2))
+    story.append(_tbl(['Client', 'Reports', '%'],
                       [[d['key'], d['count'], d['pct']] for d in data['by_client']],
                       [14 * cm, 2 * cm, 1.6 * cm]))
     story.append(Spacer(1, 8))
-    story.append(Paragraph("Per prodotto", h2))
-    story.append(_tbl(['Prodotto', 'Segn.', '%'],
+    story.append(Paragraph("By product", h2))
+    story.append(_tbl(['Product', 'Reports', '%'],
                       [[d['key'], d['count'], d['pct']] for d in data['by_product']],
                       [14 * cm, 2 * cm, 1.6 * cm]))
     story.append(Spacer(1, 10))
 
-    # Ricorrenze prodotto × errore (validità soluzioni)
-    story.append(Paragraph("Ricorrenze prodotto × errore — validità delle soluzioni", h2))
+    # Product × error recurrence (solution validity)
+    story.append(Paragraph("Product × error recurrence — solution validity", h2))
     story.append(Paragraph(
-        f"Coppie prodotto+errore ricorrenti (≥{RECUR_THRESHOLD} segnalazioni): se persistono "
-        f"nonostante le soluzioni dichiarate dai tecnici, le azioni correttive vanno verificate.",
+        f"Recurring product+error pairs (≥{RECUR_THRESHOLD} reports): if they persist despite the "
+        f"solutions declared by the technicians, the corrective actions must be verified.",
         small))
     story.append(Spacer(1, 3))
     story.append(_tbl(
-        ['Prodotto', 'Errore', 'Occ.', 'Riap.', 'N.sol', 'Soluzioni dichiarate', 'Prima', 'Ultima', 'Segnale'],
+        ['Product', 'Error', 'Occ.', 'Reop.', 'No.sol', 'Declared solutions', 'First', 'Last', 'Flag'],
         [[d['product'], d['problem'], d['count'], d['reopened'], d['n_solutions'],
           d['solutions'], _fmt_dt(d['first']), _fmt_dt(d['last']), d['flag']]
          for d in data.get('by_product_problem', [])],
         [3.0 * cm, 4.5 * cm, 1.2 * cm, 1.2 * cm, 1.2 * cm, 6.0 * cm, 2.2 * cm, 2.2 * cm, 4.0 * cm]))
     story.append(Spacer(1, 10))
 
-    # Dettaglio
-    story.append(Paragraph("Dettaglio segnalazioni", h2))
+    # Detail
+    story.append(Paragraph("Report detail", h2))
     det_rows = []
     for rep in data['reports']:
         probs = data['problems_by_rep'].get(rep['TouchUpReportId'], []) or [{}]
@@ -549,8 +549,8 @@ def export_pdf(data: dict, meta: dict) -> str:
                 rep['ReopenCount'] or 0, 'Sì' if rep['BossEscalated'] else '',
             ])
     story.append(_tbl(
-        ['Data/ora', 'N°', 'Stato', 'Cliente', 'Prodotto', 'Difetto', 'Reparto',
-         '1ª risp.(min)', 'Riap.', 'Capo'],
+        ['Date/time', 'No.', 'Status', 'Client', 'Product', 'Defect', 'Department',
+         '1st resp.(min)', 'Reop.', 'Boss'],
         det_rows,
         [2.6 * cm, 1.1 * cm, 1.6 * cm, 3.2 * cm, 2.8 * cm, 5.5 * cm, 3.2 * cm,
          1.8 * cm, 1.2 * cm, 1.1 * cm]))
@@ -650,6 +650,9 @@ class TouchUpReportWindow(tk.Toplevel):
         self._btn_pdf = ttk.Button(bar, text=L('touchup_report_export_pdf', '📄 Esporta PDF'),
                                    command=lambda: self._export('pdf'), state='disabled')
         self._btn_pdf.pack(side=tk.LEFT, padx=4)
+        self._btn_ai = ttk.Button(bar, text=L('touchup_report_ai', '🧠 Analisi AI'),
+                                   command=self._run_ai_analysis, state='disabled')
+        self._btn_ai.pack(side=tk.LEFT, padx=12)
         ttk.Button(bar, text=L('btn_close', 'Chiudi'), command=self.destroy).pack(side=tk.RIGHT, padx=4)
 
         self._load_filter_options()
@@ -844,6 +847,7 @@ class TouchUpReportWindow(tk.Toplevel):
         state = 'normal' if self._data and self._data['reports'] else 'disabled'
         self._btn_xls.config(state=state)
         self._btn_pdf.config(state=state)
+        self._btn_ai.config(state=state)
 
     def _fill_kpi(self):
         L = self.lang.get
@@ -932,6 +936,53 @@ class TouchUpReportWindow(tk.Toplevel):
             os.startfile(path)
         except Exception:
             pass
+
+    def _run_ai_analysis(self):
+        """Analisi AI (Ollama locale) della validità delle soluzioni. I numeri sono
+        già calcolati; il modello interpreta i dati esatti in un thread separato."""
+        L = self.lang.get
+        if not self._data or not self._data['reports']:
+            return
+        import touchup_ai
+        import threading
+        url, model = touchup_ai.get_config(self.db.conn)
+
+        win = tk.Toplevel(self)
+        win.title(L('touchup_ai_title', 'Analisi AI — validità soluzioni Touch-up'))
+        win.geometry('840x620')
+        win.transient(self)
+        info = tk.Label(win, anchor='w', fg='#1F3864', padx=10, pady=8,
+                        font=('Helvetica', 10, 'bold'),
+                        text=L('touchup_ai_running',
+                               'Analisi in corso sul modello locale {0} ({1})...').format(model, url))
+        info.pack(fill=tk.X)
+        txt = tk.Text(win, wrap='word', font=('Segoe UI', 10))
+        txt.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
+        txt.insert('1.0', L('touchup_ai_wait',
+                            'Attendere: il modello sta analizzando i dati (può richiedere qualche minuto).'))
+        txt.config(state='disabled')
+        bar = ttk.Frame(win)
+        bar.pack(fill=tk.X, padx=8, pady=6)
+        ttk.Button(bar, text=L('btn_close', 'Chiudi'), command=win.destroy).pack(side=tk.RIGHT)
+
+        def _done(result, err):
+            if not win.winfo_exists():
+                return
+            info.config(text=L('touchup_ai_done', 'Analisi completata — {0} ({1})').format(model, url))
+            txt.config(state='normal')
+            txt.delete('1.0', 'end')
+            txt.insert('1.0', f"⚠️ {err}" if err else result)
+            txt.config(state='disabled')
+
+        def worker():
+            try:
+                res = touchup_ai.analyze_recurrence(self._data, self._meta, url, model)
+                self.after(0, lambda: _done(res, None))
+            except Exception as e:
+                emsg = str(e)
+                self.after(0, lambda: _done(None, emsg))
+
+        threading.Thread(target=worker, daemon=True).start()
 
 
 def open_touchup_report(master, db, lang):

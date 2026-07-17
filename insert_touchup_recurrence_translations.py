@@ -22,6 +22,22 @@ TRANSLATIONS = [
     ('tur_rc_first', 'Prima', 'First', 'Prima', 'Erste', 'Första'),
     ('tur_rc_last', 'Ultima', 'Last', 'Ultima', 'Letzte', 'Sista'),
     ('tur_rc_flag', 'Segnale', 'Flag', 'Semnal', 'Signal', 'Signal'),
+    # Analisi AI
+    ('touchup_report_ai', '🧠 Analisi AI', '🧠 AI analysis', '🧠 Analiză AI',
+     '🧠 KI-Analyse', '🧠 AI-analys'),
+    ('touchup_ai_title', 'Analisi AI — validità soluzioni Touch-up',
+     'AI analysis — Touch-up solution validity', 'Analiză AI — validitatea soluțiilor Touch-up',
+     'KI-Analyse — Gültigkeit der Touch-up-Lösungen', 'AI-analys — giltighet av Touch-up-lösningar'),
+    ('touchup_ai_running', 'Analisi in corso sul modello locale {0} ({1})...',
+     'Analysis running on local model {0} ({1})...', 'Analiză în curs pe modelul local {0} ({1})...',
+     'Analyse läuft auf lokalem Modell {0} ({1})...', 'Analys pågår på lokal modell {0} ({1})...'),
+    ('touchup_ai_wait', 'Attendere: il modello sta analizzando i dati (può richiedere qualche minuto).',
+     'Please wait: the model is analyzing the data (may take a few minutes).',
+     'Așteptați: modelul analizează datele (poate dura câteva minute).',
+     'Bitte warten: das Modell analysiert die Daten (kann einige Minuten dauern).',
+     'Vänta: modellen analyserar data (kan ta några minuter).'),
+    ('touchup_ai_done', 'Analisi completata — {0} ({1})', 'Analysis complete — {0} ({1})',
+     'Analiză finalizată — {0} ({1})', 'Analyse abgeschlossen — {0} ({1})', 'Analys klar — {0} ({1})'),
 ]
 
 LANGS = ('it', 'en', 'ro', 'de', 'sv')
