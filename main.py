@@ -309,7 +309,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.4.4'  # Versione aggiornata
+APP_VERSION = '2.4.2.5.0'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -14052,6 +14052,35 @@ class App(tk.Tk):
             )
         )
 
+    def open_label_scrap_declaration_with_login(self):
+        """Dichiarazione scarti etichette (operatore) dopo login semplice.
+        Il nome operatore è letto dalla form via self.last_authenticated_user_name."""
+        def _open(_user_id):
+            try:
+                import label_scrap_gui
+                label_scrap_gui.open_label_scrap_declaration(self, self.db, self.lang)
+            except Exception as e:
+                logger.error(f"Errore apertura dichiarazione scarti etichette: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"{self.lang.get('lsc_open_err', 'Impossibile aprire la dichiarazione scarti')}:\n{e}",
+                    parent=self)
+        self._execute_simple_login(action_callback=_open)
+
+    def open_label_scrap_report_with_login(self):
+        """Report scarti etichette (Excel/PDF) dopo login semplice."""
+        def _open(_user_id):
+            try:
+                import label_scrap_report_gui
+                label_scrap_report_gui.open_label_scrap_report(self, self.db, self.lang)
+            except Exception as e:
+                logger.error(f"Errore apertura report scarti etichette: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"{self.lang.get('lsr_open_err', 'Impossibile aprire il report scarti')}:\n{e}",
+                    parent=self)
+        self._execute_simple_login(action_callback=_open)
+
     def open_kit_priority_with_login(self):
         """Apre la gestione priorità ordini kit (pianificatore) dopo login semplice."""
         import kit_preparation_gui
@@ -16488,6 +16517,16 @@ class App(tk.Tk):
         materials_menu.add_command(
             label=self.lang.get('submenu_labels', 'Etichette'),
             command=self.open_label_print_with_login
+        )
+
+        # Scarti etichette: dichiarazione (operatore) + report
+        materials_menu.add_command(
+            label=self.lang.get('submenu_label_scrap_declare', 'Dichiarazione scarti'),
+            command=self.open_label_scrap_declaration_with_login
+        )
+        materials_menu.add_command(
+            label=self.lang.get('submenu_label_scrap_report', 'Report scarti etichette'),
+            command=self.open_label_scrap_report_with_login
         )
 
         # Sottomenu Kit Preparation (spec docs/PlanRespect_KitPreparation_Spec_v1.2.md)
