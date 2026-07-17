@@ -61,6 +61,7 @@ class LabelScrapDeclarationWindow(tk.Toplevel):
         self._reason_map = {}
         self._build_ui()
         self._load_reasons()
+        self._load_unprinted()   # dichiarazioni non ancora stampate (anche giorni precedenti)
         self._refresh_counters()
         self.grab_set()
         self.scan_entry.focus_set()
@@ -175,6 +176,36 @@ class LabelScrapDeclarationWindow(tk.Toplevel):
         self.reason_combo['values'] = labels
         if labels:
             self.reason_combo.current(0)
+
+    def _load_unprinted(self):
+        """Precarica nella lista le dichiarazioni dell'operatore non ancora stampate
+        (Printed IS NULL), anche di giorni precedenti: così vengono incluse nel
+        riepilogo e nella stampa e nulla resta in sospeso."""
+        L = self.lang.get
+        try:
+            cur = self.db.conn.cursor()
+            cur.execute("""
+                SELECT ls.LabelScrapId, ls.LabelCode, r.Reason, ls.Category, ls.DateIn
+                FROM traceability_rs.dbo.labelscrap ls
+                INNER JOIN traceability_rs.dbo.LabelScrapReasons r
+                    ON r.LabelScrapReasonId = ls.LabelScrapReasonId
+                WHERE ls.Operator = ? AND ls.Printed IS NULL
+                ORDER BY ls.DateIn
+            """, (self.operator,))
+            rows = cur.fetchall()
+            cur.close()
+        except Exception as e:
+            logger.error(f"Load dichiarazioni non stampate: {e}", exc_info=True)
+            return
+        for r in rows:
+            t = r.DateIn.strftime('%d/%m %H:%M') if r.DateIn else ''
+            self._session_rows.append({'id': r.LabelScrapId, 'label': r.LabelCode,
+                                       'reason': r.Reason, 'category': r.Category, 'time': t})
+            self.tree.insert('', 'end', values=(
+                len(self._session_rows), r.LabelCode, r.Reason,
+                L('lsc_cat_' + (r.Category or '').lower(), r.Category), t))
+        if rows:
+            self.tree.yview_moveto(1.0)
 
     def _resolve_label_id(self, code):
         try:

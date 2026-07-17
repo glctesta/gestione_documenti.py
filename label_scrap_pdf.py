@@ -69,14 +69,14 @@ def get_warehouse_responsible(conn):
 
 
 def _draw_signatures(c, f, width, operator, warehouse_responsible, y=None):
-    """Disegna due riquadri firma: operatore dichiarante e responsabile magazzino."""
+    """Due riquadri firma (in rumeno): operatore dichiarante e responsabile magazzino."""
     from reportlab.lib.units import cm
     if y is None:
         y = 3.6 * cm
     col_w = (width - 4 * cm) / 2
     for i, (title, name) in enumerate((
-            ("Operatore (dichiarante)", operator or ''),
-            ("Responsabile magazzino", warehouse_responsible or ''))):
+            ("Operator (declarant)", operator or ''),
+            ("Responsabil depozit", warehouse_responsible or ''))):
         x = 2 * cm + i * col_w
         c.setFont(f["b"], 9)
         c.setFillColorRGB(0.1, 0.1, 0.1)
@@ -89,7 +89,20 @@ def _draw_signatures(c, f, width, operator, warehouse_responsible, y=None):
         c.line(x, y - 1.5 * cm, x + col_w - 1 * cm, y - 1.5 * cm)
         c.setFont(f["n"], 8)
         c.setFillColorRGB(0.5, 0.5, 0.5)
-        c.drawString(x, y - 1.9 * cm, "Firma")
+        c.drawString(x, y - 1.9 * cm, "Semnătura")
+
+
+# Categorie mostrate in rumeno nel documento
+_CATEGORY_RO = {'Production': 'Producție', 'Print': 'Tipărire'}
+
+# Clausola di responsabilità (rumeno). {op} = nome operatore.
+_DISCLAIMER_RO = (
+    "Subsemnatul {op} declar pe propria răspundere că am depus maximă diligență în "
+    "manipularea etichetelor și că sunt conștient că acestea constituie un bun cu un "
+    "cost ridicat. Sunt conștient că, în caz de neglijență, gestionare necorespunzătoare "
+    "și mai ales ca urmare a nerespectării procedurilor de producție și de utilizare a "
+    "imprimantei — pe care declar că le-am însușit și înțeles — pot fi obligat să acopăr, "
+    "în solidar, contravaloarea bunurilor deteriorate sau distruse.")
 
 
 def _register_font():
@@ -193,35 +206,53 @@ def generate_declaration_pdf(pdf_path, operator, scrap_date, rows, warehouse_res
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import cm
 
+    from reportlab.platypus import Paragraph
+    from reportlab.lib.styles import ParagraphStyle
+
     f = _register_font()
     width, height = A4
     c = canvas.Canvas(pdf_path, pagesize=A4)
     date_str = scrap_date.strftime('%d/%m/%Y') if hasattr(scrap_date, 'strftime') else str(scrap_date)
-    y = _draw_header(c, f, width, height, "Declarare rebuturi etichete",
-                     "Scarti etichette — riepilogo dichiarazione")
+    y = _draw_header(c, f, width, height, "Proces verbal predare-primire rebuturi etichete",
+                     "Declarare rebuturi etichete")
 
     c.setFont(f["n"], 10)
-    c.drawString(2 * cm, y, f"Operatore: {operator}")
+    c.setFillColorRGB(0.1, 0.1, 0.1)
+    c.drawString(2 * cm, y, f"Operator: {operator}")
     c.drawRightString(width - 2 * cm, y, f"Data: {date_str}")
     y -= 0.5 * cm
-    c.drawString(2 * cm, y, f"Totale etichette dichiarate: {len(rows)}")
+    c.drawString(2 * cm, y, f"Total etichete declarate: {len(rows)}")
     c.drawRightString(width - 2 * cm, y,
-                      f"Generato: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+                      f"Generat: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     y -= 0.8 * cm
 
     data = [(i + 1, r.get('label', ''), r.get('reason', ''),
-             r.get('category', ''), r.get('time', '')) for i, r in enumerate(rows)]
-    y = _table(c, f, 2 * cm, y, ["#", "Etichetta", "Motivo", "Categoria", "Ora"],
+             _CATEGORY_RO.get(r.get('category', ''), r.get('category', '')),
+             r.get('time', '')) for i, r in enumerate(rows)]
+    y = _table(c, f, 2 * cm, y, ["Nr.", "Etichetă", "Motiv", "Categorie", "Ora"],
                data, [1.0, 6.5, 5.0, 2.5, 2.0], width, height)
 
-    # Riquadri firma in fondo alla pagina (se lo spazio è poco, nuova pagina).
-    if y < 5.5 * cm:
+    # Clausola di responsabilità + firme in fondo. Serve spazio: ~9 cm.
+    if y < 9.5 * cm:
         c.showPage()
-    _draw_signatures(c, f, width, operator, warehouse_responsible)
+        y = height - 2 * cm
+
+    style = ParagraphStyle('disc', fontName=f["n"], fontSize=9, leading=13,
+                           alignment=4)  # justify
+    para = Paragraph(_DISCLAIMER_RO.format(op=operator or '________'), style)
+    pw, ph = para.wrap(width - 4 * cm, 6 * cm)
+    y -= 0.4 * cm
+    para.drawOn(c, 2 * cm, y - ph)
+    y -= ph + 1.2 * cm
+
+    if y < 3.5 * cm:
+        c.showPage()
+        y = height - 3 * cm
+    _draw_signatures(c, f, width, operator, warehouse_responsible, y=y)
 
     c.setFont(f["n"], 8)
     c.setFillColorRGB(0.5, 0.5, 0.5)
-    c.drawString(2 * cm, 1.2 * cm, "TraceabilityRS — documento generato automaticamente")
+    c.drawString(2 * cm, 1.2 * cm, "TraceabilityRS — document generat automat")
     c.save()
     return pdf_path
 
