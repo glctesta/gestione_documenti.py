@@ -34,6 +34,7 @@ class DynamicShippingWindow(tk.Toplevel):
         
         self.current_order_id = None  # IDOrder selezionato
         self.current_production_order_id = None  # DynamicProductionOrderID
+        self._warehouse_rows = []  # FASE 1: ordini finiti a magazzino non spediti
         self.current_remain = 0  # QuantitÃ  rimanente
         
         self.title(self.lang.get('dynamic_shipping_title', 'Gestione Spedizioni Dinamiche'))
@@ -135,12 +136,34 @@ class DynamicShippingWindow(tk.Toplevel):
         """Crea la sezione superiore con i dati ordini"""
         orders_frame = ttk.LabelFrame(parent, text=self.lang.get('orders_data', 'Dati Ordini'), padding=10)
         parent.add(orders_frame, weight=2)
-        
+
+        # Barra superiore: legenda colori + bottone abbina/correggi magazzino.
+        top_bar = ttk.Frame(orders_frame)
+        top_bar.grid(row=0, column=0, columnspan=2, sticky='ew', pady=(0, 4))
+        tk.Label(top_bar, text='  ', background='#ffe066').pack(side=tk.LEFT)
+        ttk.Label(top_bar, text=self.lang.get(
+            'wh_legend_yellow',
+            'Giallo = da abbinare (magazzino, senza ordine di vendita)')).pack(
+            side=tk.LEFT, padx=(4, 12))
+        tk.Label(top_bar, text='  ', background='#f5c6cb').pack(side=tk.LEFT)
+        ttk.Label(top_bar, text=self.lang.get(
+            'wh_legend_red',
+            'Rosso = urgente, merce già a magazzino')).pack(side=tk.LEFT, padx=(4, 12))
+        ttk.Label(top_bar, text=self.lang.get(
+            'wh_hint_dblclick',
+            '— Doppio click su una riga gialla per abbinarla a un ordine di vendita '
+            'e inserire i dati, oppure usa il bottone:'),
+            foreground='#555').pack(side=tk.LEFT, padx=(0, 8))
+        self.wh_match_btn = ttk.Button(
+            top_bar, text=self.lang.get('wh_btn_open_match', '🔗 Abbina / Correggi'),
+            command=self._open_warehouse_match, state=tk.DISABLED)
+        self.wh_match_btn.pack(side=tk.LEFT)
+
         # Treeview ordini
-        columns = ('IDOrder', 'Customer', 'SaleOrder', 'ProductionOrder', 'ItemCode', 'ItemName', 
-                  'ShipDate', 'QtyOrder', 'QtyAssigned', 'Associate', 'SMT', 'PTHM', 'ICT', 
+        columns = ('IDOrder', 'Customer', 'SaleOrder', 'ProductionOrder', 'ItemCode', 'ItemName',
+                  'ShipDate', 'QtyOrder', 'QtyAssigned', 'Associate', 'SMT', 'PTHM', 'ICT',
                   'FCT', 'Coating', 'CoatingBottom', 'OutOfBox', 'Remain')
-        
+
         self.orders_tree = ttk.Treeview(orders_frame, columns=columns, show='headings', selectmode='browse')
         
         # Nascondi IDOrder ma usalo per selezione
@@ -181,19 +204,26 @@ class DynamicShippingWindow(tk.Toplevel):
         hsb = ttk.Scrollbar(orders_frame, orient=tk.HORIZONTAL, command=self.orders_tree.xview)
         self.orders_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         
-        self.orders_tree.grid(row=0, column=0, sticky='nsew')
-        vsb.grid(row=0, column=1, sticky='ns')
-        hsb.grid(row=1, column=0, sticky='ew')
-        
-        orders_frame.grid_rowconfigure(0, weight=1)
+        self.orders_tree.grid(row=1, column=0, sticky='nsew')
+        vsb.grid(row=1, column=1, sticky='ns')
+        hsb.grid(row=2, column=0, sticky='ew')
+
+        orders_frame.grid_rowconfigure(1, weight=1)
         orders_frame.grid_columnconfigure(0, weight=1)
         
         # Bind selezione
         self.orders_tree.bind('<<TreeviewSelect>>', self._on_order_select)
+        # Doppio click su una riga "da abbinare" → abbinamento SO + destinazione
+        # oppure correzione "già spedito" (FASE 2).
+        self.orders_tree.bind('<Double-1>', self._on_order_double_click)
         
         # Tag per colorazione
         self.orders_tree.tag_configure('completed', background='#d4edda')
         self.orders_tree.tag_configure('partial', background='#fff3cd')
+        # FASE 2: righe "da abbinare" (magazzino, da abbinare a un SO) = giallo
+        # pieno; urgenti la cui merce è già a magazzino = rosso.
+        self.orders_tree.tag_configure('da_abbinare', background='#ffe066')
+        self.orders_tree.tag_configure('urgent_wh', background='#f5c6cb')
     
     def _create_shipping_rules_section(self, parent):
         """Crea la sezione inferiore per le regole di spedizione"""
@@ -465,19 +495,31 @@ class DynamicShippingWindow(tk.Toplevel):
             
             self.db.cursor.execute(query, params)
             rows = self.db.cursor.fetchall()
-            
+
+            # Ordini finiti a magazzino non ancora spediti (FASE 1).
+            # Calcolati PRIMA del ciclo per: (a) colorare di rosso gli ordini
+            # esistenti che sono urgenti e già a magazzino; (b) iniettare in coda
+            # le righe gialle "da abbinare" con la quota residua.
+            self._warehouse_rows = self._fetch_warehouse_available()
+            red_orders = {str(r['IDOrder']) for r in self._warehouse_rows
+                          if r['IsUrgent']}
+
             # Pulisci treeview
             for item in self.orders_tree.get_children():
                 self.orders_tree.delete(item)
-            
+
             # Popola treeview
             for row in rows:
                 ship_date = row.ShipDateRequest.strftime('%d/%m/%Y') if row.ShipDateRequest else ''
                 remain = row.Remain if row.Remain else 0
-                
-                # Determina tag
-                tag = 'completed' if remain == 0 else 'partial'
-                
+
+                # Rosso: ordine urgente la cui merce è già a magazzino (§4bis);
+                # altrimenti verde (completo) / giallo tenue (parziale).
+                if str(row.IDOrder) in red_orders:
+                    tag = 'urgent_wh'
+                else:
+                    tag = 'completed' if remain == 0 else 'partial'
+
                 self.orders_tree.insert('', tk.END, values=(
                     row.IDOrder,
                     row.CustomerName,
@@ -498,9 +540,33 @@ class DynamicShippingWindow(tk.Toplevel):
                     row.OutOfBox,
                     remain
                 ), tags=(tag,))
-            
-            logger.info(f"Caricati {len(rows)} ordini")
-            
+
+            # Inietta le righe "da abbinare" (gialle): ordini a magazzino con
+            # quota residua > 0 non abbinata. SO/cliente vuoti, editabili
+            # dall'operatore (FASE 2 interazione).
+            n_inject = 0
+            for w in self._warehouse_rows:
+                if w['Residua'] <= 0:
+                    continue
+                n_inject += 1
+                last_wh = w['LastWhDate'].strftime('%d/%m/%Y') if w['LastWhDate'] else ''
+                self.orders_tree.insert('', tk.END, values=(
+                    w['IDOrder'],
+                    '',                      # Customer (da abbinare)
+                    '',                      # SaleOrder (vuoto, editabile)
+                    w['OrderNumber'],        # ProductionOrder
+                    w['ProductCode'],        # ItemCode = ProductCode
+                    '',                      # ItemName
+                    last_wh,                 # ShipDate = ultima data a magazzino
+                    '', '', '', '', '', '', '', '', '',  # QtyOrder..OutOfBox n/a
+                    w['Residua']             # Remain = disponibile da abbinare
+                ), tags=('da_abbinare',))
+
+            logger.info(
+                "Caricati %d ordini + %d righe da magazzino (%d gialle 'da abbinare', "
+                "%d rosse urgenti-a-magazzino)",
+                len(rows), len(self._warehouse_rows), n_inject, len(red_orders))
+
         except Exception as e:
             logger.error(f"Errore caricamento dati ordini: {e}", exc_info=True)
             messagebox.showerror(
@@ -508,7 +574,134 @@ class DynamicShippingWindow(tk.Toplevel):
                 f"Errore caricamento dati: {e}",
                 parent=self
             )
-    
+
+    def _fetch_warehouse_available(self):
+        """FASE 1 — Ordini finiti e versati a magazzino non ancora spediti.
+
+        Riconcilia i dati di magazzino (LogApiDynamics + WarehouseFinish.Packing)
+        con l'abbinamento dei planner e con lo spedito v2, sulla chiave ordine di
+        produzione `IDOrder` (deterministica: un ordine → un prodotto). Per ogni
+        ordine, nella finestra `MAX(data_inizio_spedizioni, date_from) .. date_to`:
+
+            Residua = versato a magazzino − già abbinato (DynamicProductionOrders)
+                      − già spedito (ShipmentPallets nella finestra)
+
+        Restituisce una lista di dict con: IDOrder, ProductCode, OrderNumber,
+        WhQty, MatchedQty, ShippedQty, AdjQty, Residua, IsUrgent, LastWhDate.
+        Residua > 0 = riga "da abbinare" (gialla). IsUrgent + a magazzino = rossa.
+        Il floor `data_inizio_spedizioni` è il punto zero: prima si assume spedito.
+        AdjQty = correzione manuale "già spedito" (ledger di allineamento
+        transitorio dyn.WarehouseShippedAdjustments), sottratta dal residuo.
+        La parte correzione è inclusa solo se la tabella esiste (resiliente).
+        """
+        has_adj = self._adjustments_table_exists()
+        adj_cte = ("""        ,ADJ AS (
+            SELECT IDOrder, SUM(Qty) AS AdjQty
+            FROM traceability_rs.dyn.WarehouseShippedAdjustments GROUP BY IDOrder
+        )""" if has_adj else "")
+        adj_join = ("        LEFT JOIN ADJ a ON a.IDOrder = wh.IDOrder\n" if has_adj else "")
+        adj_sel = ("ISNULL(a.AdjQty, 0)" if has_adj else "0")
+
+        sql = f"""
+        DECLARE @from date = ?, @to date = ?;
+        DECLARE @floor date;
+        SELECT @floor = TRY_CAST(Value AS date)
+        FROM traceability_rs.dbo.Settings WHERE atribute = 'data_inizio_spedizioni';
+        DECLARE @start date = CASE WHEN @floor IS NULL OR @from > @floor THEN @from ELSE @floor END;
+
+        ;WITH WH AS (
+            SELECT o.IDOrder, p.ProductCode, o.OrderNumber,
+                   SUM(CAST(JSON_VALUE(j.value, '$.RealValue') AS int)) AS WhQty,
+                   CAST(MAX(L.CurrentDate) AS date) AS LastWhDate
+            FROM traceability_rs.dbo.LogApiDynamics L
+            INNER JOIN traceability_rs.dbo.Orders o
+                ON o.OrderNumber = JSON_VALUE(L.MessageSend, '$.Message.Reference')
+            INNER JOIN traceability_rs.dbo.Products p ON p.IDProduct = o.IDProduct
+            CROSS APPLY OPENJSON(L.MessageSend,
+                '$.Message.KeyValue.ListValue[0].ListValue[0].ListValue') j
+            WHERE L.EndPointName = 'ProdFinishedGoods'
+              AND CAST(L.CurrentDate AS date) BETWEEN @start AND @to
+              AND JSON_VALUE(j.value, '$.Key') = 'GoodQty'
+            GROUP BY o.IDOrder, p.ProductCode, o.OrderNumber
+        ),
+        MATCHED AS (
+            SELECT IdOrder, SUM(Qty) AS MatchedQty
+            FROM traceability_rs.dyn.DynamicProductionOrders GROUP BY IdOrder
+        ),
+        SHIPPED AS (
+            SELECT po.IdOrder, SUM(sp.ConfirmedQty) AS ShippedQty
+            FROM traceability_rs.dyn.ShipmentPallets sp
+            INNER JOIN traceability_rs.dyn.DynamicProductionOrders po
+                ON po.DynamicProductionOrderID = sp.DynamicProductionOrderID
+            INNER JOIN traceability_rs.dyn.Shipments s ON s.ShipmentId = sp.ShipmentId
+            WHERE s.ShipmentDate >= @start GROUP BY po.IdOrder
+        ),
+        URGENT AS (
+            SELECT DISTINCT po.IdOrder
+            FROM traceability_rs.dyn.DynamicShippingRules r
+            INNER JOIN traceability_rs.dyn.DynamicProductionOrders po
+                ON po.DynamicProductionOrderID = r.DynamicProductionOrderID
+        ){adj_cte}
+        SELECT wh.IDOrder, wh.ProductCode, wh.OrderNumber, wh.WhQty, wh.LastWhDate,
+               ISNULL(m.MatchedQty, 0) AS MatchedQty,
+               ISNULL(sh.ShippedQty, 0) AS ShippedQty,
+               {adj_sel} AS AdjQty,
+               wh.WhQty - ISNULL(m.MatchedQty, 0) - ISNULL(sh.ShippedQty, 0)
+                        - {adj_sel} AS Residua,
+               CASE WHEN u.IdOrder IS NOT NULL THEN 1 ELSE 0 END AS IsUrgent
+        FROM WH wh
+        LEFT JOIN MATCHED m ON m.IdOrder = wh.IDOrder
+        LEFT JOIN SHIPPED sh ON sh.IdOrder = wh.IDOrder
+        LEFT JOIN URGENT u ON u.IdOrder = wh.IDOrder
+{adj_join}        ORDER BY IsUrgent DESC, Residua DESC
+        """
+        try:
+            date_from = self.date_from.get_date()
+            date_to = self.date_to.get_date()
+            self.db.cursor.execute(sql, (date_from, date_to))
+            out = []
+            for r in self.db.cursor.fetchall():
+                out.append({
+                    'IDOrder': r.IDOrder,
+                    'ProductCode': r.ProductCode,
+                    'OrderNumber': r.OrderNumber,
+                    'WhQty': int(r.WhQty or 0),
+                    'MatchedQty': int(r.MatchedQty or 0),
+                    'ShippedQty': int(r.ShippedQty or 0),
+                    'AdjQty': int(r.AdjQty or 0),
+                    'Residua': int(r.Residua or 0),
+                    'IsUrgent': bool(r.IsUrgent),
+                    'LastWhDate': r.LastWhDate,
+                })
+            return out
+        except Exception as e:
+            logger.error(f"Errore lettura ordini a magazzino (FASE 1): {e}", exc_info=True)
+            return []
+
+    def _adjustments_table_exists(self):
+        """True se il ledger dyn.WarehouseShippedAdjustments è già stato creato."""
+        try:
+            self.db.cursor.execute(
+                "SELECT OBJECT_ID('Traceability_RS.dyn.WarehouseShippedAdjustments')")
+            return self.db.cursor.fetchone()[0] is not None
+        except Exception:
+            return False
+
+    def _add_shipped_adjustment(self, id_order, product_code, qty, note):
+        """Registra una correzione 'già spedito' per un ordine di produzione.
+
+        Append-only: la quantità dichiarata si somma alle correzioni esistenti e
+        viene sottratta dalla disponibilità a magazzino. Richiede la tabella
+        (creata da add_warehouse_shipped_adjustments.sql)."""
+        self.db.cursor.execute(
+            """INSERT INTO Traceability_RS.dyn.WarehouseShippedAdjustments
+               (IDOrder, ProductCode, Qty, Note, AdjustedByUser, AdjustedAt)
+               VALUES (?, ?, ?, ?, ?, GETDATE())""",
+            (id_order, product_code, qty, note, self.user_name))
+        self.db.conn.commit()
+        logger.info("Correzione 'già spedito' IDOrder=%s qty=%s utente=%s",
+                    id_order, qty, self.user_name)
+
     def _on_order_select(self, event):
         """Gestisce la selezione di un ordine"""
         selection = self.orders_tree.selection()
@@ -517,6 +710,7 @@ class DynamicShippingWindow(tk.Toplevel):
             self.current_production_order_id = None
             self.current_remain = 0
             self.add_rule_btn.config(state=tk.DISABLED)
+            self.wh_match_btn.config(state=tk.DISABLED)
             self.rules_info_label.config(text=self.lang.get('select_order_first', 'Seleziona un ordine sopra'))
             # Pulisci regole
             for item in self.rules_tree.get_children():
@@ -524,11 +718,30 @@ class DynamicShippingWindow(tk.Toplevel):
             return
         
         
+        tags = self.orders_tree.item(selection[0], 'tags')
         values = self.orders_tree.item(selection[0], 'values')
         self.current_order_id = values[0]
+
+        # Riga "da abbinare" (ordine a magazzino senza SO): non ha regole di
+        # spedizione né DynamicProductionOrderID. Si abbina con doppio click.
+        if 'da_abbinare' in tags:
+            self.current_production_order_id = None
+            self.current_remain = int(values[17]) if values[17] else 0
+            self.add_rule_btn.config(state=tk.DISABLED)
+            self.wh_match_btn.config(state=tk.NORMAL)  # abilita bottone abbina
+            for item in self.rules_tree.get_children():
+                self.rules_tree.delete(item)
+            self.rules_info_label.config(
+                text=self.lang.get(
+                    'wh_to_match_hint',
+                    'Ordine a magazzino da abbinare — doppio click (o bottone Abbina) '
+                    'per abbinare a un ordine di vendita o correggere il già spedito'))
+            return
+
+        self.wh_match_btn.config(state=tk.DISABLED)  # non è una riga magazzino
         # ðŸ†• Usa valore assoluto per rimanenti (può essere negativo nella form)
         self.current_remain = abs(int(values[17])) if values[16] else 0
-        
+
         # Ottieni DynamicProductionOrderID
         try:
             query = """
@@ -556,7 +769,34 @@ class DynamicShippingWindow(tk.Toplevel):
         
         # Carica regole
         self._load_shipping_rules()
-    
+
+    def _on_order_double_click(self, event):
+        """Doppio click su una riga 'da abbinare' → abbinamento/correzione."""
+        selection = self.orders_tree.selection()
+        if selection and 'da_abbinare' in self.orders_tree.item(selection[0], 'tags'):
+            self._open_warehouse_match()
+
+    def _open_warehouse_match(self):
+        """Apre l'abbinamento SO + destinazione / correzione 'già spedito' per la
+        riga gialla selezionata. Condiviso da doppio click e bottone."""
+        selection = self.orders_tree.selection()
+        if not selection:
+            return
+        if 'da_abbinare' not in self.orders_tree.item(selection[0], 'tags'):
+            messagebox.showinfo(
+                self.lang.get('info', 'Info'),
+                self.lang.get('wh_select_yellow',
+                              'Selezionare una riga gialla "da abbinare".'),
+                parent=self)
+            return
+        id_order = self.orders_tree.item(selection[0], 'values')[0]
+        wh = next((w for w in self._warehouse_rows
+                   if str(w['IDOrder']) == str(id_order)), None)
+        if not wh:
+            return
+        WarehouseMatchDialog(self, self.db, self.lang, self.user_name, wh,
+                             callback=self._load_order_data)
+
     def _load_shipping_rules(self):
         """Carica le regole di spedizione per l'ordine selezionato"""
         if not self.current_production_order_id:
@@ -1227,6 +1467,283 @@ class ShippingRuleDialog(tk.Toplevel):
                 f"Errore: {e}",
                 parent=self
             )
+
+
+class WarehouseMatchDialog(tk.Toplevel):
+    """FASE 2 — Abbina un ordine finito a magazzino a un ordine di vendita
+    (stesso prodotto + quantità), imposta la destinazione e crea la regola di
+    spedizione; oppure registra una correzione 'già spedito' (allineamento).
+
+    L'ordine a magazzino non ha SO: l'operatore sceglie un SO con lo stesso
+    prodotto (ItemCode = ProductCode senza suffisso |N) e residuo disponibile.
+    """
+
+    def __init__(self, master, db, lang, user_name, wh_row, callback=None):
+        super().__init__(master)
+        self.db = db
+        self.lang = lang
+        self.user_name = user_name
+        self.wh = wh_row
+        self.callback = callback
+        # ItemCode del sales order = ProductCode senza il suffisso |N (versione)
+        self.item_code = (wh_row['ProductCode'] or '').split('|')[0]
+        self._so_by_label = {}
+
+        L = self.lang.get
+        self.title(L('wh_match_title', 'Abbina ordine a magazzino'))
+        self.geometry('620x420')
+        self.transient(master)
+        self.grab_set()
+        self._build()
+        self._load_candidate_sos()
+
+    def _build(self):
+        L = self.lang.get
+        frm = ttk.Frame(self, padding=12)
+        frm.pack(fill=tk.BOTH, expand=True)
+
+        info = (f"{L('production_order', 'Ordine Produzione')}: {self.wh['OrderNumber']}   |   "
+                f"{L('product', 'Prodotto')}: {self.wh['ProductCode']}   |   "
+                f"{L('wh_available', 'Disponibile a magazzino')}: {self.wh['Residua']}")
+        ttk.Label(frm, text=info, font=('', 9, 'bold')).grid(
+            row=0, column=0, columnspan=3, sticky='w', pady=(0, 10))
+
+        # Sales order candidato
+        ttk.Label(frm, text=L('sale_order', 'Ordine Vendita') + ' *').grid(
+            row=1, column=0, sticky='w', pady=4)
+        self.so_combo = ttk.Combobox(frm, width=55, state='readonly')
+        self.so_combo.grid(row=1, column=1, columnspan=2, sticky='w', pady=4)
+
+        # Quantità
+        ttk.Label(frm, text=L('qty_to_ship', 'Quantità da Spedire') + ' *').grid(
+            row=2, column=0, sticky='w', pady=4)
+        self.qty_entry = ttk.Entry(frm, width=14)
+        self.qty_entry.grid(row=2, column=1, sticky='w', pady=4)
+        self.qty_hint = ttk.Label(frm, text='', foreground='gray')
+        self.qty_hint.grid(row=2, column=2, sticky='w', padx=6)
+
+        # Data + ora
+        ttk.Label(frm, text=L('date_to_ship', 'Data Spedizione') + ' *').grid(
+            row=3, column=0, sticky='w', pady=4)
+        self.date_entry = DateEntry(frm, width=12, date_pattern='dd/mm/yyyy', locale='it_IT')
+        self.date_entry.grid(row=3, column=1, sticky='w', pady=4)
+        tf = ttk.Frame(frm)
+        tf.grid(row=3, column=2, sticky='w')
+        self.hour_sb = ttk.Spinbox(tf, from_=0, to=23, width=4, format='%02.0f')
+        self.hour_sb.set('08'); self.hour_sb.pack(side=tk.LEFT)
+        ttk.Label(tf, text=':').pack(side=tk.LEFT)
+        self.min_sb = ttk.Spinbox(tf, from_=0, to=59, width=4, format='%02.0f')
+        self.min_sb.set('00'); self.min_sb.pack(side=tk.LEFT)
+
+        # Destinazione
+        ttk.Label(frm, text=L('ship_to', 'Destinazione') + ' *').grid(
+            row=4, column=0, sticky='w', pady=4)
+        self.shipto_combo = ttk.Combobox(
+            frm, width=28, state='readonly',
+            values=['Normal Shipment', 'Direct to final Customer'])
+        self.shipto_combo.current(0)
+        self.shipto_combo.grid(row=4, column=1, columnspan=2, sticky='w', pady=4)
+
+        # Bottoni
+        bar = ttk.Frame(frm)
+        bar.grid(row=6, column=0, columnspan=3, pady=(18, 0), sticky='w')
+        ttk.Button(bar, text=L('wh_btn_match', '✅ Abbina e crea regola'),
+                   command=self._match_and_rule).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bar, text=L('wh_btn_shipped', '📦 Già spedito (correzione)'),
+                   command=self._already_shipped).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bar, text=L('btn_close', 'Chiudi'),
+                   command=self.destroy).pack(side=tk.LEFT, padx=4)
+
+    def _load_candidate_sos(self):
+        """SO con lo stesso prodotto (ItemCode = ProductCode senza |N) e residuo > 0."""
+        L = self.lang.get
+        try:
+            self.db.cursor.execute("""
+                SELECT d.DynamicSaleOrderId, d.SONumber, d.CustomerName, d.QtyOrder,
+                       d.QtyOrder - ISNULL((
+                           SELECT SUM(po.Qty)
+                           FROM Traceability_RS.dyn.DynamicProductionOrders po
+                           WHERE po.DynamicSaleOrderId = d.DynamicSaleOrderId), 0) AS Residuo
+                FROM Traceability_RS.dyn.DynamicSaleOrders d
+                WHERE d.ItemCode = ?
+                  AND d.QtyOrder - ISNULL((
+                          SELECT SUM(po.Qty)
+                          FROM Traceability_RS.dyn.DynamicProductionOrders po
+                          WHERE po.DynamicSaleOrderId = d.DynamicSaleOrderId), 0) > 0
+                ORDER BY d.ShipDateRequest
+            """, (self.item_code,))
+            rows = self.db.cursor.fetchall()
+        except Exception as e:
+            logger.error(f"Errore caricamento SO candidati: {e}", exc_info=True)
+            rows = []
+        self._so_by_label = {}
+        labels = []
+        for r in rows:
+            label = f"{r.SONumber} — {r.CustomerName or ''} (residuo {int(r.Residuo)})"
+            self._so_by_label[label] = {'id': r.DynamicSaleOrderId, 'residuo': int(r.Residuo)}
+            labels.append(label)
+        self.so_combo['values'] = labels
+        if labels:
+            self.so_combo.current(0)
+            self._sync_qty_hint()
+            self.so_combo.bind('<<ComboboxSelected>>', lambda _e: self._sync_qty_hint())
+        else:
+            self.qty_hint.config(
+                text=L('wh_no_so', 'Nessun ordine di vendita con questo prodotto'),
+                foreground='#c0392b')
+
+    def _sync_qty_hint(self):
+        sel = self._so_by_label.get(self.so_combo.get())
+        if not sel:
+            return
+        cap = min(self.wh['Residua'], sel['residuo'])
+        self.qty_hint.config(
+            text=f"(max {cap} = min tra magazzino {self.wh['Residua']} e residuo SO {sel['residuo']})",
+            foreground='gray')
+
+    def _match_and_rule(self):
+        L = self.lang.get
+        sel = self._so_by_label.get(self.so_combo.get())
+        if not sel:
+            messagebox.showwarning(L('warning', 'Attenzione'),
+                                   L('wh_pick_so', 'Selezionare un ordine di vendita'),
+                                   parent=self)
+            return
+        try:
+            qty = int(self.qty_entry.get().strip())
+        except ValueError:
+            messagebox.showwarning(L('warning', 'Attenzione'),
+                                   L('qty_invalid', 'Quantità non valida'), parent=self)
+            return
+        cap = min(self.wh['Residua'], sel['residuo'])
+        if qty <= 0 or qty > cap:
+            messagebox.showwarning(
+                L('warning', 'Attenzione'),
+                f"{L('qty_exceeds', 'La quantità supera il massimo disponibile')}: {cap}",
+                parent=self)
+            return
+        from datetime import datetime, time
+        try:
+            dt = datetime.combine(self.date_entry.get_date(),
+                                  time(int(self.hour_sb.get()), int(self.min_sb.get())))
+        except ValueError:
+            dt = datetime.combine(self.date_entry.get_date(), time(8, 0))
+        ship_to = self.shipto_combo.get()
+        try:
+            # 1) abbinamento SO↔PO (come i planner)
+            self.db.cursor.execute("""
+                INSERT INTO Traceability_RS.dyn.DynamicProductionOrders
+                    (DynamicSaleOrderId, IdOrder, Qty, DateIn)
+                OUTPUT INSERTED.DynamicProductionOrderID
+                VALUES (?, ?, ?, GETDATE())
+            """, (sel['id'], self.wh['IDOrder'], qty))
+            po_id = self.db.cursor.fetchone()[0]
+            # 2) regola di spedizione con destinazione
+            self.db.cursor.execute("""
+                INSERT INTO Traceability_RS.dyn.DynamicShippingRules
+                    (DynamicProductionOrderID, QtyToShip, DateToship, ShipTo, AddBayUser, DateOut)
+                VALUES (?, ?, ?, ?, ?, GETDATE())
+            """, (po_id, qty, dt, ship_to, self.user_name))
+            self.db.conn.commit()
+            logger.info("Magazzino abbinato: IDOrder=%s → SO %s qty=%s ShipTo=%s (PO=%s)",
+                        self.wh['IDOrder'], sel['id'], qty, ship_to, po_id)
+            messagebox.showinfo(L('success', 'Successo'),
+                                L('wh_matched', 'Ordine abbinato e regola creata'),
+                                parent=self)
+            if self.callback:
+                self.callback()
+            self.destroy()
+        except Exception as e:
+            logger.error(f"Errore abbinamento magazzino: {e}", exc_info=True)
+            self.db.conn.rollback()
+            messagebox.showerror(L('error', 'Errore'), str(e), parent=self)
+
+    def _already_shipped(self):
+        """Correzione transitoria: dichiara quanto è già stato spedito fuori sistema."""
+        L = self.lang.get
+        if not self.master._adjustments_table_exists():
+            messagebox.showwarning(
+                L('warning', 'Attenzione'),
+                L('wh_adj_missing',
+                  "Tabella correzioni non presente. Eseguire "
+                  "add_warehouse_shipped_adjustments.sql."),
+                parent=self)
+            return
+        WarehouseShippedDialog(self, self.db, self.lang, self.user_name, self.wh,
+                               callback=self._on_adjusted)
+
+    def _on_adjusted(self):
+        if self.callback:
+            self.callback()
+        self.destroy()
+
+
+class WarehouseShippedDialog(tk.Toplevel):
+    """Correzione 'già spedito' per un ordine a magazzino (allineamento transitorio)."""
+
+    def __init__(self, master, db, lang, user_name, wh_row, callback=None):
+        super().__init__(master)
+        self.db = db
+        self.lang = lang
+        self.user_name = user_name
+        self.wh = wh_row
+        self.callback = callback
+        self.match_dialog = master  # per _add_shipped_adjustment via la window
+        L = self.lang.get
+        self.title(L('wh_shipped_title', 'Già spedito — correzione'))
+        self.geometry('460x230')
+        self.transient(master)
+        self.grab_set()
+
+        frm = ttk.Frame(self, padding=12)
+        frm.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frm, text=f"{L('production_order', 'Ordine Produzione')}: "
+                            f"{self.wh['OrderNumber']}  ({self.wh['ProductCode']})",
+                  font=('', 9, 'bold')).grid(row=0, column=0, columnspan=2, sticky='w', pady=(0, 8))
+        ttk.Label(frm, text=f"{L('wh_available', 'Disponibile a magazzino')}: "
+                            f"{self.wh['Residua']}").grid(row=1, column=0, columnspan=2, sticky='w')
+        ttk.Label(frm, text=L('wh_shipped_qty', 'Quantità già spedita') + ' *').grid(
+            row=2, column=0, sticky='w', pady=(10, 4))
+        self.qty_entry = ttk.Entry(frm, width=14)
+        self.qty_entry.grid(row=2, column=1, sticky='w', pady=(10, 4))
+        ttk.Label(frm, text=L('note', 'Nota')).grid(row=3, column=0, sticky='w', pady=4)
+        self.note_entry = ttk.Entry(frm, width=40)
+        self.note_entry.grid(row=3, column=1, sticky='w', pady=4)
+
+        bar = ttk.Frame(frm)
+        bar.grid(row=4, column=0, columnspan=2, pady=(16, 0))
+        ttk.Button(bar, text=L('btn_save', 'Salva'), command=self._save).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bar, text=L('btn_cancel', 'Annulla'), command=self.destroy).pack(side=tk.LEFT, padx=4)
+
+    def _save(self):
+        L = self.lang.get
+        try:
+            qty = int(self.qty_entry.get().strip())
+        except ValueError:
+            messagebox.showwarning(L('warning', 'Attenzione'),
+                                   L('qty_invalid', 'Quantità non valida'), parent=self)
+            return
+        if qty <= 0 or qty > self.wh['Residua']:
+            messagebox.showwarning(
+                L('warning', 'Attenzione'),
+                f"{L('qty_exceeds', 'La quantità supera il massimo disponibile')}: {self.wh['Residua']}",
+                parent=self)
+            return
+        try:
+            # la window principale (master del WarehouseMatchDialog) espone il metodo
+            window = self.match_dialog.master
+            window._add_shipped_adjustment(
+                self.wh['IDOrder'], self.wh['ProductCode'], qty,
+                self.note_entry.get().strip() or None)
+            messagebox.showinfo(L('success', 'Successo'),
+                                L('wh_adj_saved', 'Correzione registrata'), parent=self)
+            if self.callback:
+                self.callback()
+            self.destroy()
+        except Exception as e:
+            logger.error(f"Errore correzione già spedito: {e}", exc_info=True)
+            self.db.conn.rollback()
+            messagebox.showerror(L('error', 'Errore'), str(e), parent=self)
 
 
 def open_orders_reports_window(master, db, lang, user_name):
