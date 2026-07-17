@@ -14082,14 +14082,17 @@ class App(tk.Tk):
         self._execute_simple_login(action_callback=_open)
 
     def open_labelscrap_workstation_config(self):
-        """Designa/rimuove questo PC come postazione di stampa scarti etichette."""
-        try:
-            import label_scrap_workstation_config
-            un = getattr(self, 'last_authenticated_user_name', None) or 'Unknown'
-            label_scrap_workstation_config.open_labelscrap_workstation_config(self, self.lang, un)
-        except Exception as e:
-            logger.error(f"Errore config postazione scarti etichette: {e}", exc_info=True)
-            messagebox.showerror(self.lang.get('error', 'Errore'), str(e), parent=self)
+        """Designa/rimuove questo PC come postazione di stampa scarti etichette.
+        Richiede autorizzazione (chiave 'setta_pc_report_labelscrap')."""
+        def _open():
+            try:
+                import label_scrap_workstation_config
+                un = getattr(self, 'last_authenticated_user_name', None) or 'Unknown'
+                label_scrap_workstation_config.open_labelscrap_workstation_config(self, self.lang, un)
+            except Exception as e:
+                logger.error(f"Errore config postazione scarti etichette: {e}", exc_info=True)
+                messagebox.showerror(self.lang.get('error', 'Errore'), str(e), parent=self)
+        self._execute_authorized_action('setta_pc_report_labelscrap', _open)
 
     def open_kit_priority_with_login(self):
         """Apre la gestione priorità ordini kit (pianificatore) dopo login semplice."""

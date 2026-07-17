@@ -330,7 +330,29 @@ class LabelScrapDeclarationWindow(tk.Toplevel):
                                    parent=self)
 
     def _open_reasons_manager(self):
-        LabelScrapReasonsManager(self, self.db, self.lang, on_done=self._load_reasons)
+        """Gestione motivi: richiede autorizzazione (chiave 'aggiungi_motivo_label_scrap').
+        Il login modale è gestito dall'app padre; rilasciamo/riprendiamo il grab
+        come per le altre azioni autorizzate in-form."""
+        app = self.master
+
+        def cb():
+            w = LabelScrapReasonsManager(self, self.db, self.lang, on_done=self._load_reasons)
+            self.wait_window(w)  # modale: il grab torna alla form solo alla chiusura
+
+        if not hasattr(app, '_execute_authorized_action'):
+            cb()
+            return
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        try:
+            app._execute_authorized_action('aggiungi_motivo_label_scrap', cb)
+        finally:
+            try:
+                self.grab_set()
+            except Exception:
+                pass
 
 
 class LabelScrapReasonsManager(tk.Toplevel):
