@@ -14081,6 +14081,16 @@ class App(tk.Tk):
                     parent=self)
         self._execute_simple_login(action_callback=_open)
 
+    def open_labelscrap_workstation_config(self):
+        """Designa/rimuove questo PC come postazione di stampa scarti etichette."""
+        try:
+            import label_scrap_workstation_config
+            un = getattr(self, 'last_authenticated_user_name', None) or 'Unknown'
+            label_scrap_workstation_config.open_labelscrap_workstation_config(self, self.lang, un)
+        except Exception as e:
+            logger.error(f"Errore config postazione scarti etichette: {e}", exc_info=True)
+            messagebox.showerror(self.lang.get('error', 'Errore'), str(e), parent=self)
+
     def open_kit_priority_with_login(self):
         """Apre la gestione priorità ordini kit (pianificatore) dopo login semplice."""
         import kit_preparation_gui
@@ -16527,6 +16537,10 @@ class App(tk.Tk):
         materials_menu.add_command(
             label=self.lang.get('submenu_label_scrap_report', 'Report scarti etichette'),
             command=self.open_label_scrap_report_with_login
+        )
+        materials_menu.add_command(
+            label=self.lang.get('submenu_label_scrap_ws', '🖥 PC stampa scarti (config)'),
+            command=self.open_labelscrap_workstation_config
         )
 
         # Sottomenu Kit Preparation (spec docs/PlanRespect_KitPreparation_Spec_v1.2.md)
@@ -20309,6 +20323,19 @@ class App(tk.Tk):
         except Exception as e:
             logger.error(f"Errore avvio monitor spedizioni urgenti: {e}", exc_info=True)
             self._shipment_monitor = None
+
+        # Monitor Scarti Etichette (stampa+email fine turno) — solo PC designato
+        try:
+            from label_scrap_workstation_config import is_labelscrap_print_workstation
+            from label_scrap_monitor import LabelScrapMonitor
+            if is_labelscrap_print_workstation():
+                self._label_scrap_monitor = LabelScrapMonitor(self, self.db, self.lang)
+                logger.info("LabelScrapMonitor avviato (questo PC è postazione stampa scarti etichette)")
+            else:
+                self._label_scrap_monitor = None
+        except Exception as e:
+            logger.error(f"Errore avvio monitor scarti etichette: {e}", exc_info=True)
+            self._label_scrap_monitor = None
 
         # Monitor Touch-up
         try:

@@ -116,4 +116,28 @@ riepiloghi (per operatore, per motivo, per categoria).
 
 ---
 
-*Analisi redatta prima di qualsiasi modifica. Pattern verificati sul codice reale.*
+## 9. Stato implementazione
+
+- ✅ **Dati** — `add_labelscrap_tables.sql` (applicato): `LabelScrapReasons` (8 motivi
+  rumeno), `labelscrap`, setting `sys_email_labelScrap`.
+- ✅ **Dichiarazione** — `label_scrap_gui.py`: scansione, contatori live, stampa
+  chiusura, UI motivi. Voce menu + `open_label_scrap_declaration_with_login`.
+- ✅ **Report** — `label_scrap_report_gui.py`: filtri data/operatore, Excel + PDF logo.
+- ✅ **PDF/print** — `label_scrap_pdf.py` (dichiarazione + report + `print_pdf`).
+- ✅ **Fine turno** — `label_scrap_monitor.py`: poll 60s, finestre 15:15/23:15/07:15
+  (fine turni 15:30/23:30/07:30), stampa per operatore delle righe `Printed IS NULL`
+  del turno, mark printed, email (Excel+PDF) con dedup `_claim_send_slot`. Salta chi
+  ha già stampato. Email venerdì ~14:00 con rolling mese + YTD.
+- ✅ **PC designato** — `label_scrap_workstation_config.py` (`labelscrap_print_host.json`)
+  + voce menu config. Monitor avviato solo se PC designato (main.py startup).
+- ✅ **Traduzioni** — `lsc_*`/`lsr_*`/`lsw_*` in 5 lingue. Motivi in rumeno.
+
+**Da configurare in esercizio:** popolare `sys_email_labelScrap` (destinatari) e
+designare il PC di stampa dalla voce di menu. Nota: la stampa/email notturna (07:15)
+è inclusa; se gli scarti etichette avvengono solo su 2 turni, si può togliere.
+
+---
+
+*Analisi redatta prima di qualsiasi modifica. Pattern verificati sul codice reale.
+Fasi 1-2 implementate e verificate sul DB reale (insert, contatori, PDF/Excel,
+fetch fine turno, dedup).*
