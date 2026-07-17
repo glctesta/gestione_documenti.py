@@ -374,9 +374,13 @@ iniettati (gialli) + 4 rossi**.
   `_add_shipped_adjustment()`; tabella `dyn.WarehouseShippedAdjustments`
   (`add_warehouse_shipped_adjustments.sql`, **da applicare**). La lettura è
   resiliente: senza tabella la correzione vale 0.
-- ⏳ **Fase 3** — destinazione direct/normal nel corpo email di conferma: da fare.
-- ⏳ **Traduzioni** — le nuove chiavi (`wh_*`) hanno default inline; da inserire in
-  `AppTranslations` in un secondo passaggio.
+- ✅ **Fase 3** — destinazione direct/normal nel corpo email di conferma:
+  colonna "Destinazione" in `shipment_confirmation_window._send_shipment_email`
+  (helper `_shipto_map`), direct evidenziato in rosso. Verificata sulla spedizione 9.
+- ✅ **Traduzioni** — chiavi `wh_*` inserite in `AppTranslations` (5 lingue) via
+  `orders/insert_warehouse_shipping_translations.py`.
+- ✅ **UI aiuto** — barra con legenda colori, nota "doppio click per abbinare" e
+  bottone "🔗 Abbina / Correggi" (abilitato solo sulle righe gialle).
 
 ---
 
