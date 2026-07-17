@@ -309,7 +309,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.4.3'  # Versione aggiornata
+APP_VERSION = '2.4.2.4.4'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -17475,10 +17475,16 @@ class App(tk.Tk):
             label=self.lang.get('npi_manual_checklist', 'NPI Checklist (MD.RAQ.089)'),
             command=self._open_npi_checklist_manual)
 
-        # 4c. Ordini
-        ops_menu.add_command(
+        # 4c. Ordini (sotto-cascata: manuale generale + spedizioni da magazzino)
+        orders_manual_menu = tk.Menu(ops_menu, tearoff=0)
+        ops_menu.add_cascade(
+            label=self.lang.get('menu_orders', 'Ordini'), menu=orders_manual_menu)
+        orders_manual_menu.add_command(
             label=self.lang.get('menu_orders', 'Ordini'),
             command=lambda: self._open_manual('operazioni_ordini'))
+        orders_manual_menu.add_command(
+            label=self.lang.get('manual_warehouse_shipping', 'Spedizioni da magazzino'),
+            command=lambda: self._open_manual('operazioni_spedizioni_magazzino'))
 
         # 4d. Personale
         personnel_manual_menu = tk.Menu(ops_menu, tearoff=0)

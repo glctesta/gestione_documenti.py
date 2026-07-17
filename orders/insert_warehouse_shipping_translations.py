@@ -73,6 +73,9 @@ TRANSLATIONS = [
     ('wh_adj_saved', 'Correzione registrata', 'Correction saved',
      'Corecție înregistrată', 'Korrektur gespeichert', 'Korrigering sparad'),
     ('note', 'Nota', 'Note', 'Notă', 'Notiz', 'Anteckning'),
+    # Etichetta voce di menu Aiuto > Manuali > Operazioni > Ordini
+    ('manual_warehouse_shipping', 'Spedizioni da magazzino', 'Warehouse shipping',
+     'Expedieri din depozit', 'Lagerversand', 'Lagerfrakt'),
 ]
 
 LANGS = ('it', 'en', 'ro', 'de', 'sv')
