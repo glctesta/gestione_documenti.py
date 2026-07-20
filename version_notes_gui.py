@@ -16,6 +16,7 @@ fetch_version_dm_logs / fetch_version_dm_log_summary.
 import logging
 import os
 import subprocess
+import sys
 import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -25,14 +26,73 @@ logger = logging.getLogger("GTMC_DocumentManagement")
 
 # ─── Git + AI (bozza) ────────────────────────────────────────────────────────
 
-def _repo_dir():
-    return os.path.dirname(os.path.abspath(__file__))
+def _read_repo_setting(db):
+    """Percorso del repo git da Settings['Sys_versionnotes_repo'] (opzionale).
+    Utile quando l'app gira dall'exe installato (dove __file__ NON è il repo)."""
+    try:
+        cur = db.conn.cursor()
+        cur.execute("SELECT [Value] FROM traceability_rs.dbo.Settings WHERE [Atribute] = ?",
+                    ('Sys_versionnotes_repo',))
+        row = cur.fetchone()
+        cur.close()
+        if row and row[0] and str(row[0]).strip():
+            return str(row[0]).strip()
+    except Exception as e:
+        logger.warning(f"version_notes: lettura Sys_versionnotes_repo: {e}")
+    return None
 
 
-def get_recent_commits(since_date=None, max_count=80):
-    """Messaggi commit git ('YYYY-MM-DD | soggetto') dalla data indicata.
-    Ritorna [] se git non e' disponibile (es. su PC client senza repo)."""
-    repo = _repo_dir()
+def _is_git_worktree(path):
+    """True se `path` è dentro una working tree git."""
+    if not path or not os.path.isdir(path):
+        return False
+    try:
+        out = subprocess.run(['git', '-C', path, 'rev-parse', '--is-inside-work-tree'],
+                             capture_output=True, text=True, timeout=10)
+        return out.returncode == 0 and 'true' in (out.stdout or '').lower()
+    except Exception:
+        return False
+
+
+def resolve_git_repo(db=None):
+    """Individua la working tree git da usare per le note. Prova, in ordine:
+    Settings['Sys_versionnotes_repo'], la cartella del modulo, la CWD e (se
+    frozen) la cartella dell'exe; per ognuna risale fino a 6 livelli cercando un
+    repo git valido. Ritorna il percorso o None."""
+    candidates = []
+    if db is not None:
+        s = _read_repo_setting(db)
+        if s:
+            candidates.append(s)
+    candidates.append(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        candidates.append(os.getcwd())
+    except Exception:
+        pass
+    if getattr(sys, 'frozen', False):
+        candidates.append(os.path.dirname(sys.executable))
+
+    seen = set()
+    for base in candidates:
+        d = base
+        for _ in range(6):
+            if not d or d in seen:
+                break
+            seen.add(d)
+            if _is_git_worktree(d):
+                return d
+            parent = os.path.dirname(d)
+            if parent == d:
+                break
+            d = parent
+    return None
+
+
+def get_recent_commits(repo, since_date=None, max_count=80):
+    """Messaggi commit git ('YYYY-MM-DD | soggetto') dalla working tree `repo`,
+    opzionalmente da `since_date`. Ritorna [] se il repo è None o git fallisce."""
+    if not repo:
+        return []
     cmd = ['git', '-C', repo, 'log', '--no-merges',
            f'--max-count={int(max_count)}', '--date=short', '--pretty=format:%ad | %s']
     if since_date:
@@ -229,20 +289,37 @@ class VersionNotesEditor(tk.Toplevel):
 
         def worker():
             try:
-                commits = get_recent_commits(since_date=since, max_count=80)
-                if not commits:
-                    draft = None
-                    warn = L('vn_no_git',
-                             'Nessun commit git trovato (git non disponibile su questo PC). '
-                             'Scrivere le note manualmente.')
-                    self.after(0, lambda: self._done_gen(draft, warn, is_warn=True))
+                repo = resolve_git_repo(self.db)
+                if not repo:
+                    warn = L('vn_no_repo',
+                             'Repository git non trovato. Se l\'app gira dall\'exe installato, '
+                             'impostare in Settings la chiave "Sys_versionnotes_repo" col percorso '
+                             'della cartella del codice sorgente. In alternativa scrivere le note a mano.')
+                    self.after(0, lambda: self._done_gen(None, warn, is_warn=True))
                     return
+
+                # Prima con filtro data (solo commit nuovi); se vuoto, ritenta senza filtro.
+                commits = get_recent_commits(repo, since_date=since, max_count=80)
+                if not commits:
+                    commits = get_recent_commits(repo, since_date=None, max_count=40)
+                if not commits:
+                    warn = L('vn_no_commits',
+                             'Nessun commit trovato nel repository ({0}). Verificare che git '
+                             'sia disponibile e che il repo contenga cronologia.').format(repo)
+                    self.after(0, lambda: self._done_gen(None, warn, is_warn=True))
+                    return
+
                 draft = generate_ai_draft(self.db, version, commits)
                 self.after(0, lambda: self._done_gen(draft, None))
             except Exception as e:
                 emsg = str(e)
-                # fallback: proponi comunque i commit grezzi come bozza
-                fallback = "\n".join(f"- {c}" for c in get_recent_commits(since_date=since)) or ''
+                # Fallback: proponi comunque i commit grezzi come bozza da rivedere
+                try:
+                    repo = resolve_git_repo(self.db)
+                    raw = get_recent_commits(repo, since_date=since) or get_recent_commits(repo)
+                except Exception:
+                    raw = []
+                fallback = "\n".join(f"- {c}" for c in raw)
                 self.after(0, lambda: self._done_gen(
                     fallback or None,
                     L('vn_ai_err', 'AI non disponibile: {0}\nProposti i commit grezzi da rivedere.')
