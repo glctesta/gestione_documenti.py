@@ -358,16 +358,15 @@ def _mins(secs) -> str:
 
 # ─── Export Excel ──────────────────────────────────────────────────────────────
 
-def export_excel(data: dict, meta: dict) -> str:
+def _write_data_sheets(wb, data: dict, det_ws) -> None:
+    """Popola il workbook con i fogli dati (Detail + sintesi + KPI).
+
+    ``det_ws`` è il foglio da usare come 'Detail' (di norma ``wb.active``, ma per
+    l'export dell'analisi AI è un foglio creato dopo quello dell'analisi).
+    """
     import openpyxl
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 
-    out_dir = r'C:\temp'
-    os.makedirs(out_dir, exist_ok=True)
-    fn = (f"Report_TouchUp_{meta['date_from']:%Y%m%d}-{meta['date_to']:%Y%m%d}.xlsx")
-    path = os.path.join(out_dir, fn)
-
-    wb = openpyxl.Workbook()
     H_FILL = PatternFill('solid', fgColor='1F3864')
     H_FONT = Font(bold=True, color='FFFFFF', size=10)
     ALT = PatternFill('solid', fgColor='F4F6F8')
@@ -394,7 +393,7 @@ def export_excel(data: dict, meta: dict) -> str:
         ws.freeze_panes = 'A2'
 
     # Dettaglio
-    det = wb.active
+    det = det_ws
     det_rows = []
     for rep in data['reports']:
         probs = data['problems_by_rep'].get(rep['TouchUpReportId'], []) or [{}]
@@ -447,8 +446,137 @@ def export_excel(data: dict, meta: dict) -> str:
             [f"% responses within {k['threshold_min']} min", k['pct_within']]],
            [34, 14])
 
+
+def export_excel(data: dict, meta: dict) -> str:
+    import openpyxl
+
+    out_dir = r'C:\temp'
+    os.makedirs(out_dir, exist_ok=True)
+    fn = (f"Report_TouchUp_{meta['date_from']:%Y%m%d}-{meta['date_to']:%Y%m%d}.xlsx")
+    path = os.path.join(out_dir, fn)
+
+    wb = openpyxl.Workbook()
+    _write_data_sheets(wb, data, wb.active)
     wb.save(path)
     return path
+
+
+def export_ai_excel(ai_text: str, data: dict, meta: dict) -> str:
+    """Workbook con l'analisi AI nel primo foglio e i dati grezzi nei fogli
+    successivi (stessa struttura dell'export standard)."""
+    import openpyxl
+    from openpyxl.styles import PatternFill, Font, Alignment
+
+    out_dir = r'C:\temp'
+    os.makedirs(out_dir, exist_ok=True)
+    fn = (f"AnalisiAI_TouchUp_{meta['date_from']:%Y%m%d}-{meta['date_to']:%Y%m%d}.xlsx")
+    path = os.path.join(out_dir, fn)
+
+    wb = openpyxl.Workbook()
+    ai_ws = wb.active
+    ai_ws.title = 'AI Analysis'
+    ai_ws.column_dimensions['A'].width = 120
+
+    title = ai_ws.cell(1, 1, 'Touch-up — AI solution-validity analysis')
+    title.font = Font(bold=True, color='FFFFFF', size=12)
+    title.fill = PatternFill('solid', fgColor='1F3864')
+    title.alignment = Alignment(horizontal='left', vertical='center')
+    ai_ws.row_dimensions[1].height = 22
+
+    sub = ai_ws.cell(2, 1, f"Period: {meta['date_from']:%d/%m/%Y} → {meta['date_to']:%d/%m/%Y}")
+    sub.font = Font(italic=True, color='555555', size=9)
+
+    ri = 4
+    for raw in (ai_text or '').split('\n'):
+        line = raw.rstrip()
+        cell = ai_ws.cell(ri, 1, line)
+        cell.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+        cell.font = Font(size=10)
+        ri += 1
+
+    # Dati grezzi nei fogli successivi (Detail su un foglio creato dopo l'analisi)
+    _write_data_sheets(wb, data, wb.create_sheet())
+    wb.save(path)
+    return path
+
+
+def _ai_text_to_html(ai_text: str, meta: dict, user_name: str = None) -> str:
+    """Converte il testo dell'analisi AI (plain/markdown leggero) in un'email
+    HTML ben formattata, in stile coerente con le altre notifiche del sistema."""
+    import html
+    import re
+
+    def _inline(s: str) -> str:
+        s = html.escape(s)
+        s = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', s)
+        s = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'<em>\1</em>', s)
+        return s
+
+    blocks = []
+    for raw in (ai_text or '').split('\n'):
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Titoli markdown (#, ##, ...)
+        m_h = re.match(r'^#{1,6}\s+(.*)$', stripped)
+        if m_h:
+            blocks.append(
+                f'<h3 style="color:#1F3864; margin:16px 0 6px 0; font-size:15px;">'
+                f'{_inline(m_h.group(1))}</h3>')
+            continue
+        # Voci numerate: 1. ... / 1) ...
+        m_num = re.match(r'^(\d+)[.)]\s+(.*)$', stripped)
+        if m_num:
+            blocks.append(
+                f'<p style="margin:8px 0; line-height:1.55;">'
+                f'<strong style="color:#1F3864;">{m_num.group(1)}.</strong> '
+                f'{_inline(m_num.group(2))}</p>')
+            continue
+        # Elenchi puntati: - ... / * ... / • ...
+        m_bul = re.match(r'^[-*•]\s+(.*)$', stripped)
+        if m_bul:
+            blocks.append(
+                f'<p style="margin:4px 0 4px 18px; line-height:1.5;">'
+                f'&bull; {_inline(m_bul.group(1))}</p>')
+            continue
+        blocks.append(
+            f'<p style="margin:8px 0; line-height:1.55;">{_inline(stripped)}</p>')
+
+    body_html = '\n'.join(blocks)
+    period = f"{meta['date_from']:%d/%m/%Y} &rarr; {meta['date_to']:%d/%m/%Y}"
+    greeting = f"Hi {html.escape(user_name)}," if user_name else "Hi,"
+    year = meta['date_to'].year
+
+    return f"""\
+<html>
+<body style="margin:0; padding:0; background:#f4f6f8; font-family:'Segoe UI',Arial,sans-serif; color:#333;">
+  <div style="max-width:760px; margin:20px auto; background:#ffffff; border-radius:8px; overflow:hidden; box-shadow:0 1px 4px rgba(0,0,0,0.1);">
+    <div style="background:#1F3864; padding:18px 24px;">
+      <div style="color:#ffffff; font-size:18px; font-weight:bold;">🧠 Touch-up — AI Solution-Validity Analysis</div>
+      <div style="color:#c9d4ea; font-size:12px; margin-top:4px;">Period: {period}</div>
+    </div>
+    <div style="padding:22px 24px;">
+      <p style="margin:0 0 14px 0; line-height:1.55;">{greeting}</p>
+      <p style="margin:0 0 16px 0; line-height:1.55; color:#555;">
+        Below is the AI analysis of the recurrence of product&times;error pairs and the validity
+        of the declared solutions. The same data — plus a separate tab with the raw records —
+        is attached as an Excel file.
+      </p>
+      <div style="border-top:1px solid #e0e4ea; padding-top:14px;">
+        {body_html}
+      </div>
+      <div style="margin-top:26px; padding-top:14px; border-top:1px solid #dee2e6;">
+        <p style="font-size:11px; color:#888; line-height:1.5; margin:0;">
+          This analysis was generated by a local AI model on plant-internal data.
+          Figures are computed deterministically; the model only interprets them.<br/>
+          &copy; {year} Vandewiele Romania — automated notification, please do not reply.
+        </p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>"""
 
 
 # ─── Export PDF ────────────────────────────────────────────────────────────────
@@ -562,11 +690,14 @@ def export_pdf(data: dict, meta: dict) -> str:
 # ─── GUI ───────────────────────────────────────────────────────────────────────
 
 class TouchUpReportWindow(tk.Toplevel):
-    def __init__(self, master, db, lang):
+    def __init__(self, master, db, lang, user_email=None, user_name=None):
         super().__init__(master)
         self.db = db
         self.lang = lang
+        self.user_email = user_email
+        self.user_name = user_name
         self._data = None
+        self._ai_result_text = None
         L = self.lang.get
         self.title(L('touchup_report_title', 'Report Touch-up'))
         self.geometry('1180x740')
@@ -961,8 +1092,13 @@ class TouchUpReportWindow(tk.Toplevel):
         txt.insert('1.0', L('touchup_ai_wait',
                             'Attendere: il modello sta analizzando i dati (può richiedere qualche minuto).'))
         txt.config(state='disabled')
+        self._ai_result_text = None
         bar = ttk.Frame(win)
         bar.pack(fill=tk.X, padx=8, pady=6)
+        btn_email = ttk.Button(
+            bar, text=L('touchup_ai_email', '📧 Invia a me via email'),
+            command=lambda: self._email_ai_analysis(win, btn_email), state='disabled')
+        btn_email.pack(side=tk.LEFT)
         ttk.Button(bar, text=L('btn_close', 'Chiudi'), command=win.destroy).pack(side=tk.RIGHT)
 
         def _done(result, err):
@@ -973,6 +1109,9 @@ class TouchUpReportWindow(tk.Toplevel):
             txt.delete('1.0', 'end')
             txt.insert('1.0', f"⚠️ {err}" if err else result)
             txt.config(state='disabled')
+            if not err and result:
+                self._ai_result_text = result
+                btn_email.config(state='normal')
 
         def worker():
             try:
@@ -984,7 +1123,65 @@ class TouchUpReportWindow(tk.Toplevel):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _email_ai_analysis(self, win, btn):
+        """Invia all'utente loggato l'analisi AI: corpo HTML formattato +
+        allegato Excel (analisi + dati grezzi in tab separati)."""
+        L = self.lang.get
+        if not self._ai_result_text:
+            return
+        if not self.user_email:
+            messagebox.showwarning(
+                L('warning', 'Attenzione'),
+                L('touchup_ai_no_email',
+                  'Email utente non disponibile: impossibile inviare l\'analisi.'),
+                parent=win)
+            return
 
-def open_touchup_report(master, db, lang):
+        btn.config(state='disabled')
+        import threading
+        ai_text = self._ai_result_text
+        data, meta = self._data, self._meta
+        user_email = self.user_email
+        user_name = self.user_name
+
+        def _restore():
+            if win.winfo_exists():
+                btn.config(state='normal')
+
+        def _ok():
+            _restore()
+            messagebox.showinfo(
+                L('success', 'Fatto'),
+                L('touchup_ai_email_sent', 'Email inviata a {0}').format(user_email),
+                parent=win if win.winfo_exists() else self)
+
+        def _fail(msg):
+            _restore()
+            messagebox.showerror(
+                L('error', 'Errore'),
+                L('touchup_ai_email_err', 'Invio email fallito:\n{0}').format(msg),
+                parent=win if win.winfo_exists() else self)
+
+        def worker():
+            try:
+                xls_path = export_ai_excel(ai_text, data, meta)
+                html_body = _ai_text_to_html(ai_text, meta, user_name)
+                import utils
+                subject = L('touchup_ai_email_subject',
+                            'Analisi AI Touch-up {0} → {1}').format(
+                    meta['date_from'].strftime('%d/%m/%Y'),
+                    meta['date_to'].strftime('%d/%m/%Y'))
+                utils.send_email(recipients=[user_email], subject=subject,
+                                 body=html_body, is_html=True, attachments=[xls_path])
+                self.after(0, _ok)
+            except Exception as e:
+                emsg = str(e)
+                logger.error(f"TouchUp AI email: {emsg}", exc_info=True)
+                self.after(0, lambda: _fail(emsg))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+
+def open_touchup_report(master, db, lang, user_email=None, user_name=None):
     """Entry point: apre la finestra Report Touch-up."""
-    TouchUpReportWindow(master, db, lang)
+    TouchUpReportWindow(master, db, lang, user_email=user_email, user_name=user_name)

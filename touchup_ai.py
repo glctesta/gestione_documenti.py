@@ -128,7 +128,12 @@ def analyze_recurrence(data, meta, url=None, model=None, timeout=180):
         raise RuntimeError(f"Errore Ollama HTTP {e.code}: {detail}")
     except urllib.error.URLError as e:
         raise RuntimeError(
-            f"Server Ollama non raggiungibile ({url}): {e.reason}. "
-            f"Verificare che Ollama sia in esecuzione e raggiungibile in rete.")
+            f"Server Ollama non raggiungibile ({url}): {e.reason}.\n\n"
+            f"Il servizio Ollama sul server non è attivo. Sul computer indicato "
+            f"dall'IP verificare che il task/servizio di avvio automatico di Ollama "
+            f"(es. 'OllamaServe') sia in esecuzione — NON è più necessario tenere "
+            f"aperta una finestra PowerShell.\n"
+            f"Controllo rapido da un altro PC: aprire nel browser "
+            f"{url}/api/tags (deve elencare i modelli).")
     except Exception as e:
         raise RuntimeError(f"Errore analisi AI: {e}")

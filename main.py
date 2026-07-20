@@ -309,7 +309,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.5.0'  # Versione aggiornata
+APP_VERSION = '2.4.2.5.2'  # Versione aggiornata
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -14052,6 +14052,22 @@ class App(tk.Tk):
             )
         )
 
+    def open_ei_aros_label_with_login(self):
+        """Etichette EI → Aros: login semplice per registrare l'operatore che
+        stampa (il nome finisce sull'etichetta)."""
+        def _open(_user_id):
+            try:
+                import ei_aros_label_gui
+                operator = getattr(self, 'last_authenticated_user_name', None) or 'N/A'
+                ei_aros_label_gui.open_ei_aros_label_window(self, self.db, self.lang, operator)
+            except Exception as e:
+                logger.error(f"Errore apertura Etichette EI→Aros: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"{self.lang.get('ei_aros_open_err', 'Impossibile aprire Etichette EI → Aros')}:\n{e}",
+                    parent=self)
+        self._execute_simple_login(action_callback=_open)
+
     def open_label_scrap_declaration_with_login(self):
         """Dichiarazione scarti etichette (operatore) dopo login semplice.
         Il nome operatore è letto dalla form via self.last_authenticated_user_name."""
@@ -14281,16 +14297,30 @@ class App(tk.Tk):
         self._execute_authorized_action('tecnico_risponde_touchup', authorized_action)
 
     def _open_touchup_reports(self):
-        """Menu Touch-up 3 - Rapporti (accesso libero, sola lettura)."""
-        try:
-            import touchup_report_gui
-            touchup_report_gui.open_touchup_report(self, self.db, self.lang)
-        except Exception as e:
-            logger.error(f"Errore apertura Report Touch-up: {e}", exc_info=True)
-            messagebox.showerror(
-                self.lang.get('error', 'Errore'),
-                f"{self.lang.get('touchup_report_open_error', 'Impossibile aprire il Report Touch-up')}:\n{e}",
-                parent=self)
+        """Menu Touch-up 3 - Rapporti. Login semplice per catturare l'email
+        dell'utente (usata per inviargli via email l'analisi AI generata)."""
+        def _open(user_id):
+            try:
+                import touchup_report_gui
+                user_email = None
+                try:
+                    import fai_enforcement
+                    user_email = fai_enforcement.get_employee_email_by_hhid(self.db.conn, user_id)
+                except Exception as _mail_exc:
+                    logger.warning(f"Report Touch-up: email utente non recuperata: {_mail_exc}")
+                user_name = getattr(self, 'last_authenticated_user_name', None)
+                touchup_report_gui.open_touchup_report(
+                    self, self.db, self.lang,
+                    user_email=user_email, user_name=user_name)
+                logger.info("Report Touch-up aperto con successo [_open_touchup_reports] "
+                            "(user_email=%r)", user_email)
+            except Exception as e:
+                logger.error(f"Errore apertura Report Touch-up: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"{self.lang.get('touchup_report_open_error', 'Impossibile aprire il Report Touch-up')}:\n{e}",
+                    parent=self)
+        self._execute_simple_login(action_callback=_open)
 
     def _open_touchup_workstation(self):
         """Menu Touch-up 4 - Setup workstation (auth 'attiva_workstation_tecnici')."""
@@ -16531,7 +16561,13 @@ class App(tk.Tk):
             label=self.lang.get('submenu_labels', 'Etichette'),
             command=self.open_label_print_with_login
         )
-
+        # Etichette EI -> Aros (conversione EutronCode -> ArosCode/Descrizione)
+        materials_menu.add_command(
+            label=self.lang.get('submenu_labels_ei_aros', 'Etichette EI → Aros'),
+            command=self.open_ei_aros_label_with_login
+        )
+        # Sottomenu Etichette (voce diretta)
+        materials_menu.add_separator()
         # Scarti etichette: dichiarazione (operatore) + report
         materials_menu.add_command(
             label=self.lang.get('submenu_label_scrap_declare', 'Dichiarazione scarti'),
