@@ -18310,59 +18310,72 @@ class App(tk.Tk):
                     )
                     return
 
-                # Crea una finestra di selezione piÃ¹ larga
+                # ── Finestra di selezione (layout ridisegnato) ──
                 selection_window = tk.Toplevel(self)
-                selection_window.title("Seleziona Progetto NPI")
-                selection_window.geometry("900x250")
+                selection_window.title(self.lang.get('npi_select_title', 'Gestione Progetti NPI — Seleziona progetto'))
+                selection_window.geometry("1000x600")
+                selection_window.minsize(820, 480)
+                selection_window.resizable(True, True)
                 selection_window.transient(self)
                 selection_window.grab_set()
 
-                ttk.Label(selection_window, text="Seleziona il progetto da gestire:", 
-                         font=('Helvetica', 10, 'bold')).pack(pady=10)
+                # Header
+                header = tk.Frame(selection_window, bg='#1F3864')
+                header.pack(fill=tk.X)
+                tk.Label(header,
+                         text=self.lang.get('npi_select_header', 'Gestione Progetti NPI'),
+                         bg='#1F3864', fg='white', font=('Helvetica', 13, 'bold')).pack(
+                    side=tk.LEFT, padx=12, pady=10)
+                tk.Label(header,
+                         text=self.lang.get('npi_select_subtitle', 'Seleziona il progetto da gestire'),
+                         bg='#1F3864', fg='#c9d4ea', font=('Helvetica', 9, 'italic')).pack(
+                    side=tk.LEFT, padx=(0, 12), pady=10)
 
-                # ðŸ†• Frame filtri
-                filter_frame = ttk.LabelFrame(selection_window, text=self.lang.get('filters', 'Filtri'), padding=10)
-                filter_frame.pack(pady=10, padx=20, fill=tk.X)
+                body = ttk.Frame(selection_window, padding=12)
+                body.pack(fill=tk.BOTH, expand=True)
 
-                # Filtro Cliente
-                client_frame = ttk.Frame(filter_frame)
-                client_frame.pack(fill=tk.X, pady=5)
-                ttk.Label(client_frame, text=self.lang.get('npi_client_filter', 'Cliente:'), width=12).pack(side=tk.LEFT)
-                
-                client_var = tk.StringVar()
-                client_combo = ttk.Combobox(client_frame, textvariable=client_var, width=50, state='readonly')
-                
-                # Estrai clienti unici dai progetti attivi
-                clienti_set = set()
-                for proj in progetti:
-                    cliente = proj.get('Cliente', '').strip()
-                    if cliente:
-                        clienti_set.add(cliente)
-                
-                clienti_unici = sorted(clienti_set)
-                client_values = [self.lang.get('npi_all_clients', 'Tutti i Clienti')] + clienti_unici
-                client_combo['values'] = client_values
-                client_combo.current(0)
-                client_combo.pack(side=tk.LEFT, padx=(5, 0), fill=tk.X, expand=True)
+                # ── Filtri (grid allineato) ──
+                filter_frame = ttk.LabelFrame(body, text=self.lang.get('filters', 'Filtri'), padding=10)
+                filter_frame.pack(fill=tk.X)
+                filter_frame.columnconfigure(1, weight=1)
 
-                # ðŸ†• Filtro Stato progetto
                 opt_all = self.lang.get('npi_state_all', 'Tutti gli stati')
                 opt_closed = self.lang.get('npi_state_closed', 'Solo chiusi')
                 opt_expiring = self.lang.get('npi_state_expiring', 'Solo in scadenza tra n giorni')
                 opt_not_closed = self.lang.get('npi_state_not_closed', 'Solo non ancora chiusi')
+                all_clients_label = self.lang.get('npi_all_clients', 'Tutti i Clienti')
 
-                state_frame = ttk.Frame(filter_frame)
-                state_frame.pack(fill=tk.X, pady=5)
-                ttk.Label(state_frame, text=self.lang.get('npi_state_filter', 'Stato:'), width=12).pack(side=tk.LEFT)
+                # Riga 0: Cliente
+                ttk.Label(filter_frame, text=self.lang.get('npi_client_filter', 'Cliente:')).grid(
+                    row=0, column=0, sticky='w', padx=(0, 8), pady=4)
+                client_var = tk.StringVar()
+                client_combo = ttk.Combobox(filter_frame, textvariable=client_var, state='readonly')
+                clienti_set = {proj.get('Cliente', '').strip() for proj in progetti if proj.get('Cliente', '').strip()}
+                client_combo['values'] = [all_clients_label] + sorted(clienti_set)
+                client_combo.current(0)
+                client_combo.grid(row=0, column=1, sticky='ew', pady=4)
+
+                # Riga 1: Stato + giorni
+                ttk.Label(filter_frame, text=self.lang.get('npi_state_filter', 'Stato:')).grid(
+                    row=1, column=0, sticky='w', padx=(0, 8), pady=4)
+                state_row = ttk.Frame(filter_frame)
+                state_row.grid(row=1, column=1, sticky='ew', pady=4)
                 status_var = tk.StringVar(value=opt_all)
-                status_combo = ttk.Combobox(state_frame, textvariable=status_var, width=32, state='readonly',
+                status_combo = ttk.Combobox(state_row, textvariable=status_var, width=34, state='readonly',
                                             values=[opt_all, opt_closed, opt_expiring, opt_not_closed])
                 status_combo.current(0)
-                status_combo.pack(side=tk.LEFT, padx=(5, 12))
-                ttk.Label(state_frame, text=self.lang.get('npi_state_days', 'Giorni (0-5):')).pack(side=tk.LEFT)
+                status_combo.pack(side=tk.LEFT)
+                ttk.Label(state_row, text=self.lang.get('npi_state_days', 'Giorni (0-5):')).pack(side=tk.LEFT, padx=(14, 4))
                 days_var = tk.IntVar(value=5)
-                days_spin = ttk.Spinbox(state_frame, from_=0, to=5, width=5, textvariable=days_var, state='disabled')
-                days_spin.pack(side=tk.LEFT, padx=(5, 0))
+                days_spin = ttk.Spinbox(state_row, from_=0, to=5, width=5, textvariable=days_var, state='disabled')
+                days_spin.pack(side=tk.LEFT)
+
+                # Riga 2: Cerca (testo libero)
+                ttk.Label(filter_frame, text=self.lang.get('npi_search', 'Cerca:')).grid(
+                    row=2, column=0, sticky='w', padx=(0, 8), pady=4)
+                search_var = tk.StringVar()
+                search_entry = ttk.Entry(filter_frame, textvariable=search_var)
+                search_entry.grid(row=2, column=1, sticky='ew', pady=4)
 
                 def _status_ok(p):
                     sel = status_var.get()
@@ -18386,20 +18399,9 @@ class App(tk.Tk):
                         return today <= dd <= today + timedelta(days=n)
                     return True  # opt_all
 
-                # Frame per il combobox progetti
-                combo_frame = ttk.Frame(selection_window)
-                combo_frame.pack(pady=10, padx=20, fill=tk.X)
-                
-                ttk.Label(combo_frame, text=self.lang.get('npi_project_label', 'Progetto:'), width=12).pack(side=tk.LEFT)
-
-                # Combobox editabile con i progetti - usa il campo ActiveNpi formattato
-                combo_var = tk.StringVar()
-                combo = ttk.Combobox(combo_frame, textvariable=combo_var, width=100)
-                
-                # Etichetta progetto = ActiveNpi + data dichiarata di chiusura (ScadenzaProgetto)
+                # Etichetta progetto = ActiveNpi + scadenza + stato
                 deadline_lbl = self.lang.get('npi_project_deadline', 'Scadenza')
                 no_deadline = self.lang.get('npi_no_deadline', 'n/d')
-
                 status_closed = self.lang.get('npi_status_closed', 'Chiuso')
                 status_open = self.lang.get('npi_status_open', 'Aperto')
 
@@ -18413,103 +18415,87 @@ class App(tk.Tk):
                     stato = status_closed if stato_raw.lower() == 'chiuso' else status_open
                     return f"{p['ActiveNpi']}  —  {deadline_lbl}: {scad}  —  {stato}"
 
-                # Prepara lista completa dei progetti con formato ActiveNpi + scadenza
                 all_projects_list = [_proj_label(p) for p in progetti]
                 progetti_map = {_proj_label(p): p['ProgettoId'] for p in progetti}
-                # ðŸ†• Mappa inversa per accedere ai dati completi del progetto
                 progetti_map_reverse = {_proj_label(p): p for p in progetti}
-                
-                combo['values'] = all_projects_list
-                combo.pack(fill=tk.X, expand=True)
 
-                # ðŸ†• Funzione per filtrare il combobox mentre l'utente digita (con filtro cliente)
-                def on_keyrelease(event):
-                    typed_text = combo_var.get().lower()
-                    selected_client = client_var.get()
-                    all_clients_label = self.lang.get('npi_all_clients', 'Tutti i Clienti')
-                    
-                    # Filtra prima per cliente
-                    if selected_client == all_clients_label:
-                        filtered_by_client = all_projects_list
-                    else:
-                        filtered_by_client = [
-                            p for p in all_projects_list
-                            if progetti_map_reverse[p].get('Cliente', '').strip() == selected_client
-                        ]
+                # ── Lista risultati (visibile, doppio click per aprire) ──
+                list_frame = ttk.LabelFrame(body, text=self.lang.get('npi_projects', 'Progetti'), padding=6)
+                list_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+                listbox = tk.Listbox(list_frame, activestyle='dotbox', font=('Segoe UI', 10),
+                                     selectmode=tk.BROWSE)
+                lsb = ttk.Scrollbar(list_frame, orient='vertical', command=listbox.yview)
+                lhsb = ttk.Scrollbar(list_frame, orient='horizontal', command=listbox.xview)
+                listbox.configure(yscrollcommand=lsb.set, xscrollcommand=lhsb.set)
+                listbox.grid(row=0, column=0, sticky='nsew')
+                lsb.grid(row=0, column=1, sticky='ns')
+                lhsb.grid(row=1, column=0, sticky='ew')
+                list_frame.rowconfigure(0, weight=1)
+                list_frame.columnconfigure(0, weight=1)
 
-                    # Poi filtra per stato progetto (tutti / chiusi / in scadenza n gg / non chiusi)
-                    filtered_by_status = [p for p in filtered_by_client
-                                          if _status_ok(progetti_map_reverse[p])]
+                count_var = tk.StringVar(value='')
+                ttk.Label(body, textvariable=count_var, foreground='#555').pack(anchor='w', pady=(6, 0))
 
-                    # Poi filtra per testo digitato
-                    if typed_text == '':
-                        # Se il campo Ã¨ vuoto, mostra tutti i progetti (filtrati per cliente+stato)
-                        combo['values'] = filtered_by_status
-                    else:
-                        # Filtra i progetti che contengono il testo digitato
-                        filtered = [p for p in filtered_by_status if typed_text in p.lower()]
-                        combo['values'] = filtered
+                _current = []  # etichette attualmente visualizzate
 
-                    # Riapri il dropdown se ci sono risultati
-                    if (filtered if typed_text else filtered_by_status):
-                        combo.event_generate('<Down>')
+                def refresh_list(*_):
+                    txt = search_var.get().strip().lower()
+                    client = client_var.get()
+                    items = all_projects_list
+                    if client != all_clients_label:
+                        items = [p for p in items if progetti_map_reverse[p].get('Cliente', '').strip() == client]
+                    items = [p for p in items if _status_ok(progetti_map_reverse[p])]
+                    if txt:
+                        items = [p for p in items if txt in p.lower()]
+                    _current[:] = items
+                    listbox.delete(0, tk.END)
+                    for it in items:
+                        listbox.insert(tk.END, it)
+                    if items:
+                        listbox.selection_set(0)
+                    count_var.set(self.lang.get('npi_projects_count', '{0} progetti').format(len(items)))
 
-                # Bind dell'evento di digitazione - solo su Enter
-                combo.bind('<Return>', on_keyrelease)
-                # Bind anche su click della freccia dropdown
-                combo.bind('<Button-1>', lambda e: on_keyrelease(e) if combo_var.get() else None)
-                
-                # ðŸ†• Funzione per aggiornare la lista progetti quando cambia il cliente
-                def on_client_change(event):
-                    # Reset project combobox
-                    combo_var.set('')
-                    on_keyrelease(None)
-                
-                # Bind cambio cliente
-                client_combo.bind('<<ComboboxSelected>>', on_client_change)
-
-                # ðŸ†• Bind cambio stato: abilita lo spinbox solo per "in scadenza", poi rifiltra
-                def on_status_change(event=None):
-                    if status_var.get() == opt_expiring:
-                        days_spin.configure(state='readonly')
-                    else:
-                        days_spin.configure(state='disabled')
-                    combo_var.set('')
-                    on_keyrelease(None)
-
-                def on_days_change(event=None):
-                    on_keyrelease(None)
-
-                status_combo.bind('<<ComboboxSelected>>', on_status_change)
-                days_spin.configure(command=on_days_change)
-                days_spin.bind('<Return>', on_days_change)
-
-                def open_selected():
+                def open_selected(*_):
                     from npi.windows.project_window import ProjectWindow
-                    selected_text = combo_var.get()
-                    if selected_text and selected_text in progetti_map:
-                        project_id = progetti_map[selected_text]
-                        selection_window.destroy()
-
-                        # Recupera il nome dell'utente che ha appena effettuato l'autenticazione
-                        logged_user = self.last_authenticated_user_name
-
-                        # Passa il nome utente come argomento esplicito a ProjectWindow
-                        ProjectWindow(self, self.npi_manager, self.lang, project_id, self,
-                                      logged_user, final_customers)
-                    else:
+                    sel = listbox.curselection()
+                    if not sel or sel[0] >= len(_current):
                         messagebox.showwarning(
-                            "Selezione non valida",
-                            "Seleziona un progetto valido dalla lista.",
-                            parent=selection_window
-                        )
+                            self.lang.get('warning', 'Attenzione'),
+                            self.lang.get('npi_select_invalid', 'Seleziona un progetto valido dalla lista.'),
+                            parent=selection_window)
+                        return
+                    label = _current[sel[0]]
+                    project_id = progetti_map.get(label)
+                    if project_id is None:
+                        return
+                    selection_window.destroy()
+                    logged_user = self.last_authenticated_user_name
+                    ProjectWindow(self, self.npi_manager, self.lang, project_id, self,
+                                  logged_user, final_customers)
 
-                # Frame per i pulsanti
-                btn_frame = ttk.Frame(selection_window)
-                btn_frame.pack(pady=10)
-                
-                ttk.Button(btn_frame, text="Apri", command=open_selected, width=15).pack(side=tk.LEFT, padx=5)
-                ttk.Button(btn_frame, text="Annulla", command=selection_window.destroy, width=15).pack(side=tk.LEFT, padx=5)
+                def on_status_change(event=None):
+                    days_spin.configure(state='readonly' if status_var.get() == opt_expiring else 'disabled')
+                    refresh_list()
+
+                # Bind filtri
+                search_var.trace_add('write', lambda *a: refresh_list())
+                client_combo.bind('<<ComboboxSelected>>', lambda e: refresh_list())
+                status_combo.bind('<<ComboboxSelected>>', on_status_change)
+                days_spin.configure(command=refresh_list)
+                days_spin.bind('<Return>', lambda e: refresh_list())
+                listbox.bind('<Double-Button-1>', open_selected)
+                listbox.bind('<Return>', open_selected)
+
+                refresh_list()
+                search_entry.focus_set()
+
+                # ── Bottoni ──
+                btn_frame = ttk.Frame(body)
+                btn_frame.pack(fill=tk.X, pady=(10, 0))
+                ttk.Button(btn_frame, text=self.lang.get('btn_open', '📂 Apri'),
+                           command=open_selected, width=14).pack(side=tk.RIGHT, padx=(6, 0))
+                ttk.Button(btn_frame, text=self.lang.get('btn_cancel', 'Annulla'),
+                           command=selection_window.destroy, width=14).pack(side=tk.RIGHT)
 
             except Exception as e:
                 messagebox.showerror(

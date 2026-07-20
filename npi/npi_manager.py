@@ -2252,21 +2252,21 @@ class GestoreNPI:
     def _was_project_welcome_sent(self, progetto_id: int) -> bool:
         """
         Controlla se la welcome email è già stata inviata per il progetto.
-        Usa la tabella NotificationLog con NotificationReason='PROJECT_WELCOME'
-        e RecipientTeamsId='PROJECT_ID:{progetto_id}' come chiave univoca progetto.
+        Usa la tabella dbo.NotificationLog (schema reale: ProgettoID, StatoInvio,
+        NotificationReason) con NotificationReason='PROJECT_WELCOME' come chiave.
         """
         session = self._get_session()
         try:
             from sqlalchemy import text as sa_text
             result = session.execute(
                 sa_text("""
-                    SELECT TOP 1 NotificationLogId
+                    SELECT TOP 1 LogID
                     FROM dbo.NotificationLog
                     WHERE NotificationReason = 'PROJECT_WELCOME'
-                      AND RecipientTeamsId = :key
-                      AND DeliveryStatus = 'SENT'
+                      AND ProgettoID = :pid
+                      AND StatoInvio = 'SENT'
                 """),
-                {"key": f"PROJECT_ID:{progetto_id}"}
+                {"pid": progetto_id}
             ).fetchone()
             return result is not None
         except Exception as e:
@@ -2282,7 +2282,7 @@ class GestoreNPI:
 
         Destinatari:
           - TO: tutti i partecipanti (OwnerID assegnato) al momento dell'invio
-          - CC: indirizzi da Settings[Attribute='Sys_Email_late_npi_cc']
+          - CC: indirizzi da Settings[Atribute='Sys_Email_late_npi_cc']
           - CC: Project Owner (se non già in TO)
 
         Tracking: NotificationLog con NotificationReason='PROJECT_WELCOME'
@@ -2364,7 +2364,7 @@ class GestoreNPI:
                 cc_row = session.execute(sa_text("""
                     SELECT [Value]
                     FROM [Traceability_RS].[dbo].[Settings]
-                    WHERE [Attribute] IN ('Sys_Email_late_npi_cc', ' Sys_Email_late_npi_cc')
+                    WHERE [Atribute] IN ('Sys_Email_late_npi_cc', ' Sys_Email_late_npi_cc')
                 """)).fetchone()
                 if cc_row and cc_row[0]:
                     cc_emails = [e.strip() for e in cc_row[0].split(';') if e.strip()]
@@ -2501,27 +2501,33 @@ class GestoreNPI:
                 subject=subject,
                 body=email_html,
                 is_html=True,
-                cc=cc_emails if cc_emails else None
+                cc_emails=cc_emails if cc_emails else None
             )
 
-            # 7. Logga in NotificationLog (una riga per progetto con reason=PROJECT_WELCOME)
-            from .data_models import NotificationLog
-            log_entry = NotificationLog(
-                TaskProdottoId=None,
-                EmployeeHireHistoryId=None,
-                NotificationType='EMAIL',
-                NotificationReason='PROJECT_WELCOME',
-                RecipientEmail=','.join(recipient_list),
-                RecipientName=f"{len(participants)} participants",
-                RecipientTeamsId=f"PROJECT_ID:{progetto_id}",
-                Subject=subject,
-                MessageBody=None,  # Non salviamo HTML completo per risparmiare spazio
-                SentDate=datetime.now(),
-                DeliveryStatus='SENT',
-                ErrorMessage=None
-            )
-            session.add(log_entry)
-            session.commit()
+            # 7. Logga in dbo.NotificationLog per il dedup "invia una volta".
+            # Il dedup usa ProgettoID + NotificationReason; TaskProdottoID/SoggettoID
+            # sono NOT NULL nel DB, quindi usiamo un task rappresentativo (primo del
+            # progetto) e l'owner del progetto. Best-effort: se manca qualcosa non
+            # blocchiamo l'esito dell'invio (email già partita).
+            try:
+                owner_soggetto_id = getattr(progetto, 'OwnerID', None) or (
+                    progetto.owner.SoggettoId if getattr(progetto, 'owner', None) else None)
+                first_task_id = wave.tasks[0].TaskProdottoID if getattr(wave, 'tasks', None) else None
+                if owner_soggetto_id and first_task_id:
+                    from sqlalchemy import text as sa_text
+                    session.execute(sa_text("""
+                        INSERT INTO dbo.NotificationLog
+                            (ProgettoID, TaskProdottoID, SoggettoID, CanaleInvio, DataInvio,
+                             StatoInvio, MessaggioErrore, NotificationReason)
+                        VALUES (:pid, :tid, :sid, 'EMAIL', :now, 'SENT', NULL, 'PROJECT_WELCOME')
+                    """), {"pid": progetto_id, "tid": first_task_id, "sid": owner_soggetto_id,
+                           "now": datetime.now()})
+                    session.commit()
+                else:
+                    logger.warning(f"Welcome email {progetto_id}: log NotificationLog saltato "
+                                   f"(owner/task mancante) — possibile reinvio al prossimo accesso.")
+            except Exception as log_err:
+                logger.warning(f"Welcome email {progetto_id}: log NotificationLog fallito: {log_err}")
 
             logger.info(
                 f"📬 Welcome email progetto {progetto_id} '{product_name}' "
@@ -3351,7 +3357,9 @@ class GestoreNPI:
                 .outerjoin(Soggetto, TaskProdotto.OwnerID == Soggetto.SoggettoId)
                 .where(ProgettoNPI.StatoProgetto != 'Chiuso')
                 .where(ProgettoNPI.DateOut.is_(None))
-                .where(TaskProdotto.OwnerID.isnot(None))
+                # NB: includiamo anche i task SENZA responsabile (OwnerID NULL): vanno
+                # comunque mostrati come scaduti; il sollecito email li salta se privi
+                # di indirizzo.
                 .where(TaskProdotto.Stato != 'Completato')
                 .where(TaskProdotto.DataScadenza <= datetime.now())
                 .order_by(
@@ -3437,7 +3445,7 @@ class GestoreNPI:
                 .outerjoin(Soggetto, TaskProdotto.OwnerID == Soggetto.SoggettoId)
                 .where(ProgettoNPI.StatoProgetto != 'Chiuso')
                 .where(ProgettoNPI.DateOut.is_(None))
-                .where(TaskProdotto.OwnerID.isnot(None))
+                # Include anche i task senza responsabile (OwnerID NULL): vanno mostrati.
                 .where(TaskProdotto.Stato != 'Completato')
                 .where(TaskProdotto.DataScadenza >= start)
                 .where(TaskProdotto.DataScadenza <= end)
