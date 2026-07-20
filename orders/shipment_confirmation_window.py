@@ -24,7 +24,7 @@ import logging
 import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 from tkcalendar import DateEntry
 
@@ -162,7 +162,9 @@ class ShipmentConfirmationWindow(tk.Toplevel):
         ship_row.pack(fill=tk.X, pady=(0, 6))
         self.lbl_shipment = ttk.Label(ship_row, text="", font=("Segoe UI", 10, "bold"))
         self.lbl_shipment.pack(side=tk.LEFT, padx=(0, 16))
-        ttk.Label(ship_row, text=self.lang.get("shipment_date_label", "Data spedizione:")).pack(side=tk.LEFT)
+        ttk.Label(ship_row, text=self.lang.get(
+            "shipment_date_label",
+            "Data spedizione (registra qta spedite):")).pack(side=tk.LEFT)
         self.date_entry = DateEntry(ship_row, width=12, date_pattern="dd/mm/yyyy")
         self.date_entry.pack(side=tk.LEFT, padx=(6, 16))
         self.lbl_mode = ttk.Label(ship_row, text="", foreground="#1a5276", font=("Segoe UI", 10, "bold"))
@@ -171,6 +173,18 @@ class ShipmentConfirmationWindow(tk.Toplevel):
         # --- Filtri ---
         flt = ttk.LabelFrame(main, text=self.lang.get("filters", "Filtri"), padding=8)
         flt.pack(fill=tk.X, pady=(0, 6))
+
+        # Filtro periodo Data da spedire (guida la query ordini)
+        ttk.Label(flt, text=self.lang.get("filter_date_from", "Data da (da spedire):")).pack(side=tk.LEFT)
+        _def_from, _def_to = self._default_date_range()
+        self.filter_from_entry = DateEntry(flt, width=12, date_pattern="dd/mm/yyyy")
+        self.filter_from_entry.set_date(_def_from)
+        self.filter_from_entry.pack(side=tk.LEFT, padx=(4, 12))
+        ttk.Label(flt, text=self.lang.get("filter_date_to", "Data a:")).pack(side=tk.LEFT)
+        self.filter_to_entry = DateEntry(flt, width=12, date_pattern="dd/mm/yyyy")
+        self.filter_to_entry.set_date(_def_to)
+        self.filter_to_entry.pack(side=tk.LEFT, padx=(4, 12))
+
         ttk.Label(flt, text=self.lang.get("filter_order", "Ordine:")).pack(side=tk.LEFT)
         self.filter_order_var = tk.StringVar()
         e1 = ttk.Entry(flt, textvariable=self.filter_order_var, width=18)
@@ -185,6 +199,8 @@ class ShipmentConfirmationWindow(tk.Toplevel):
                    command=self._clear_filters).pack(side=tk.LEFT, padx=4)
         e1.bind("<Return>", lambda _e: self._load_orders())
         e2.bind("<Return>", lambda _e: self._load_orders())
+        self.filter_from_entry.bind("<<DateEntrySelected>>", lambda _e: self._load_orders())
+        self.filter_to_entry.bind("<<DateEntrySelected>>", lambda _e: self._load_orders())
 
         # --- Griglia ordini (residuo > 0) ---
         og = ttk.LabelFrame(main, text=self.lang.get("orders_to_ship", "Ordini da spedire"), padding=6)
@@ -331,9 +347,18 @@ class ShipmentConfirmationWindow(tk.Toplevel):
         self._load_orders()
         self._load_pallets()
 
+    def _default_date_range(self):
+        """Intervallo predefinito del filtro 'Data da spedire': ultimi 30 giorni
+        fino a +30 giorni (finestra pratica attorno a oggi)."""
+        today = date.today()
+        return today - timedelta(days=30), today + timedelta(days=30)
+
     def _clear_filters(self):
         self.filter_order_var.set("")
         self.filter_product_var.set("")
+        _from, _to = self._default_date_range()
+        self.filter_from_entry.set_date(_from)
+        self.filter_to_entry.set_date(_to)
         self._load_orders()
 
     def _load_orders(self):
@@ -341,8 +366,19 @@ class ShipmentConfirmationWindow(tk.Toplevel):
             self.orders_tree.delete(it)
         self._order_info = {}
 
-        filters = ""
-        params = []
+        # Periodo Data-da-spedire: filtro principale della query
+        d_from = self.filter_from_entry.get_date()
+        d_to = self.filter_to_entry.get_date()
+        if d_from > d_to:
+            messagebox.showwarning(
+                self.lang.get("warning", "Attenzione"),
+                self.lang.get("filter_date_order",
+                              "La data iniziale deve precedere la data finale."),
+                parent=self)
+            return
+
+        filters = " AND CAST(R.DateToship AS date) BETWEEN ? AND ?"
+        params = [d_from, d_to]
         ofil = self.filter_order_var.get().strip()
         pfil = self.filter_product_var.get().strip()
         if ofil:
@@ -379,7 +415,9 @@ class ShipmentConfirmationWindow(tk.Toplevel):
                             r.DateToShipFmt or "", qty_to_ship, confirmed, residual),
                 )
             self.status_var.set(
-                self.lang.get("orders_count", "{0} ordini da spedire").format(len(rows)))
+                self.lang.get("orders_count_period",
+                              "{0} ordini da spedire (periodo {1} - {2})").format(
+                    len(rows), d_from.strftime("%d/%m/%Y"), d_to.strftime("%d/%m/%Y")))
         except Exception as e:
             logger.error(f"Errore caricamento ordini: {e}", exc_info=True)
             messagebox.showerror(self.lang.get("error", "Errore"), str(e), parent=self)
