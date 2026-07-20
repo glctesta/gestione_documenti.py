@@ -309,7 +309,10 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.5.2'  # Versione aggiornata
+APP_VERSION = '2.4.2.5.6'  # Versione aggiornata 
+# Nome programma usato come chiave in SwVersions / VersionDMLogs.
+# In produzione = nome dell'exe; in sviluppo usa il nome canonico.
+APP_PROGRAM_NAME = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else 'DocumentManagement.exe'
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
@@ -397,6 +400,14 @@ def load_last_skip_date():
 # Intervallo promemoria update NON obbligatorio (4 ore)
 OPTIONAL_UPDATE_REMINDER_SECONDS = 4 * 60 * 60
 
+# Aggiornamento automatico con conto alla rovescia e posticipo:
+# countdown 60s; l'utente puo' posticipare max 3 volte, ogni posticipo max 30 min,
+# per un totale massimo di 60 minuti; poi l'update parte automaticamente.
+UPDATE_COUNTDOWN_SECONDS = 60
+UPDATE_MAX_POSTPONES = 3
+UPDATE_MAX_SINGLE_POSTPONE_SECONDS = 30 * 60
+UPDATE_MAX_TOTAL_POSTPONE_SECONDS = 60 * 60
+
 
 def save_update_skip_count(skip_count, version_str):
     """Salva il conteggio dei rinvii dell'update nel file JSON."""
@@ -423,6 +434,35 @@ def reset_update_skip_count():
             logger.info("File di rinvio update eliminato (reset conteggio)")
     except Exception as e:
         logger.error(f"Errore nell'eliminazione del file di rinvio update: {e}")
+
+
+def get_whatsnew_shown_file_path():
+    """Percorso del file che traccia l'ultima versione per cui è già stato mostrato
+    il popup 'Novità' (una volta dopo l'update)."""
+    work_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(work_dir, "whatsnew_shown.txt")
+
+
+def load_whatsnew_shown_version():
+    """Ritorna la versione per cui il popup Novità è già stato mostrato ('' se nessuna)."""
+    path = get_whatsnew_shown_file_path()
+    try:
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                return f.read().strip()
+    except Exception as e:
+        logger.warning(f"Errore lettura whatsnew_shown: {e}")
+    return ''
+
+
+def save_whatsnew_shown_version(version_str):
+    """Registra che il popup Novità è stato mostrato per questa versione."""
+    path = get_whatsnew_shown_file_path()
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(version_str or '')
+    except Exception as e:
+        logger.error(f"Errore salvataggio whatsnew_shown: {e}")
 
 
 def fetch_working_areas(self):
@@ -7265,6 +7305,60 @@ class Database:
                 logger.error(f"Errore durante il recupero della versione del software: {e}")
                 return None
 
+    # ── Registro modifiche versione (VersionDMLogs) ──────────────────────────
+    def add_version_dm_log(self, name_program, version, summary, created_by=None):
+        """Inserisce una sintesi delle modifiche/aggiunte per una versione.
+        Ritorna True/False."""
+        with self._lock:
+            try:
+                self.cursor.execute(
+                    "INSERT INTO traceability_rs.dbo.VersionDMLogs "
+                    "(NameProgram, Version, Summary, CreatedBy) VALUES (?, ?, ?, ?)",
+                    (name_program, version, summary, created_by))
+                self.conn.commit()
+                logger.info(f"VersionDMLogs: nota salvata per {name_program} v{version}")
+                return True
+            except pyodbc.Error as e:
+                logger.error(f"Errore salvataggio VersionDMLogs: {e}")
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    pass
+                return False
+
+    def fetch_version_dm_logs(self, name_program, limit=None):
+        """Ritorna le note in ordine cronologico inverso (LIFO, piu' recenti prima)."""
+        with self._lock:
+            try:
+                top = f"TOP {int(limit)} " if limit else ""
+                self.cursor.execute(
+                    f"SELECT {top}VersionDMLogId, Version, Summary, CreatedAt, CreatedBy "
+                    "FROM traceability_rs.dbo.VersionDMLogs "
+                    "WHERE NameProgram = ? AND DateOut IS NULL "
+                    "ORDER BY CreatedAt DESC, VersionDMLogId DESC",
+                    (name_program,))
+                return self.cursor.fetchall()
+            except pyodbc.Error as e:
+                logger.error(f"Errore lettura VersionDMLogs: {e}")
+                return []
+
+    def fetch_version_dm_log_summary(self, name_program, version):
+        """Concatena le note (piu' recente prima) di una singola versione, o None."""
+        with self._lock:
+            try:
+                self.cursor.execute(
+                    "SELECT Summary FROM traceability_rs.dbo.VersionDMLogs "
+                    "WHERE NameProgram = ? AND Version = ? AND DateOut IS NULL "
+                    "ORDER BY CreatedAt DESC, VersionDMLogId DESC",
+                    (name_program, version))
+                rows = self.cursor.fetchall()
+                if not rows:
+                    return None
+                return "\n\n".join((r.Summary or "").strip() for r in rows if (r.Summary or "").strip())
+            except pyodbc.Error as e:
+                logger.error(f"Errore lettura sintesi VersionDMLogs: {e}")
+                return None
+
     def fetch_available_maintenance_plans(self, equipment_id):
         """Recupera i piani di manutenzione disponibili per una macchina, basandosi sui compiti assegnati."""
         # La logica per determinare se un piano Ã¨ "scaduto" Ã¨ complessa e la manteniamo,
@@ -13199,17 +13293,17 @@ class App(tk.Tk):
 
     def _trigger_update(self, version_info, mandatory=True):
         """
-        Mostra un dialogo pre-aggiornamento, poi lancia l'updater.
+        Mostra un dialogo con conto alla rovescia (60s) e lancia l'updater.
 
-        Bottoni:
-        - "Salva e Aggiorna": chiude normalmente (dà tempo di salvare le finestre aperte),
-          poi avvia l'updater.
-        - "Aggiorna Subito": force_quit immediato.
-        - "Annulla" (solo se mandatory=False): torna all'app senza aggiornare.
+        Non c'è più il pulsante "Salva e Aggiorna": allo scadere del countdown
+        l'update parte automaticamente. L'utente può "Aggiorna ora" oppure
+        "Posticipa" (max 3 volte, 30 min ciascuno, totale max 60 min) per chiudere
+        il lavoro nelle finestre aperte. Mostra anche la sintesi novità se presente.
 
         Returns:
-            True  → update avviato
-            False → utente ha annullato (solo per update opzionale)
+            (non ritorna)  → update avviato (os._exit)
+            'postponed'    → utente ha posticipato; ritrigger già schedulato → l'app continua
+            'failed'       → updater non trovato / sorgente non pronta → riprovare più tardi
         """
         source = version_info.MainPath
         destination = os.path.dirname(sys.executable)
@@ -13259,7 +13353,7 @@ class App(tk.Tk):
                 "File updater non trovato!\n\nImpossibile aggiornare.",
                 parent=self
             )
-            return False
+            return 'failed'
 
         # ── Verifica integrità file sorgente ──────────────────────────────────
         file_ready, reason = self._is_source_file_ready(source, exe_name)
@@ -13270,109 +13364,159 @@ class App(tk.Tk):
                 self.lang.get('update_postponed_message', reason),
                 parent=self
             )
-            return False
+            return 'failed'
 
-        # ── Dialogo pre-update ───────────────────────────────────────────────
-        # Forza il rendering del main window prima di creare il dialogo
-        # (critico se check_version() è chiamato durante __init__ prima di _create_widgets)
-        logger.info("_trigger_update: preparazione dialogo pre-update...")
+        # ── Dialogo countdown + posticipo ────────────────────────────────────
+        # Non c'è più il pulsante "Salva e Aggiorna": l'update parte da solo allo
+        # scadere del countdown. L'utente può posticipare (max 3 volte, 30 min
+        # ciascuno, totale max 60 min) per chiudere il lavoro nelle finestre aperte.
+        logger.info("_trigger_update: preparazione dialogo countdown...")
         try:
             self.update_idletasks()
             self.update()
         except Exception as e:
             logger.warning(f"_trigger_update: errore update main window (potrebbe non essere ancora realizzata): {e}")
-
-        # Porta la finestra principale in primo piano prima di creare il dialogo
         try:
             self.lift()
             self.focus_force()
         except Exception as e:
             logger.warning(f"_trigger_update: errore lift/focus: {e}")
 
-        logger.info("_trigger_update: creazione dialogo...")
+        # Re-entrancy guard: se un dialogo di update è già aperto, non stackare.
+        if getattr(self, '_update_dialog_open', False):
+            logger.info("_trigger_update: dialogo già aperto, ritorno postponed")
+            return 'postponed'
+
+        # Stato posticipi (reset se la versione target è cambiata)
+        if getattr(self, '_update_postpone_version', None) != version_info.Version:
+            self._update_postpone_count = 0
+            self._update_postpone_total = 0
+            self._update_postpone_version = version_info.Version
+
+        # Sintesi novità della versione (se già inserita in VersionDMLogs)
+        try:
+            whatsnew = self.db.fetch_version_dm_log_summary(APP_PROGRAM_NAME, version_info.Version)
+        except Exception:
+            whatsnew = None
+
         dialog = tk.Toplevel(self)
+        self._update_dialog_open = True
         dialog.title(self.lang.get('update_ready_title', 'Aggiornamento Pronto'))
 
-        # transient + grab_set SOLO se la finestra padre è già visibile/mappata
-        # Altrimenti il dialogo resta invisibile (bug tkinter con parent non realizzato)
         parent_is_ready = False
         try:
             parent_is_ready = self.winfo_ismapped()
         except Exception:
             pass
-
         if parent_is_ready:
             dialog.transient(self)
             dialog.grab_set()
         else:
             logger.info("_trigger_update: parent non ancora mappato, dialogo standalone")
-
         dialog.resizable(False, False)
-
-        # Impedisce la chiusura con X se obbligatorio
-        if mandatory:
-            dialog.protocol("WM_DELETE_WINDOW", lambda: None)
-        else:
-            dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
 
         frame = ttk.Frame(dialog, padding=20)
         frame.pack(fill=tk.BOTH, expand=True)
 
-        if mandatory:
-            msg = self.lang.get(
-                'update_ready_msg_mandatory',
-                f"L'aggiornamento alla versione {version_info.Version} è pronto.\n\n"
-                "Puoi salvare le attività in corso nelle finestre aperte,\n"
-                "poi clicca 'Salva e Aggiorna'.\n\n"
-                "⚠  L'aggiornamento è obbligatorio e non può essere rimandato."
-            )
-        else:
-            msg = self.lang.get(
-                'update_ready_msg_optional',
-                f"L'aggiornamento alla versione {version_info.Version} è pronto.\n\n"
-                "Puoi salvare le attività in corso nelle finestre aperte,\n"
-                "poi clicca 'Salva e Aggiorna'."
-            )
+        ttk.Label(
+            frame,
+            text=self.lang.get('update_ready_head',
+                               "Aggiornamento alla versione {0} pronto.").format(version_info.Version),
+            justify=tk.LEFT, wraplength=460, font=('Segoe UI', 10, 'bold')
+        ).pack(anchor='w')
 
-        ttk.Label(frame, text=msg, justify=tk.LEFT, wraplength=380).pack(pady=(0, 20))
+        if whatsnew:
+            ttk.Label(frame, text=self.lang.get('update_whatsnew', 'Novità di questa versione:'),
+                      font=('Segoe UI', 9, 'bold')).pack(anchor='w', pady=(10, 2))
+            nt = tk.Text(frame, wrap='word', height=7, width=58, font=('Segoe UI', 9))
+            nt.insert('1.0', whatsnew)
+            nt.config(state='disabled')
+            nt.pack(fill=tk.BOTH, expand=True)
+
+        info_lbl = ttk.Label(frame, justify=tk.LEFT, wraplength=460, foreground='#B71C1C')
+        info_lbl.pack(anchor='w', pady=(12, 10))
 
         btn_frame = ttk.Frame(frame)
-        btn_frame.pack()
+        btn_frame.pack(fill=tk.X)
 
-        chosen = {'action': None}  # closure per catturare la scelta
+        chosen = {'action': None}
+        remaining = {'sec': UPDATE_COUNTDOWN_SECONDS}
+        tick = {'job': None}
 
-        def on_save_and_update():
-            chosen['action'] = 'save'
-            dialog.destroy()
+        can_postpone = (self._update_postpone_count < UPDATE_MAX_POSTPONES
+                        and self._update_postpone_total < UPDATE_MAX_TOTAL_POSTPONE_SECONDS)
+        postpone_secs = min(UPDATE_MAX_SINGLE_POSTPONE_SECONDS,
+                            UPDATE_MAX_TOTAL_POSTPONE_SECONDS - self._update_postpone_total)
 
-        def on_update_now():
-            chosen['action'] = 'now'
-            dialog.destroy()
+        def _cancel_tick():
+            if tick['job'] is not None:
+                try:
+                    self.after_cancel(tick['job'])
+                except Exception:
+                    pass
+                tick['job'] = None
 
-        def on_cancel():
-            chosen['action'] = 'cancel'
-            dialog.destroy()
+        def _proceed():
+            _cancel_tick()
+            chosen['action'] = 'update'
+            self._update_dialog_open = False
+            try:
+                dialog.destroy()
+            except Exception:
+                pass
 
-        ttk.Button(
-            btn_frame,
-            text=self.lang.get('update_save_and_update_btn', '💾 Salva e Aggiorna'),
-            command=on_save_and_update
-        ).pack(side=tk.LEFT, padx=6)
+        def _postpone():
+            if not can_postpone:
+                return
+            _cancel_tick()
+            self._update_postpone_count += 1
+            self._update_postpone_total += postpone_secs
+            chosen['action'] = 'postpone'
+            self._update_dialog_open = False
+            logger.info(f"_trigger_update: posticipo #{self._update_postpone_count} di {postpone_secs}s "
+                        f"(totale posticipato {self._update_postpone_total}s)")
+            try:
+                dialog.destroy()
+            except Exception:
+                pass
+            # Ripianifica il ritrigger dopo la durata di posticipo (job dedicato)
+            prev = getattr(self, '_update_retrigger_job', None)
+            if prev is not None:
+                try:
+                    self.after_cancel(prev)
+                except Exception:
+                    pass
+            self._update_retrigger_job = self.after(
+                postpone_secs * 1000, lambda: self._trigger_update(version_info, mandatory))
 
-        ttk.Button(
-            btn_frame,
-            text=self.lang.get('update_now_btn', '⚡ Aggiorna Subito'),
-            command=on_update_now
-        ).pack(side=tk.LEFT, padx=6)
+        def _update_label():
+            if not dialog.winfo_exists():
+                return
+            m, s = divmod(max(0, remaining['sec']), 60)
+            info_lbl.config(text=self.lang.get(
+                'update_countdown_msg',
+                "L'aggiornamento partirà automaticamente tra {0:02d}:{1:02d}.\n"
+                "Salvare il lavoro nelle finestre aperte.").format(m, s))
+            if remaining['sec'] <= 0:
+                _proceed()
+                return
+            remaining['sec'] -= 1
+            tick['job'] = self.after(1000, _update_label)
 
-        if not mandatory:
+        ttk.Button(btn_frame, text=self.lang.get('update_now_btn', '⚡ Aggiorna ora'),
+                   command=_proceed).pack(side=tk.LEFT, padx=6)
+        if can_postpone:
+            pm = max(1, postpone_secs // 60)
+            left = UPDATE_MAX_POSTPONES - self._update_postpone_count
             ttk.Button(
                 btn_frame,
-                text=self.lang.get('cancel', 'Annulla'),
-                command=on_cancel
+                text=self.lang.get('update_postpone_btn', '⏱ Posticipa {0} min ({1} rimasti)').format(pm, left),
+                command=_postpone
             ).pack(side=tk.LEFT, padx=6)
 
-        # Centra il dialogo sullo schermo (non sul main window che potrebbe non avere dimensioni)
+        # X: posticipa se possibile, altrimenti resta (non si può sfuggire all'update)
+        dialog.protocol("WM_DELETE_WINDOW", _postpone if can_postpone else (lambda: None))
+
         dialog.update_idletasks()
         dw = dialog.winfo_reqwidth()
         dh = dialog.winfo_reqheight()
@@ -13380,27 +13524,30 @@ class App(tk.Tk):
         sh = dialog.winfo_screenheight()
         x = (sw - dw) // 2
         y = (sh - dh) // 2
-        dialog.geometry(f"{max(dw, 420)}x{max(dh, 230)}+{x}+{y}")
+        dialog.geometry(f"{max(dw, 480)}x{max(dh, 260)}+{x}+{y}")
 
-        # Forza il dialogo in primo piano sopra tutte le form aperte
         dialog.lift()
         dialog.attributes('-topmost', True)
         dialog.after(200, lambda: dialog.attributes('-topmost', False))
-        dialog.focus_force()
+        try:
+            dialog.focus_force()
+        except Exception:
+            pass
 
-        # Forza rendering del dialogo prima di wait_window
+        _update_label()  # avvia il countdown
         dialog.update()
-        logger.info("_trigger_update: dialogo creato, in attesa della scelta utente...")
-
+        logger.info("_trigger_update: countdown avviato, in attesa...")
         dialog.wait_window()
         # ────────────────────────────────────────────────────────────────────
 
         action = chosen['action']
-        logger.info(f"_trigger_update: scelta utente = '{action}' (mandatory={mandatory})")
+        self._update_dialog_open = False
+        logger.info(f"_trigger_update: esito = '{action}' (mandatory={mandatory})")
 
-        if action == 'cancel':
-            return False
+        if action == 'postpone':
+            return 'postponed'
 
+        # action == 'update' → prosegue con il lancio updater
         # Avvia updater
         logger.info(f"_trigger_update: lancio updater: {updater_path}")
         logger.info(f"  source={source}")
@@ -13421,7 +13568,7 @@ class App(tk.Tk):
                 f"Impossibile avviare l'updater:\n{e}",
                 parent=self
             )
-            return False
+            return 'failed'
 
         # Piccola attesa per dare tempo all'updater di avviarsi prima del force-exit
         time.sleep(0.5)
@@ -13488,13 +13635,13 @@ class App(tk.Tk):
             force_update = is_mandatory or skip_count >= 3
 
             if force_update:
-                # Update obbligatorio: il dialogo interno a _trigger_update gestisce
-                # il messaggio e dà all'utente la possibilità di salvare prima di uscire.
+                # Update obbligatorio: _trigger_update mostra il countdown. Se l'utente
+                # aggiorna, l'app esce (os._exit). Se posticipa/updater non pronto, ritorna
+                # e il ciclo periodico viene comunque ripianificato per non fermarsi.
                 logger.info(f"_periodic_version_check: update obbligatorio (mandatory={is_mandatory}, skip={skip_count})")
-                updated = self._trigger_update(version_info, mandatory=True)
-                # Se updater NON trovato (updated==False), ripianifica tra 15 min
-                if not updated:
-                    self.periodic_check_job_id = self.after(15 * 60 * 1000, self._periodic_version_check)
+                status = self._trigger_update(version_info, mandatory=True)
+                delay = 15 * 60 * 1000 if status == 'failed' else 30 * 60 * 1000
+                self.periodic_check_job_id = self.after(delay, self._periodic_version_check)
                 return
 
             # Update opzionale: se l'utente lo ha già rinviato da meno di 4 ore
@@ -13529,6 +13676,8 @@ class App(tk.Tk):
                 # L'utente ha scelto di aggiornare ora (volontario)
                 reset_update_skip_count()
                 self._trigger_update(version_info, mandatory=False)
+                # Se ritorna (posticipo/updater non pronto), mantieni vivo il ciclo periodico
+                self.periodic_check_job_id = self.after(30 * 60 * 1000, self._periodic_version_check)
                 return
             else:
                 # Rinvia
@@ -14369,9 +14518,15 @@ class App(tk.Tk):
         sulla connessione al database.
         """
         logger.info("Eseguo le operazioni post-avvio...")
-        
+
         # âœ… Operazione 1: Orologio (immediato, non usa DB)
         self._update_clock()
+
+        # ✅ Novità: mostra una volta la sintesi della versione dopo un update
+        try:
+            self.after(2500, self._show_whatsnew_if_needed)
+        except Exception as _wn_exc:
+            logger.warning(f"whats-new: scheduling fallito: {_wn_exc}")
         
         # ✅ Operazione 2: Controllo compleanni (thread con connessione DB dedicata)
         logger.info('Avviato controllo compleanni (thread con DB dedicata)')
@@ -15983,12 +16138,13 @@ class App(tk.Tk):
                 self._hide_splash_for_dialog()
 
                 if force_update:
-                    # Update obbligatorio: usa il dialogo unificato _trigger_update
+                    # Update obbligatorio: countdown automatico. Se l'utente aggiorna,
+                    # _trigger_update esce (os._exit). Se posticipa (o updater non pronto),
+                    # l'app CONTINUA a funzionare e il ritrigger/periodico ci riprovano.
                     logger.info(f"check_version: update obbligatorio (mandatory={is_mandatory}, skip={skip_count})")
                     reset_update_skip_count()
                     self._trigger_update(version_info, mandatory=True)
-                    self.should_exit = True
-                    return False
+                    return True
                 else:
                     # Update opzionale - chiedi all'utente
                     title = self.lang.get("upgrade_available_title")
@@ -16001,11 +16157,10 @@ class App(tk.Tk):
                     response = messagebox.askyesno(title, message, parent=self)
 
                     if response:
-                        # L'utente vuole aggiornare
+                        # L'utente vuole aggiornare (countdown; se posticipa, l'app continua)
                         reset_update_skip_count()
                         self._trigger_update(version_info, mandatory=False)
-                        self.should_exit = True
-                        return False
+                        return True
                     else:
                         # L'utente ha scelto di rinviare
                         skip_count += 1
@@ -17457,8 +17612,57 @@ class App(tk.Tk):
         self._build_manuals_menu()
 
         self.help_menu.add_separator()
+        # Registro modifiche (changelog LIFO) + redazione note (bozza AI, autorizzato)
+        self.help_menu.add_command(
+            label=self.lang.get('menu_version_notes', '🆕 Registro modifiche (Novità)'),
+            command=self._open_version_notes_viewer
+        )
+        self.help_menu.add_command(
+            label=self.lang.get('menu_version_notes_editor', '📝 Redigi note versione...'),
+            command=self._open_version_notes_editor
+        )
+
+        self.help_menu.add_separator()
         about_menu_label = f"{self.lang.get('menu_about')} {APP_VERSION}"
         self.help_menu.add_command(label=about_menu_label, command=self._show_about)
+
+    def _open_version_notes_viewer(self):
+        """Apre il viewer LIFO del registro modifiche (accesso libero, sola lettura)."""
+        try:
+            import version_notes_gui
+            version_notes_gui.open_version_notes_viewer(self, self.db, self.lang, APP_PROGRAM_NAME)
+        except Exception as e:
+            logger.error(f"Errore apertura registro modifiche: {e}", exc_info=True)
+            messagebox.showerror(self.lang.get('error', 'Errore'), str(e), parent=self)
+
+    def _open_version_notes_editor(self):
+        """Apre l'editor note versione (bozza AI da git) sotto autorizzazione."""
+        def authorized_action():
+            try:
+                import version_notes_gui
+                user_name = getattr(self, 'last_authenticated_user_name', 'Unknown')
+                version_notes_gui.open_version_notes_editor(
+                    self, self.db, self.lang, user_name, APP_PROGRAM_NAME, APP_VERSION)
+            except Exception as e:
+                logger.error(f"Errore apertura editor note versione: {e}", exc_info=True)
+                messagebox.showerror(self.lang.get('error', 'Errore'), str(e), parent=self)
+        self._execute_authorized_action('gestisci_note_versione', authorized_action)
+
+    def _show_whatsnew_if_needed(self):
+        """Mostra una sola volta il popup 'Novità' con la sintesi della versione
+        corrente, al primo avvio dopo un aggiornamento."""
+        try:
+            if load_whatsnew_shown_version() == APP_VERSION:
+                return  # già mostrato per questa versione
+            summary = self.db.fetch_version_dm_log_summary(APP_PROGRAM_NAME, APP_VERSION)
+            if not summary:
+                return  # nessuna nota per questa versione: niente popup
+            import version_notes_gui
+            version_notes_gui.show_version_summary_popup(self, self.lang, APP_VERSION, summary)
+            save_whatsnew_shown_version(APP_VERSION)
+            logger.info(f"whats-new: popup mostrato per v{APP_VERSION}")
+        except Exception as e:
+            logger.warning(f"whats-new: errore visualizzazione: {e}")
 
     # ══════════════════════════════════════════════════════════════
     #  MENU MANUALI - Struttura completa
@@ -18141,6 +18345,47 @@ class App(tk.Tk):
                 client_combo.current(0)
                 client_combo.pack(side=tk.LEFT, padx=(5, 0), fill=tk.X, expand=True)
 
+                # ðŸ†• Filtro Stato progetto
+                opt_all = self.lang.get('npi_state_all', 'Tutti gli stati')
+                opt_closed = self.lang.get('npi_state_closed', 'Solo chiusi')
+                opt_expiring = self.lang.get('npi_state_expiring', 'Solo in scadenza tra n giorni')
+                opt_not_closed = self.lang.get('npi_state_not_closed', 'Solo non ancora chiusi')
+
+                state_frame = ttk.Frame(filter_frame)
+                state_frame.pack(fill=tk.X, pady=5)
+                ttk.Label(state_frame, text=self.lang.get('npi_state_filter', 'Stato:'), width=12).pack(side=tk.LEFT)
+                status_var = tk.StringVar(value=opt_all)
+                status_combo = ttk.Combobox(state_frame, textvariable=status_var, width=32, state='readonly',
+                                            values=[opt_all, opt_closed, opt_expiring, opt_not_closed])
+                status_combo.current(0)
+                status_combo.pack(side=tk.LEFT, padx=(5, 12))
+                ttk.Label(state_frame, text=self.lang.get('npi_state_days', 'Giorni (0-5):')).pack(side=tk.LEFT)
+                days_var = tk.IntVar(value=5)
+                days_spin = ttk.Spinbox(state_frame, from_=0, to=5, width=5, textvariable=days_var, state='disabled')
+                days_spin.pack(side=tk.LEFT, padx=(5, 0))
+
+                def _status_ok(p):
+                    sel = status_var.get()
+                    stato = (p.get('StatoProgetto') or '').strip().lower()
+                    if sel == opt_closed:
+                        return stato == 'chiuso'
+                    if sel == opt_not_closed:
+                        return stato != 'chiuso'
+                    if sel == opt_expiring:
+                        if stato == 'chiuso':
+                            return False
+                        d = p.get('ScadenzaProgetto')
+                        if not d:
+                            return False
+                        dd = d.date() if hasattr(d, 'date') else d
+                        try:
+                            n = max(0, min(5, int(days_var.get())))
+                        except (TypeError, ValueError):
+                            n = 5
+                        today = datetime.now().date()
+                        return today <= dd <= today + timedelta(days=n)
+                    return True  # opt_all
+
                 # Frame per il combobox progetti
                 combo_frame = ttk.Frame(selection_window)
                 combo_frame.pack(pady=10, padx=20, fill=tk.X)
@@ -18188,21 +18433,25 @@ class App(tk.Tk):
                         filtered_by_client = all_projects_list
                     else:
                         filtered_by_client = [
-                            p for p in all_projects_list 
+                            p for p in all_projects_list
                             if progetti_map_reverse[p].get('Cliente', '').strip() == selected_client
                         ]
-                    
+
+                    # Poi filtra per stato progetto (tutti / chiusi / in scadenza n gg / non chiusi)
+                    filtered_by_status = [p for p in filtered_by_client
+                                          if _status_ok(progetti_map_reverse[p])]
+
                     # Poi filtra per testo digitato
                     if typed_text == '':
-                        # Se il campo Ã¨ vuoto, mostra tutti i progetti (filtrati per cliente)
-                        combo['values'] = filtered_by_client
+                        # Se il campo Ã¨ vuoto, mostra tutti i progetti (filtrati per cliente+stato)
+                        combo['values'] = filtered_by_status
                     else:
                         # Filtra i progetti che contengono il testo digitato
-                        filtered = [p for p in filtered_by_client if typed_text in p.lower()]
+                        filtered = [p for p in filtered_by_status if typed_text in p.lower()]
                         combo['values'] = filtered
-                    
+
                     # Riapri il dropdown se ci sono risultati
-                    if (filtered if typed_text else filtered_by_client):
+                    if (filtered if typed_text else filtered_by_status):
                         combo.event_generate('<Down>')
 
                 # Bind dell'evento di digitazione - solo su Enter
@@ -18218,6 +18467,22 @@ class App(tk.Tk):
                 
                 # Bind cambio cliente
                 client_combo.bind('<<ComboboxSelected>>', on_client_change)
+
+                # ðŸ†• Bind cambio stato: abilita lo spinbox solo per "in scadenza", poi rifiltra
+                def on_status_change(event=None):
+                    if status_var.get() == opt_expiring:
+                        days_spin.configure(state='readonly')
+                    else:
+                        days_spin.configure(state='disabled')
+                    combo_var.set('')
+                    on_keyrelease(None)
+
+                def on_days_change(event=None):
+                    on_keyrelease(None)
+
+                status_combo.bind('<<ComboboxSelected>>', on_status_change)
+                days_spin.configure(command=on_days_change)
+                days_spin.bind('<Return>', on_days_change)
 
                 def open_selected():
                     from npi.windows.project_window import ProjectWindow
@@ -19463,6 +19728,15 @@ class App(tk.Tk):
         txt.pack(fill='both', expand=True)
         txt.insert('1.0', about_message)
         txt.configure(state='disabled')
+
+        # Registro modifiche / Novità (LIFO) direttamente dalla form About
+        notes_row = ttk.Frame(frame)
+        notes_row.pack(fill='x', pady=(8, 0))
+        ttk.Button(
+            notes_row,
+            text=self.lang.get('menu_version_notes', '🆕 Registro modifiche (Novità)'),
+            command=lambda: (dlg.destroy(), self._open_version_notes_viewer())
+        ).pack(side='left')
 
         filter_row = ttk.Frame(frame)
         filter_row.pack(fill='x', pady=(10, 0))

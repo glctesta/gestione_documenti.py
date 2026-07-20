@@ -193,6 +193,15 @@ class NpiDashboardWindow(tk.Toplevel):
         self.project_tree.heading('completion_pct', text='% Completamento')
         self.project_tree.column('completion_pct', width=110, anchor=tk.CENTER)
 
+        # Ordinamento A-Z / Z-A cliccando sull'intestazione di colonna
+        self._sortable_cols = ('project_name', 'product_code', 'customer', 'project_end_date',
+                               'total_tasks', 'completed_on_time', 'completed_late',
+                               'pending_late', 'completion_pct')
+        self._base_headers = {c: self.project_tree.heading(c)['text'] for c in self._sortable_cols}
+        self._sort_state = {'col': None, 'reverse': False}
+        for _c in self._sortable_cols:
+            self.project_tree.heading(_c, command=lambda cc=_c: self._sort_tree_column(cc))
+
         # Definizione dei tag
         self.project_tree.tag_configure('overdue', foreground='red', font=('Helvetica', 9, 'bold'))
         self.project_tree.tag_configure('closed', foreground='green', font=('Helvetica', 9, 'bold'))  # Verde per progetti chiusi
@@ -242,7 +251,12 @@ class NpiDashboardWindow(tk.Toplevel):
             text=self.lang.get('btn_overdue_tasks', '⚠️ Task Scaduti'),
             command=self._launch_overdue_tasks
         ).pack(side=tk.LEFT, padx=5)
-        
+        ttk.Button(
+            button_frame,
+            text=self.lang.get('btn_upcoming_tasks', '⏳ Task in scadenza'),
+            command=self._launch_upcoming_tasks
+        ).pack(side=tk.LEFT, padx=5)
+
         ttk.Button(button_frame, text=self.lang.get('btn_close', 'Chiudi'), command=self.destroy).pack(side=tk.RIGHT)
 
     def _update_statistics(self):
@@ -517,6 +531,40 @@ class NpiDashboardWindow(tk.Toplevel):
             self.project_tree.insert('', tk.END, text="-1",
                                      values=('', "Errore", "Impossibile caricare i dati.", str(e), ""))
 
+    def _sort_tree_column(self, col):
+        """Ordina le righe del treeview per la colonna cliccata (A-Z / Z-A a toggle).
+        Numerico dove possibile (Tot Task, %, ...), altrimenti alfabetico."""
+        if self._sort_state['col'] == col:
+            self._sort_state['reverse'] = not self._sort_state['reverse']
+        else:
+            self._sort_state['col'] = col
+            self._sort_state['reverse'] = False
+        reverse = self._sort_state['reverse']
+
+        col_index = list(self.project_tree['columns']).index(col)
+        items = [iid for iid in self.project_tree.get_children('')
+                 if self.project_tree.item(iid, 'text') != '-1']
+
+        def sort_key(iid):
+            vals = self.project_tree.item(iid, 'values')
+            raw = vals[col_index] if col_index < len(vals) else ''
+            s = str(raw).strip()
+            num = s.replace('%', '').replace(',', '.').strip()
+            try:
+                return (0, float(num))       # colonne numeriche
+            except ValueError:
+                return (1, s.lower())        # colonne testuali (A-Z / Z-A)
+
+        items.sort(key=sort_key, reverse=reverse)
+        for pos, iid in enumerate(items):
+            self.project_tree.move(iid, '', pos)
+
+        # Indicatori freccia sull'intestazione
+        for c in self._sortable_cols:
+            base = self._base_headers.get(c, '')
+            arrow = (' ▼' if reverse else ' ▲') if c == col else ''
+            self.project_tree.heading(c, text=base + arrow)
+
     def _on_double_click(self, event):
         """Doppio click su una riga: apre direttamente la gestione task del progetto."""
         self._launch_project_window()
@@ -696,6 +744,32 @@ class NpiDashboardWindow(tk.Toplevel):
         except Exception as e:
             logger.error(f"Errore apertura finestra task scaduti: {e}", exc_info=True)
             messagebox.showerror("Errore", f"Impossibile aprire la finestra:\n{e}", parent=self)
+
+    def _launch_upcoming_tasks(self):
+        """Apre la finestra dei task in scadenza (tutti i prodotti). Selezionando una
+        riga si apre il progetto/prodotto, previo login NPI."""
+        try:
+            from .upcoming_tasks_window import NpiUpcomingTasksWindow
+            NpiUpcomingTasksWindow(
+                self, self.npi_manager, self.lang,
+                on_open_project=self._open_project_by_id_with_login, default_days=5)
+        except Exception as e:
+            logger.error(f"Errore apertura finestra task in scadenza: {e}", exc_info=True)
+            messagebox.showerror("Errore", f"Impossibile aprire la finestra:\n{e}", parent=self)
+
+    def _open_project_by_id_with_login(self, project_id, project_name=None):
+        """Apre la ProjectWindow per un progetto specifico eseguendo il login NPI
+        (stessa autorizzazione di open_npi_project_management)."""
+        logged_user = self.logged_in_user
+        if hasattr(self.master_app, '_execute_authorized_action'):
+            self.master_app._execute_authorized_action(
+                menu_translation_key='project_window',
+                action_callback=lambda: ProjectWindow(
+                    self, self.npi_manager, self.lang, project_id, self.master_app,
+                    getattr(self.master_app, 'last_authenticated_user_name', logged_user))
+            )
+        else:  # Fallback senza autorizzazione
+            ProjectWindow(self, self.npi_manager, self.lang, project_id, self.master_app, logged_user)
 
     def _export_to_excel_new(self):
         """Esporta i progetti NPI in un file Excel completo con statistiche task e tab per cliente."""

@@ -89,19 +89,18 @@ def _build_prompt(data, meta):
     return system, user
 
 
-def analyze_recurrence(data, meta, url=None, model=None, timeout=180):
-    """Chiama Ollama /api/chat e restituisce il testo dell'analisi. Solleva
-    RuntimeError con messaggio chiaro in caso di problemi (server irraggiungibile,
-    modello non caricato)."""
+def chat(system, user, url=None, model=None, timeout=180, temperature=0.2, top_p=0.9):
+    """Chiamata generica a Ollama /api/chat: ritorna il testo della risposta.
+    Solleva RuntimeError con messaggio chiaro (server irraggiungibile, modello
+    non caricato). Riusabile da qualsiasi feature (es. bozza note versione)."""
     url = _server_to_url(url or DEFAULT_SERVER)
     model = model or DEFAULT_MODEL
-    system, user = _build_prompt(data, meta)
     payload = {
         "model": model,
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
         "stream": False,
-        "options": {"temperature": 0.2, "top_p": 0.9},
+        "options": {"temperature": temperature, "top_p": top_p},
     }
     req = urllib.request.Request(
         f"{url}/api/chat",
@@ -136,4 +135,12 @@ def analyze_recurrence(data, meta, url=None, model=None, timeout=180):
             f"Controllo rapido da un altro PC: aprire nel browser "
             f"{url}/api/tags (deve elencare i modelli).")
     except Exception as e:
-        raise RuntimeError(f"Errore analisi AI: {e}")
+        raise RuntimeError(f"Errore AI: {e}")
+
+
+def analyze_recurrence(data, meta, url=None, model=None, timeout=180):
+    """Chiama Ollama /api/chat e restituisce il testo dell'analisi. Solleva
+    RuntimeError con messaggio chiaro in caso di problemi (server irraggiungibile,
+    modello non caricato)."""
+    system, user = _build_prompt(data, meta)
+    return chat(system, user, url=url, model=model, timeout=timeout)

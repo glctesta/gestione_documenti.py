@@ -3391,6 +3391,93 @@ class GestoreNPI:
         finally:
             session.close()
 
+    def get_all_upcoming_tasks(self, days_ahead=5):
+        """
+        Recupera i task NON completati IN SCADENZA nei prossimi `days_ahead` giorni
+        (da oggi incluso), per TUTTI i prodotti/progetti attivi (non chiusi).
+
+        Args:
+            days_ahead: giorni di anticipo (0 = solo in scadenza oggi).
+
+        Returns:
+            Lista di dict con: project_id, project_name, customer, product_code,
+            category, task_name, owner_name, owner_email, due_date, days_left, status
+        """
+        from datetime import timedelta
+        session = self._get_session()
+        try:
+            today = datetime.now().date()
+            try:
+                days_ahead = max(0, int(days_ahead))
+            except (TypeError, ValueError):
+                days_ahead = 5
+            # finestra [inizio oggi, fine giorno today+days_ahead]
+            start = datetime.combine(today, datetime.min.time())
+            end = datetime.combine(today + timedelta(days=days_ahead), datetime.max.time())
+
+            tasks = session.execute(
+                select(
+                    ProgettoNPI.ProgettoId,
+                    ProgettoNPI.NomeProgetto,
+                    Prodotto.Cliente,
+                    Prodotto.CodiceProdotto,
+                    Categoria.Category,
+                    TaskCatalogo.NomeTask,
+                    Soggetto.Nome,
+                    Soggetto.Email,
+                    TaskProdotto.DataScadenza,
+                    TaskProdotto.Stato,
+                    TaskProdotto.TaskProdottoID
+                )
+                .join(WaveNPI, TaskProdotto.WaveID == WaveNPI.WaveID)
+                .join(ProgettoNPI, WaveNPI.ProgettoID == ProgettoNPI.ProgettoId)
+                .join(Prodotto, ProgettoNPI.ProdottoID == Prodotto.ProdottoID)
+                .join(TaskCatalogo, TaskProdotto.TaskID == TaskCatalogo.TaskID)
+                .outerjoin(Categoria, TaskCatalogo.CategoryId == Categoria.CategoryId)
+                .outerjoin(Soggetto, TaskProdotto.OwnerID == Soggetto.SoggettoId)
+                .where(ProgettoNPI.StatoProgetto != 'Chiuso')
+                .where(ProgettoNPI.DateOut.is_(None))
+                .where(TaskProdotto.OwnerID.isnot(None))
+                .where(TaskProdotto.Stato != 'Completato')
+                .where(TaskProdotto.DataScadenza >= start)
+                .where(TaskProdotto.DataScadenza <= end)
+                .order_by(
+                    TaskProdotto.DataScadenza,
+                    ProgettoNPI.NomeProgetto,
+                    Prodotto.CodiceProdotto
+                )
+            ).all()
+
+            result = []
+            for row in tasks:
+                due_date = row.DataScadenza
+                dd = due_date.date() if hasattr(due_date, 'date') else due_date
+                days_left = (dd - today).days if dd else 0
+
+                result.append({
+                    'project_id': row.ProgettoId,
+                    'project_name': row.NomeProgetto or '',
+                    'customer': row.Cliente or '',
+                    'product_code': row.CodiceProdotto or '',
+                    'category': row.Category or '',
+                    'task_name': row.NomeTask or '',
+                    'owner_name': row.Nome or '',
+                    'owner_email': row.Email or '',
+                    'due_date': due_date,
+                    'days_left': days_left,
+                    'status': row.Stato or '',
+                    'task_prodotto_id': row.TaskProdottoID
+                })
+
+            logger.info(f"get_all_upcoming_tasks({days_ahead}): trovati {len(result)} task in scadenza")
+            return result
+
+        except Exception as e:
+            logger.error(f"Errore in get_all_upcoming_tasks: {e}", exc_info=True)
+            return []
+        finally:
+            session.close()
+
     def export_overdue_tasks_to_excel(self, tasks_data=None):
         """
         Genera un file Excel formattato con i task NPI scaduti.
