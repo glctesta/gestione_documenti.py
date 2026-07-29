@@ -575,6 +575,125 @@ def log_enforcement_event(conn, event_type: str, employee_hhid: int = None,
         return None
 
 
+def claim_enforcement_event(conn, event_type: str, escalation_level: int,
+                            employee_hhid: int = None, employee_name: str = None,
+                            order_id: int = None, order_number: str = None,
+                            shift_time: str = None, notes: str = None,
+                            per_day: bool = False,
+                            key_on_shift: bool = False) -> Optional[int]:
+    """Prenota atomicamente il diritto di inviare questa escalation.
+
+    Ritorna l'EnforcementLogId se questa istanza ha vinto, None se lo slot era
+    gia' stato preso da qualcun altro (in tal caso NON si deve inviare nulla).
+
+    Va chiamata PRIMA di generare il referat e di inviare l'email: e' questo
+    che impedisce a due PC di mandare la stessa escalation. Il pattern e' lo
+    stesso di _claim_send_slot in fails_daily_email.py — la INSERT stessa e' il
+    lock, e UPDLOCK/HOLDLOCK serializza le istanze concorrenti. Un semplice
+    "SELECT se esiste, poi INSERT" non basta: fra i due passaggi ci sono la
+    generazione del PDF e l'invio SMTP, cioe' secondi di finestra utile.
+
+    Chiave di deduplica:
+      - sempre EventType + EscalationLevel
+      - OrderNumber quando c'e' un ordine. Mai OrderId: e' NULL per gli ordini
+        presenti solo nel file Excel e puo' valorizzarsi fra un giro e l'altro,
+        facendo sfuggire la riga gia' scritta.
+      - EmployeeHireHistoryId quando valorizzato
+      - ShiftTime solo con key_on_shift=True. Per gli ordini il turno resta
+        solo informativo: un ordine non conforme non deve ri-scalare al
+        cambio turno.
+      - CheckDate solo con per_day=True (violazioni di turno, che si
+        ripresentano legittimamente ogni giorno). Per gli ordini la chiave e'
+        permanente: un ordine non conforme non deve ri-scalare ogni mezzanotte.
+
+    Non filtra su DateOut: chiudere l'evento non deve riabilitare l'invio.
+    """
+    where = ["EventType = ?", "EscalationLevel = ?"]
+    where_params = [event_type, escalation_level]
+
+    if order_number:
+        where.append("OrderNumber = ?")
+        where_params.append(order_number)
+    if employee_hhid:
+        where.append("EmployeeHireHistoryId = ?")
+        where_params.append(employee_hhid)
+    if key_on_shift and shift_time:
+        where.append("ShiftTime = ?")
+        where_params.append(shift_time)
+    if per_day:
+        where.append("CheckDate = CAST(GETDATE() AS DATE)")
+
+    query = f"""
+        INSERT INTO [Traceability_RS].[fai].[FaiEnforcementLog]
+            (EventType, EmployeeHireHistoryId, EmployeeName, OrderId, OrderNumber,
+             ShiftTime, EscalationLevel, NotificationSent, Notes)
+        OUTPUT INSERTED.EnforcementLogId
+        SELECT ?, ?, ?, ?, ?, ?, ?, 0, ?
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM [Traceability_RS].[fai].[FaiEnforcementLog] WITH (UPDLOCK, HOLDLOCK)
+            WHERE {' AND '.join(where)}
+        )
+    """
+    insert_params = [event_type, employee_hhid, employee_name, order_id,
+                     order_number, shift_time, escalation_level, notes]
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, tuple(insert_params + where_params))
+            row = cur.fetchone() if cur.description else None
+            conn.commit()
+        if not row:
+            logger.info(
+                f"FAI Enforcement: slot gia' preso da un'altra istanza — "
+                f"skip {event_type} L{escalation_level} "
+                f"(ordine={order_number}, hhid={employee_hhid}, turno={shift_time})")
+            return None
+        log_id = int(row[0])
+        logger.info(f"FAI Enforcement: slot acquisito ID={log_id}, "
+                    f"tipo={event_type}, livello={escalation_level}")
+        return log_id
+    except Exception as e:
+        logger.error(f"FAI Enforcement: errore claim_enforcement_event: {e}", exc_info=True)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        # In dubbio non si invia: meglio un'escalation persa che N duplicate
+        # (il giro successivo del worker ritenta comunque).
+        return None
+
+
+def confirm_enforcement_notification(conn, log_id: int):
+    """Marca l'invio come avvenuto (lo slot era stato prenotato con NotificationSent=0)."""
+    update_enforcement_event(conn, log_id,
+                             NotificationSent=1,
+                             NotificationTime=datetime.now())
+
+
+def release_enforcement_claim(conn, log_id: int):
+    """Rilascia lo slot se l'invio e' fallito, cosi' il giro successivo ritenta.
+
+    Cancella la riga invece di chiuderla con DateOut, perche' la deduplica non
+    guarda DateOut: una riga chiusa continuerebbe a bloccare per sempre l'invio.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                DELETE FROM [Traceability_RS].[fai].[FaiEnforcementLog]
+                WHERE EnforcementLogId = ? AND NotificationSent = 0
+            """, (log_id,))
+            conn.commit()
+        logger.warning(f"FAI Enforcement: slot {log_id} rilasciato dopo invio fallito")
+    except Exception as e:
+        logger.error(f"FAI Enforcement: errore release_enforcement_claim {log_id}: {e}",
+                     exc_info=True)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
 def update_enforcement_event(conn, log_id: int, **kwargs):
     """Aggiorna un evento esistente (es. escalation_level, fai_completed, referat)."""
     set_parts = []
@@ -1415,31 +1534,41 @@ def run_shift_check(conn, logo_path: str = "logo.png"):
             continue
         
         # Violazione trovata!
-        violations.append(emp)
         logger.warning(f"FAI Enforcement: ⚠️ {emp['Employee']} NON ha compilato FAI "
                         f"per turno {shift_label}")
         
-        # Log evento
-        log_enforcement_event(
-            conn, 'SHIFT_CHECK',
+        # Claim atomico: solo chi vince lo slot finisce in `violations` e
+        # quindi manda l'email. Se un'altra istanza ha gia' preso questo
+        # (dipendente, turno) di oggi, si salta.
+        log_id = claim_enforcement_event(
+            conn, 'SHIFT_CHECK', 1,
             employee_hhid=emp['EmployeeHireHistoryId'],
             employee_name=emp['Employee'],
             shift_time=shift_label,
-            escalation_level=1,
-            notes=f"FAI non compilato entro 60 min dal turno {shift_label}"
-        )
+            per_day=True, key_on_shift=True,
+            notes=f"FAI non compilato entro 60 min dal turno {shift_label}")
+        if not log_id:
+            continue
+
+        emp['_enforcement_log_id'] = log_id
+        violations.append(emp)
     
     # Invia email L1 per tutte le violazioni
     if violations:
         l1_recipients = get_escalation_recipients(conn, 1, employees)
         for emp in violations:
-            send_escalation_email(
+            sent = send_escalation_email(
                 level=1,
                 employee_name=emp['Employee'],
                 shift_label=shift_label,
                 recipients=l1_recipients,
                 logo_path=logo_path
             )
+            if sent:
+                confirm_enforcement_notification(conn, emp['_enforcement_log_id'])
+            else:
+                # Invio fallito: libero lo slot cosi' il giro successivo ritenta
+                release_enforcement_claim(conn, emp['_enforcement_log_id'])
     
     logger.info(f"FAI Enforcement: shift check completato - {len(violations)} violazioni")
 
@@ -1503,6 +1632,19 @@ def process_pending_escalations(conn, logo_path: str = "logo.png"):
         logger.warning(f"FAI Enforcement: 🔺 ESCALATION L{target_level} per "
                         f"{event['EmployeeName']}")
         
+        # Claim atomico PRIMA di generare il referat e di inviare: se un'altra
+        # istanza ha gia' preso questo (dipendente, turno, livello) di oggi,
+        # qui ci si ferma e l'email non parte due volte.
+        log_id = claim_enforcement_event(
+            conn, 'SHIFT_CHECK', target_level,
+            employee_hhid=event['EmployeeHireHistoryId'],
+            employee_name=event['EmployeeName'],
+            shift_time=shift_label,
+            per_day=True, key_on_shift=True,
+            notes=f"Escalation L{target_level} - FAI ancora non compilato")
+        if not log_id:
+            continue
+
         recipients = get_escalation_recipients(conn, target_level, employees,
                                                 employee_hhid=event['EmployeeHireHistoryId'])
         
@@ -1522,7 +1664,7 @@ def process_pending_escalations(conn, logo_path: str = "logo.png"):
                 logger.info(f"FAI Enforcement: REFERAT generato: {referat_pdf}")
         
         # Invia email
-        send_escalation_email(
+        sent = send_escalation_email(
             level=target_level,
             employee_name=event['EmployeeName'],
             shift_label=shift_label,
@@ -1530,19 +1672,30 @@ def process_pending_escalations(conn, logo_path: str = "logo.png"):
             logo_path=logo_path,
             referat_pdf_path=referat_pdf
         )
+        if not sent:
+            # Invio fallito: libero lo slot cosi' il giro successivo ritenta
+            release_enforcement_claim(conn, log_id)
+            continue
         
         # Log nuovo evento di escalation
-        log_enforcement_event(
-            conn, 'SHIFT_CHECK',
-            employee_hhid=event['EmployeeHireHistoryId'],
-            employee_name=event['EmployeeName'],
-            shift_time=shift_label,
-            escalation_level=target_level,
-            notes=f"Escalation L{target_level} - FAI ancora non compilato"
-        )
+        confirm_enforcement_notification(conn, log_id)
+        if referat_pdf:
+            update_enforcement_event(conn, log_id, ReferatGenerated=1)
         
-        # Aggiorna evento precedente
-        update_kwargs = {'EscalationLevel': target_level}
+        # Chiude l'evento precedente, invece di alzargli EscalationLevel.
+        #
+        # Il codice precedente riscriveva EscalationLevel della riga L(n-1)
+        # portandolo a n. Effetto: la riga L1 creata alle 08:28 finiva la
+        # giornata marcata L3, indistinguibile dal vero invio L3 delle 09:28.
+        # Da li' i falsi "duplicati" a un'ora esatta di distanza nel log, e
+        # l'impossibilita' di mettere un vincolo UNIQUE su
+        # (livello, dipendente, turno, giorno) senza rompere il flusso normale.
+        #
+        # DateOut toglie comunque la riga dal set pendente
+        # (get_pending_escalations filtra DateOut IS NULL), quindi la macchina
+        # a stati avanza esattamente come prima, ma EscalationLevel conserva il
+        # suo significato: "questa riga e' l'email di livello N".
+        update_kwargs = {'DateOut': datetime.now()}
         if target_level == 3 and referat_pdf:
             update_kwargs['ReferatGenerated'] = 1
         update_enforcement_event(conn, event['EnforcementLogId'], **update_kwargs)
@@ -2221,6 +2374,18 @@ def run_planning_based_enforcement(conn, logo_path: str = "logo.png"):
         # quando l'ordine e' realmente entrato in produzione. Se il reparto non ha
         # uno shift leader, o non era in turno, non si intesta nulla: parte solo
         # l'email (send_escalation_email omette il blocco REFERAT senza PDF).
+        # Claim atomico PRIMA del lavoro pesante (PDF + SMTP): se un'altra
+        # istanza dell'applicativo ha gia' preso questo (ordine, livello),
+        # qui ci si ferma e l'email non parte una seconda volta.
+        log_id = claim_enforcement_event(
+            conn, 'PLANNING_CHECK', effective_level,
+            order_id=order_id,
+            order_number=order_number,
+            shift_time=shift_label,
+            notes=f"Planning-based enforcement L{effective_level} (claim)")
+        if not log_id:
+            continue
+
         referat_pdf = None
         target = None
         if effective_level == 3:
@@ -2244,7 +2409,7 @@ def run_planning_based_enforcement(conn, logo_path: str = "logo.png"):
             employee_hhid=(target['EmployeeHireHistoryId'] if target else None))
 
         # 5. Invia email escalation
-        send_escalation_email(
+        sent = send_escalation_email(
             level=effective_level,
             employee_name=(target['Employee'] if target else "(Responsabile linea)"),
             shift_label=(target.get('ShiftLabel') if target else shift_label),
@@ -2253,17 +2418,20 @@ def run_planning_based_enforcement(conn, logo_path: str = "logo.png"):
             logo_path=logo_path,
             referat_pdf_path=referat_pdf
         )
+        if not sent:
+            # Invio fallito: libero lo slot cosi' il giro successivo ritenta
+            release_enforcement_claim(conn, log_id)
+            continue
 
-        # 6. Log evento
-        log_enforcement_event(
-            conn, 'PLANNING_CHECK',
-            employee_hhid=(target['EmployeeHireHistoryId'] if target else None),
-            employee_name=(target['Employee'] if target else None),
-            order_id=order_id,
-            order_number=order_number,
-            shift_time=shift_label,
-            escalation_level=effective_level,
-            notes=(
+        # 6. Completa la riga gia' prenotata al passo 3
+        update_enforcement_event(
+            conn, log_id,
+            EmployeeHireHistoryId=(target['EmployeeHireHistoryId'] if target else None),
+            EmployeeName=(target['Employee'] if target else None),
+            ReferatGenerated=(1 if referat_pdf else 0),
+            NotificationSent=1,
+            NotificationTime=datetime.now(),
+            Notes=(
                 f"Planning-based enforcement L{effective_level} — "
                 f"Template: {template['FaiTitle']}, "
                 f"PlannedStart: {planned_str}, "

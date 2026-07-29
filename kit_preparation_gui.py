@@ -16,10 +16,12 @@ Login a monte (gestito da main.py):
 L'operatore (EmployeeHireHistoryId) arriva dal chiamante.
 """
 import logging
+import socket
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 
 import kit_essegi_parser as kep
+import kit_notifications as notif
 
 logger = logging.getLogger("PlanMonitor")
 
@@ -345,65 +347,217 @@ class KitPreparationWindow(tk.Toplevel):
             self._open_file_chooser(files)
 
     def _open_file_chooser(self, files):
-        """Finestra di scelta quando in T:\\KITTING ci sono piu' file (spec §5.1.1)."""
+        """Finestra di scelta quando in T:\\KITTING ci sono piu' file (spec §5.1.1).
+        Con filtro per nome file e ordinamento cliccando sulle intestazioni."""
+        L = self.lang.get
         dlg = tk.Toplevel(self)
-        dlg.title(self.lang.get('kit_choose_file_title', 'Scegli la lista di prelievo'))
-        dlg.geometry("640x320")
+        dlg.title(L('kit_choose_file_title', 'Scegli la lista di prelievo'))
+        dlg.geometry("680x380")
         dlg.transient(self)
         dlg.grab_set()
 
-        ttk.Label(dlg, text=self.lang.get(
+        ttk.Label(dlg, text=L(
             'kit_choose_file_msg',
             'Più file presenti in T:\\KITTING — seleziona quello corretto:'),
-            padding=8).pack(anchor='w')
+            padding=(8, 8, 8, 0)).pack(anchor='w')
+
+        # ── Filtro nome file ──────────────────────────────────────────────
+        top = ttk.Frame(dlg, padding=(8, 4, 8, 0))
+        top.pack(fill='x')
+        ttk.Label(top, text=L('kit_filter_file', 'Filtro nome file:')).pack(side='left')
+        filter_var = tk.StringVar()
+        filter_entry = ttk.Entry(top, textvariable=filter_var, width=32)
+        filter_entry.pack(side='left', padx=6)
+        self._count_var = tk.StringVar(value='')
+        ttk.Label(top, textvariable=self._count_var, foreground='#666').pack(side='left', padx=6)
 
         cols = ('file', 'date', 'orders')
+        headers = {
+            'file':   L('kit_col_file', 'File'),
+            'date':   L('kit_col_file_date', 'Modificato il'),
+            'orders': L('kit_col_orders', 'Ordini'),
+        }
+        widths = {'file': 240, 'date': 150, 'orders': 240}
         tree = ttk.Treeview(dlg, columns=cols, show='headings', selectmode='browse')
-        tree.heading('file', text=self.lang.get('kit_col_file', 'File'))
-        tree.heading('date', text=self.lang.get('kit_col_file_date', 'Modificato il'))
-        tree.heading('orders', text=self.lang.get('kit_col_orders', 'Ordini'))
-        tree.column('file', width=220, anchor='w')
-        tree.column('date', width=130, anchor='center')
-        tree.column('orders', width=240, anchor='w')
-        tree.pack(expand=True, fill='both', padx=8)
-        for fi in files:
-            tree.insert('', 'end', values=(
-                fi['name'], fi['date'].strftime('%d/%m/%Y %H:%M'), fi['orders_compact']
-            ))
 
-        btns = ttk.Frame(dlg, padding=8)
-        btns.pack(fill='x')
+        # Stato ordinamento (default: data decrescente, come l'elenco originale)
+        sort_state = {'col': 'date', 'reverse': True}
+        key_funcs = {
+            'file':   lambda f: (f.get('name') or '').lower(),
+            'date':   lambda f: f.get('date'),
+            'orders': lambda f: str(f.get('orders_compact') or '').lower(),
+        }
+
+        def render(*_a):
+            txt = filter_var.get().strip().lower()
+            subset = [f for f in files if txt in (f.get('name') or '').lower()]
+            subset.sort(key=key_funcs[sort_state['col']], reverse=sort_state['reverse'])
+            tree.delete(*tree.get_children())
+            for f in subset:
+                tree.insert('', 'end', iid=f['path'], values=(
+                    f['name'],
+                    f['date'].strftime('%d/%m/%Y %H:%M') if f.get('date') else '',
+                    f.get('orders_compact') or '?'))
+            # Frecce di ordinamento nelle intestazioni
+            for c in cols:
+                arrow = (' ▼' if sort_state['reverse'] else ' ▲') if c == sort_state['col'] else ''
+                tree.heading(c, text=headers[c] + arrow)
+            self._count_var.set(L('kit_file_count', '{n} file').format(n=len(subset)))
+
+        def sort_by(c):
+            if sort_state['col'] == c:
+                sort_state['reverse'] = not sort_state['reverse']
+            else:
+                sort_state['col'] = c
+                sort_state['reverse'] = (c == 'date')  # data: default desc; testo: asc
+            render()
+
+        for c in cols:
+            tree.heading(c, text=headers[c], command=lambda cc=c: sort_by(cc))
+            tree.column(c, width=widths[c], anchor='center' if c == 'date' else 'w')
 
         def confirm():
             sel = tree.selection()
             if not sel:
                 return
-            idx = tree.index(sel[0])
+            path = sel[0]  # l'iid della riga è il path del file
             dlg.destroy()
-            self._import_file(files[idx]['path'])
+            self._import_file(path)
 
-        tree.bind('<Double-1>', lambda e: confirm())
-        ttk.Button(btns, text=self.lang.get('kit_btn_confirm', 'Conferma'),
+        # Barra pulsanti in basso — impacchettata PRIMA dell'albero, così resta
+        # sempre visibile e l'albero riempie lo spazio restante.
+        btns = ttk.Frame(dlg, padding=8)
+        btns.pack(side='bottom', fill='x')
+        ttk.Button(btns, text=L('kit_btn_confirm', 'Conferma'),
                    command=confirm).pack(side='right')
-        ttk.Button(btns, text=self.lang.get('kit_btn_cancel', 'Annulla'),
+        ttk.Button(btns, text=L('kit_btn_cancel', 'Annulla'),
                    command=dlg.destroy).pack(side='right', padx=6)
 
-    def _import_file(self, path):
+        vsb = ttk.Scrollbar(dlg, orient='vertical', command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side='right', fill='y', pady=(6, 0))
+        tree.pack(side='left', expand=True, fill='both', padx=(8, 0), pady=(6, 0))
+
+        tree.bind('<Double-1>', lambda e: confirm())
+        filter_var.trace_add('write', render)
+        render()
+        filter_entry.focus_set()
+
+    def _parse_with_mapping(self, path):
+        """Parsa il file usando il dizionario colonne (dbo.KitColumnAliases).
+        Se una colonna non è mappata, apre la maschera di mappatura (stesso login
+        della pagina); se l'operatore salva la mappatura, riprova. Ritorna
+        l'oggetto EssegiFile oppure None (errore/annullo)."""
+        import kit_column_dict
+        L = self.lang.get
         try:
-            parsed = kep.parse_essegi_file(path)
-        except kep.EssegiParseError as e:
-            messagebox.showerror(
-                self.lang.get('error_title', 'Errore'),
-                self.lang.get('kit_err_parse', 'File non conforme al tracciato Essegi')
-                + f"\n\n{e}", parent=self)
+            column_dict = kit_column_dict.load_aliases(self.db.conn)
+        except Exception as e:
+            logger.warning("Kit: dizionario colonne non caricato dal DB (%s), uso i default", e)
+            column_dict = None
+
+        for _attempt in range(4):   # max 4 passaggi (un campo mancante per volta)
+            try:
+                return kep.parse_essegi_file(path, column_dict)
+            except kep.UnmappedColumnsError as e:
+                import kit_column_mapping_gui
+                try:
+                    self.grab_release()
+                except Exception:
+                    pass
+                try:
+                    saved = kit_column_mapping_gui.open_column_mapping(
+                        self, self.db, self.lang, e,
+                        __import__('os').path.basename(path), self.user_name)
+                finally:
+                    try:
+                        self.grab_set()
+                    except Exception:
+                        pass
+                if not saved:
+                    return None  # operatore ha annullato la mappatura
+                # ricarica il dizionario aggiornato e riprova
+                try:
+                    column_dict = kit_column_dict.load_aliases(self.db.conn)
+                except Exception:
+                    pass
+            except kep.EssegiParseError as e:
+                messagebox.showerror(
+                    L('error_title', 'Errore'),
+                    L('kit_err_parse', 'File non conforme al tracciato di kitting')
+                    + f"\n\n{e}", parent=self)
+                return None
+
+        messagebox.showerror(
+            L('error_title', 'Errore'),
+            L('kit_err_map_giveup', 'Impossibile mappare tutte le colonne del file.'),
+            parent=self)
+        return None
+
+    def _exclude_smt_and_empty(self, parsed):
+        """Esclude dalle righe da importare:
+          - le righe SENZA reel code (codice unico) — belt-and-suspenders, il
+            parser le salta già;
+          - i codici SMT, cioè quelli la cui descrizione in dbo.Components contiene
+            'SMT' (componenti SMT, non pertinenti ai kit PTH).
+        Aggiunge un riepilogo agli avvisi mostrati in anteprima."""
+        rows = parsed.rows
+        n_empty = sum(1 for r in rows if not (r.unique_number or '').strip())
+        rows = [r for r in rows if (r.unique_number or '').strip()]
+
+        smt_codes = set()
+        codes = sorted({r.material_code for r in rows if r.material_code})
+        if codes:
+            try:
+                cur = self.db.conn.cursor()
+                CHUNK = 1000  # limite parametri per IN (max 2100 in SQL Server)
+                for i in range(0, len(codes), CHUNK):
+                    chunk = codes[i:i + CHUNK]
+                    ph = ','.join('?' * len(chunk))
+                    cur.execute(
+                        "SELECT ComponentCode FROM Traceability_RS.dbo.Components "
+                        f"WHERE ComponentDescription LIKE '%SMT%' AND ComponentCode IN ({ph})",
+                        chunk)
+                    smt_codes.update(r[0] for r in cur.fetchall())
+                cur.close()
+            except Exception as e:
+                logger.warning("Kit import: filtro SMT non applicato (%s)", e)
+
+        n_smt = sum(1 for r in rows if r.material_code in smt_codes)
+        rows = [r for r in rows if r.material_code not in smt_codes]
+        parsed.rows = rows
+        if n_smt or n_empty:
+            parsed.warnings.append(
+                self.lang.get('kit_excluded_summary',
+                              'Escluse {smt} righe SMT e {empty} righe senza reel code.')
+                .replace('{smt}', str(n_smt)).replace('{empty}', str(n_empty)))
+        logger.info("Kit import: escluse %d SMT + %d senza reel (rimaste %d righe)",
+                    n_smt, n_empty, len(rows))
+
+    def _import_file(self, path):
+        parsed = self._parse_with_mapping(path)
+        if parsed is None:
             return
 
-        # Guardia duplicati: stesso hash con lista non chiusa
+        # Escludi righe SMT (descrizione Components contiene 'SMT') e senza reel code
+        self._exclude_smt_and_empty(parsed)
+        if not parsed.rows:
+            messagebox.showwarning(
+                self.lang.get('warning_title', 'Attenzione'),
+                self.lang.get('kit_all_excluded',
+                              'Nessuna riga valida da importare dopo l\'esclusione dei codici '
+                              'SMT e delle righe senza reel code.'),
+                parent=self)
+            return
+
+        # Guardia duplicati: stesso file (hash) gia' importato, QUALSIASI stato
+        # (incluso CLOSED). Il ri-caricamento e' bloccato per non sovrascrivere o
+        # cancellare il lavoro di verifica gia' fatto sulla lista esistente.
         try:
             cursor = self.db.conn.cursor()
             cursor.execute(
-                "SELECT id, status FROM Traceability_RS.dbo.picking_lists "
-                "WHERE source_file_hash = ? AND status <> 'CLOSED'",
+                "SELECT TOP 1 id, status FROM Traceability_RS.dbo.picking_lists "
+                "WHERE source_file_hash = ? ORDER BY id DESC",
                 (parsed.file_hash,))
             dup = cursor.fetchone()
             cursor.close()
@@ -414,7 +568,9 @@ class KitPreparationWindow(tk.Toplevel):
             messagebox.showwarning(
                 self.lang.get('warning_title', 'Attenzione'),
                 self.lang.get('kit_msg_duplicate_file',
-                              'Questo file è già stato importato (lista #{id}, stato {status}).')
+                              'Questo file è già stato caricato ed elaborato (lista #{id}, stato {status}).\n'
+                              'Per non sovrascrivere il lavoro di verifica già fatto, '
+                              'il ri-caricamento è bloccato.')
                 .replace('{id}', str(dup[0])).replace('{status}', str(dup[1])),
                 parent=self)
             return
@@ -498,14 +654,16 @@ class KitPreparationWindow(tk.Toplevel):
         f = self.requests_frame
         top = ttk.Frame(f)
         top.pack(fill='x', pady=(0, 8))
+        ttk.Button(top, text=self.lang.get('kit_req_btn_new', 'Nuova richiesta'),
+                   command=self._new_request).pack(side='left')
         ttk.Button(top, text=self.lang.get('kit_req_btn_confirm', 'Conferma disponibilità'),
-                   command=self._confirm_request).pack(side='left')
+                   command=self._confirm_request).pack(side='left', padx=(6, 0))
         ttk.Button(top, text=self.lang.get('kit_req_btn_cancel', 'Annulla richiesta'),
                    command=self._cancel_request).pack(side='left', padx=6)
         ttk.Button(top, text=self.lang.get('kit_btn_refresh', 'Aggiorna'),
                    command=self._refresh_requests).pack(side='left')
 
-        cols = ('id', 'order', 'phase', 'material', 'qty', 'requester',
+        cols = ('id', 'order', 'phase', 'material', 'qty', 'reason', 'requester',
                 'date', 'status', 'note')
         self.req_tree = ttk.Treeview(f, columns=cols, show='headings', selectmode='browse')
         headings = {
@@ -514,17 +672,18 @@ class KitPreparationWindow(tk.Toplevel):
             'phase': self.lang.get('kit_req_col_phase', 'Fase'),
             'material': self.lang.get('kit_col_material', 'Codice Materiale'),
             'qty': self.lang.get('kit_col_qty', 'Qtà'),
+            'reason': self.lang.get('kit_req_col_reason', 'Motivo'),
             'requester': self.lang.get('kit_req_col_requester', 'Richiedente'),
             'date': self.lang.get('kit_col_set_date', 'Data'),
             'status': self.lang.get('kit_col_status', 'Stato'),
             'note': self.lang.get('kit_req_note', 'Motivazione'),
         }
         widths = {'id': 45, 'order': 95, 'phase': 100, 'material': 180, 'qty': 60,
-                  'requester': 150, 'date': 110, 'status': 95, 'note': 180}
+                  'reason': 130, 'requester': 150, 'date': 110, 'status': 95, 'note': 160}
         for c in cols:
             self.req_tree.heading(c, text=headings[c])
             self.req_tree.column(c, width=widths[c],
-                                 anchor='w' if c in ('material', 'requester', 'note') else 'center')
+                                 anchor='w' if c in ('material', 'requester', 'note', 'reason') else 'center')
         vsb = ttk.Scrollbar(f, orient='vertical', command=self.req_tree.yview)
         self.req_tree.configure(yscrollcommand=vsb.set)
         self.req_tree.pack(side='left', expand=True, fill='both')
@@ -550,7 +709,206 @@ class KitPreparationWindow(tk.Toplevel):
             self.req_tree.insert('', 'end', values=(
                 r['id'], r['order_number'], r['phase'], r['material_code'],
                 str(int(qty)) if qty == int(qty) else f"{qty:g}",
+                self._reason_label(r.get('reason')),
                 r['requester'], date, r['wh_status'], r['note'] or ''), tags=(tag,))
+
+    def _reason_label(self, code):
+        """Etichetta tradotta di una motivazione (codice REQUEST_REASONS)."""
+        if not code:
+            return ''
+        return self.lang.get('kit_req_reason_' + str(code).lower(), str(code))
+
+    # ─────────────── Nuova richiesta materiale (produzione) ─────────────── #
+
+    def _new_request(self):
+        """Gate di autorizzazione: la richiesta materiale richiede un login
+        autorizzato (chiave 'richiedi_materiale_kit'). Chi autorizza e' il
+        richiedente registrato sulla richiesta."""
+        app = self.app
+
+        def run():
+            # Richiedente = utente che ha appena autorizzato
+            uid = getattr(app, '_temp_authorized_user_id', None)
+            name = getattr(app, 'last_authenticated_user_name', None) or self.user_name
+            hhid = self.operator_id
+            if uid is not None:
+                try:
+                    hhid = self.db.get_employee_hire_history_id(uid) or self.operator_id
+                except Exception as e:
+                    logger.warning("Nuova richiesta: hire history id non risolto: %s", e)
+            self._new_request_dialog(hhid, name)
+
+        if hasattr(app, '_execute_authorized_action'):
+            # grab_release/set intorno al login modale, come per gli altri
+            # login in-form (l'app apre la propria LoginWindow).
+            try:
+                self.grab_release()
+            except Exception:
+                pass
+            try:
+                app._execute_authorized_action(
+                    menu_translation_key='richiedi_materiale_kit',
+                    action_callback=run)
+            finally:
+                try:
+                    self.grab_set()
+                except Exception:
+                    pass
+        else:
+            # Fallback (es. test / apertura senza app autorizzante)
+            run()
+
+    def _new_request_dialog(self, requested_by, requester_name):
+        """Dialog per creare una richiesta materiale per ordine + materiale
+        verificato nelle liste di prelievo, con motivazione strutturata.
+        requested_by/requester_name = utente autorizzato (vedi _new_request)."""
+        import kit_pf_logic as pfl
+        L = self.lang.get
+
+        cursor = self.db.conn.cursor()
+        try:
+            orders = pfl.get_verified_orders(cursor)
+        except Exception as e:
+            logger.error("Nuova richiesta: caricamento ordini fallito: %s", e)
+            messagebox.showerror(L('error_title', 'Errore'),
+                                 f"{L('kit_req_orders_err', 'Impossibile caricare gli ordini')}: {e}",
+                                 parent=self)
+            return
+        finally:
+            cursor.close()
+
+        if not orders:
+            messagebox.showinfo(
+                L('info_title', 'Informazione'),
+                L('kit_req_no_orders',
+                  'Nessun ordine verificato nelle liste di prelievo: non ci sono '
+                  'ordini su cui richiedere materiale.'), parent=self)
+            return
+
+        dlg = tk.Toplevel(self)
+        dlg.title(L('kit_req_btn_new', 'Nuova richiesta'))
+        dlg.geometry('480x360')
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()
+        fr = ttk.Frame(dlg, padding=14)
+        fr.pack(fill='both', expand=True)
+
+        # Ordine (dagli ordini verificati)
+        ttk.Label(fr, text=L('kit_col_order', 'Ordine') + ':').grid(row=0, column=0, sticky='w', pady=5)
+        order_cb = ttk.Combobox(fr, state='readonly', width=28, values=orders)
+        order_cb.current(0)
+        order_cb.grid(row=0, column=1, sticky='w', pady=5)
+
+        # Materiale (componenti verificati dell'ordine scelto)
+        ttk.Label(fr, text=L('kit_col_material', 'Codice Materiale') + ':').grid(row=1, column=0, sticky='w', pady=5)
+        mat_cb = ttk.Combobox(fr, width=28)
+        mat_cb.grid(row=1, column=1, sticky='w', pady=5)
+        mat_hint = ttk.Label(fr, text='', foreground='gray')
+        mat_hint.grid(row=2, column=1, sticky='w')
+
+        self._req_materials = []   # dict material_code/qty_required/qty_picked
+
+        def load_materials(_e=None):
+            cur = self.db.conn.cursor()
+            try:
+                self._req_materials = pfl.get_order_materials(cur, order_cb.get())
+            except Exception as ex:
+                logger.error("Nuova richiesta: materiali fallito: %s", ex)
+                self._req_materials = []
+            finally:
+                cur.close()
+            codes = [m['material_code'] for m in self._req_materials]
+            mat_cb['values'] = codes
+            mat_cb.set('')
+            mat_hint.config(text=L('kit_req_mat_count', '{n} materiali').format(n=len(codes)))
+
+        def on_mat_typed(_e=None):
+            txt = mat_cb.get().strip().lower()
+            allc = [m['material_code'] for m in self._req_materials]
+            mat_cb['values'] = [c for c in allc if txt in c.lower()] if txt else allc
+
+        order_cb.bind('<<ComboboxSelected>>', load_materials)
+        mat_cb.bind('<KeyRelease>', on_mat_typed)
+        load_materials()
+
+        # Quantità
+        ttk.Label(fr, text=L('kit_req_qty', 'Quantità') + ':').grid(row=3, column=0, sticky='w', pady=5)
+        qty_var = tk.StringVar()
+        ttk.Entry(fr, textvariable=qty_var, width=12).grid(row=3, column=1, sticky='w', pady=5)
+
+        # Fase richiedente
+        ttk.Label(fr, text=L('kit_req_col_phase', 'Fase') + ':').grid(row=4, column=0, sticky='w', pady=5)
+        phase_map = {'PREFORMING': L('kit_phase_preforming', 'Preforming'),
+                     'PRODUCTION': L('kit_phase_production', 'Produzione')}
+        phase_cb = ttk.Combobox(fr, state='readonly', width=20,
+                                values=list(phase_map.values()))
+        phase_cb.current(1)   # default Produzione
+        phase_cb.grid(row=4, column=1, sticky='w', pady=5)
+
+        # Motivazione (categorie fisse)
+        ttk.Label(fr, text=L('kit_req_col_reason', 'Motivo') + ':').grid(row=5, column=0, sticky='w', pady=5)
+        reason_map = {code: self._reason_label(code) for code in pfl.REQUEST_REASONS}
+        reason_cb = ttk.Combobox(fr, state='readonly', width=28,
+                                 values=list(reason_map.values()))
+        reason_cb.current(0)
+        reason_cb.grid(row=5, column=1, sticky='w', pady=5)
+
+        # Nota libera (facoltativa)
+        ttk.Label(fr, text=L('kit_req_note', 'Motivazione') + ':').grid(row=6, column=0, sticky='nw', pady=5)
+        note_txt = tk.Text(fr, width=30, height=3)
+        note_txt.grid(row=6, column=1, sticky='w', pady=5)
+
+        def submit():
+            order = order_cb.get().strip()
+            material = mat_cb.get().strip()
+            if not order or not material:
+                messagebox.showwarning(L('warning_title', 'Attenzione'),
+                                       L('kit_req_msg_required',
+                                         'Ordine e codice materiale sono obbligatori'), parent=dlg)
+                return
+            try:
+                qty = float(qty_var.get().strip().replace(',', '.'))
+                if qty <= 0:
+                    raise ValueError
+            except ValueError:
+                messagebox.showwarning(L('warning_title', 'Attenzione'),
+                                       L('kit_err_qty', 'Quantità non valida'), parent=dlg)
+                return
+            # Risolve fase e motivo dai rispettivi combo
+            phase = next((k for k, v in phase_map.items() if v == phase_cb.get()), 'PRODUCTION')
+            reason = next((k for k, v in reason_map.items() if v == reason_cb.get()), None)
+            note = note_txt.get('1.0', 'end').strip()
+
+            cur = self.db.conn.cursor()
+            try:
+                result = pfl.create_material_request(
+                    cur, order, phase, material, qty, requested_by,
+                    requester_name, note, socket.gethostname(), reason=reason)
+                self.db.conn.commit()
+            except Exception as ex:
+                self.db.conn.rollback()
+                messagebox.showerror(L('error_title', 'Errore'), str(ex), parent=dlg)
+                return
+            finally:
+                cur.close()
+            try:
+                msgs = result['messages']
+                notif.send_kit_email_async(self.db.conn, msgs['subject'], msgs['body'])
+            except Exception as ex:
+                logger.warning("Nuova richiesta #%s: email non inviata: %s",
+                               result.get('request_id'), ex)
+            logger.info("Richiesta materiale #%s creata da %s (%s x %s, motivo %s)",
+                        result.get('request_id'), requester_name, qty, material, reason)
+            dlg.destroy()
+            self._refresh_requests()
+
+        bar = ttk.Frame(fr)
+        bar.grid(row=7, column=0, columnspan=2, sticky='e', pady=(12, 0))
+        ttk.Button(bar, text=L('button_cancel', 'Annulla'), command=dlg.destroy).pack(side='right')
+        ttk.Button(bar, text=L('kit_req_btn_send', 'Invia richiesta'),
+                   command=submit).pack(side='right', padx=(0, 8))
+        fr.columnconfigure(1, weight=1)
 
     def _selected_request_id(self):
         sel = self.req_tree.selection()

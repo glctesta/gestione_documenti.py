@@ -397,11 +397,19 @@ def find_item_by_unique(cursor, list_id: int, unique_number: str) -> Optional[di
 # ───────────────────── Chiusura lista (§5.1.4) ────────────────────────── #
 
 def closure_state(cursor, list_id: int) -> dict:
-    """Conteggi per stato + scansioni sconosciute, per abilitare i pulsanti."""
+    """Conteggi per stato + scansioni sconosciute, per abilitare i pulsanti.
+
+    Conta SOLO i materiali PTH: esclude le righe senza reel code e i componenti
+    SMT (descrizione dbo.Components contiene 'SMT'), che non fanno parte del kit
+    e non devono impedire la chiusura quando tutti i materiali PTH sono verificati."""
     cursor.execute("""
         SELECT pick_status, COUNT(*)
-        FROM Traceability_RS.dbo.picking_list_items
+        FROM Traceability_RS.dbo.picking_list_items i
         WHERE picking_list_id = ?
+          AND i.unique_number IS NOT NULL AND LTRIM(RTRIM(i.unique_number)) <> ''
+          AND NOT EXISTS (SELECT 1 FROM Traceability_RS.dbo.Components c
+                          WHERE c.ComponentCode = i.material_code
+                            AND c.ComponentDescription LIKE '%SMT%')
         GROUP BY pick_status
     """, (list_id,))
     counts = {r[0]: r[1] for r in cursor.fetchall()}

@@ -309,7 +309,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.5.6'  # Versione aggiornata 
+APP_VERSION = '2.4.2.7.5'  # Versione aggiornata 
 # Nome programma usato come chiave in SwVersions / VersionDMLogs.
 # In produzione = nome dell'exe; in sviluppo usa il nome canonico.
 APP_PROGRAM_NAME = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else 'DocumentManagement.exe'
@@ -464,88 +464,6 @@ def save_whatsnew_shown_version(version_str):
     except Exception as e:
         logger.error(f"Errore salvataggio whatsnew_shown: {e}")
 
-
-def fetch_working_areas(self):
-    """Recupera le Aree di Lavoro principali."""
-    query = "SELECT [WorkingAreaID], [AreaName] FROM [ResetServices].[BreakDown].[WorkingAreas] ORDER BY AreaName;"
-    try:
-        self.cursor.execute(query)
-        return self.cursor.fetchall()
-    except pyodbc.Error as e:
-        self.last_error_details = str(e); return []
-
-def fetch_working_sub_areas(self, working_area_id):
-    """Recupera le Sotto-Aree in base all'Area di Lavoro selezionata."""
-    query = """
-        SELECT [WorkingSubAreaID], [AreaSubName] 
-        FROM [ResetServices].[BreakDown].[WorkingSubAreas]
-        WHERE [WorkingAreaID] = ? ORDER BY AreaSubName;
-    """
-    try:
-        self.cursor.execute(query, working_area_id)
-        return self.cursor.fetchall()
-    except pyodbc.Error as e:
-        self.last_error_details = str(e); return []
-
-def fetch_working_lines(self, working_area_id, sub_area_id):
-    """Recupera le Linee in base all'Area e Sotto-Area selezionate."""
-    query = """
-        SELECT DISTINCT wl.WorkingLineID, WL.WorkingLineName 
-        FROM [ResetServices].[BreakDown].[WorkingAreas] AS WA 
-        INNER JOIN [ResetServices].[BreakDown].WorkingSubAreas WSA ON WA.WorkingAreaID = WSA.WorkingAreaID 
-        INNER JOIN [ResetServices].[BreakDown].WorkingLines AS WL ON WSA.WorkingSubAreaID = WL.WorkingSubAreaID 
-        WHERE WA.WorkingAreaID = ? AND WSA.workingsubareaid = ? 
-        ORDER BY wl.WorkingLineName;
-    """
-    try:
-        self.cursor.execute(query, working_area_id, sub_area_id)
-        return self.cursor.fetchall()
-    except pyodbc.Error as e:
-        self.last_error_details = str(e); return []
-
-def fetch_production_orders_for_breakdown(self):
-    """Recupera gli ordini di produzione per la selezione."""
-    query = """
-        SELECT DISTINCT 
-            o.idorder as idordine, 
-            o.OrderNumber + ' [' + pf.ProductCode +']' as OrderNumber 
-        FROM Traceability_RS.dbo.orders as o 
-        INNER JOIN traceability_rs.dbo.products as pf ON pf.IDProduct = O.IDProduct
-        LEFT JOIN ResetServices.DBO.TBORDINI RO ON ro.IdPOTrace = o.IDOrder
-        LEFT JOIN resetservices.dbo.tbregistro r ON ro.idregistro = r.contatore 
-            AND r.idregistro IN (21,26)
-        WHERE CAST(O.DataInserted as date) >= '2025-08-01' 
-            AND (ro.IdOrdine IS NULL 
-                OR NOT EXISTS (
-                    SELECT 1
-                    FROM resetservices.dbo.TbSubOrdine s 
-                    LEFT JOIN resetservices.dbo.TbFattStory fs ON fs.IdPoSub = s.IdOrdStori
-                    WHERE s.idordine = ro.IdOrdine
-                    GROUP BY s.IdOrdStori, s.QtaStory
-                    HAVING s.QtaStory > ISNULL(SUM(fs.QtaFaturata), 0)
-                )
-            and (ro.idordine is NULL 
-                OR NOT EXISTS (
-                    SELECT 1 
-                    FROM resetservices.dbo.TbSubOrdine inner join resetservices.dbo.tbprodfin on tbsubordine.idpf = 
-                    tbprodfin.idpf inner join resetservices.dbo.TbProdFinStuff on TbProdFinStuff.Idpf =tbprodfin.idpf
-                    )
-            ))
-    """
-    try:
-        self.cursor.execute(query)
-        return self.cursor.fetchall()
-    except pyodbc.Error as e:
-        self.last_error_details = str(e); return []
-
-def fetch_issue_areas(self):
-    """Recupera le aree problematiche (es. Meccanica, Elettrica)."""
-    query = "SELECT [IssueAreaId], [IssueArea] FROM [ResetServices].[BreakDown].[IssuesAreas] ORDER BY [IssueArea];"
-    try:
-        self.cursor.execute(query)
-        return self.cursor.fetchall()
-    except pyodbc.Error as e:
-        self.last_error_details = str(e); return []
 
 class KanbanRulesManagementForm(tk.Toplevel):
     def __init__(self, master, db_handler, lang_manager):
@@ -818,11 +736,55 @@ class Database:
     def __init__(self, conn_str):
         self.conn_str = conn_str
         self.conn = None
+        # Ogni thread ha il proprio cursore: vedi la property `cursor` piu' sotto.
+        # _tls va inizializzato PRIMA di qualsiasi assegnazione a self.cursor.
+        self._tls = threading.local()
         self.cursor = None
         self.engine = None
         self.npi_engine = None
         self.last_error_details = ""
         self._lock = threading.RLock()
+
+    @property
+    def cursor(self):
+        """
+        Cursore thread-local, creato on-demand dalla connessione corrente.
+
+        Un cursore pyodbc condiviso fra thread e' una race: se un thread esegue
+        una execute mentre un altro e' fra la sua execute e la fetch, il result
+        set del secondo viene chiuso e la fetch fallisce con
+        '24000 Invalid cursor state'. Con un cursore per thread il problema
+        sparisce senza toccare le ~300 chiamate self.cursor.execute(...) sparse
+        nella classe.
+
+        Il cursore viene invalidato automaticamente quando self.conn cambia
+        (riconnessione), perche' memorizziamo la connessione che l'ha generato.
+        """
+        conn = self.conn
+        if conn is None:
+            return None
+
+        entry = getattr(self._tls, 'cursor_entry', None)
+        if entry is not None:
+            owner, cur = entry
+            if cur is not None and owner is conn:
+                return cur
+
+        try:
+            cur = conn.cursor()
+        except Exception as e:
+            logger.error(f"[DATABASE] Impossibile creare il cursore per il thread corrente: {e}")
+            return None
+
+        self._tls.cursor_entry = (conn, cur)
+        return cur
+
+    @cursor.setter
+    def cursor(self, value):
+        if value is None:
+            self._tls.cursor_entry = None
+        else:
+            self._tls.cursor_entry = (self.conn, value)
 
     def connect(self):
         with self._lock:
@@ -891,9 +853,15 @@ class Database:
 
     def disconnect(self):
         """Closes the cursor and connection safely, preventing errors if called multiple times."""
-        if self.cursor:
-            self.cursor.close()
-            self.cursor = None  # Set to None after closing
+        # Chiude solo il cursore di QUESTO thread (senza crearne uno se non esiste):
+        # i cursori degli altri thread vengono chiusi dal conn.close() qui sotto.
+        entry = getattr(self._tls, 'cursor_entry', None)
+        if entry is not None and entry[1] is not None:
+            try:
+                entry[1].close()
+            except Exception:
+                pass
+        self.cursor = None  # Set to None after closing
         if self.conn:
             self.conn.close()
             self.conn = None  # Set to None after closing
@@ -1911,7 +1879,7 @@ class Database:
         query = """
         SELECT TOP 1 1
         FROM [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
-        WHERE WeekStartDate = ? AND Attribute = ?
+        WHERE WeekStartDate = ? AND Atribute = ?
         """
         with self._lock:
             try:
@@ -4574,6 +4542,134 @@ class Database:
             self.last_error_details = str(e)
             return []
 
+    def fetch_finished_goods_transfers(self, date_from, date_to,
+                                       product_code=None, production_order=None,
+                                       client_name=None):
+        """Versamenti prodotto finito verso D365. Filtri opzionali su codice
+        prodotto, ordine di produzione e cliente finale.
+
+        FinalClientName puo' essere NULL: e' il prodotto senza associazione
+        cliente, che la form segnala per l'accoppiamento manuale.
+
+        IdBoxTrasb: elenco (CSV) degli ID scatola del versamento, aggregato con
+        STRING_AGG dentro CTE_Main GROUP BY. La versione precedente faceva un
+        CROSS APPLY su [WarehouseFinish].dbo.Packing per ID scatola, che
+        MOLTIPLICAVA le righe e quindi DUPLICAVA QtySend: qui gli ID sono in
+        un'unica colonna e la quantita' resta corretta.
+
+        E' un batch con DECLARE @from/@to: gira su un cursore dedicato per
+        non lasciare quello condiviso in stato invalido (Invalid cursor state).
+        STRING_AGG richiede SQL Server 2017+.
+        """
+        where = ""
+        params = [date_from, date_to]
+        if product_code:
+            where += " AND A.ProductCode LIKE ?"
+            params.append(f"%{product_code}%")
+        if production_order:
+            where += " AND A.OrderNumber LIKE ?"
+            params.append(f"%{production_order}%")
+        if client_name:
+            where += " AND A.FinalClientName = ?"
+            params.append(client_name)
+
+        sql = f"""
+        SET NOCOUNT ON;
+        DECLARE @from DATETIME = ?;
+        DECLARE @to   DATETIME = ?;
+
+        WITH CTE_LogApiDynamics AS (
+            SELECT JSON_VALUE(LogApiDynamics.MessageSend, '$.Message.Reference') AS OrderNumber,
+                   CurrentDate AS SendDynamicsDate,
+                   (SELECT JSON_VALUE(j.value, '$.RealValue') AS GoodQty
+                    FROM OPENJSON(LogApiDynamics.MessageSend,
+                                  '$.Message.KeyValue.ListValue[0].ListValue[0].ListValue') j
+                    WHERE JSON_VALUE(j.value, '$.Key') = 'GoodQty') AS QtySend,
+                   ResponseAPI AS ResponseApiDynamics,
+                   IIF(ResponseMessage = 'Response Body: ', 'OK', ResponseMessage) AS ResponseMessage,
+                   MessageSend
+            FROM LogApiDynamics
+            WHERE CurrentDate BETWEEN @from AND @to
+              AND EndPointName = 'ProdFinishedGoods'
+        ),
+        CTE_Main AS (
+            SELECT Products.ProductCode,
+                   D365.OrderNumber,
+                   Orders.IDOrder,
+                   D365.SendDynamicsDate,
+                   D365.QtySend,
+                   D365.ResponseApiDynamics,
+                   fc.FinalClientName,
+                   (SELECT STRING_AGG(CAST(Boxes.IDBox AS VARCHAR(20)), ',')
+                                WITHIN GROUP (ORDER BY Boxes.IDBox)
+                    FROM QualityVerifyBoxes
+                    INNER JOIN Boxes ON Boxes.IDBox = QualityVerifyBoxes.IDBox
+                    INNER JOIN BoxDetails ON BoxDetails.IDBox = Boxes.IDBox
+                    INNER JOIN Boards ON Boards.IDBoard = BoxDetails.IDBoard
+                    INNER JOIN Orders ON Orders.IDOrder = Boards.IDOrder
+                    WHERE DeclaredDateERP = D365.SendDynamicsDate
+                      AND Orders.OrderNumber = D365.OrderNumber) AS IdBoxTrasb
+            FROM CTE_LogApiDynamics D365
+            INNER JOIN Orders   ON Orders.OrderNumber = D365.OrderNumber
+            INNER JOIN Products ON Products.IDProduct = Orders.IDProduct
+            LEFT  JOIN FinalClients fc ON Products.IdFinalClient = fc.IDFinalClient
+            GROUP BY Products.ProductCode, D365.OrderNumber, Orders.IDOrder,
+                     D365.SendDynamicsDate, D365.QtySend, D365.ResponseApiDynamics,
+                     fc.FinalClientName
+        )
+        SELECT A.OrderNumber,
+               A.ProductCode,
+               A.QtySend,
+               IIF(A.ResponseApiDynamics = 1, 'Received by D365', 'NOT received by D365') AS ResponseByD365,
+               A.SendDynamicsDate AS DateTransfer,
+               A.FinalClientName,
+               A.IdBoxTrasb
+        FROM CTE_Main A
+        WHERE 1 = 1{where}
+        ORDER BY A.SendDynamicsDate;
+        """
+        cur = None
+        try:
+            cur = self.conn.cursor()
+            cur.execute(sql, params)
+            return cur.fetchall()
+        except pyodbc.Error as e:
+            self.last_error_details = str(e)
+            logger.error(f"fetch_finished_goods_transfers: {e}", exc_info=True)
+            return []
+        finally:
+            if cur is not None:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+
+    def assign_final_client_to_product(self, product_code, final_client_id):
+        """Associa un cliente finale ai prodotti con quel codice che ne sono privi.
+
+        Aggiorna solo le righe con IdFinalClient IS NULL: non sovrascrive
+        associazioni gia' esistenti (es. altre versioni dello stesso codice).
+        Ritorna (True, righe_aggiornate) oppure (False, messaggio_errore).
+        """
+        try:
+            cur = self.conn.cursor()
+            cur.execute("""
+                UPDATE dbo.Products
+                SET IdFinalClient = ?
+                WHERE ProductCode = ? AND IdFinalClient IS NULL
+            """, (final_client_id, product_code))
+            n = cur.rowcount
+            self.conn.commit()
+            cur.close()
+            return True, n
+        except pyodbc.Error as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            self.last_error_details = str(e)
+            return False, str(e)
+
     def add_final_customer(self, name, full_name, acronim, address, city, zip_code, country, vat_code):
         """Aggiunge un nuovo cliente finale."""
         query = """
@@ -4666,6 +4762,22 @@ class Database:
                 results = self.cursor.fetchall()
                 logger.debug(f"[DATABASE] fetch_all eseguito - Righe recuperate: {len(results)}")
                 return results
+
+            except pyodbc.ProgrammingError as e:
+                # 24000 'Invalid cursor state': il result set e' sparito fra execute e fetchall.
+                # Con i cursori thread-local non dovrebbe piu' accadere: se compare,
+                # c'e' ancora qualcuno che condivide un cursore fra thread.
+                msg = str(e)
+                self.last_error_details = msg
+                if '24000' in msg or 'Invalid cursor state' in msg:
+                    logger.warning(
+                        "[DATABASE] fetch_all: cursore invalidato durante la fetch (24000) | query=%s | err=%s",
+                        " ".join(str(query).split())[:240],
+                        e
+                    )
+                    return []
+                logger.exception(f"[DATABASE] Errore fetch_all (ProgrammingError): {e}")
+                return []
 
             except pyodbc.Error as e:
                 self.last_error_details = str(e)
@@ -5446,7 +5558,12 @@ class Database:
         Recupera i problemi/eventi seguendo ESATTAMENTE la logica VBA fornita.
         """
         # Query per contare i problemi specifici per la linea/sotto-area
-        # Ho corretto i typo 'IusseProblemId' in 'IssueProblemId' e 'PerLines' in 'PerLine'
+        #
+        # ATTENZIONE: in IssueProblemsPerLines la colonna si chiama davvero
+        # 'IusseProblemId' — il refuso e' nello SCHEMA del database, non qui.
+        # Solo IssueProblems.IssueProblemId e' scritto correttamente.
+        # "Correggere" bdl.IusseProblemId in bdl.IssueProblemId fa fallire la
+        # query con 42S22 Invalid column name: e' gia' successo una volta.
         count_query = """
                       SELECT COUNT(BDL.IssueProblemsPerLineId)
                       FROM ResetServices.BreakDown.IssueProblemsPerLines AS BDL
@@ -5482,7 +5599,7 @@ class Database:
                                        INNER JOIN ResetServices.BreakDown.IssuesAreas AS IA ON IA.IssueAreaId = IP.IssueAreaId
                                        INNER JOIN ResetServices.BreakDown.WorkingAreas AS WA ON IP.WorkingAreaID = WA.WorkingAreaID
                                        INNER JOIN ResetServices.BreakDown.IssueProblemsPerLines AS BDL \
-                                                  on ip.IssueProblemId = bdl.IssueProblemId
+                                                  on ip.IssueProblemId = bdl.IusseProblemId
                               WHERE (WA.WorkingAreaID = ?) \
                                 AND (IP.IssueAreaId = ?) \
                                 AND (BDL.WorkingSubAreaId = ?) \
@@ -8560,6 +8677,9 @@ class KanbanLocationCreateForm(tk.Toplevel):
         self.db = db_handler
         self.lang = lang_manager
 
+
+        logger.info("Apro finestra di creazione locazione KanBan")
+
         self.title(self.lang.get('kanban_locations_title', "Crea locazione KanBan"))
         self.geometry("500x260")
         self.resizable(False, False)
@@ -8723,11 +8843,11 @@ class KanbanLocationLabelsForm(tk.Toplevel):
         self.db = db_handler
         self.lang = lang_manager
         self.title(self.lang.get('kanban_labels_title', "Stampa etichette locazioni"))
-        self.geometry("520x260")
+        self.geometry("560x400")
         self.resizable(False, False)
         self.transient(master)
         self.grab_set()
-
+        logger.info("Apro finestra di stampa etichette locazioni KanBan")
         self.cfg = load_printer_config()
         if not self.cfg:
             # chiedi subito la configurazione
@@ -8740,11 +8860,18 @@ class KanbanLocationLabelsForm(tk.Toplevel):
                 return
             self.cfg = dlg.result
 
+        self.area_var = tk.StringVar()
         self.location_var = tk.StringVar()
         self.copies_var = tk.StringVar(value="1")
+        self.print_all_var = tk.BooleanVar(value=False)
+
+        self.ALL_AREAS = self.lang.get('kanban_all_areas', "(Tutte le aree)")
+        self._areas = []       # [(KanBanLocationId, KanBanLocation)]
+        self._locations = []   # [(LocationCode, KanBanLocationId, AreaName)]
+        self._filtered = []    # sottoinsieme di _locations per l'area selezionata
 
         self._build_ui()
-        self._load_locations()
+        self._load_data()
 
     def _build_ui(self):
         frm = ttk.Frame(self, padding=16)
@@ -8758,15 +8885,36 @@ class KanbanLocationLabelsForm(tk.Toplevel):
         self.prn_label.pack(side="left", padx=(6, 0))
         ttk.Button(top, text=self.lang.get('printer_setup_btn', "Imposta..."), command=self._setup_printer).pack(side="right")
 
-        # Selezione locazione
-        ttk.Label(frm, text=self.lang.get('kanban_location_label', "Locazione"), font=("Helvetica", 10, "bold")).grid(row=1, column=0, sticky="w", pady=(12,2))
-        self.location_combo = ttk.Combobox(frm, textvariable=self.location_var, state="readonly", width=40)
-        self.location_combo.grid(row=2, column=0, sticky="w")
+        # Selezione area KanBan (filtra le locazioni sottostanti)
+        ttk.Label(frm, text=self.lang.get('kanban_area_label', "Area KanBan"), font=("Helvetica", 10, "bold")).grid(row=1, column=0, sticky="w", pady=(12,2))
+        self.area_combo = ttk.Combobox(frm, textvariable=self.area_var, width=40)
+        self.area_combo.grid(row=2, column=0, sticky="ew")
+        self.area_combo.bind("<KeyRelease>", self._on_area_typed)
+        self.area_combo.bind("<<ComboboxSelected>>", self._on_area_selected)
+        self.area_combo.bind("<FocusOut>", self._on_area_focus_out)
+
+        # Selezione locazione: editabile, filtra mentre si digita
+        ttk.Label(frm, text=self.lang.get('kanban_location_label', "Locazione"), font=("Helvetica", 10, "bold")).grid(row=3, column=0, sticky="w", pady=(12,2))
+        self.location_combo = ttk.Combobox(frm, textvariable=self.location_var, width=40)
+        self.location_combo.grid(row=4, column=0, sticky="ew")
+        self.location_combo.bind("<KeyRelease>", self._on_location_typed)
 
         # Copie
-        ttk.Label(frm, text=self.lang.get('copies_label', "Copie")).grid(row=1, column=1, sticky="w", pady=(12,2))
+        ttk.Label(frm, text=self.lang.get('copies_label', "Copie")).grid(row=3, column=1, sticky="w", pady=(12,2), padx=(12,0))
         self.copies_entry = ttk.Spinbox(frm, from_=1, to=99, textvariable=self.copies_var, width=5)
-        self.copies_entry.grid(row=2, column=1, sticky="w")
+        self.copies_entry.grid(row=4, column=1, sticky="w", padx=(12,0))
+
+        # Stampa tutte le locazioni dell'area selezionata
+        self.print_all_chk = ttk.Checkbutton(
+            frm,
+            text=self.lang.get('kanban_print_all_area', "Stampa tutte le locazioni dell'area"),
+            variable=self.print_all_var,
+            command=self._on_print_all_toggled
+        )
+        self.print_all_chk.grid(row=5, column=0, columnspan=2, sticky="w", pady=(12,2))
+
+        self.count_label = ttk.Label(frm, text="", foreground="gray")
+        self.count_label.grid(row=6, column=0, columnspan=2, sticky="w")
 
         # Pulsanti
         btns = ttk.Frame(frm)
@@ -8778,8 +8926,7 @@ class KanbanLocationLabelsForm(tk.Toplevel):
         frm.columnconfigure(0, weight=1)
 
     def _printer_summary(self) -> str:
-        c = self.cfg or {}
-        return f"{c.get('name','?')} ({c.get('ip','?')}:{c.get('port','?')}, {c.get('dpi','203')} dpi)"
+        return describe_printer_config(self.cfg)
 
     def _setup_printer(self):
         dlg = PrinterSetupDialog(self, self.lang)
@@ -8788,7 +8935,7 @@ class KanbanLocationLabelsForm(tk.Toplevel):
             self.cfg = dlg.result
             self.prn_label.config(text=self._printer_summary())
 
-    def _load_locations(self):
+    def _load_data(self):
         rows = self.db.fetch_kanban_locations_all()
         if not rows:
             messagebox.showerror(self.lang.get('error_title', "Errore"),
@@ -8796,13 +8943,153 @@ class KanbanLocationLabelsForm(tk.Toplevel):
                                  parent=self)
             self.print_btn.config(state="disabled")
             return
-        values = [r.LocationCode for r in rows]
-        self.location_combo['values'] = values
-        if values:
-            self.location_combo.current(0)
+
+        # Aree KanBan: mappa id -> nome, per etichettare e filtrare le locazioni
+        try:
+            self._areas = [(r.KanBanLocationId, r.KanBanLocation)
+                           for r in (self.db.fetch_kanban_locations_for_combo() or [])]
+        except Exception as e:
+            logger.warning(f"Impossibile caricare le aree KanBan: {e}")
+            self._areas = []
+        area_names = {aid: name for aid, name in self._areas}
+
+        self._locations = [(r.LocationCode, r.KanBanLocationId, area_names.get(r.KanBanLocationId))
+                           for r in rows]
+
+        self.area_combo['values'] = [self.ALL_AREAS] + [name for _, name in self._areas]
+        self.area_var.set(self.ALL_AREAS)
+        self._apply_area_filter()
+
+    # --- Area KanBan ------------------------------------------------------
+
+    def _resolve_area(self, text: str):
+        """Ritorna (KanBanLocationId, nome) per il testo digitato, (None, None) se non risolve.
+        Per '(Tutte le aree)' ritorna self.ALL_AREAS come sentinella."""
+        text = (text or "").strip()
+        if not text or text == self.ALL_AREAS:
+            return self.ALL_AREAS, self.ALL_AREAS
+        for aid, name in self._areas:
+            if (name or "").lower() == text.lower():
+                return aid, name
+        return None, None
+
+    def _on_area_typed(self, event=None):
+        text = self.area_var.get().lower().strip()
+        items = [name for _, name in self._areas if text in (name or "").lower()]
+        if text in self.ALL_AREAS.lower():
+            items.insert(0, self.ALL_AREAS)
+        self.area_combo['values'] = items
+
+    def _on_area_selected(self, event=None):
+        self._apply_area_filter()
+
+    def _on_area_focus_out(self, event=None):
+        # Testo che non corrisponde ad alcuna area: torna a "tutte"
+        area_id, _ = self._resolve_area(self.area_var.get())
+        if area_id is None:
+            self.area_var.set(self.ALL_AREAS)
+        self.area_combo['values'] = [self.ALL_AREAS] + [name for _, name in self._areas]
+        self._apply_area_filter()
+
+    def _apply_area_filter(self):
+        """Ricalcola le locazioni disponibili in base all'area selezionata."""
+        area_id, _ = self._resolve_area(self.area_var.get())
+        if area_id == self.ALL_AREAS or area_id is None:
+            self._filtered = list(self._locations)
+        else:
+            self._filtered = [t for t in self._locations if t[1] == area_id]
+
+        # Azzera la locazione solo se l'area e' davvero cambiata: passare col
+        # focus sul combo area non deve cancellare una scelta gia' fatta.
+        if area_id != getattr(self, "_applied_area_id", object()):
+            self.location_var.set("")
+        self._applied_area_id = area_id
+
+        self._refresh_location_values(self._filtered)
+        self._update_count_label()
+
+    # --- Locazione --------------------------------------------------------
+
+    def _location_display(self, code, area_name) -> str:
+        return f"{code} - {area_name}" if area_name else code
+
+    def _refresh_location_values(self, items):
+        self.location_combo['values'] = [self._location_display(c, a) for c, _, a in items]
+
+    def _on_location_typed(self, event=None):
+        """Filtro attivo: restringe la tendina a quanto digitato, sempre
+        entro i confini dell'area gia' selezionata."""
+        text = self.location_var.get().lower().strip()
+        items = [t for t in self._filtered
+                 if text in t[0].lower() or text in (t[2] or "").lower()]
+        self._refresh_location_values(items)
+
+    def _resolve_location(self, text: str) -> str | None:
+        """Estrae il LocationCode dal testo del combo ('CODE - Area' oppure 'CODE')."""
+        code = (text or "").split(" - ", 1)[0].strip().upper()
+        if not code:
+            return None
+        for c, _, _ in self._filtered:
+            if c.upper() == code:
+                return c
+        return code  # consentito anche un codice digitato a mano
+
+    # --- Stampa massiva ---------------------------------------------------
+
+    def _on_print_all_toggled(self):
+        # Con "stampa tutte" la scelta della singola locazione non serve
+        self.location_combo.config(state="disabled" if self.print_all_var.get() else "normal")
+        self._update_count_label()
+
+    def _update_count_label(self):
+        if self.print_all_var.get():
+            self.count_label.config(
+                text=self.lang.get('kanban_labels_count', "{n} etichette da stampare").format(n=len(self._filtered))
+            )
+        else:
+            self.count_label.config(
+                text=self.lang.get('kanban_locations_available', "{n} locazioni disponibili").format(n=len(self._filtered))
+            )
+
+    def _print_all(self):
+        """Stampa un'etichetta per ogni locazione dell'area attualmente filtrata."""
+        codes = [c for c, _, _ in self._filtered]
+        if not codes:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
+                                   self.lang.get('kanban_no_locations_in_area',
+                                                 "Nessuna locazione per l'area selezionata."), parent=self)
+            return
+
+        try:
+            copies = int(self.copies_var.get())
+        except ValueError:
+            copies = 1
+
+        if not messagebox.askyesno(
+                self.lang.get('confirm_title', "Conferma"),
+                self.lang.get('kanban_confirm_print_all',
+                              "Stampare {n} etichette ({t} in totale con {c} copie)?").format(
+                    n=len(codes), t=len(codes) * copies, c=copies),
+                parent=self):
+            return
+
+        # Un unico payload: ogni etichetta e' un blocco ^XA...^XZ autonomo
+        zpl = "".join(build_zpl_label(c, copies, self.cfg) for c in codes)
+        logger.info(f"Stampa etichette KanBan: {len(codes)} locazioni x {copies} copie")
+        ok, err = send_label_to_printer(self.cfg, zpl)
+        if ok:
+            messagebox.showinfo(self.lang.get('info_title', "Informazione"),
+                                self.lang.get('print_ok', "Stampa inviata alla stampante."), parent=self)
+        else:
+            messagebox.showerror(self.lang.get('error_title', "Errore"),
+                                 self.lang.get('print_error', f"Errore di stampa: {err}"), parent=self)
 
     def _on_print(self):
-        loc = self.location_var.get().strip().upper()
+        if self.print_all_var.get():
+            self._print_all()
+            return
+
+        loc = self._resolve_location(self.location_var.get())
         if not loc:
             messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
                                    self.lang.get('kanban_location_required', "Inserire una locazione."), parent=self)
@@ -8821,7 +9108,7 @@ class KanbanLocationLabelsForm(tk.Toplevel):
             copies = 1
 
         zpl = build_zpl_label(loc, copies, self.cfg)
-        ok, err = send_raw_to_printer(self.cfg["ip"], int(self.cfg["port"]), zpl.encode("utf-8"))
+        ok, err = send_label_to_printer(self.cfg, zpl)
         if ok:
             messagebox.showinfo(self.lang.get('info_title', "Informazione"),
                                 self.lang.get('print_ok', "Stampa inviata alla stampante."), parent=self)
@@ -8849,7 +9136,85 @@ def migrate_printer_config(cfg: dict) -> dict:
     cfg.setdefault("text_pt", 12)
     cfg.setdefault("language", "ZPL")
 
+    # v2: tipo di connessione, come in printer_connection_manager.
+    # Le config gia' salvate sono nate quando esisteva solo il socket IP:
+    # il default 'IP' le lascia funzionare esattamente come prima.
+    cfg.setdefault("connection_type", "IP")
+    cfg.setdefault("usb_printer_name", "")
+    cfg.setdefault("printer_model", "ZEBRA")
+    if cfg["version"] < 2:
+        cfg["version"] = 2
+
     return cfg
+
+
+def send_label_to_printer(cfg: dict, zpl: str) -> tuple[bool, str | None]:
+    """Invia ZPL alla stampante configurata, qualunque sia il tipo di connessione.
+
+    Adatta printer_connection_manager (che solleva PrinterConnectionError) alla
+    convenzione (ok, err) usata dalle form etichette. Sostituisce la chiamata
+    diretta a send_raw_to_printer, che sapeva fare solo socket IP.
+    """
+    try:
+        from printer_connection_manager import get_printer_connection
+    except Exception as e:
+        logger.error(f"printer_connection_manager non disponibile: {e}")
+        # Fallback al vecchio percorso IP: meglio stampare che non stampare
+        if (cfg or {}).get("ip"):
+            return send_raw_to_printer(cfg["ip"], int(cfg.get("port", 9100)),
+                                       zpl.encode("utf-8"))
+        return False, str(e)
+
+    try:
+        conn = get_printer_connection(cfg)
+    except ValueError as e:
+        return False, str(e)
+
+    try:
+        conn.print_label(zpl)
+        return True, None
+    except Exception as e:
+        logger.error(f"Errore stampa etichetta ({cfg.get('connection_type')}): {e}",
+                     exc_info=True)
+        return False, str(e)
+    finally:
+        try:
+            conn.disconnect()
+        except Exception:
+            pass
+
+
+def test_printer_connection(cfg: dict) -> tuple[bool, str | None]:
+    """Prova la connessione senza stampare nulla (utile prima di salvare)."""
+    try:
+        from printer_connection_manager import get_printer_connection
+        conn = get_printer_connection(cfg)
+        try:
+            if conn.test_connection():
+                return True, conn.get_status()
+            return False, None
+        finally:
+            try:
+                conn.disconnect()
+            except Exception:
+                pass
+    except Exception as e:
+        return False, str(e)
+
+
+def describe_printer_config(cfg: dict) -> str:
+    """Riepilogo leggibile della stampante, per qualunque tipo di connessione."""
+    c = cfg or {}
+    ctype = str(c.get("connection_type", "IP")).upper()
+    name = c.get("name") or ""
+    if ctype == "IP":
+        where = f"{c.get('ip', '?')}:{c.get('port', '?')}"
+    elif ctype == "USB":
+        where = c.get("usb_printer_name") or "?"
+    else:
+        where = "stampante di default di Windows"
+    prefix = f"{name} — " if name else ""
+    return f"{prefix}{ctype}: {where} ({c.get('dpi', 203)} dpi, {c.get('printer_model', 'ZEBRA')})"
 
 def load_printer_config() -> dict | None:
     path = get_printer_config_path()
@@ -10389,6 +10754,9 @@ class PrinterSetupDialog(tk.Toplevel):
         self.port_var = tk.StringVar(value="9100")
         self.dpi_var = tk.StringVar(value="203")
         self.textpt_var = tk.StringVar(value="12")
+        self.conn_type_var = tk.StringVar(value="IP")
+        self.usb_name_var = tk.StringVar()
+        self.model_var = tk.StringVar(value="ZEBRA")
 
         frm = ttk.Frame(self, padding=16)
         frm.pack(fill="both", expand=True)
@@ -10396,17 +10764,50 @@ class PrinterSetupDialog(tk.Toplevel):
         ttk.Label(frm, text=self.lang.get('printer_name', "Nome stampante")).grid(row=0, column=0, sticky="w")
         ttk.Entry(frm, textvariable=self.name_var, width=36).grid(row=0, column=1, sticky="ew", pady=4)
 
-        ttk.Label(frm, text="IP").grid(row=1, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.ip_var, width=36).grid(row=1, column=1, sticky="ew", pady=4)
+        # Tipo di connessione: rete / USB / stampante di default di Windows
+        ttk.Label(frm, text=self.lang.get('printer_conn_type', "Connessione")).grid(row=1, column=0, sticky="nw", pady=(8,2))
+        conn_frame = ttk.Frame(frm)
+        conn_frame.grid(row=1, column=1, sticky="w", pady=(8,2))
+        for value, label in (
+            ("IP", self.lang.get('printer_conn_ip', "Rete (IP)")),
+            ("USB", self.lang.get('printer_conn_usb', "USB / coda Windows")),
+            ("DEFAULT", self.lang.get('printer_conn_default', "Stampante di default")),
+        ):
+            ttk.Radiobutton(conn_frame, text=label, value=value,
+                            variable=self.conn_type_var,
+                            command=self._on_conn_type_changed).pack(anchor="w")
 
-        ttk.Label(frm, text=self.lang.get('printer_port', "Porta")).grid(row=2, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.port_var, width=10).grid(row=2, column=1, sticky="w", pady=4)
+        # Parametri rete (visibili solo per IP)
+        self.ip_label = ttk.Label(frm, text="IP")
+        self.ip_label.grid(row=2, column=0, sticky="w")
+        self.ip_entry = ttk.Entry(frm, textvariable=self.ip_var, width=36)
+        self.ip_entry.grid(row=2, column=1, sticky="ew", pady=4)
 
-        ttk.Label(frm, text=self.lang.get('printer_dpi', "DPI")).grid(row=3, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.dpi_var, width=10).grid(row=3, column=1, sticky="w", pady=4)
+        self.port_label = ttk.Label(frm, text=self.lang.get('printer_port', "Porta"))
+        self.port_label.grid(row=3, column=0, sticky="w")
+        self.port_entry = ttk.Entry(frm, textvariable=self.port_var, width=10)
+        self.port_entry.grid(row=3, column=1, sticky="w", pady=4)
 
-        ttk.Label(frm, text=self.lang.get('printer_textpt', "Corpo testo")).grid(row=4, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.textpt_var, width=10).grid(row=4, column=1, sticky="w", pady=4)
+        # Coda di stampa Windows (visibile solo per USB), scelta fra quelle installate
+        self.usb_label = ttk.Label(frm, text=self.lang.get('printer_usb_name', "Coda di stampa"))
+        self.usb_label.grid(row=4, column=0, sticky="w")
+        self.usb_combo = ttk.Combobox(frm, textvariable=self.usb_name_var, width=34,
+                                      values=self._available_printers())
+        self.usb_combo.grid(row=4, column=1, sticky="ew", pady=4)
+
+        # Nessuna scelta del modello: build_zpl_label genera solo ZPL, quindi
+        # la stampante deve parlare ZPL (Zebra). Offrire BROTHER/ZJIANG qui
+        # sarebbe una scelta che non cambia l'output e manda comandi ZPL a una
+        # stampante ESC/POS. Il campo resta nella config per compatibilita' di
+        # schema con printer_connection_manager.
+        ttk.Label(frm, text=self.lang.get('printer_language', "Linguaggio")).grid(row=5, column=0, sticky="w")
+        ttk.Label(frm, text="ZPL (Zebra)", foreground="gray").grid(row=5, column=1, sticky="w", pady=4)
+
+        ttk.Label(frm, text=self.lang.get('printer_dpi', "DPI")).grid(row=6, column=0, sticky="w")
+        ttk.Entry(frm, textvariable=self.dpi_var, width=10).grid(row=6, column=1, sticky="w", pady=4)
+
+        ttk.Label(frm, text=self.lang.get('printer_textpt', "Corpo testo")).grid(row=7, column=0, sticky="w")
+        ttk.Entry(frm, textvariable=self.textpt_var, width=10).grid(row=7, column=1, sticky="w", pady=4)
 
         # Bottoni azione
         btns = ttk.Frame(frm)
@@ -10415,6 +10816,10 @@ class PrinterSetupDialog(tk.Toplevel):
         # Extra: Apri cartella config
         ttk.Button(btns, text=self.lang.get('printer_open_folder', "Apri cartella"),
                    command=open_config_folder).pack(side="left")
+
+        # Test connessione: verifica senza consumare etichette
+        ttk.Button(btns, text=self.lang.get('printer_test_conn', "Test connessione"),
+                   command=self._test_connection).pack(side="left", padx=(8, 0))
 
         # Extra: Test stampa veloce
         ttk.Button(btns, text=self.lang.get('printer_test', "Test stampa"),
@@ -10435,45 +10840,94 @@ class PrinterSetupDialog(tk.Toplevel):
             self.port_var.set(str(cur.get("port","9100")))
             self.dpi_var.set(str(cur.get("dpi","203")))
             self.textpt_var.set(str(cur.get("text_pt","12")))
+            self.conn_type_var.set(str(cur.get("connection_type","IP")).upper())
+            self.usb_name_var.set(cur.get("usb_printer_name",""))
+            self.model_var.set(cur.get("printer_model","ZEBRA"))
+
+        self._on_conn_type_changed()
+
+    def _available_printers(self) -> list:
+        """Code di stampa installate sul PC; lista vuota se win32print manca."""
+        try:
+            from printer_connection_manager import get_available_printers
+            return get_available_printers()
+        except Exception as e:
+            logger.warning(f"Impossibile elencare le stampanti di sistema: {e}")
+            return []
+
+    def _on_conn_type_changed(self):
+        """Mostra solo i campi che servono al tipo di connessione scelto."""
+        ctype = self.conn_type_var.get().upper()
+        ip_state = "normal" if ctype == "IP" else "disabled"
+        usb_state = "normal" if ctype == "USB" else "disabled"
+        for w in (self.ip_entry, self.port_entry):
+            w.config(state=ip_state)
+        self.usb_combo.config(state=usb_state)
+        for lbl, st in ((self.ip_label, ip_state), (self.port_label, ip_state),
+                        (self.usb_label, usb_state)):
+            lbl.config(foreground="" if st == "normal" else "gray")
+
+    def _collect_cfg(self) -> dict | None:
+        """Legge i widget e produce una config valida, o None se c'e' un errore
+        (in tal caso il messaggio e' gia' stato mostrato)."""
+        ctype = self.conn_type_var.get().upper()
+        name = self.name_var.get().strip()
+        if not name:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
+                                   self.lang.get('printer_name_required', "Indicare il nome della stampante."),
+                                   parent=self)
+            return None
+
+        try:
+            dpi_i = int(self.dpi_var.get().strip() or "203")
+            textpt_i = int(self.textpt_var.get().strip() or "12")
+            port_i = int(self.port_var.get().strip() or "9100")
+        except ValueError:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
+                                   self.lang.get('printer_numeric_required', "Porta, DPI e corpo testo devono essere numerici."),
+                                   parent=self)
+            return None
+
+        ip = self.ip_var.get().strip()
+        usb_name = self.usb_name_var.get().strip()
+
+        # Validazione mirata al tipo scelto: per USB/DEFAULT l'IP non serve
+        if ctype == "IP":
+            if not ip:
+                messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
+                                       self.lang.get('printer_required', "Compila nome, IP e porta."), parent=self)
+                return None
+            if not validate_ip(ip):
+                messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
+                                       self.lang.get('printer_ip_invalid', "IP non valido."), parent=self)
+                return None
+        elif ctype == "USB" and not usb_name:
+            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
+                                   self.lang.get('printer_usb_required', "Selezionare la coda di stampa."), parent=self)
+            return None
+
+        return {
+            "name": name,
+            "connection_type": ctype,
+            "ip": ip,
+            "port": port_i,
+            "usb_printer_name": usb_name,
+            "printer_model": self.model_var.get().strip().upper() or "ZEBRA",
+            "dpi": dpi_i,
+            "label_cm": [5, 5],
+            "text_pt": textpt_i,
+            "language": "ZPL",
+            "version": 2
+        }
 
     def _cancel(self):
         self.result = None
         self.destroy()
 
     def _save(self):
-        name = self.name_var.get().strip()
-        ip = self.ip_var.get().strip()
-        port = self.port_var.get().strip()
-        dpi = self.dpi_var.get().strip()
-        textpt = self.textpt_var.get().strip()
-
-        if not name or not ip or not port:
-            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
-                                   self.lang.get('printer_required', "Compila nome, IP e porta."), parent=self)
+        cfg = self._collect_cfg()
+        if cfg is None:
             return
-        if not validate_ip(ip):
-            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
-                                   self.lang.get('printer_ip_invalid', "IP non valido."), parent=self)
-            return
-        try:
-            port_i = int(port)
-            dpi_i = int(dpi)
-            textpt_i = int(textpt)
-        except ValueError:
-            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
-                                   self.lang.get('printer_numeric_required', "Porta, DPI e corpo testo devono essere numerici."), parent=self)
-            return
-
-        cfg = {
-            "name": name,
-            "ip": ip,
-            "port": port_i,
-            "dpi": dpi_i,
-            "label_cm": [5, 5],
-            "text_pt": textpt_i,
-            "language": "ZPL",
-            "version": 1
-        }
         ok, err = save_printer_config(cfg)
         if not ok:
             messagebox.showerror(self.lang.get('error_title', "Errore"),
@@ -10484,22 +10938,28 @@ class PrinterSetupDialog(tk.Toplevel):
         self.result = cfg
         self.destroy()
 
+    def _test_connection(self):
+        """Verifica la raggiungibilita' della stampante senza consumare etichette."""
+        cfg = self._collect_cfg()
+        if cfg is None:
+            return
+        ok, info = test_printer_connection(cfg)
+        if ok:
+            messagebox.showinfo(self.lang.get('info_title', "Informazione"),
+                                self.lang.get('printer_conn_ok', "Stampante raggiungibile.")
+                                + (f"\n{info}" if info else ""), parent=self)
+        else:
+            messagebox.showerror(self.lang.get('error_title', "Errore"),
+                                 self.lang.get('printer_conn_error', "Stampante non raggiungibile.")
+                                 + (f"\n{info}" if info else ""), parent=self)
+
     def _test_print(self):
         # Costruisce e invia una piccola etichetta di test
-        try:
-            ip = self.ip_var.get().strip()
-            port = int(self.port_var.get().strip())
-            dpi = int(self.dpi_var.get().strip() or "203")
-        except ValueError:
-            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
-                                   self.lang.get('printer_numeric_required', "Porta, DPI e corpo testo devono essere numerici."), parent=self)
-            return
-        if not validate_ip(ip):
-            messagebox.showwarning(self.lang.get('warn_title', "Attenzione"),
-                                   self.lang.get('printer_ip_invalid', "IP non valido."), parent=self)
+        cfg = self._collect_cfg()
+        if cfg is None:
             return
         zpl = "^XA^CI28^PW400^LL400^FO20,20^A0N,40,40^FDTest stampa^FS^FO20,80^GB350,1,1^FS^XZ"
-        ok, err = send_raw_to_printer(ip, port, zpl.encode("utf-8"))
+        ok, err = send_label_to_printer(cfg, zpl)
         if ok:
             messagebox.showinfo(self.lang.get('info_title', "Informazione"),
                                 self.lang.get('print_ok', "Stampa inviata alla stampante."), parent=self)
@@ -10970,6 +11430,7 @@ class App(tk.Tk):
         self._plan_alert_stop_event = threading.Event()
         self._plan_alert_monthly_sent = None  # Track mese corrente
         self._plan_alert_weekly_sent = None   # Track settimana corrente
+        self._plan_responsibles_sent = None   # Track invio email responsabili odierno
         # _plan_check_mode gia' letto all'avvio (dopo connessione DB)
         if self._plan_check_mode != 'False':
             self._start_plan_alert_background_task()
@@ -11945,6 +12406,26 @@ class App(tk.Tk):
                     except Exception as e:
                         logger.error(
                             f"Errore report settimanale piano: {e}", exc_info=True)
+
+                # --- 4) Email giornaliera responsabili (ore 8, giorni lavorativi RO) ---
+                #     Dedup vero e cross-PC nel modulo (claim su settings); qui la
+                #     guardia in-memory evita di risollecitare ogni minuto dopo l'invio.
+                if (current_hour == 8
+                        and self._plan_responsibles_sent != current_date
+                        and should_send_notification(country_code='RO')):
+                    try:
+                        import plan_responsibles as prb
+                        # mode=None -> usa la modalità DEDICATA dell'email
+                        # (Sys_plan_responsibles_email_mode, default 'Test'),
+                        # indipendente dall'escalation piano.
+                        sent, msg = prb.send_daily_responsibles_email(
+                            conn, mode=None, logo_path="logo.png")
+                        logger.info(f"Email responsabili piano: {msg}")
+                        if sent:
+                            self._plan_responsibles_sent = current_date
+                    except Exception as e:
+                        logger.error(
+                            f"Errore email responsabili piano: {e}", exc_info=True)
 
                 # Attendi 60 secondi
                 time.sleep(60)
@@ -13050,7 +13531,72 @@ class App(tk.Tk):
                 f"Impossibile aprire le discrepanze piano:\n{e}"
             )
 
-    
+    def open_plan_responsibles_with_login(self):
+        """Apre la maschera di gestione dei responsabili del piano produzione
+        (destinatari email giornaliera). Stessa autorizzazione delle discrepanze."""
+        try:
+            import plan_alert_escalation as pae
+            mode = pae.get_plan_check_mode(self.db.conn)
+        except Exception:
+            mode = 'False'
+        if mode == 'False':
+            messagebox.showinfo(
+                self.lang.get('info', 'Info'),
+                'Piano produzione: funzionalità disabilitata.\n'
+                'Contattare IT per abilitare (Sys_enable_control_plan_check).')
+            return
+        self._execute_authorized_action(
+            menu_translation_key='giustifica_discrepanze_piano',
+            action_callback=lambda: self._open_plan_responsibles()
+        )
+
+    def _open_plan_responsibles(self):
+        """Apre la maschera responsabili piano (chiamata dopo login ok)."""
+        try:
+            import plan_responsibles_gui
+            plan_responsibles_gui.open_plan_responsibles(
+                self, self.db, self.lang, self.last_authenticated_user_name
+            )
+        except Exception as e:
+            logger.error(f"Errore apertura responsabili piano: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire i responsabili piano:\n{e}"
+            )
+
+    def open_plan_phases_with_login(self):
+        """Apre la maschera di selezione delle fasi da osservare/giustificare.
+        Login autorizzato con chiave 'fasi_da_giustificare_mancata_produzione'."""
+        try:
+            import plan_alert_escalation as pae
+            mode = pae.get_plan_check_mode(self.db.conn)
+        except Exception:
+            mode = 'False'
+        if mode == 'False':
+            messagebox.showinfo(
+                self.lang.get('info', 'Info'),
+                'Piano produzione: funzionalità disabilitata.\n'
+                'Contattare IT per abilitare (Sys_enable_control_plan_check).')
+            return
+        self._execute_authorized_action(
+            menu_translation_key='fasi_da_giustificare_mancata_produzione',
+            action_callback=lambda: self._open_plan_phases()
+        )
+
+    def _open_plan_phases(self):
+        """Apre la maschera fasi da giustificare (chiamata dopo login ok)."""
+        try:
+            import plan_phases_gui
+            plan_phases_gui.open_plan_phases(
+                self, self.db, self.lang, self.last_authenticated_user_name
+            )
+        except Exception as e:
+            logger.error(f"Errore apertura fasi da giustificare: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire le fasi da giustificare:\n{e}"
+            )
+
     def send_fai_fails_email_with_login(self):
         """Invia email automatica FAI fails con autenticazione"""
         self._execute_simple_login(
@@ -13291,6 +13837,50 @@ class App(tk.Tk):
         )
         return True, ""
 
+    def _show_update_prep_splash(self):
+        """Finestrella 'preparazione aggiornamento in corso' con progressbar
+        indeterminata, mostrata durante la copia dell'updater e la verifica dei
+        file sorgente (fasi che possono durare qualche secondo su rete). Evita
+        l'impressione che l'app sia bloccata. Ritorna il Toplevel o None."""
+        try:
+            win = tk.Toplevel(self)
+            win.title(self.lang.get('update_prep_title', 'Aggiornamento'))
+            win.resizable(False, False)
+            try:
+                win.transient(self)
+            except Exception:
+                pass
+            win.protocol("WM_DELETE_WINDOW", lambda: None)  # non chiudibile
+            frm = ttk.Frame(win, padding=20)
+            frm.pack(fill=tk.BOTH, expand=True)
+            ttk.Label(
+                frm,
+                text=self.lang.get(
+                    'update_prep_msg',
+                    "Preparazione dell'aggiornamento in corso...\n"
+                    "Attendere: caricamento dei dati aggiornati.\n"
+                    "Non chiudere l'applicazione."),
+                justify=tk.LEFT, wraplength=360).pack(pady=(0, 12))
+            pb = ttk.Progressbar(frm, mode='indeterminate', length=320)
+            pb.pack()
+            pb.start(12)
+            win.update_idletasks()
+            w = max(win.winfo_reqwidth(), 400)
+            h = max(win.winfo_reqheight(), 150)
+            sw = win.winfo_screenwidth()
+            sh = win.winfo_screenheight()
+            win.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+            win.lift()
+            try:
+                win.attributes('-topmost', True)
+            except Exception:
+                pass
+            win.update()
+            return win
+        except Exception as e:
+            logger.warning(f"_show_update_prep_splash: {e}")
+            return None
+
     def _trigger_update(self, version_info, mandatory=True):
         """
         Mostra un dialogo con conto alla rovescia (60s) e lancia l'updater.
@@ -13321,31 +13911,68 @@ class App(tk.Tk):
         # sovrascriverlo (su Windows un .exe in esecuzione non puo' sovrascrivere se
         # stesso: per questo l'updater si auto-preserva durante la copia). Cosi' le
         # modifiche all'updater (es. nuova UI di copia) raggiungono gli utenti.
-        updater_path = None
-        try:
-            if os.path.isdir(source_updater_dir) and os.path.exists(source_updater_onedir):
-                shutil.copytree(
-                    source_updater_dir,
-                    os.path.join(destination, "_internal", "updater"),
-                    dirs_exist_ok=True
-                )
-                updater_path = dest_updater_onedir
-                logger.info("_trigger_update: updater onedir aggiornato dal sorgente")
-            elif os.path.exists(source_updater_legacy):
-                os.makedirs(os.path.dirname(dest_updater_legacy), exist_ok=True)
-                shutil.copy2(source_updater_legacy, dest_updater_legacy)
-                updater_path = dest_updater_legacy
-                logger.info("_trigger_update: updater.exe (legacy) aggiornato dal sorgente")
-        except Exception as refresh_err:
-            logger.warning(f"_trigger_update: refresh updater dal sorgente fallito: {refresh_err}")
+        # ── Prep pesante in background (copia updater dal sorgente di rete +
+        #    verifica integrità file sorgente) con splash animato. Queste fasi
+        #    possono durare secondi su rete: senza feedback l'app sembra bloccata
+        #    e l'utente rilancia il programma. ──────────────────────────────────
+        prep = self._show_update_prep_splash()
+        prep_result = {'updater_path': None, 'ready': None, 'reason': '', 'done': False}
 
-        # Se il refresh non e' riuscito, usa l'updater locale esistente
-        if not updater_path or not os.path.exists(updater_path):
-            if os.path.exists(dest_updater_onedir):
-                updater_path = dest_updater_onedir
-            elif os.path.exists(dest_updater_legacy):
-                updater_path = dest_updater_legacy
+        def _prep_worker():
+            try:
+                up = None
+                try:
+                    if os.path.isdir(source_updater_dir) and os.path.exists(source_updater_onedir):
+                        shutil.copytree(
+                            source_updater_dir,
+                            os.path.join(destination, "_internal", "updater"),
+                            dirs_exist_ok=True)
+                        up = dest_updater_onedir
+                        logger.info("_trigger_update: updater onedir aggiornato dal sorgente")
+                    elif os.path.exists(source_updater_legacy):
+                        os.makedirs(os.path.dirname(dest_updater_legacy), exist_ok=True)
+                        shutil.copy2(source_updater_legacy, dest_updater_legacy)
+                        up = dest_updater_legacy
+                        logger.info("_trigger_update: updater.exe (legacy) aggiornato dal sorgente")
+                except Exception as refresh_err:
+                    logger.warning(f"_trigger_update: refresh updater dal sorgente fallito: {refresh_err}")
 
+                # Se il refresh non e' riuscito, usa l'updater locale esistente
+                if not up or not os.path.exists(up):
+                    if os.path.exists(dest_updater_onedir):
+                        up = dest_updater_onedir
+                    elif os.path.exists(dest_updater_legacy):
+                        up = dest_updater_legacy
+                prep_result['updater_path'] = up
+
+                # Verifica integrità file sorgente (solo se abbiamo un updater valido)
+                if up and os.path.exists(up):
+                    ready, reason = self._is_source_file_ready(source, exe_name)
+                    prep_result['ready'] = ready
+                    prep_result['reason'] = reason
+            except Exception as e:
+                logger.error(f"_trigger_update: errore prep updater: {e}", exc_info=True)
+            finally:
+                prep_result['done'] = True
+
+        _prep_thread = threading.Thread(target=_prep_worker, daemon=True)
+        _prep_thread.start()
+        # Pump dell'event loop per mantenere animato lo splash finché il prep finisce
+        _waited = 0.0
+        while not prep_result['done'] and _waited < 180:
+            try:
+                self.update()
+            except Exception:
+                pass
+            time.sleep(0.05)
+            _waited += 0.05
+        if prep is not None:
+            try:
+                prep.destroy()
+            except Exception:
+                pass
+
+        updater_path = prep_result['updater_path']
         if not updater_path or not os.path.exists(updater_path):
             logger.error(f"_trigger_update: updater non trovato (ne' locale ne' sorgente {source})")
             messagebox.showerror(
@@ -13355,9 +13982,8 @@ class App(tk.Tk):
             )
             return 'failed'
 
-        # ── Verifica integrità file sorgente ──────────────────────────────────
-        file_ready, reason = self._is_source_file_ready(source, exe_name)
-        if not file_ready:
+        if prep_result['ready'] is False:
+            reason = prep_result['reason']
             logger.warning(f"_trigger_update: file sorgente non pronto - {reason}")
             messagebox.showwarning(
                 self.lang.get('update_postponed_title', 'Aggiornamento Posticipato'),
@@ -14391,6 +15017,20 @@ class App(tk.Tk):
         import material_consumption_report_gui as mcr_gui
         mcr_gui.MaterialConsumptionReportWindow(self, self.db, self.lang)
 
+    def _open_consumption_general_report(self):
+        """Report generale consumi materiali (di consumo) richiesti nel periodo A..B.
+        Sintesi a monitor + export Excel analitico con tab per i top 10 codici.
+        Rapporto senza login."""
+        try:
+            import indirect_materials_consumption_report as icr
+            icr.open_consumption_general_report(self, self.db, self.lang)
+        except Exception as e:
+            logger.error(f"Errore apertura Report Consumi Generale: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"{self.lang.get('cgr_open_err', 'Impossibile aprire il report consumi')}:\n{e}",
+                parent=self)
+
     def _open_fqc_products_with_login(self):
         """Apre la form esecuzione controlli FQC (semplice login)."""
         import fqc_products_gui
@@ -14741,6 +15381,21 @@ class App(tk.Tk):
             from datetime import datetime as _dt, timedelta as _td
 
             TRIGGER_H, TRIGGER_M = 7, 30
+
+            # Recupero all'AVVIO: il vecchio schema partiva solo se un PC aveva
+            # l'app aperta ESATTAMENTE alle 07:30 → spesso non partiva mai. Ora,
+            # se all'avvio è un giorno lavorativo e le 07:30 sono già passate,
+            # eseguiamo subito il controllo. Il claim atomico giornaliero
+            # (ind.RiordineEmailLog) evita invii doppi anche con più PC.
+            try:
+                _now = _dt.now()
+                if _now.weekday() != 6 and (_now.hour, _now.minute) >= (TRIGGER_H, TRIGGER_M):
+                    import indirect_materials_stock_data as stock_data
+                    res = stock_data.check_and_send_reorder(self.db, self.lang)
+                    logger.info(f"indirect_reorder_scheduler (recupero avvio): {res}")
+            except Exception as exc:
+                logger.error(
+                    f"indirect_reorder_scheduler recupero avvio: {exc}", exc_info=True)
 
             while True:
                 now = _dt.now()
@@ -16642,6 +17297,11 @@ class App(tk.Tk):
             command=self._orders_reports_placeholder
         )
 
+        self.orders_menu.add_command(
+            label=self.lang.get('submenu_finished_goods_transfers', 'Versamenti prodotto finito'),
+            command=self._open_finished_goods_transfers
+        )
+
         # Sottomenu Spedizioni
         self.shipments_submenu.delete(0, 'end')
 
@@ -16900,6 +17560,13 @@ class App(tk.Tk):
             label=self.lang.get('menu_consumption_reports', 'Rapporti'),
             command=self._open_material_consumption_reports
         )
+        # Report generale consumi materiali richiesti (periodo A..B, senza login)
+        consumption_submenu.add_separator()
+        consumption_submenu.add_command(
+            label=self.lang.get('menu_consumption_general_report', 'Report Consumi Generale'),
+            command=self._open_consumption_general_report
+        )
+
     def _update_production_submenu(self):
         """Aggiorna il sottomenu Produzione con tutte le sezioni"""
         self.production_submenu.delete(0, 'end')
@@ -16973,6 +17640,14 @@ class App(tk.Tk):
             self.declarations_submenu.add_command(
                 label=self.lang.get('piano_produzione', "Piano produzione"),
                 command=self.open_plan_discrepancy_with_login
+            )
+            self.declarations_submenu.add_command(
+                label=self.lang.get('piano_produzione_responsabili', "Piano produzione — Responsabili"),
+                command=self.open_plan_responsibles_with_login
+            )
+            self.declarations_submenu.add_command(
+                label=self.lang.get('piano_produzione_fasi', "Piano produzione — Fasi da giustificare"),
+                command=self.open_plan_phases_with_login
             )
         # ── FQC Prodotti ──────────────────────────────────────────────────────
         self.declarations_submenu.add_separator()
@@ -20177,6 +20852,19 @@ class App(tk.Tk):
             menu_translation_key='spedizioni_urgenti',
             action_callback=authorized_action
         )
+
+    def _open_finished_goods_transfers(self):
+        """Apre la finestra 'Versamenti prodotto finito'."""
+        try:
+            from orders.finished_goods_transfers_window import open_finished_goods_transfers_window
+            user_name = getattr(self, 'last_authenticated_user_name', 'Unknown')
+            open_finished_goods_transfers_window(self, self.db, self.lang, user_name)
+        except Exception as e:
+            logger.error(f"Errore apertura Versamenti prodotto finito: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"{self.lang.get('fgt_open_err', 'Impossibile aprire la finestra')}:\n{e}",
+                parent=self)
 
     def _open_shipment_confirmation(self):
         """Apre la finestra di conferma spedizioni urgenti (con autorizzazione)."""

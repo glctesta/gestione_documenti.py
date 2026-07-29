@@ -1,5 +1,7 @@
 # updater.spec — builds updater as --onedir (no temp extraction = no hang)
-# Output: dist/updater/ — will be placed inside main app's _internal/updater/
+# Output: dist/updater/ — updater.exe + le sue dipendenze SENZA la sottocartella
+# '_internal' (contents_directory='.' le mette accanto all'exe). Va posizionato
+# dentro _internal/updater/ dell'app principale.
 
 block_cipher = None
 
@@ -36,6 +38,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    contents_directory='.',   # niente sottocartella '_internal': dipendenze accanto a updater.exe
 )
 
 coll = COLLECT(

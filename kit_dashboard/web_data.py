@@ -100,6 +100,36 @@ def order_detail(cur, order_number: str):
     requests = [dict(zip(('material_code', 'qty_requested', 'requesting_phase',
                           'wh_status', 'request_date', 'note'), r)) for r in cur.fetchall()]
 
+    # Lista COMPLETA dei materiali PTH dell'ordine (lista di prelievo più recente),
+    # in ordine alfabetico. Esclusi reel vuoto e componenti SMT (solo PTH).
+    # HU = reel, Codice = material_code, Descrizione = dbo.Components,
+    # qtà prelevata = qty_picked, qtà verificata = qty_picked se pick_status='COMPLETE'.
+    cur.execute("""
+        SELECT i.material_code, i.unique_number, c.ComponentDescription AS descr,
+               i.qty_required, i.qty_picked, i.pick_status
+        FROM Traceability_RS.dbo.picking_list_items i
+        LEFT JOIN Traceability_RS.dbo.Components c ON c.ComponentCode = i.material_code
+        WHERE i.picking_list_id = (
+                SELECT TOP 1 pl.id
+                FROM Traceability_RS.dbo.picking_list_orders plo
+                JOIN Traceability_RS.dbo.picking_lists pl ON pl.id = plo.picking_list_id
+                WHERE plo.order_number = ? ORDER BY pl.upload_date DESC)
+          AND i.unique_number IS NOT NULL AND LTRIM(RTRIM(i.unique_number)) <> ''
+          AND NOT EXISTS (SELECT 1 FROM Traceability_RS.dbo.Components c2
+                          WHERE c2.ComponentCode = i.material_code
+                            AND c2.ComponentDescription LIKE '%SMT%')
+        ORDER BY i.material_code, i.unique_number
+    """, (order_number,))
+    materials = []
+    for r in cur.fetchall():
+        picked = float(r[4] or 0)
+        materials.append({
+            'material_code': r[0], 'hu': r[1], 'descr': r[2] or '',
+            'qty_required': float(r[3] or 0), 'qty_picked': picked,
+            'qty_verified': picked if r[5] == 'COMPLETE' else 0.0,
+            'pick_status': r[5],
+        })
+
     # se non in snapshot, prova lo storico (ordine già completato)
     hist = None
     if not snap:
@@ -110,4 +140,5 @@ def order_detail(cur, order_number: str):
         if h:
             hist = dict(zip(_HIST_COLS, h))
 
-    return {'snap': snap, 'missing': missing, 'requests': requests, 'history': hist}
+    return {'snap': snap, 'missing': missing, 'requests': requests,
+            'materials': materials, 'history': hist}

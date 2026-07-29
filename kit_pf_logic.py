@@ -215,19 +215,29 @@ def finalize_pf_fail(cursor, list_id: int, operator_id: int) -> dict:
 
 # ─────────────── Richiesta materiale aggiuntivo (§5.2.3) ──────────────── #
 
+# Motivazioni predefinite della richiesta materiale (categorie fisse).
+# Il codice viene salvato in material_requests.reason; l'etichetta tradotta
+# e' risolta nella GUI con la chiave kit_req_reason_<codice minuscolo>.
+REQUEST_REASONS = ('KIT_INCOMPLETE', 'SCRAP', 'DAMAGED', 'MISSING', 'OTHER')
+
+
 def create_material_request(cursor, order_number: str, phase: str,
                             material_code: str, qty: float, requested_by: int,
                             requester_name: str, note: str,
-                            requester_computer: str) -> dict:
-    """Inserisce la richiesta, accoda il popup WH e ritorna i messaggi email."""
+                            requester_computer: str, reason: str = None) -> dict:
+    """Inserisce la richiesta, accoda il popup WH e ritorna i messaggi email.
+
+    reason: una delle REQUEST_REASONS (categoria), NULL per le richieste create
+    dai flussi che non la specificano (retrocompatibile con i chiamanti esistenti).
+    """
     cursor.execute("""
         INSERT INTO Traceability_RS.dbo.material_requests
             (order_number, requesting_phase, material_code, qty_requested,
-             requested_by, note, requester_computer)
+             requested_by, note, requester_computer, reason)
         OUTPUT INSERTED.id
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (order_number, phase, material_code, qty, requested_by,
-          note[:500] if note else None, requester_computer))
+          note[:500] if note else None, requester_computer, reason))
     request_id = cursor.fetchone()[0]
 
     whl.log_event(cursor, order_number, 'REQUEST_MATERIAL', phase=phase,
@@ -249,7 +259,7 @@ def get_requests(cursor, only_open: bool = True) -> List[dict]:
         SELECT r.id, r.order_number, r.requesting_phase, r.material_code,
                r.qty_requested, r.request_date, r.wh_status, r.note,
                ISNULL(e.EmployeeName + ' ' + e.EmployeeSurname, '') AS requester,
-               r.requester_computer, r.confirmed_date, r.resolution
+               r.requester_computer, r.confirmed_date, r.resolution, r.reason
         FROM Traceability_RS.dbo.material_requests r
         LEFT JOIN employee.dbo.EmployeeHireHistory h ON h.EmployeeHireHistoryId = r.requested_by
         LEFT JOIN employee.dbo.employees e ON e.EmployeeId = h.EmployeeId
@@ -258,7 +268,47 @@ def get_requests(cursor, only_open: bool = True) -> List[dict]:
     """)
     cols = ('id', 'order_number', 'phase', 'material_code', 'qty',
             'request_date', 'wh_status', 'note', 'requester',
-            'requester_computer', 'confirmed_date', 'resolution')
+            'requester_computer', 'confirmed_date', 'resolution', 'reason')
+    return [dict(zip(cols, r)) for r in cursor.fetchall()]
+
+
+def get_verified_orders(cursor) -> List[str]:
+    """Ordini appartenenti a liste di prelievo CHIUSE (verificate).
+
+    La produzione puo' richiedere integrazioni solo sulle quantita' che ha
+    verificato: quindi solo ordini di picking_lists.status = 'CLOSED'. Le liste
+    OPEN/PARTIAL/REOPENED (ancora in lavorazione) non danno ordini richiedibili.
+    """
+    cursor.execute("""
+        SELECT DISTINCT i.order_number
+        FROM Traceability_RS.dbo.picking_list_items i
+        INNER JOIN Traceability_RS.dbo.picking_lists l ON l.id = i.picking_list_id
+        WHERE i.order_number IS NOT NULL
+          AND l.status = 'CLOSED'
+        ORDER BY i.order_number
+    """)
+    return [r[0] for r in cursor.fetchall()]
+
+
+def get_order_materials(cursor, order_number: str) -> List[dict]:
+    """Materiali di un ordine con le quantita' verificate nel picking
+    (richiesta e prelevata), aggregati per codice materiale.
+
+    Solo materiali di liste CLOSED (verificate): coerente con
+    get_verified_orders — si integra solo su cio' che e' stato verificato.
+    """
+    cursor.execute("""
+        SELECT i.material_code,
+               SUM(i.qty_required) AS qty_required,
+               SUM(i.qty_picked)   AS qty_picked
+        FROM Traceability_RS.dbo.picking_list_items i
+        INNER JOIN Traceability_RS.dbo.picking_lists l ON l.id = i.picking_list_id
+        WHERE i.order_number = ?
+          AND l.status = 'CLOSED'
+        GROUP BY i.material_code
+        ORDER BY i.material_code
+    """, (order_number,))
+    cols = ('material_code', 'qty_required', 'qty_picked')
     return [dict(zip(cols, r)) for r in cursor.fetchall()]
 
 

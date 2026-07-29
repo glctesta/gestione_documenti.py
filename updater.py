@@ -5,6 +5,8 @@ import subprocess
 import time
 import threading
 import filecmp
+import hashlib
+import json
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
@@ -159,7 +161,8 @@ class UpdateProgressWindow(tk.Tk):
     @staticmethod
     def _same_content(src, dst):
         """True se dst esiste e ha lo STESSO contenuto di src (size + byte).
-        Non usa l'mtime: ogni build PyInstaller rigenera le date dei file."""
+        Non usa l'mtime: ogni build PyInstaller rigenera le date dei file.
+        Fallback usato quando il manifest non ha l'hash (deploy vecchio)."""
         try:
             if not os.path.exists(dst):
                 return False
@@ -167,6 +170,65 @@ class UpdateProgressWindow(tk.Tk):
         except Exception:
             # In dubbio (es. file illeggibile) prova comunque a copiare
             return False
+
+    @staticmethod
+    def _file_sha256(path):
+        """SHA-256 del contenuto del file (a blocchi). None su errore."""
+        try:
+            h = hashlib.sha256()
+            with open(path, 'rb') as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                    h.update(chunk)
+            return h.hexdigest()
+        except Exception:
+            return None
+
+    def _load_source_manifest(self):
+        """Carica deploy_manifest.json dal sorgente e ritorna
+        {rel_path_slash: {'size': int, 'sha256': str}} per le voci CON hash.
+        Ritorna {} se il manifest manca o non ha hash (→ fallback byte-a-byte)."""
+        manifest_path = os.path.join(self.source_path, 'deploy_manifest.json')
+        if not os.path.exists(manifest_path):
+            log("_load_source_manifest: manifest assente, uso confronto byte-a-byte")
+            return {}
+        try:
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception as e:
+            log(f"_load_source_manifest: manifest illeggibile ({e}), fallback byte-a-byte")
+            return {}
+        out = {}
+        for entry in data.get('files', []):
+            sha = entry.get('sha256')
+            path = entry.get('path')
+            if sha and path:
+                out[path.replace('\\', '/')] = {'size': entry.get('size'), 'sha256': sha}
+        log(f"_load_source_manifest: {len(out)} voci con hash (manifest v{data.get('version','?')})")
+        return out
+
+    def _needs_copy(self, source_file, dest_file):
+        """Decide se `source_file` va copiato su `dest_file`.
+
+        Con il manifest (hash): confronta l'hash del file LOCALE (dest) con quello
+        atteso dal manifest — legge SOLO dal disco locale, niente lettura dal
+        server per i file invariati. Senza hash: fallback al confronto byte-a-byte
+        (che legge dal server, come prima)."""
+        rel = os.path.relpath(source_file, self.source_path).replace('\\', '/')
+        entry = self._manifest.get(rel)
+        if entry:
+            if not os.path.exists(dest_file):
+                return True
+            try:
+                if entry.get('size') is not None and os.path.getsize(dest_file) != entry['size']:
+                    return True  # dimensione diversa: cambiato di sicuro (niente hash)
+            except OSError:
+                return True
+            local_hash = self._file_sha256(dest_file)
+            if local_hash is None:
+                return True
+            return local_hash != entry['sha256']
+        # Nessun hash nel manifest per questo file → confronto byte-a-byte (dal server)
+        return not self._same_content(source_file, dest_file)
 
     def _kill_running_instances(self):
         """(B) Chiude tutte le istanze dell'app (incluso il figlio --kit-web-server)
@@ -196,7 +258,11 @@ class UpdateProgressWindow(tk.Tk):
         skipped = 0
         total = len(file_list)
         total_bytes = getattr(self, "_total_bytes", 0)
-        log(f"_copy_worker: avvio copia di {total} file ({self._fmt_bytes(total_bytes)})")
+        # Manifest sorgente (hash per file): permette di rilevare i file invariati
+        # leggendo solo il file locale, senza rileggerli dal server.
+        self._manifest = self._load_source_manifest()
+        log(f"_copy_worker: avvio copia di {total} file ({self._fmt_bytes(total_bytes)}) "
+            f"— rilevamento {'via hash (manifest)' if self._manifest else 'byte-a-byte'}")
 
         processed_bytes = 0      # byte processati (copiati + saltati) → progresso/ETA
         transferred_bytes = 0    # byte realmente copiati → velocità di trasferimento
@@ -226,11 +292,12 @@ class UpdateProgressWindow(tk.Tk):
                     os.makedirs(dest_dir, exist_ok=True)
                     dest_file = os.path.join(dest_dir, name)
 
-                    # (A) Salta i file con CONTENUTO identico: niente copia, niente lock.
-                    # filecmp confronta size + byte (gli mtime cambiano a ogni build).
-                    # Un .pyd caricato in memoria resta comunque LEGGIBILE (FILE_SHARE_READ),
-                    # quindi il confronto riesce anche se il file è "in uso".
-                    if self._same_content(source_file, dest_file):
+                    # (A) Salta i file INVARIATI: niente copia, niente lock.
+                    # Con il manifest (hash) il confronto legge SOLO il file locale
+                    # (nessuna rilettura dal server per gli invariati); senza manifest
+                    # ricade sul confronto byte-a-byte. Un .pyd caricato in memoria
+                    # resta comunque LEGGIBILE (FILE_SHARE_READ).
+                    if not self._needs_copy(source_file, dest_file):
                         skipped += 1
                     else:
                         # Retry in caso di PermissionError (file temporaneamente in uso)

@@ -391,22 +391,23 @@ class MinStockConfigWindow(tk.Toplevel):
         # Tabella
         tree_frame = ttk.Frame(main)
         tree_frame.pack(fill="both", expand=True)
-        cols = ('codice', 'descrizione', 'giacenza', 'minimo', 'lotto', 'attivo')
+        cols = ('codice', 'descrizione', 'giacenza', 'minimo', 'racc', 'lotto', 'attivo')
         self.tree = ttk.Treeview(tree_frame, columns=cols, show='headings', selectmode='browse')
         heads = {
             'codice':      self.lang.get('ind_import_col_code', 'Codice'),
             'descrizione': self.lang.get('ind_import_col_desc', 'Descrizione'),
             'giacenza':    self.lang.get('ind_stock_col_stock', 'Giacenza'),
             'minimo':      self.lang.get('ind_min_col_min', 'Scorta minima'),
+            'racc':        self.lang.get('ind_min_col_recommended', 'Scorta raccomandata'),
             'lotto':       self.lang.get('ind_min_col_lot', 'Lotto riordino'),
             'attivo':      self.lang.get('ind_min_col_active', 'Riordino attivo'),
         }
-        widths = {'codice': 110, 'descrizione': 300, 'giacenza': 90,
-                  'minimo': 100, 'lotto': 100, 'attivo': 110}
+        widths = {'codice': 110, 'descrizione': 280, 'giacenza': 90,
+                  'minimo': 100, 'racc': 120, 'lotto': 100, 'attivo': 110}
         for c in cols:
             self.tree.heading(c, text=heads[c])
             self.tree.column(c, width=widths[c],
-                             anchor='e' if c in ('giacenza', 'minimo', 'lotto') else 'w')
+                             anchor='e' if c in ('giacenza', 'minimo', 'racc', 'lotto') else 'w')
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -427,14 +428,19 @@ class MinStockConfigWindow(tk.Toplevel):
         self.min_var = tk.StringVar()
         ttk.Entry(ed, textvariable=self.min_var, width=12).grid(row=1, column=1, sticky="w", padx=4)
 
-        ttk.Label(ed, text=self.lang.get('ind_min_col_lot', 'Lotto riordino') + ':').grid(
+        ttk.Label(ed, text=self.lang.get('ind_min_col_recommended', 'Scorta raccomandata') + ':').grid(
             row=1, column=2, sticky="e", padx=4, pady=3)
+        self.recc_var = tk.StringVar()
+        ttk.Entry(ed, textvariable=self.recc_var, width=12).grid(row=1, column=3, sticky="w", padx=4)
+
+        ttk.Label(ed, text=self.lang.get('ind_min_col_lot', 'Lotto riordino') + ':').grid(
+            row=2, column=0, sticky="e", padx=4, pady=3)
         self.lot_var = tk.StringVar()
-        ttk.Entry(ed, textvariable=self.lot_var, width=12).grid(row=1, column=3, sticky="w", padx=4)
+        ttk.Entry(ed, textvariable=self.lot_var, width=12).grid(row=2, column=1, sticky="w", padx=4)
 
         self.active_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(ed, text=self.lang.get('ind_min_col_active', 'Riordino attivo'),
-                        variable=self.active_var).grid(row=2, column=0, columnspan=2, sticky="w", padx=4, pady=6)
+                        variable=self.active_var).grid(row=2, column=2, sticky="w", padx=4, pady=6)
 
         self.btn_save = ttk.Button(ed, text=self.lang.get('btn_save', 'Salva'),
                                    command=self._save, state='disabled')
@@ -457,12 +463,14 @@ class MinStockConfigWindow(tk.Toplevel):
                 continue
             idx = len(self._visible)
             min_str = f"{r['livello_minimo']:.2f}" if r['livello_minimo'] is not None else '-'
+            racc_str = (f"{r.get('livello_raccomandato'):.2f}"
+                        if r.get('livello_raccomandato') is not None else '-')
             lot_str = f"{r['lotto_riordino']:.2f}" if r['lotto_riordino'] is not None else '-'
             att_str = (self.lang.get('yes', 'Sì') if r['is_riordino_attivo']
                        else self.lang.get('no', 'No')) if r['livello_minimo'] is not None else '-'
             self.tree.insert('', 'end', iid=str(idx), values=(
                 r['codice'], r['descrizione'], f"{r['giacenza']:.2f}",
-                min_str, lot_str, att_str
+                min_str, racc_str, lot_str, att_str
             ))
             self._visible.append(r)
 
@@ -479,6 +487,8 @@ class MinStockConfigWindow(tk.Toplevel):
         self._selected = r
         self.sel_label_var.set(f"{r['codice']} - {r['descrizione']}")
         self.min_var.set(f"{r['livello_minimo']:.2f}" if r['livello_minimo'] is not None else '')
+        self.recc_var.set(f"{r.get('livello_raccomandato'):.2f}"
+                          if r.get('livello_raccomandato') is not None else '')
         self.lot_var.set(f"{r['lotto_riordino']:.2f}" if r['lotto_riordino'] is not None else '')
         self.active_var.set(r['is_riordino_attivo'] if r['livello_minimo'] is not None else True)
         self.btn_save.state(['!disabled'])
@@ -512,9 +522,28 @@ class MinStockConfigWindow(tk.Toplevel):
                     parent=self)
                 return
 
+        recc_raw = self.recc_var.get().strip().replace(',', '.')
+        recc_val = None
+        if recc_raw:
+            try:
+                recc_val = float(recc_raw)
+            except ValueError:
+                messagebox.showwarning(
+                    self.lang.get('warning', 'Attenzione'),
+                    self.lang.get('ind_min_invalid_recommended', 'Scorta raccomandata non valida.'),
+                    parent=self)
+                return
+            if recc_val < min_val:
+                messagebox.showwarning(
+                    self.lang.get('warning', 'Attenzione'),
+                    self.lang.get('ind_min_recommended_lt_min',
+                                  'La scorta raccomandata deve essere ≥ della scorta minima.'),
+                    parent=self)
+                return
+
         ok, msg = stock_data.upsert_min_config(
             self.db, self._selected['materiale_id'], min_val, lot_val,
-            self.active_var.get(), self.user_name
+            self.active_var.get(), self.user_name, livello_raccomandato=recc_val
         )
         if ok:
             messagebox.showinfo(

@@ -221,16 +221,21 @@ def generate_declaration_pdf(pdf_path, operator, scrap_date, rows, warehouse_res
     c.drawString(2 * cm, y, f"Operator: {operator}")
     c.drawRightString(width - 2 * cm, y, f"Data: {date_str}")
     y -= 0.5 * cm
-    c.drawString(2 * cm, y, f"Total etichete declarate: {len(rows)}")
+    # Somma delle quantita', non conteggio righe: una riga di etichette
+    # bianche puo' valerne molte. get('qty', 1) copre le righe storiche.
+    total_qty = sum(int(r.get('qty', 1) or 1) for r in rows)
+    c.drawString(2 * cm, y, f"Total etichete declarate: {total_qty}")
     c.drawRightString(width - 2 * cm, y,
                       f"Generat: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     y -= 0.8 * cm
 
-    data = [(i + 1, r.get('label', ''), r.get('reason', ''),
+    data = [(i + 1, r.get('label', ''), int(r.get('qty', 1) or 1), r.get('material', ''),
+             r.get('reason', ''),
              _CATEGORY_RO.get(r.get('category', ''), r.get('category', '')),
              r.get('time', '')) for i, r in enumerate(rows)]
-    y = _table(c, f, 2 * cm, y, ["Nr.", "Etichetă", "Motiv", "Categorie", "Ora"],
-               data, [1.0, 6.5, 5.0, 2.5, 2.0], width, height)
+    y = _table(c, f, 2 * cm, y,
+               ["Nr.", "Etichetă", "Cant.", "Material", "Motiv", "Categorie", "Ora"],
+               data, [1.0, 3.8, 1.2, 3.2, 4.0, 2.2, 1.6], width, height)
 
     # Clausola di responsabilità + firme in fondo. Serve spazio: ~9 cm.
     if y < 9.5 * cm:

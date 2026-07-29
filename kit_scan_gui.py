@@ -83,6 +83,19 @@ class KitScanWindow(tk.Toplevel):
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        # Attiva la finestra a livello OS PRIMA dei messagebox di avvio.
+        # _start_session (ripresa) e _run_bom_check aprono messagebox modali con
+        # parent=self mentre la finestra transient non e' ancora attiva: cosi'
+        # facendo il focus tastiera restava orfano e le due caselle di scansione
+        # risultavano non editabili. Portandola in primo piano e prendendo il
+        # focus prima, i messagebox sono figli di una finestra gia' attiva.
+        self.update_idletasks()
+        self.lift()
+        try:
+            self.focus_force()
+        except Exception:
+            pass
+
         # Avvio sessione (con eventuale ripresa) e matching BOM
         try:
             self._start_session()
@@ -95,7 +108,9 @@ class KitScanWindow(tk.Toplevel):
             return
 
         self._refresh_items()
-        self.scan_entry.focus_set()
+        # Focus differito sulla casella scansione: dopo i messagebox e dopo che
+        # la finestra e' realmente mappata, cosi' il focus attecchisce davvero.
+        self.after(50, self._focus_scan)
         logger.info("KitScanWindow lista #%d aperta da %s (sessione %s)",
                     list_id, self.user_name, self.session_id)
 
@@ -183,6 +198,20 @@ class KitScanWindow(tk.Toplevel):
         self.btn_close.pack(side='right', padx=4)
         ttk.Button(footer, text=lang.get('kit_btn_suspend', 'Sospendi Sessione'),
                    command=self._suspend).pack(side='right', padx=4)
+
+    def _focus_scan(self):
+        """Porta la finestra in primo piano e mette il focus sulla casella di
+        scansione. Idempotente: usata all'avvio (differita) e dopo ogni reset."""
+        try:
+            self.lift()
+            self.focus_force()
+        except Exception:
+            pass
+        try:
+            self.scan_entry.focus_set()
+            self.scan_entry.selection_range(0, 'end')
+        except Exception:
+            pass
 
     # ───────────────────── Sessione / Ripresa (§5.4) ─────────────────── #
 

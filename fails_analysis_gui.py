@@ -173,6 +173,15 @@ def _dt(v):
     return str(v)[:19] if v else ''
 
 
+def _safe_sheet_title(name, fallback='Foglio'):
+    """Titolo foglio Excel valido: openpyxl vieta \\ / * ? : [ ] e max 31 char.
+    Alcune traduzioni (es. 'Ri-fallite / Tassi') contengono '/' e facevano
+    fallire create_sheet."""
+    import re
+    cleaned = re.sub(r'[\\/*?:\[\]]', '-', str(name or '')).strip()
+    return (cleaned or fallback)[:31]
+
+
 class FailsAnalysisWindow(tk.Toplevel):
     def __init__(self, parent, db, lang, user_name=''):
         super().__init__(parent)
@@ -677,7 +686,7 @@ class FailsAnalysisWindow(tk.Toplevel):
 
             # Sheet 1 — Tutti i FAIL
             ws1 = wb.active
-            ws1.title = self.lang.get('fa_tab_allfail', 'Tutti i FAIL')[:31]
+            ws1.title = _safe_sheet_title(self.lang.get('fa_tab_allfail', 'Tutti i FAIL'), 'FAIL')
             hdr(ws1, ['OrderNumber', 'ProductCode', 'Qty', 'PhaseName', 'IDBoard', 'Labels',
                        'FailEvents', 'Status', 'RefailAfterRepair', 'FirstFail', 'LastScan'])
             ri = 2
@@ -698,7 +707,7 @@ class FailsAnalysisWindow(tk.Toplevel):
             autofit(ws1)
 
             # Sheet 2 — Riparate poi ri-fallite
-            ws2 = wb.create_sheet(self.lang.get('fa_tab_refail', 'Ri-fallite')[:31])
+            ws2 = wb.create_sheet(_safe_sheet_title(self.lang.get('fa_tab_refail', 'Ri-fallite'), 'Ri-fallite'))
             hdr(ws2, ['OrderNumber', 'ProductCode', 'PhaseName', 'IDBoard', 'Labels',
                        'FailEvents', 'FirstFail', 'LastScan', 'Status'])
             ri = 2
@@ -714,7 +723,7 @@ class FailsAnalysisWindow(tk.Toplevel):
             autofit(ws2)
 
             # Sheet 3 — Statistiche per fase
-            ws3 = wb.create_sheet(self.lang.get('fa_tab_stats', 'Statistiche')[:31])
+            ws3 = wb.create_sheet(_safe_sheet_title(self.lang.get('fa_tab_stats', 'Statistiche'), 'Statistiche'))
             hdr(ws3, ['Fase', 'Schede', 'Eventi', 'Repaired', 'Recovered', 'Wait', 'Scrap',
                        'Ri-fallite', 'Multi-fail'])
             agg = self._phase_aggregates()
@@ -738,7 +747,7 @@ class FailsAnalysisWindow(tk.Toplevel):
 
             # Sheet 4 — Tassi Scrap/Rework (se calcolati)
             if self._rates:
-                ws4 = wb.create_sheet(self.lang.get('fa_tab_rates', 'Tassi')[:31])
+                ws4 = wb.create_sheet(_safe_sheet_title(self.lang.get('fa_tab_rates', 'Tassi'), 'Tassi'))
                 hdr(ws4, ['Mese', 'Prodotto', 'Scrap', 'Rework', 'Scrap %', 'Rework %', 'Fail %'])
                 tgt_s, tgt_r = self._targets()
                 OK_FILL = PatternFill('solid', fgColor='D4EDDA')

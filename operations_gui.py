@@ -120,6 +120,10 @@ class AddInterruptionWindow(tk.Toplevel):
         self.problem_combo = ttk.Combobox(cause_frame, textvariable=self.problem_var, state="disabled")
         self.problem_combo.grid(row=0, column=3, sticky="ew", padx=5)
 
+        # Spiega perche' il combo e' vuoto/disabilitato invece di lasciarlo muto
+        self.problem_hint = ttk.Label(cause_frame, text="", foreground="gray")
+        self.problem_hint.grid(row=1, column=2, columnspan=2, sticky="w", padx=5)
+
         notes_frame = ttk.LabelFrame(main_frame, text=self.lang.get('notes_frame_title', "Note e Piano d'Azione"))
         notes_frame.grid(row=3, column=0, columnspan=4, sticky="nsew", pady=5)
         main_frame.rowconfigure(3, weight=1)
@@ -210,15 +214,47 @@ class AddInterruptionWindow(tk.Toplevel):
     def _update_problems_combo(self):
         self.problem_var.set('')
         self.problem_combo.config(state="disabled", values=[])
+        self.problem_hint.config(text="")
+
         wa_id = self.working_areas_data.get(self.working_area_var.get())
         sa_id = self.sub_areas_data.get(self.sub_area_var.get())
         ia_id = self.issue_areas_data.get(self.issue_area_var.get())
-        if not all([wa_id, sa_id, ia_id]): return
+
+        # Servono tutti e tre: selezionare solo l'area problema non basta.
+        # Prima qui c'era un return muto e il combo restava disabilitato senza
+        # che l'utente potesse capire cosa mancava.
+        if not all([wa_id, sa_id, ia_id]):
+            mancanti = [n for n, v in (("Area", wa_id), ("Sotto-Area", sa_id),
+                                       ("Area problema", ia_id)) if not v]
+            self.problem_hint.config(
+                text="Seleziona prima: " + ", ".join(mancanti), foreground="gray")
+            return
+
+        self.db.last_error_details = ""
         problems = self.db.fetch_issue_problems(wa_id, ia_id, sa_id)
+
         if problems:
             self.problems_data = {p.IssueDescription: p.IssueProblemId for p in problems}
             self.problem_combo['values'] = sorted(list(self.problems_data.keys()))
             self.problem_combo.config(state="readonly")
+            return
+
+        # Lista vuota: distingue "non ce ne sono" da "la query e' fallita".
+        # fetch_issue_problems intercetta gli errori e ritorna [], quindi senza
+        # questo controllo un errore SQL e un elenco vuoto sono indistinguibili.
+        err = getattr(self.db, "last_error_details", "")
+        if err:
+            self.problem_hint.config(
+                text="Errore nel caricamento dei problemi (vedi log)", foreground="#B00020")
+            messagebox.showerror(
+                "Errore",
+                "Impossibile caricare l'elenco dei problemi.\n\n"
+                f"{err}",
+                parent=self)
+        else:
+            self.problem_hint.config(
+                text="Nessun problema configurato per questa Sotto-Area e Area problema",
+                foreground="#8A6D00")
 
     def _filter_order_combo(self, event):
         typed_text = self.order_var.get().lower()

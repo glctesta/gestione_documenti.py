@@ -2324,6 +2324,14 @@ class GestoreNPI:
             tasks_summary = []
 
             for task in wave.tasks:
+                # Elenca SOLO le task effettivamente abbinate al progetto, cioe'
+                # quelle assegnate a un owner (OwnerID valorizzato). Le task del
+                # catalogo importate ma non assegnate non fanno parte dello scope
+                # del progetto (stesso criterio del filtro "assegnati" nella
+                # ProjectWindow) e non vanno elencate nella welcome email.
+                if not task.OwnerID:
+                    continue
+
                 nome_task = task.task_catalogo.NomeTask if task.task_catalogo else "N/A"
                 cat_task = (task.task_catalogo.categoria.Category
                             if task.task_catalogo and task.task_catalogo.categoria else "N/A")

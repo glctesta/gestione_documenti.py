@@ -65,6 +65,12 @@ OUTER APPLY (
                                 AND i.qty_picked < i.qty_required THEN i.material_code END) AS missing_codes
     FROM Traceability_RS.dbo.picking_list_items i
     WHERE i.picking_list_id = pl.id
+      -- Solo materiali PTH: escludi righe senza reel code e componenti SMT
+      -- (descrizione dbo.Components contiene 'SMT'), coerente con l'import kit.
+      AND i.unique_number IS NOT NULL AND LTRIM(RTRIM(i.unique_number)) <> ''
+      AND NOT EXISTS (SELECT 1 FROM Traceability_RS.dbo.Components c
+                      WHERE c.ComponentCode = i.material_code
+                        AND c.ComponentDescription LIKE '%SMT%')
 ) it(items_total, items_done, missing_codes)
 OUTER APPLY (
     SELECT TOP 1 O.OrderQuantity, O.IDProduct
@@ -205,10 +211,15 @@ class KitDashboardSync:
                        SUM(qty_required) AS qty_required,
                        SUM(qty_picked)   AS qty_picked,
                        MAX(pick_status)  AS pick_status
-                FROM Traceability_RS.dbo.picking_list_items
+                FROM Traceability_RS.dbo.picking_list_items i
                 WHERE picking_list_id = ?
                   AND pick_status IN ('PENDING','PARTIAL','MISSING_FROM_LIST','PENDING_COMPLETION')
                   AND qty_picked < qty_required
+                  -- Solo materiali PTH (esclusi reel vuoto e componenti SMT)
+                  AND i.unique_number IS NOT NULL AND LTRIM(RTRIM(i.unique_number)) <> ''
+                  AND NOT EXISTS (SELECT 1 FROM Traceability_RS.dbo.Components c
+                                  WHERE c.ComponentCode = i.material_code
+                                    AND c.ComponentDescription LIKE '%SMT%')
                 GROUP BY material_code
             """, (list_id,))
             items = cur.fetchall()

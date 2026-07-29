@@ -22,6 +22,31 @@ logger = logging.getLogger(__name__)
 # Attributo Settings con i destinatari email per gli acquisti indiretti
 REORDER_EMAIL_ATTRIBUTE = 'sys_email_acquista_indiretti'
 
+_reorder_cols_ensured = False
+
+
+def _ensure_reorder_columns(db):
+    """Aggiunge la colonna LivelloRaccomandato a ind.MaterialiRiordino se manca
+    (idempotente, una sola volta per processo). Il minimo resta la soglia critica;
+    il raccomandato è il livello-obiettivo fino a cui riordinare."""
+    global _reorder_cols_ensured
+    if _reorder_cols_ensured:
+        return
+    try:
+        db._ensure_connection()
+        with db._lock:
+            cur = db.cursor
+            cur.execute(
+                "IF NOT EXISTS (SELECT 1 FROM sys.columns "
+                "  WHERE object_id = OBJECT_ID('ind.MaterialiRiordino') "
+                "    AND name = 'LivelloRaccomandato') "
+                "ALTER TABLE ind.MaterialiRiordino ADD LivelloRaccomandato DECIMAL(18,3) NULL"
+            )
+            db.conn.commit()
+        _reorder_cols_ensured = True
+    except Exception as e:
+        logger.warning(f"_ensure_reorder_columns: {e}")
+
 
 # ----------------------------------------------------------------------------
 #  Lettura giacenze e movimenti
@@ -35,11 +60,12 @@ def get_giacenze(db, only_below=False):
     Se only_below=True ritorna solo i materiali sotto la scorta minima
     (con riordino attivo e soglia configurata).
     """
+    _ensure_reorder_columns(db)
     query = """
         SELECT g.MaterialeId, g.CodiceMateriale, g.DescrizioneMateriale,
                ISNULL(t.Tipo, 'Generico') AS Tipo,
                g.Giacenza, g.UltimoMovimento,
-               r.LivelloMinimo, r.LottoRiordino, r.IsAttivo
+               r.LivelloMinimo, r.LottoRiordino, r.IsAttivo, r.LivelloRaccomandato
         FROM ind.vw_GiacenzaCorrente g
         LEFT JOIN ind.TipoMateriali t ON t.TipoMaterialeId = g.TipoMaterialeId
         LEFT JOIN ind.MaterialiRiordino r ON r.MaterialeId = g.MaterialeId
@@ -50,8 +76,16 @@ def get_giacenze(db, only_below=False):
     for row in (rows or []):
         livello_min = float(row[6]) if row[6] is not None else None
         is_attivo = bool(row[8]) if row[8] is not None else False
+        raccomandato = float(row[9]) if row[9] is not None else None
+        lotto = float(row[7]) if row[7] is not None else None
         giacenza = float(row[4] or 0)
-        sotto_soglia = (is_attivo and livello_min is not None and giacenza < livello_min)
+        sotto_soglia = (is_attivo and livello_min is not None and giacenza <= livello_min)
+        # Quantità suggerita da riordinare: fino al raccomandato se impostato,
+        # altrimenti il lotto di riordino.
+        if raccomandato is not None and raccomandato > giacenza:
+            qta_riordino = raccomandato - giacenza
+        else:
+            qta_riordino = lotto
         item = {
             'materiale_id': row[0],
             'codice': row[1] or '',
@@ -60,7 +94,9 @@ def get_giacenze(db, only_below=False):
             'giacenza': giacenza,
             'ultimo_movimento': row[5],
             'livello_minimo': livello_min,
-            'lotto_riordino': float(row[7]) if row[7] is not None else None,
+            'lotto_riordino': lotto,
+            'livello_raccomandato': raccomandato,
+            'qta_da_riordinare': qta_riordino,
             'is_riordino_attivo': is_attivo,
             'sotto_soglia': sotto_soglia,
         }
@@ -265,8 +301,9 @@ def avanza_stato_richiesta(db, richiesta_id, nuovo_stato, user_name):
 # ----------------------------------------------------------------------------
 def get_min_config(db, materiale_id):
     """Ritorna la config riordino di un materiale o None."""
+    _ensure_reorder_columns(db)
     row = db.fetch_one(
-        "SELECT LivelloMinimo, LottoRiordino, IsAttivo "
+        "SELECT LivelloMinimo, LottoRiordino, IsAttivo, LivelloRaccomandato "
         "FROM ind.MaterialiRiordino WHERE MaterialeId = ?",
         (materiale_id,)
     )
@@ -276,13 +313,15 @@ def get_min_config(db, materiale_id):
         'livello_minimo': float(row[0]) if row[0] is not None else None,
         'lotto_riordino': float(row[1]) if row[1] is not None else None,
         'is_attivo': bool(row[2]),
+        'livello_raccomandato': float(row[3]) if row[3] is not None else None,
     }
 
 
 def upsert_min_config(db, materiale_id, livello_minimo, lotto_riordino,
-                      is_attivo, user_name):
-    """Crea o aggiorna la configurazione scorta minima di un materiale.
+                      is_attivo, user_name, livello_raccomandato=None):
+    """Crea o aggiorna la configurazione scorta minima/raccomandata di un materiale.
     Ritorna (ok, msg)."""
+    _ensure_reorder_columns(db)
     db._ensure_connection()
     with db._lock:
         cur = db.cursor
@@ -290,18 +329,19 @@ def upsert_min_config(db, materiale_id, livello_minimo, lotto_riordino,
             cur.execute(
                 "UPDATE ind.MaterialiRiordino "
                 "SET LivelloMinimo = ?, LottoRiordino = ?, IsAttivo = ?, "
-                "    DataModifica = GETDATE(), ModificatoDa = ? "
+                "    LivelloRaccomandato = ?, DataModifica = GETDATE(), ModificatoDa = ? "
                 "WHERE MaterialeId = ?",
                 (livello_minimo, lotto_riordino, 1 if is_attivo else 0,
-                 user_name, materiale_id)
+                 livello_raccomandato, user_name, materiale_id)
             )
             if cur.rowcount == 0:
                 cur.execute(
                     "INSERT INTO ind.MaterialiRiordino "
-                    "(MaterialeId, LivelloMinimo, LottoRiordino, IsAttivo, ModificatoDa) "
-                    "VALUES (?, ?, ?, ?, ?)",
+                    "(MaterialeId, LivelloMinimo, LottoRiordino, IsAttivo, "
+                    " LivelloRaccomandato, ModificatoDa) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
                     (materiale_id, livello_minimo, lotto_riordino,
-                     1 if is_attivo else 0, user_name)
+                     1 if is_attivo else 0, livello_raccomandato, user_name)
                 )
             db.conn.commit()
             return True, "ok"
@@ -329,19 +369,57 @@ def _get_reorder_recipients(db):
         return [p for p in parts if p and '@' in p]
 
 
-def _filter_not_sent_today(db, items):
-    """Esclude i materiali per cui e' gia' stata inviata una email riordino oggi
-    (dedup giornaliero su ind.RiordineEmailLog)."""
-    fresh = []
-    for it in items:
-        row = db.fetch_one(
-            "SELECT 1 FROM ind.RiordineEmailLog "
-            "WHERE MaterialeId = ? AND CAST(DataInvio AS DATE) = CAST(GETDATE() AS DATE)",
-            (it['materiale_id'],)
-        )
-        if not row:
-            fresh.append(it)
-    return fresh
+def _claim_materials_today(db, items, recipients):
+    """Prenota ATOMICAMENTE l'invio odierno per ciascun materiale (INSERT ...
+    WHERE NOT EXISTS per la data di oggi in ind.RiordineEmailLog) e ritorna solo
+    i materiali effettivamente prenotati da QUESTO processo (cur.rowcount > 0).
+
+    Sostituisce il vecchio check-then-act: con il recupero all'avvio più PC
+    possono partire in contemporanea la mattina — la prenotazione atomica
+    garantisce che ogni materiale finisca in UNA sola email (niente doppioni)."""
+    inviato_a = '; '.join(recipients)[:255]
+    claimed = []
+    db._ensure_connection()
+    with db._lock:
+        cur = db.cursor
+        for it in items:
+            try:
+                cur.execute(
+                    "INSERT INTO ind.RiordineEmailLog "
+                    "(MaterialeId, GiacenzaRilevata, LivelloMinimo, InviatoA) "
+                    "SELECT ?, ?, ?, ? "
+                    "WHERE NOT EXISTS (SELECT 1 FROM ind.RiordineEmailLog "
+                    "  WHERE MaterialeId = ? AND CAST(DataInvio AS DATE) = CAST(GETDATE() AS DATE))",
+                    (it['materiale_id'], it['giacenza'], it['livello_minimo'],
+                     inviato_a, it['materiale_id'])
+                )
+                if cur.rowcount and cur.rowcount > 0:
+                    claimed.append(it)
+            except Exception as e:
+                logger.error(f"_claim_materials_today {it.get('materiale_id')}: {e}")
+        db.conn.commit()
+    return claimed
+
+
+def _unclaim_materials_today(db, items):
+    """Rilascia le prenotazioni odierne dei materiali indicati (usato se l'invio
+    email fallisce, così il controllo successivo può ritentare)."""
+    if not items:
+        return
+    db._ensure_connection()
+    with db._lock:
+        cur = db.cursor
+        try:
+            for it in items:
+                cur.execute(
+                    "DELETE FROM ind.RiordineEmailLog "
+                    "WHERE MaterialeId = ? AND CAST(DataInvio AS DATE) = CAST(GETDATE() AS DATE)",
+                    (it['materiale_id'],)
+                )
+            db.conn.commit()
+        except Exception as e:
+            db.conn.rollback()
+            logger.error(f"_unclaim_materials_today errore: {e}", exc_info=True)
 
 
 def _log_reorder_sent(db, items, recipients):
@@ -380,21 +458,25 @@ def _build_reorder_email(lang, items):
     col_desc = t('ind_import_col_desc', 'Descrizione')
     col_stock = t('ind_stock_col_stock', 'Giacenza')
     col_min = t('ind_min_col_min', 'Scorta minima')
-    col_lotto = t('ind_min_col_lot', 'Lotto riordino')
+    col_racc = t('ind_min_col_recommended', 'Scorta raccomandata')
+    col_qty = t('ind_reorder_col_qty', 'Qta da riordinare')
     footer = t('ind_reorder_email_footer',
                'Email generata automaticamente dal sistema Document Management.')
 
     rows_html = []
     for it in items:
-        lotto = it.get('lotto_riordino')
-        lotto_str = f"{lotto:.2f}" if lotto is not None else '-'
+        racc = it.get('livello_raccomandato')
+        racc_str = f"{racc:.2f}" if racc is not None else '-'
+        qta = it.get('qta_da_riordinare')
+        qta_str = f"{qta:.2f}" if qta is not None else '-'
         rows_html.append(
             "<tr>"
             f"<td style='border:1px solid #ccc;padding:6px;'>{it['codice']}</td>"
             f"<td style='border:1px solid #ccc;padding:6px;'>{it['descrizione']}</td>"
             f"<td style='border:1px solid #ccc;padding:6px;text-align:right;'>{it['giacenza']:.2f}</td>"
             f"<td style='border:1px solid #ccc;padding:6px;text-align:right;'>{it['livello_minimo']:.2f}</td>"
-            f"<td style='border:1px solid #ccc;padding:6px;text-align:right;'>{lotto_str}</td>"
+            f"<td style='border:1px solid #ccc;padding:6px;text-align:right;'>{racc_str}</td>"
+            f"<td style='border:1px solid #ccc;padding:6px;text-align:right;font-weight:bold;'>{qta_str}</td>"
             "</tr>"
         )
 
@@ -406,7 +488,8 @@ def _build_reorder_email(lang, items):
         f"<th style='border:1px solid #ccc;padding:6px;'>{col_desc}</th>"
         f"<th style='border:1px solid #ccc;padding:6px;'>{col_stock}</th>"
         f"<th style='border:1px solid #ccc;padding:6px;'>{col_min}</th>"
-        f"<th style='border:1px solid #ccc;padding:6px;'>{col_lotto}</th>"
+        f"<th style='border:1px solid #ccc;padding:6px;'>{col_racc}</th>"
+        f"<th style='border:1px solid #ccc;padding:6px;'>{col_qty}</th>"
         "</tr></thead><tbody>"
         + ''.join(rows_html) +
         "</tbody></table>"
@@ -427,24 +510,35 @@ def check_and_send_reorder(db, lang, force=False):
     if not below:
         return {'sent': False, 'count': 0, 'recipients': [], 'reason': 'no_items'}
 
-    to_send = below if force else _filter_not_sent_today(db, below)
-    if not to_send:
-        return {'sent': False, 'count': 0, 'recipients': [], 'reason': 'already_sent_today'}
-
+    # Destinatari PRIMA della prenotazione: se non ce ne sono, non consumare il
+    # claim (altrimenti i materiali risulterebbero "inviati oggi" senza email).
     recipients = _get_reorder_recipients(db)
     if not recipients:
         logger.warning(f"Riordino: nessun destinatario configurato in Settings.{REORDER_EMAIL_ATTRIBUTE}")
-        return {'sent': False, 'count': len(to_send), 'recipients': [], 'reason': 'no_recipients'}
+        return {'sent': False, 'count': len(below), 'recipients': [], 'reason': 'no_recipients'}
+
+    # Prenotazione atomica giornaliera (dedup cross-PC). In modalità force
+    # (invio manuale) si invia comunque per tutti i materiali sotto soglia.
+    if force:
+        to_send = below
+    else:
+        to_send = _claim_materials_today(db, below, recipients)
+        if not to_send:
+            return {'sent': False, 'count': 0, 'recipients': recipients, 'reason': 'already_sent_today'}
 
     subject, body = _build_reorder_email(lang, to_send)
     try:
         from email_connector import EmailSender
         sender = EmailSender()
-        for addr in recipients:
-            sender.send_email(to_email=addr, subject=subject, body=body, is_html=True)
-        _log_reorder_sent(db, to_send, recipients)
+        # Un'unica email a tutti i destinatari (in TO), invece di una per ciascuno.
+        sender.send_email(to_email='; '.join(recipients), subject=subject,
+                          body=body, is_html=True)
+        if force:
+            _log_reorder_sent(db, to_send, recipients)  # log per il dedup dei run automatici
         logger.info(f"Riordino: email inviata a {len(recipients)} destinatari per {len(to_send)} materiali.")
         return {'sent': True, 'count': len(to_send), 'recipients': recipients, 'reason': 'ok'}
     except Exception as e:
         logger.error(f"Riordino: errore invio email: {e}", exc_info=True)
+        if not force:
+            _unclaim_materials_today(db, to_send)   # rilascia le prenotazioni: si ritenta al prossimo giro
         return {'sent': False, 'count': len(to_send), 'recipients': recipients, 'reason': f'error: {e}'}

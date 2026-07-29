@@ -257,6 +257,19 @@ _ORDINE = """
 </table>
 {% endif %}
 
+<h2>Materiale kit PTH ({{ d.materials|length }})</h2>
+{% if not d.materials %}<div class="empty">Niciun material.</div>{% endif %}
+{% if d.materials %}
+<table>
+  <tr><th>HU</th><th>Cod</th><th>Descriere</th><th>Prelevat</th><th>Verificat</th></tr>
+  {% for m in d.materials %}
+  <tr><td>{{ m.hu }}</td><td>{{ m.material_code }}</td><td>{{ m.descr }}</td>
+      <td>{{ m.qty_picked|qty }}</td>
+      <td>{% if m.qty_verified %}<span style="color:#0a7d28;font-weight:bold;">{{ m.qty_verified|qty }}</span>{% else %}{{ m.qty_verified|qty }}{% endif %}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+
 {% if d.requests %}
 <h2>Cereri material deschise ({{ d.requests|length }})</h2>
 <table>

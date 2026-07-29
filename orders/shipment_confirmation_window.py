@@ -71,28 +71,95 @@ ORDER BY MIN(R.DateToship) ASC
 """
 
 _ORDER_COLS = (
-    "DPOID",            # hidden
+    "IDOrder",          # hidden (chiave riga = ordine di produzione)
     "ProductionOrder",
-    "Customer",
-    "SONumber",
-    "ItemCode",
-    "ItemName",
-    "DateToShip",
-    "QtyToShip",
-    "Confirmed",
+    "Product",
+    "Versato",
+    "Spedito",
     "Residual",
+    "LastWhDate",
 )
 _ORDER_LABELS = {
-    "ProductionOrder": ("Ordine Prod.",  100),
-    "Customer":        ("Cliente",       150),
-    "SONumber":        ("Ord. Vendita",  100),
-    "ItemCode":        ("Codice",         90),
-    "ItemName":        ("Prodotto",      170),
-    "DateToShip":      ("Data Sped.",     90),
-    "QtyToShip":       ("Qta da Sped.",   90),
-    "Confirmed":       ("Confermato",     85),
-    "Residual":        ("Residuo",        80),
+    "ProductionOrder": ("Ordine Prod.",  110),
+    "Product":         ("Prodotto",      230),
+    "Versato":         ("Versato mag.",   95),
+    "Spedito":         ("Già spedito",    95),
+    "Residual":        ("Residuo",        85),
+    "LastWhDate":      ("Ult. versam.",   95),
 }
+
+# ── Ordini versati a magazzino e NON ancora spediti (residuo = versato − spedito) ──
+# Batch multi-istruzione: eseguire su un cursore DEDICATO (self.db.conn.cursor()),
+# mai sul cursore condiviso (lascia result-set pendenti → 'Invalid cursor state').
+# Finestra su LogApiDynamics.CurrentDate: MAX(data_inizio_spedizioni, @from) .. @to.
+_QUERY_WAREHOUSE = """
+SET NOCOUNT ON;
+DECLARE @from date = ?, @to date = ?;
+DECLARE @floor date;
+SELECT @floor = TRY_CAST(Value AS date)
+FROM traceability_rs.dbo.Settings WHERE atribute = 'data_inizio_spedizioni';
+DECLARE @start date = CASE WHEN @floor IS NULL OR @from > @floor THEN @from ELSE @floor END;
+;WITH WH AS (
+    SELECT o.IDOrder, p.ProductCode, o.OrderNumber,
+           SUM(CAST(JSON_VALUE(j.value, '$.RealValue') AS int)) AS WhQty,
+           CAST(MAX(L.CurrentDate) AS date) AS LastWhDate
+    FROM traceability_rs.dbo.LogApiDynamics L
+    INNER JOIN traceability_rs.dbo.Orders o
+        ON o.OrderNumber = JSON_VALUE(L.MessageSend, '$.Message.Reference')
+    INNER JOIN traceability_rs.dbo.Products p ON p.IDProduct = o.IDProduct
+    CROSS APPLY OPENJSON(L.MessageSend,
+        '$.Message.KeyValue.ListValue[0].ListValue[0].ListValue') j
+    WHERE L.EndPointName = 'ProdFinishedGoods'
+      AND CAST(L.CurrentDate AS date) BETWEEN @start AND @to
+      AND JSON_VALUE(j.value, '$.Key') = 'GoodQty'
+    GROUP BY o.IDOrder, p.ProductCode, o.OrderNumber
+),
+MATCHED AS (
+    SELECT IdOrder, SUM(Qty) AS MatchedQty
+    FROM traceability_rs.dyn.DynamicProductionOrders GROUP BY IdOrder
+),
+SHIPPED AS (
+    SELECT po.IdOrder, SUM(sp.ConfirmedQty) AS ShippedQty
+    FROM traceability_rs.dyn.ShipmentPallets sp
+    INNER JOIN traceability_rs.dyn.DynamicProductionOrders po
+        ON po.DynamicProductionOrderID = sp.DynamicProductionOrderID
+    INNER JOIN traceability_rs.dyn.Shipments s ON s.ShipmentId = sp.ShipmentId
+    WHERE s.ShipmentDate >= @start GROUP BY po.IdOrder
+),
+URGENT AS (
+    SELECT DISTINCT po.IdOrder
+    FROM traceability_rs.dyn.DynamicShippingRules r
+    INNER JOIN traceability_rs.dyn.DynamicProductionOrders po
+        ON po.DynamicProductionOrderID = r.DynamicProductionOrderID
+    WHERE r.ConfirmedAt IS NULL
+)
+SELECT wh.IDOrder, wh.ProductCode, wh.OrderNumber, wh.WhQty, wh.LastWhDate,
+       ISNULL(m.MatchedQty, 0)  AS MatchedQty,
+       ISNULL(sh.ShippedQty, 0) AS ShippedQty,
+       wh.WhQty - ISNULL(sh.ShippedQty, 0) AS ResiduoDaSpedire,
+       CASE WHEN u.IdOrder IS NOT NULL THEN 1 ELSE 0 END AS IsUrgent
+FROM WH wh
+LEFT JOIN MATCHED m ON m.IdOrder = wh.IDOrder
+LEFT JOIN SHIPPED sh ON sh.IdOrder = wh.IDOrder
+LEFT JOIN URGENT u ON u.IdOrder = wh.IDOrder
+WHERE wh.WhQty - ISNULL(sh.ShippedQty, 0) > 0
+ORDER BY IsUrgent DESC, wh.OrderNumber
+"""
+
+# SO candidati per un prodotto (chiave ESATTA: ItemCode = ProductCode senza suffisso |N),
+# con residuo SO (QtyOrder − già assegnato) e l'eventuale DPO già esistente per QUESTO ordine.
+_QUERY_SO_CANDIDATES = """
+SELECT d.DynamicSaleOrderId, d.SONumber, d.CustomerName, d.ItemCode, d.ItemName,
+       d.QtyOrder,
+       ISNULL((SELECT SUM(po.Qty) FROM traceability_rs.dyn.DynamicProductionOrders po
+               WHERE po.DynamicSaleOrderId = d.DynamicSaleOrderId), 0) AS Assigned,
+       (SELECT TOP 1 po2.DynamicProductionOrderID
+        FROM traceability_rs.dyn.DynamicProductionOrders po2
+        WHERE po2.DynamicSaleOrderId = d.DynamicSaleOrderId AND po2.IdOrder = ?) AS DpoForThisOrder
+FROM traceability_rs.dyn.DynamicSaleOrders d
+WHERE d.ItemCode = ?
+ORDER BY d.SONumber
+"""
 
 _PALLET_COLS = (
     "ShipmentPalletId",   # hidden
@@ -155,6 +222,10 @@ class ShipmentConfirmationWindow(tk.Toplevel):
         ).pack(side=tk.LEFT)
         ttk.Button(hdr, text=self.lang.get("btn_refresh", "Aggiorna"),
                    command=self._refresh_all).pack(side=tk.RIGHT, padx=4)
+        # In alto a destra: nella barra Filtri finiva spinto fuori dall'area
+        # visibile con finestre strette (due calendari + due caselle prima).
+        ttk.Button(hdr, text=self.lang.get("btn_export_excel", "Esporta Excel"),
+                   command=self._export_orders_excel).pack(side=tk.RIGHT, padx=4)
         ttk.Button(hdr, text=self.lang.get("btn_recover_shipment", "Recupera spedizione..."),
                    command=self._open_recover_dialog).pack(side=tk.RIGHT, padx=4)
 
@@ -207,12 +278,12 @@ class ShipmentConfirmationWindow(tk.Toplevel):
         og.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
         self.orders_tree = ttk.Treeview(og, columns=_ORDER_COLS, show="headings",
                                         selectmode="browse", height=8)
-        self.orders_tree.column("DPOID", width=0, stretch=False)
-        self.orders_tree.heading("DPOID", text="")
+        self.orders_tree.column("IDOrder", width=0, stretch=False)
+        self.orders_tree.heading("IDOrder", text="")
         for col in _ORDER_COLS[1:]:
             label, width = _ORDER_LABELS[col]
             self.orders_tree.heading(col, text=self.lang.get(f"ocol_{col.lower()}", label))
-            anchor = tk.W if col in ("Customer", "ItemName") else tk.CENTER
+            anchor = tk.W if col in ("Product",) else tk.CENTER
             self.orders_tree.column(col, width=width, anchor=anchor)
         ovsb = ttk.Scrollbar(og, orient=tk.VERTICAL, command=self.orders_tree.yview)
         self.orders_tree.configure(yscrollcommand=ovsb.set)
@@ -361,12 +432,141 @@ class ShipmentConfirmationWindow(tk.Toplevel):
         self.filter_to_entry.set_date(_to)
         self._load_orders()
 
+    # Colonne esportate: tutte tranne DPOID, che e' tecnica e a video ha
+    # larghezza 0. _ORDER_COLS[0] e' proprio DPOID.
+    _EXPORT_COLS = _ORDER_COLS[1:]
+    _EXPORT_NUMERIC = ("Versato", "Spedito", "Residual")
+
+    def _export_orders_excel(self):
+        """Esporta in Excel esattamente le righe attualmente visibili a video.
+
+        Legge dal Treeview e non dal database: cosi' l'export corrisponde
+        sempre a cio' che l'utente sta guardando, filtri compresi, senza
+        rieseguire la query e rischiare di ottenere un risultato diverso.
+        """
+        import os
+        from tkinter import filedialog
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+            from openpyxl.utils import get_column_letter
+        except ImportError as e:
+            messagebox.showerror(self.lang.get("error", "Errore"),
+                                 f"Modulo openpyxl non disponibile: {e}", parent=self)
+            return
+
+        iids = self.orders_tree.get_children("")
+        if not iids:
+            messagebox.showinfo(
+                self.lang.get("info", "Informazione"),
+                self.lang.get("no_data_to_export", "Nessuna riga da esportare."),
+                parent=self)
+            return
+
+        # Intestazioni: quelle realmente a video, cosi' seguono la lingua scelta
+        headers = [self.orders_tree.heading(c, "text") for c in self._EXPORT_COLS]
+
+        default_name = f"Conferma_Spedizioni_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title=self.lang.get("btn_export_excel", "Esporta Excel"),
+            defaultextension=".xlsx",
+            initialfile=default_name,
+            filetypes=[("Excel", "*.xlsx")])
+        if not path:
+            return
+
+        try:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = self.lang.get("sheet_shipments", "Spedizioni")
+
+            head_font = Font(bold=True, color="FFFFFF", size=11)
+            head_fill = PatternFill(start_color="366092", end_color="366092",
+                                    fill_type="solid")
+            thin = Side(style="thin", color="D0D0D0")
+            border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+            # Riga 1 = intestazioni, perche' e' li' che va l'autofiltro
+            for c, title in enumerate(headers, start=1):
+                cell = ws.cell(row=1, column=c, value=title)
+                cell.font = head_font
+                cell.fill = head_fill
+                cell.alignment = Alignment(horizontal="center", vertical="center",
+                                           wrap_text=True)
+                cell.border = border
+
+            widths = [len(h) for h in headers]
+            for r, iid in enumerate(iids, start=2):
+                for c, col in enumerate(self._EXPORT_COLS, start=1):
+                    # .set() ritorna sempre str: evita che Tcl converta un
+                    # codice come "00123" nell'intero 123
+                    raw = self.orders_tree.set(iid, col)
+                    value = raw
+
+                    if col in self._EXPORT_NUMERIC:
+                        try:
+                            value = int(str(raw).strip() or 0)
+                        except ValueError:
+                            value = raw
+                    elif col == "DateToShip" and raw:
+                        # A video e' gia' dd/MM/yyyy: la riconverto in data vera
+                        # cosi' in Excel si ordina e si filtra come data.
+                        try:
+                            value = datetime.strptime(raw, "%d/%m/%Y").date()
+                        except ValueError:
+                            value = raw
+
+                    cell = ws.cell(row=r, column=c, value=value)
+                    cell.border = border
+                    if col in self._EXPORT_NUMERIC:
+                        cell.alignment = Alignment(horizontal="center")
+                    elif col == "DateToShip":
+                        cell.alignment = Alignment(horizontal="center")
+                        if hasattr(value, "year"):
+                            cell.number_format = "DD/MM/YYYY"
+                    widths[c - 1] = max(widths[c - 1], len(str(raw)))
+
+            # Autofiltro sulla riga delle intestazioni + blocco della stessa
+            ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{ws.max_row}"
+            ws.freeze_panes = "A2"
+
+            for i, w in enumerate(widths, start=1):
+                ws.column_dimensions[get_column_letter(i)].width = min(max(w + 3, 10), 45)
+            ws.row_dimensions[1].height = 28
+
+            wb.save(path)
+        except PermissionError:
+            messagebox.showerror(
+                self.lang.get("error", "Errore"),
+                self.lang.get("export_file_locked",
+                              "Impossibile scrivere il file: e' aperto in Excel?"),
+                parent=self)
+            return
+        except Exception as e:
+            logger.error("Errore export Excel conferma spedizioni: %s", e, exc_info=True)
+            messagebox.showerror(self.lang.get("error", "Errore"),
+                                 f"{self.lang.get('export_error', 'Errore durante l export')}:\n{e}",
+                                 parent=self)
+            return
+
+        self.status_var.set(
+            self.lang.get("export_ok", "Esportate {n} righe in {path}").format(
+                n=len(iids), path=path))
+        try:
+            os.startfile(path)
+        except Exception:
+            pass
+
     def _load_orders(self):
+        """Carica TUTTI i codici versati a magazzino e non ancora spediti nel
+        periodo (residuo = versato − già spedito). Gli ordini urgenti (con regola
+        di spedizione aperta) sono evidenziati con il testo ROSSO."""
         for it in self.orders_tree.get_children():
             self.orders_tree.delete(it)
         self._order_info = {}
+        self.orders_tree.tag_configure("urgent", foreground="#C0392B")  # testo rosso
 
-        # Periodo Data-da-spedire: filtro principale della query
         d_from = self.filter_from_entry.get_date()
         d_to = self.filter_to_entry.get_date()
         if d_from > d_to:
@@ -377,50 +577,59 @@ class ShipmentConfirmationWindow(tk.Toplevel):
                 parent=self)
             return
 
-        filters = " AND CAST(R.DateToship AS date) BETWEEN ? AND ?"
-        params = [d_from, d_to]
-        ofil = self.filter_order_var.get().strip()
-        pfil = self.filter_product_var.get().strip()
-        if ofil:
-            filters += " AND PO.ordernumber LIKE ?"
-            params.append(f"%{ofil}%")
-        if pfil:
-            filters += " AND (D.ItemCode LIKE ? OR D.ItemName LIKE ?)"
-            params.extend([f"%{pfil}%", f"%{pfil}%"])
+        ofil = self.filter_order_var.get().strip().lower()
+        pfil = self.filter_product_var.get().strip().lower()
 
-        query = _QUERY_ORDERS.format(filters=filters)
+        # Batch multi-istruzione → cursore DEDICATO, chiuso subito.
+        cur = None
         try:
-            self.db.cursor.execute(query, tuple(params))
-            rows = self.db.cursor.fetchall()
-            for r in rows:
-                qty_to_ship = int(r.QtyToShipTotal or 0)
-                confirmed = int(r.QtyConfirmedTotal or 0)
-                residual = qty_to_ship - confirmed
-                dpoid = str(r.DPOID)
-                self._order_info[dpoid] = {
-                    "production_order": r.ProductionOrder or "",
-                    "customer": r.CustomerName or "",
-                    "so_number": r.SONumber or "",
-                    "item_code": r.ItemCode or "",
-                    "item_name": r.ItemName or "",
-                    "ship_to": r.ShipTo or "",
-                    "qty_to_ship": qty_to_ship,
-                    "confirmed": confirmed,
-                    "residual": residual,
-                }
-                self.orders_tree.insert(
-                    "", tk.END,
-                    values=(r.DPOID, r.ProductionOrder or "", r.CustomerName or "",
-                            r.SONumber or "", r.ItemCode or "", r.ItemName or "",
-                            r.DateToShipFmt or "", qty_to_ship, confirmed, residual),
-                )
-            self.status_var.set(
-                self.lang.get("orders_count_period",
-                              "{0} ordini da spedire (periodo {1} - {2})").format(
-                    len(rows), d_from.strftime("%d/%m/%Y"), d_to.strftime("%d/%m/%Y")))
+            cur = self.db.conn.cursor()
+            cur.execute(_QUERY_WAREHOUSE, (d_from, d_to))
+            rows = cur.fetchall()
         except Exception as e:
-            logger.error(f"Errore caricamento ordini: {e}", exc_info=True)
+            logger.error(f"Errore caricamento ordini versati: {e}", exc_info=True)
             messagebox.showerror(self.lang.get("error", "Errore"), str(e), parent=self)
+            return
+        finally:
+            if cur is not None:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+
+        n = 0
+        for r in rows:
+            order = r.OrderNumber or ""
+            prod = r.ProductCode or ""
+            if ofil and ofil not in order.lower():
+                continue
+            if pfil and pfil not in prod.lower():
+                continue
+            versato = int(r.WhQty or 0)
+            spedito = int(r.ShippedQty or 0)
+            residual = int(r.ResiduoDaSpedire or 0)
+            idorder = str(r.IDOrder)
+            self._order_info[idorder] = {
+                "id_order": int(r.IDOrder),
+                "production_order": order,
+                "product_code": prod,
+                "versato": versato,
+                "spedito": spedito,
+                "residual": residual,
+                "matched_qty": int(r.MatchedQty or 0),
+                "is_urgent": bool(r.IsUrgent),
+            }
+            last = r.LastWhDate.strftime("%d/%m/%Y") if r.LastWhDate else ""
+            self.orders_tree.insert(
+                "", tk.END,
+                values=(r.IDOrder, order, prod, versato, spedito, residual, last),
+                tags=(("urgent",) if r.IsUrgent else ()),
+            )
+            n += 1
+        self.status_var.set(
+            self.lang.get("wh_orders_count_period",
+                          "{0} codici versati non spediti (periodo {1} - {2})").format(
+                n, d_from.strftime("%d/%m/%Y"), d_to.strftime("%d/%m/%Y")))
 
     def _load_pallets(self):
         for it in self.pallets_tree.get_children():
@@ -473,15 +682,14 @@ class ShipmentConfirmationWindow(tk.Toplevel):
             self.btn_add.config(state=tk.DISABLED)
             self.add_hint.config(text="")
             return
-        dpoid = str(self.orders_tree.set(sel[0], "DPOID"))
-        info = self._order_info.get(dpoid, {})
+        idorder = str(self.orders_tree.set(sel[0], "IDOrder"))
+        info = self._order_info.get(idorder, {})
         self.add_hint.config(
             text=self.lang.get(
-                "order_hint",
-                "da spedire: {0} | confermato: {1} | residuo: {2}",
-            ).format(info.get("qty_to_ship", 0), info.get("confirmed", 0), info.get("residual", 0))
+                "wh_order_hint",
+                "versato: {0} | già spedito: {1} | residuo: {2}",
+            ).format(info.get("versato", 0), info.get("spedito", 0), info.get("residual", 0))
         )
-        # default qta = residuo (se positivo)
         residual = info.get("residual", 0)
         self.add_qty_var.set(str(residual if residual > 0 else 0))
         self.btn_add.config(state=tk.NORMAL)
@@ -493,8 +701,8 @@ class ShipmentConfirmationWindow(tk.Toplevel):
         sel = self.orders_tree.selection()
         if not sel:
             return
-        dpoid = str(self.orders_tree.set(sel[0], "DPOID"))
-        info = self._order_info.get(dpoid)
+        idorder = str(self.orders_tree.set(sel[0], "IDOrder"))
+        info = self._order_info.get(idorder)
         if not info:
             return
 
@@ -518,23 +726,28 @@ class ShipmentConfirmationWindow(tk.Toplevel):
                                    parent=self)
             return
 
-        # Avviso eccesso (NON bloccante, decisione utente)
-        new_confirmed_total = info["confirmed"] + qty
-        if new_confirmed_total > info["qty_to_ship"]:
-            diff = new_confirmed_total - info["qty_to_ship"]
+        # Avviso eccesso vs residuo da spedire (versato − già spedito) — NON bloccante
+        if qty > info["residual"]:
+            diff = qty - info["residual"]
             if not messagebox.askyesno(
                 self.lang.get("confirm", "Conferma"),
                 self.lang.get(
-                    "shipment_excess_warn",
-                    "Attenzione: con questa quantita' il confermato ({0}) supera la "
-                    "quantita' da spedire ({1}) di {2} pezzi.\n\nContinuare comunque?",
-                ).format(new_confirmed_total, info["qty_to_ship"], diff),
+                    "wh_excess_warn",
+                    "Attenzione: la quantita' ({0}) supera il residuo da spedire ({1}) "
+                    "di {2} pezzi.\n\nContinuare comunque?",
+                ).format(qty, info["residual"], diff),
                 parent=self,
             ):
                 return
 
+        # L'operatore assegna il SO (dello stesso prodotto) → risolve/crea il DPO.
+        dpo = self._resolve_dpo(info, qty)
+        if not dpo:
+            return  # annullato
+        dpoid = dpo["dpoid"]
+
         try:
-            # Esiste gia' (stessa spedizione, stesso pallet, stesso ordine)? -> somma
+            # Esiste gia' (stessa spedizione, stesso pallet, stesso DPO)? -> somma
             self.db.cursor.execute(
                 """
                 SELECT ShipmentPalletId, ConfirmedQty
@@ -564,12 +777,12 @@ class ShipmentConfirmationWindow(tk.Toplevel):
                     VALUES (?, ?, ?, ?, ?, GETDATE(), ?, ?, ?, ?, ?, ?)
                     """,
                     (self.shipment_id, pallet_code, dpoid, qty, self.user_name,
-                     info["production_order"], info["so_number"], info["customer"],
-                     info["item_code"], info["item_name"], info["ship_to"]),
+                     info["production_order"], dpo["so_number"], dpo["customer"],
+                     info["product_code"], dpo["item_name"], dpo["ship_to"]),
                 )
             self.db.conn.commit()
-            logger.info(f"Pallet {pallet_code} +{qty} (ordine {info['production_order']}) "
-                        f"su spedizione #{self.shipment_id}")
+            logger.info(f"Pallet {pallet_code} +{qty} (ordine {info['production_order']}, "
+                        f"SO {dpo['so_number']}) su spedizione #{self.shipment_id}")
         except Exception as e:
             logger.error(f"Errore aggiunta pallet: {e}", exc_info=True)
             self.db.conn.rollback()
@@ -580,6 +793,15 @@ class ShipmentConfirmationWindow(tk.Toplevel):
         self.add_qty_var.set("")
         self._load_orders()
         self._load_pallets()
+
+    def _resolve_dpo(self, info, qty):
+        """Fa scegliere all'operatore il SO (dello stesso prodotto) contro cui
+        spedire questo ordine, e ritorna il DynamicProductionOrder (creandolo se
+        non esiste). Ritorna dict {dpoid, so_number, customer, item_name, ship_to}
+        oppure None se annullato."""
+        dlg = _SOAssignDialog(self, self.db, self.lang, self.user_name, info, qty)
+        self.wait_window(dlg)
+        return getattr(dlg, "result", None)
 
     def _selected_pallet(self):
         sel = self.pallets_tree.selection()
@@ -1002,6 +1224,146 @@ Email generata automaticamente da TraceabilityRS - non rispondere.</p>
 # ─────────────────────────────────────────────────────────────────────────────
 #  Dialog: modifica quantita'
 # ─────────────────────────────────────────────────────────────────────────────
+class _SOAssignDialog(tk.Toplevel):
+    """Assegna l'ordine di produzione (versato a magazzino) a un SO dello STESSO
+    prodotto prima di confermare la spedizione. Elenca i SO candidati (chiave
+    esatta ItemCode = ProductCode senza suffisso |N) con il loro residuo e
+    l'eventuale abbinamento gia' esistente per questo ordine. Alla conferma crea
+    (o riusa) il DynamicProductionOrder e ritorna il DPO su self.result."""
+
+    def __init__(self, master, db, lang, user_name, info, qty):
+        super().__init__(master)
+        self.db = db
+        self.lang = lang
+        self.user_name = user_name
+        self.info = info
+        self.qty = qty
+        self.result = None
+
+        L = self.lang.get
+        self.title(L("so_assign_title", "Assegna SO e conferma"))
+        self.geometry("780x430")
+        self.transient(master)
+        self.grab_set()
+
+        self._rows = {}   # iid -> candidate dict
+        self._build()
+        self._load()
+
+    def _product_key(self):
+        return (self.info.get("product_code") or "").split("|")[0].strip()
+
+    def _build(self):
+        L = self.lang.get
+        top = ttk.Frame(self, padding=10)
+        top.pack(fill=tk.X)
+        ttk.Label(top, font=("Segoe UI", 10, "bold"),
+                  text=L("so_assign_head", "Ordine {0} — Prodotto {1}  |  da spedire ora: {2}").format(
+                      self.info.get("production_order", ""), self.info.get("product_code", ""), self.qty)
+                  ).pack(anchor=tk.W)
+        ttk.Label(top, foreground="#555",
+                  text=L("so_assign_hint",
+                         "Seleziona il SO (stesso prodotto) contro cui spedire, poi conferma.")
+                  ).pack(anchor=tk.W)
+
+        cols = ("SO", "Customer", "ItemName", "Ordinato", "Assegnato", "ResiduoSO", "Linked")
+        self.tree = ttk.Treeview(self, columns=cols, show="headings", selectmode="browse", height=10)
+        heads = {"SO": ("SO", 110), "Customer": ("Cliente", 150), "ItemName": ("Descrizione", 210),
+                 "Ordinato": ("Ordinato", 80), "Assegnato": ("Assegnato", 80),
+                 "ResiduoSO": ("Residuo SO", 85), "Linked": ("Abbinato", 80)}
+        for c in cols:
+            lbl, w = heads[c]
+            self.tree.heading(c, text=L(f"soc_{c.lower()}", lbl))
+            self.tree.column(c, width=w, anchor=(tk.W if c in ("Customer", "ItemName") else tk.CENTER))
+        self.tree.pack(fill=tk.BOTH, expand=True, padx=10)
+
+        bar = ttk.Frame(self, padding=10)
+        bar.pack(fill=tk.X)
+        ttk.Label(bar, text=L("so_assign_qty", "Qta da assegnare al SO:")).pack(side=tk.LEFT)
+        self.qty_var = tk.StringVar(value=str(self.qty))
+        ttk.Entry(bar, textvariable=self.qty_var, width=8).pack(side=tk.LEFT, padx=(4, 12))
+        ttk.Button(bar, text=L("btn_confirm", "Conferma"), command=self._ok).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(bar, text=L("cancel", "Annulla"), command=self.destroy).pack(side=tk.RIGHT, padx=4)
+
+    def _load(self):
+        self.tree.delete(*self.tree.get_children())
+        self._rows = {}
+        key = self._product_key()
+        try:
+            self.db.cursor.execute(_QUERY_SO_CANDIDATES, (self.info["id_order"], key))
+            rows = self.db.cursor.fetchall()
+        except Exception as e:
+            logger.error(f"Errore caricamento SO candidati: {e}", exc_info=True)
+            messagebox.showerror(self.lang.get("error", "Errore"), str(e), parent=self)
+            rows = []
+        for r in rows:
+            ordinato = int(r.QtyOrder or 0)
+            assegnato = int(r.Assigned or 0)
+            residuo_so = ordinato - assegnato
+            linked = r.DpoForThisOrder is not None
+            if residuo_so <= 0 and not linked:
+                continue  # SO pieno e non gia' abbinato a questo ordine
+            iid = self.tree.insert("", tk.END, values=(
+                r.SONumber or "", r.CustomerName or "", r.ItemName or "",
+                ordinato, assegnato, residuo_so,
+                self.lang.get("yes", "Sì") if linked else ""))
+            self._rows[iid] = {"so_id": r.DynamicSaleOrderId, "so_number": r.SONumber or "",
+                               "customer": r.CustomerName or "", "item_name": r.ItemName or "",
+                               "residuo_so": residuo_so, "dpo": r.DpoForThisOrder}
+        if not self._rows:
+            messagebox.showinfo(
+                self.lang.get("info", "Info"),
+                self.lang.get("so_none",
+                              "Nessun SO disponibile per questo prodotto ({0}). "
+                              "Verifica gli ordini di vendita importati.").format(key),
+                parent=self)
+
+    def _ok(self):
+        L = self.lang.get
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo(L("info", "Info"), L("so_pick", "Seleziona un SO."), parent=self)
+            return
+        cand = self._rows.get(sel[0])
+        try:
+            aqty = int(self.qty_var.get().strip())
+        except ValueError:
+            messagebox.showwarning(L("warning", "Attenzione"),
+                                   L("qty_invalid", "Quantita' non valida."), parent=self)
+            return
+        if aqty <= 0:
+            messagebox.showwarning(L("warning", "Attenzione"),
+                                   L("qty_positive", "La quantita' deve essere maggiore di zero."), parent=self)
+            return
+        dpoid = cand["dpo"]
+        try:
+            if dpoid is None:
+                if aqty > cand["residuo_so"]:
+                    if not messagebox.askyesno(
+                        L("confirm", "Conferma"),
+                        L("so_over", "La quantita' ({0}) supera il residuo del SO ({1}). Continuare?").format(
+                            aqty, cand["residuo_so"]), parent=self):
+                        return
+                self.db.cursor.execute(
+                    "INSERT INTO Traceability_RS.dyn.DynamicProductionOrders "
+                    "(DynamicSaleOrderId, IdOrder, Qty, DateIn) "
+                    "OUTPUT INSERTED.DynamicProductionOrderID VALUES (?, ?, ?, GETDATE())",
+                    (cand["so_id"], self.info["id_order"], aqty))
+                dpoid = int(self.db.cursor.fetchone()[0])
+                self.db.conn.commit()
+                logger.info(f"Creato DPO {dpoid}: ordine {self.info['production_order']} "
+                            f"↔ SO {cand['so_number']} qty {aqty}")
+        except Exception as e:
+            logger.error(f"Errore creazione abbinamento SO: {e}", exc_info=True)
+            self.db.conn.rollback()
+            messagebox.showerror(L("error", "Errore"), str(e), parent=self)
+            return
+        self.result = {"dpoid": str(dpoid), "so_number": cand["so_number"],
+                       "customer": cand["customer"], "item_name": cand["item_name"],
+                       "ship_to": "Normal Shipment"}
+        self.destroy()
+
+
 class _QtyDialog(tk.Toplevel):
     def __init__(self, master, lang, pallet_code, current_qty):
         super().__init__(master)

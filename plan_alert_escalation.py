@@ -165,14 +165,50 @@ def cleanup_duplicate_alerts(conn) -> int:
         return 0
 
 
-def get_unresponded_alerts_summary(conn) -> list:
+def get_unresponded_alerts_summary(conn, date_from=None, date_to=None,
+                                   product_code=None, phases=None) -> list:
     """Recupera un riepilogo raggruppato per Ordine+Prodotto degli alert senza risposta.
-    
+
+    Filtri opzionali:
+        date_from, date_to : intervallo (inclusivo) su CAST(AlertDate AS DATE).
+                             Vanno passati insieme; se uno solo e' None il filtro
+                             data non viene applicato.
+        product_code       : filtro LIKE parziale su ProductName (codice prodotto).
+        phases             : lista di PhaseName da monitorare (None/vuota = tutte).
+
+    Il filtro data/fasi e' applicato anche alla sotto-query che compone l'elenco fasi
+    (Phases), cosi' l'elenco riflette esattamente le stesse righe conteggiate.
+
     Returns:
         Lista di righe con: OrderNumber, ProductName, TotalAlerts,
         RedCount, OutOfPlanCount, TotalDeficit, Phases, FirstAlertDate, LastAlertDate
     """
-    query = """
+    # I frammenti sono stringhe statiche; i valori restano parametri bind (?).
+    # La sotto-query (SELECT ... Phases) precede TEXTUALMENTE la WHERE esterna,
+    # quindi i suoi parametri vanno passati per primi.
+    sub_filters = ""
+    outer_filters = ""
+    sub_params = []
+    outer_params = []
+    if date_from is not None and date_to is not None:
+        sub_filters += " AND CAST(AL2.AlertDate AS DATE) BETWEEN ? AND ? "
+        sub_params += [date_from, date_to]
+        outer_filters += " AND CAST(AL.AlertDate AS DATE) BETWEEN ? AND ? "
+        outer_params += [date_from, date_to]
+    if phases:
+        ph_list = [p for p in phases if p]
+        if ph_list:
+            placeholders = ','.join('?' for _ in ph_list)
+            sub_filters += f" AND AL2.PhaseName IN ({placeholders}) "
+            sub_params += list(ph_list)
+            outer_filters += f" AND AL.PhaseName IN ({placeholders}) "
+            outer_params += list(ph_list)
+    if product_code:
+        outer_filters += " AND AL.ProductName LIKE ? "
+        outer_params.append(f"%{product_code}%")
+    params = sub_params + outer_params
+
+    query = f"""
     SELECT
         o.ordernumber AS OrderNumber,
         AL.ProductName,
@@ -188,6 +224,7 @@ def get_unresponded_alerts_summary(conn) -> list:
             WHERE pa2.AlertId IS NULL
               AND o2.ordernumber = o.ordernumber
               AND AL2.ProductName = AL.ProductName
+              {sub_filters}
               AND NOT EXISTS (
                   SELECT 1 FROM [Traceability_RS].[dbo].[PlanAlerts] AX2
                   INNER JOIN [Traceability_RS].[dbo].[PlanAlertResponses] PX2 ON PX2.AlertId = AX2.AlertId
@@ -203,6 +240,7 @@ def get_unresponded_alerts_summary(conn) -> list:
     INNER JOIN traceability_rs.dbo.orders o ON o.idorder = AL.idorder
     LEFT JOIN traceability_rs.dbo.PlanAlertResponses pa ON pa.AlertId = AL.AlertId
     WHERE pa.AlertId IS NULL
+      {outer_filters}
       AND NOT EXISTS (
           SELECT 1 FROM [Traceability_RS].[dbo].[PlanAlerts] AX
           INNER JOIN [Traceability_RS].[dbo].[PlanAlertResponses] PX ON PX.AlertId = AX.AlertId
@@ -215,7 +253,10 @@ def get_unresponded_alerts_summary(conn) -> list:
     """
     try:
         with conn.cursor() as cursor:
-            cursor.execute(query)
+            if params:
+                cursor.execute(query, params)
+            else:
+                cursor.execute(query)
             return cursor.fetchall()
     except Exception as e:
         logger.error(f"Errore recupero riepilogo alert: {e}")

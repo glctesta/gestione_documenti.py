@@ -530,6 +530,21 @@ def send_fai_autocheck_email(to_emails: List[str], cc_emails: List[str],
 # 8. CICLO PRINCIPALE
 # ================================================================
 
+def _get_product_code(conn, order_number: str) -> Optional[str]:
+    """Codice prodotto di un ordine (dbo.Orders -> dbo.Products), o None."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT TOP 1 p.ProductCode FROM dbo.Orders o "
+                "INNER JOIN dbo.Products p ON p.IDProduct = o.IDProduct "
+                "WHERE o.OrderNumber = ?", (order_number,))
+            row = cur.fetchone()
+            return row[0] if row and row[0] else None
+    except Exception as e:
+        logger.warning(f"FAI Autocheck: product code non risolto per {order_number}: {e}")
+        return None
+
+
 def run_autocheck_cycle(conn, logo_path: str = "Logo.png") -> int:
     """
     Esegue un ciclo completo di autocheck.
@@ -549,6 +564,20 @@ def run_autocheck_cycle(conn, logo_path: str = "Logo.png") -> int:
         logger.info("FAI Autocheck: nessuna riga valida nel planning")
         return 0
 
+    # 2b. Delay per codice prodotto (forno wave): per i codici presenti in
+    #     fai.FaiCodeDelay la segnalazione FAI viene rimandata di N minuti a
+    #     prescindere (grazia dal primo avvistamento). Se la lista è vuota,
+    #     nessun effetto (comportamento invariato).
+    try:
+        import fai_code_delay
+        delay_map = fai_code_delay.get_delay_map(conn)
+        if delay_map:
+            fai_code_delay.cleanup_pending(conn)
+    except Exception as e:
+        logger.warning(f"FAI Autocheck: delay codici non caricato: {e}")
+        delay_map = {}
+    product_code_cache = {}
+
     # 3. Per ogni riga valida
     # Cache destinatari (calcolati una volta sola per ciclo)
     recipients_cache = None
@@ -565,6 +594,28 @@ def run_autocheck_cycle(conn, logo_path: str = "Logo.png") -> int:
         id_phase = template['IdPhase']
         template_id = template['FaiTemplateId']
         planned_start = pr['planned_start']
+
+        # 3a-bis. Delay forno wave: se il codice prodotto dell'ordine è nella
+        # lista dei delay, la segnalazione FAI è rimandata di N minuti a
+        # prescindere (grazia dal primo avvistamento dell'ordine/fase). Nessuna
+        # query se la lista è vuota (comportamento invariato).
+        if delay_map:
+            pcode = product_code_cache.get(order_number, False)
+            if pcode is False:
+                pcode = _get_product_code(conn, order_number)
+                product_code_cache[order_number] = pcode
+            delay_min = delay_map.get((pcode or '').strip().upper(), 0)
+            if delay_min:
+                try:
+                    if fai_code_delay.check_delay_grace(
+                            conn, order_number, id_phase, planned_start, delay_min):
+                        logger.info(
+                            "FAI Autocheck: %s (prodotto %s) in grazia %d min, "
+                            "segnalazione rimandata", order_number, pcode, delay_min)
+                        continue
+                except Exception as e:
+                    logger.warning(
+                        f"FAI Autocheck: grazia delay non applicata per {order_number}: {e}")
 
         # 3b. Verifica anti-duplicazione
         try:

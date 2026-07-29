@@ -69,10 +69,42 @@ class FaiTemplateManagerWindow(tk.Toplevel):
         # Bottoni
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(fill=tk.X, pady=(10, 0))
-        
-        ttk.Button(button_frame, 
+
+        ttk.Button(button_frame,
                   text=self.lang.get('btn_close', 'Chiudi'),
                   command=self.destroy).pack(side=tk.RIGHT, padx=5)
+
+        # Codici con delay dedicato per la verifica oraria FAI (forno wave).
+        # Login autorizzato con chiave 'aggiungi_codici_per_delay_fai'.
+        ttk.Button(button_frame,
+                  text=self.lang.get('btn_fai_code_delay', 'Codici delay FAI (forno wave)'),
+                  command=self._open_fai_code_delay).pack(side=tk.LEFT, padx=5)
+
+    def _open_fai_code_delay(self):
+        """Apre la maschera dei codici con delay FAI, previo login autorizzato
+        (chiave 'aggiungi_codici_per_delay_fai'). L'autorizzazione è gestita
+        dall'app padre; rilasciamo/riprendiamo il grab come per gli altri login
+        in-form."""
+        app = self.master
+
+        def cb():
+            import fai_code_delay_gui
+            fai_code_delay_gui.open_fai_code_delay(self, self.db, self.lang, self.user_name)
+
+        if not hasattr(app, '_execute_authorized_action'):
+            cb()
+            return
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        try:
+            app._execute_authorized_action('aggiungi_codici_per_delay_fai', cb)
+        finally:
+            try:
+                self.grab_set()
+            except Exception:
+                pass
     
     def _create_template_tab(self):
         """Crea il tab Template con filtro e CRUD completo."""

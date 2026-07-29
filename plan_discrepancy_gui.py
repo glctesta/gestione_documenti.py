@@ -15,10 +15,25 @@ Giustificazione a due livelli:
 
 import tkinter as tk
 from tkinter import ttk, messagebox
-from datetime import datetime
+from datetime import datetime, date, timedelta
 import logging
 
+try:
+    from tkcalendar import DateEntry
+except Exception:
+    DateEntry = None
+
 logger = logging.getLogger("TraceabilityRS")
+
+
+def default_plan_date_range(today=None):
+    """Intervallo di default: gli ultimi 2 giorni precedenti. Se oggi e' lunedi',
+    usa venerdi' e sabato precedenti (salta la domenica non lavorativa).
+    Ritorna (data_da, data_a) come date."""
+    today = today or date.today()
+    if today.weekday() == 0:  # lunedi'
+        return today - timedelta(days=3), today - timedelta(days=2)  # ven, sab
+    return today - timedelta(days=2), today - timedelta(days=1)
 
 
 # ================================================================
@@ -111,6 +126,49 @@ class PlanDiscrepancyWindow(tk.Toplevel):
 
         self.count_label = ttk.Label(toolbar, text="", font=('Arial', 9))
         self.count_label.pack(side='right', padx=5)
+
+        # --- Filtri (data da/a con default ultimi 2 gg lavorativi + codice prodotto) ---
+        filter_frame = ttk.LabelFrame(self,
+            text=self.lang.get('plan_filters', 'Filtri'), padding=8)
+        filter_frame.pack(fill='x', padx=10, pady=(0, 5))
+
+        d_from, d_to = default_plan_date_range()
+
+        ttk.Label(filter_frame,
+            text=self.lang.get('plan_date_from', 'Data da:')).pack(side='left', padx=(0, 3))
+        if DateEntry:
+            self.date_from = DateEntry(filter_frame, width=11,
+                                       date_pattern='dd/mm/yyyy', locale='it_IT')
+            self.date_from.set_date(d_from)
+        else:
+            self.date_from = ttk.Entry(filter_frame, width=11)
+            self.date_from.insert(0, d_from.strftime('%d/%m/%Y'))
+        self.date_from.pack(side='left', padx=(0, 12))
+
+        ttk.Label(filter_frame,
+            text=self.lang.get('plan_date_to', 'Data a:')).pack(side='left', padx=(0, 3))
+        if DateEntry:
+            self.date_to = DateEntry(filter_frame, width=11,
+                                     date_pattern='dd/mm/yyyy', locale='it_IT')
+            self.date_to.set_date(d_to)
+        else:
+            self.date_to = ttk.Entry(filter_frame, width=11)
+            self.date_to.insert(0, d_to.strftime('%d/%m/%Y'))
+        self.date_to.pack(side='left', padx=(0, 12))
+
+        ttk.Label(filter_frame,
+            text=self.lang.get('plan_product_code', 'Codice prodotto:')).pack(side='left', padx=(0, 3))
+        self.product_var = tk.StringVar()
+        prod_entry = ttk.Entry(filter_frame, textvariable=self.product_var, width=20)
+        prod_entry.pack(side='left', padx=(0, 12))
+        prod_entry.bind('<Return>', lambda e: self._load_summary())
+
+        ttk.Button(filter_frame,
+            text=self.lang.get('plan_btn_apply', '🔎 Applica'),
+            command=self._load_summary).pack(side='left', padx=3)
+        ttk.Button(filter_frame,
+            text=self.lang.get('plan_btn_reset', '↺ Reset'),
+            command=self._reset_filters).pack(side='left', padx=3)
 
         # --- TreeView MASTER ---
         tree_frame = ttk.Frame(self)
@@ -214,13 +272,53 @@ class PlanDiscrepancyWindow(tk.Toplevel):
         except Exception as e:
             logger.error(f"Errore caricamento motivazioni: {e}")
 
+    def _get_date(self, widget):
+        """Legge una data dal widget (DateEntry o Entry dd/mm/yyyy). None se vuoto/errato."""
+        if DateEntry and hasattr(widget, 'get_date'):
+            try:
+                return widget.get_date()
+            except Exception:
+                return None
+        txt = widget.get().strip()
+        if not txt:
+            return None
+        try:
+            return datetime.strptime(txt, '%d/%m/%Y').date()
+        except Exception:
+            return None
+
+    def _reset_filters(self):
+        """Ripristina i filtri ai valori di default (ultimi 2 gg lavorativi, prodotto vuoto)."""
+        d_from, d_to = default_plan_date_range()
+        for w, d in ((self.date_from, d_from), (self.date_to, d_to)):
+            if DateEntry and hasattr(w, 'set_date'):
+                w.set_date(d)
+            else:
+                w.delete(0, tk.END)
+                w.insert(0, d.strftime('%d/%m/%Y'))
+        self.product_var.set('')
+        self._load_summary()
+
     def _load_summary(self):
         try:
             self.tree.delete(*self.tree.get_children())
             self._tree_data = {}
 
+            d_from = self._get_date(self.date_from)
+            d_to = self._get_date(self.date_to)
+            if d_from and d_to and d_from > d_to:
+                d_from, d_to = d_to, d_from
+            product_code = self.product_var.get().strip() or None
+
             import plan_alert_escalation as pae
-            rows = pae.get_unresponded_alerts_summary(self.db.conn)
+            try:
+                import plan_phases
+                monitored = plan_phases.get_monitored_phases(self.db.conn)
+            except Exception:
+                monitored = None
+            rows = pae.get_unresponded_alerts_summary(
+                self.db.conn, date_from=d_from, date_to=d_to,
+                product_code=product_code, phases=monitored)
 
             count = 0
             for row in rows:

@@ -9,6 +9,7 @@ completo dei file con le loro dimensioni. Il sistema di aggiornamento
 dell'app usa questo file per verificare che tutti i file siano stati
 trasferiti PRIMA di avviare l'update.
 """
+import hashlib
 import json
 import os
 import sys
@@ -18,38 +19,52 @@ from datetime import datetime
 MANIFEST_FILENAME = 'deploy_manifest.json'
 
 
+def _file_sha256(path: str) -> str:
+    """SHA-256 del contenuto del file (a blocchi, per file grandi)."""
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def generate_manifest(dist_dir: str) -> str:
     """Genera il manifest e lo salva nella directory specificata.
-    
+
+    Ogni voce contiene path, dimensione e hash SHA-256: l'updater usa l'hash per
+    copiare dal server SOLO i file effettivamente modificati (confronto sull'hash
+    del file locale), evitando di rileggere dalla rete i file invariati.
+
     Args:
         dist_dir: Percorso della directory di distribuzione
-        
+
     Returns:
         Percorso del file manifest creato
     """
     dist_dir = os.path.normpath(dist_dir)
-    
+
     if not os.path.isdir(dist_dir):
         print(f"ERRORE: Directory non trovata: {dist_dir}")
         sys.exit(1)
-    
+
     files = []
     for root, dirs, filenames in os.walk(dist_dir):
         for filename in sorted(filenames):
             # Escludi il manifest stesso dalla lista
             if filename == MANIFEST_FILENAME:
                 continue
-            
+
             full_path = os.path.join(root, filename)
             rel_path = os.path.relpath(full_path, dist_dir)
             size = os.path.getsize(full_path)
             files.append({
                 'path': rel_path.replace('\\', '/'),  # Normalizza separatori
-                'size': size
+                'size': size,
+                'sha256': _file_sha256(full_path)
             })
-    
+
     manifest = {
-        'version': '1.0',
+        'version': '2.0',
         'generated_at': datetime.now().isoformat(),
         'total_files': len(files),
         'files': files
