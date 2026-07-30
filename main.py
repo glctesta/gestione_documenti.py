@@ -308,7 +308,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.7.7'  # Versione aggiornata 
+APP_VERSION = '2.4.2.7.8'  # Versione aggiornata 
 # Nome programma usato come chiave in SwVersions / VersionDMLogs.
 # In produzione = nome dell'exe; in sviluppo usa il nome canonico.
 APP_PROGRAM_NAME = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else 'DocumentManagement.exe'
@@ -21295,6 +21295,74 @@ class App(tk.Tk):
             if not getattr(self, '_closing', False) and getattr(self, '_touchup_noresponse_running', False):
                 self.after(300_000, self._touchup_noresponse_tick)  # ogni 5 minuti
 
+    def _collect_shutdown_services(self):
+        """Servizi/monitor ancora attivi da fermare alla chiusura.
+
+        Ritorna una lista di (etichetta tradotta, funzione di arresto). L'arresto
+        e' bloccante (i thread vengono joinati con timeout), quindi la lista serve
+        anche a decidere se mostrare l'avviso "chiusura in corso".
+        """
+        L = self.lang.get
+        candidates = [
+            ('_wh_monitor', 'shutdown_svc_wh_monitor',
+             'Monitoraggio giacenze materiali indiretti'),
+            ('_requester_monitor', 'shutdown_svc_requester_monitor',
+             'Monitoraggio richieste materiali'),
+            ('_budget_approval_monitor', 'shutdown_svc_budget_monitor',
+             'Monitoraggio approvazioni budget NPI'),
+            ('_shift_handover_monitor', 'shutdown_svc_handover_monitor',
+             'Monitoraggio consegna turno'),
+            ('_kit_dashboard_controller', 'shutdown_svc_kit_dashboard',
+             'Kit Dashboard'),
+        ]
+        services = []
+        for attr, key, default in candidates:
+            obj = getattr(self, attr, None)
+            if obj:
+                services.append((L(key, default), obj.stop))
+        # Thread in background (controllo prodotti, report mensile, email NPI e
+        # overtime, FAI autocheck, notifiche NPI): sono i piu' lenti a fermarsi,
+        # ciascuno con join(timeout=5)
+        services.append((
+            L('shutdown_svc_background_tasks', 'Attivita in background'),
+            self._stop_product_check_background_task))
+        return services
+
+    def _show_shutdown_notice(self, detail=None):
+        """Mostra l'avviso di chiusura in corso al posto dello slideshow.
+
+        Richiamata a ogni servizio fermato per aggiornare il dettaglio. Il
+        ridisegno e' forzato con update_idletasks() perche' subito dopo il thread
+        principale resta bloccato nell'arresto dei servizi; si usano solo gli idle
+        task (e non update()) per non processare eventi utente durante la chiusura.
+        """
+        try:
+            label = getattr(self, 'slideshow_label', None)
+            if not label or not label.winfo_exists():
+                return
+            if not getattr(self, '_shutdown_notice_active', False):
+                # Evita che un <Configure> ridisegni l'immagine sopra l'avviso
+                try:
+                    label.unbind('<Configure>')
+                except Exception:
+                    pass
+                self.slideshow_photo = None
+                self._shutdown_notice_active = True
+
+            L = self.lang.get
+            title = L('shutdown_in_progress', 'Chiusura del programma in corso...')
+            subtitle = L('shutdown_stopping_services',
+                         'Arresto dei servizi attivi, attendere prego...')
+            text = f"\n{title}\n\n{subtitle}\n"
+            if detail:
+                text += f"\n{detail}\n"
+            label.config(image='', text=text, foreground='white',
+                         anchor='center', justify='center',
+                         font=('Segoe UI', 16, 'bold'))
+            self.update_idletasks()
+        except Exception as e:
+            logger.debug(f"Avviso di chiusura non mostrato: {e}")
+
     def _on_closing(self, force_quit=False):
         """Gestisce la chiusura dell'applicazione."""
         # Segnala che l'app sta chiudendo (blocca callback periodici)
@@ -21308,54 +21376,57 @@ class App(tk.Tk):
                 pass
             self._inactivity_job_id = None
 
-        # Ferma monitor materiali indiretti
-        if hasattr(self, '_wh_monitor') and self._wh_monitor:
-            self._wh_monitor.stop()
-        if hasattr(self, '_requester_monitor') and self._requester_monitor:
-            self._requester_monitor.stop()
-        if hasattr(self, '_budget_approval_monitor') and self._budget_approval_monitor:
-            self._budget_approval_monitor.stop()
-        if hasattr(self, '_shift_handover_monitor') and self._shift_handover_monitor:
-            self._shift_handover_monitor.stop()
-        if hasattr(self, '_kit_dashboard_controller') and self._kit_dashboard_controller:
-            try:
-                self._kit_dashboard_controller.stop()
-            except Exception:
-                pass
-
-        # Ferma tutti i timer attivi
-        if self.slideshow_job_id: self.after_cancel(self.slideshow_job_id)
-        if self.birthday_flash_job_id: self.after_cancel(self.birthday_flash_job_id)
-        if self.birthday_stop_job_id: self.after_cancel(self.birthday_stop_job_id)
-        if self.periodic_check_job_id: self.after_cancel(self.periodic_check_job_id)
-        if self.news_scroll_job_id: self.after_cancel(self.news_scroll_job_id)
-        if self.news_refresh_job_id: self.after_cancel(self.news_refresh_job_id)
-
-        self._stop_product_check_background_task()
+        # NB: la conferma viene chiesta PRIMA di fermare i servizi (vedi sotto):
+        # se l'utente annulla, i monitor devono restare attivi.
 
         # Se force_quit Ã¨ True, chiudi senza chiedere conferma
-        if force_quit:
-            self._register_program_usage_end()
-            self.db.disconnect()
-            self.destroy()
-            return
-        
-        # Chiedi conferma all'utente con possibilitÃ  di annullare
-        # askokcancel ritorna: True=OK (chiudi), False=Annulla (non chiudere)
-        if messagebox.askokcancel(
-            self.lang.get('quit_title', 'Chiudi Applicazione'),
-            self.lang.get('quit_message', 'Sei sicuro di voler chiudere l\'applicazione?')
-        ):
-            self._register_program_usage_end()
-            self.db.disconnect()
-            self.destroy()
-        else:
-            # L'utente ha annullato: riattiva e riavvia il monitor inattività
-            self._closing = False
-            if self._inactivity_timeout_ms:
-                self._inactivity_job_id = self.after(
-                    self._inactivity_timeout_ms, self._on_inactivity_timeout
-                )
+        if not force_quit:
+            if not messagebox.askokcancel(
+                self.lang.get('quit_title', 'Chiudi Applicazione'),
+                self.lang.get('quit_message', 'Sei sicuro di voler chiudere l\'applicazione?')
+            ):
+                # L'utente ha annullato: riattiva e riavvia il monitor inattivita'
+                self._closing = False
+                if self._inactivity_timeout_ms:
+                    self._inactivity_job_id = self.after(
+                        self._inactivity_timeout_ms, self._on_inactivity_timeout
+                    )
+                return
+
+        # Chiusura confermata: ferma prima i timer della UI, cosi' nulla puo'
+        # ridisegnare sopra l'avviso di chiusura
+        for job_attr in ('slideshow_job_id', 'birthday_flash_job_id',
+                         'birthday_stop_job_id', 'periodic_check_job_id',
+                         'news_scroll_job_id', 'news_refresh_job_id'):
+            job_id = getattr(self, job_attr, None)
+            if job_id:
+                try:
+                    self.after_cancel(job_id)
+                except Exception:
+                    pass
+                setattr(self, job_attr, None)
+
+        # L'arresto dei servizi puo' richiedere diversi secondi (i thread vengono
+        # joinati con timeout): al posto dello slideshow mostriamo lo stato.
+        services = self._collect_shutdown_services()
+        total = len(services)
+        if total:
+            self._show_shutdown_notice()
+        for idx, (name, stop_fn) in enumerate(services, start=1):
+            self._show_shutdown_notice(f"({idx}/{total}) {name}")
+            try:
+                stop_fn()
+            except Exception as e:
+                logger.error(f"Errore arresto servizio '{name}': {e}", exc_info=True)
+
+        if total:
+            self._show_shutdown_notice(
+                self.lang.get('shutdown_closing_session',
+                              'Chiusura sessione e disconnessione database...'))
+        self._register_program_usage_end()
+        self.db.disconnect()
+        self.destroy()
+
 
 class UpdateNotificationDialog(tk.Toplevel):
     """Dialogo per notificare un nuovo aggiornamento e chiedere l'azione desiderata."""
