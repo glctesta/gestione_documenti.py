@@ -40,6 +40,10 @@ Copy-Item "dist\DocumentManagement\*" "T:\Traceability_RESET_Services\!!!!VW Sof
 ```
 python generate_deploy_manifest.py "T:\Traceability_RESET_Services\!!!!VW SoftWare\DocumentManagement"
 ```
+Impiega ~30 secondi per ~6000 file / 280 MB e stampa il progresso ogni 2 secondi
+(file processati, MB, tempo trascorso, ETA): se resta zitto e' bloccato davvero.
+Su share piu' lente si puo' alzare il parallelismo con `--workers 16`.
+
 Poi verifica che il file esista:
 ```
 Test-Path "T:\Traceability_RESET_Services\!!!!VW SoftWare\DocumentManagement\deploy_manifest.json"
