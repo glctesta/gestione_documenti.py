@@ -64,7 +64,8 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
         list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
         # Treeview per mostrare le richieste
-        columns = ('ID', 'Tipo', 'Dipendente', 'Data Registrazione', 'Data Inizio', 'Data Fine', 'Giorni', 'Ore')
+        columns = ('ID', 'Tipo', 'Dipendente', 'Data Registrazione', 'Data Inizio', 'Data Fine',
+                   'Giorni', 'Festivi', 'Ore')
         self.tree = ttk.Treeview(list_frame, columns=columns, show='headings', selectmode='browse')
         
         # Definizione intestazioni
@@ -74,7 +75,8 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
         self.tree.heading('Data Registrazione', text='Registrata il')
         self.tree.heading('Data Inizio', text='Data Inizio')
         self.tree.heading('Data Fine', text='Data Fine')
-        self.tree.heading('Giorni', text='Giorni')
+        self.tree.heading('Giorni', text=self.lang.get('col_working_days', 'Giorni lav.'))
+        self.tree.heading('Festivi', text=self.lang.get('col_holidays_in_period', 'Festivi'))
         self.tree.heading('Ore', text='Ore')
         
         # Dimensioni colonne
@@ -84,8 +86,9 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
         self.tree.column('Data Registrazione', width=120)
         self.tree.column('Data Inizio', width=100)
         self.tree.column('Data Fine', width=100)
-        self.tree.column('Giorni', width=60)
-        self.tree.column('Ore', width=60)
+        self.tree.column('Giorni', width=70, anchor='center')
+        self.tree.column('Festivi', width=60, anchor='center')
+        self.tree.column('Ore', width=60, anchor='center')
         
         # Scrollbar
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.tree.yview)
@@ -373,7 +376,21 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
 
             # STEP 4: Query principale con filtro gerarchia
 
+            # NrDays = giorni LAVORATIVI: esclude sabato/domenica e i festivi rumeni
+            # (Timeclocking.dbo.PublicHoliday), stessa regola gia' usata dal calcolo
+            # disponibilita' ferie e da _update_daily_state. NrHolidays espone i festivi
+            # del periodo che cadono in giorni feriali (quelli effettivamente scalati),
+            # cosi' vale sempre: NrCalendarDays = NrDays + NrWeekendDays + NrHolidays.
             query = f"""
+                WITH Festivi AS (
+                    SELECT DISTINCT
+                        DATEFROMPARTS(YearPublicHoliday, MonthPublicHoliday, DayPublicHoliday) AS DataFestivo
+                    FROM [Timeclocking].[dbo].[PublicHoliday]
+                ),
+                Numbers AS (
+                    SELECT TOP (1000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS n
+                    FROM sys.all_objects
+                )
                 SELECT
                     AR.[AbsenceRequestId],
                     R.RequestName + ' [' + R.Abbreviation + ']' AS RequestType,
@@ -381,7 +398,10 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
                     AR.Datesys AS RecordedOnDate,
                     AR.[DateStart],
                     AR.[DateEnd],
-                    DATEDIFF(DAY, AR.[DateStart], AR.[DateEnd]) + 1 AS NrDays,
+                    ISNULL(DD.WorkDays, 0)     AS NrDays,
+                    ISNULL(DD.HolidayDays, 0)  AS NrHolidays,
+                    ISNULL(DD.WeekendDays, 0)  AS NrWeekendDays,
+                    ISNULL(DD.CalendarDays, 0) AS NrCalendarDays,
                     CASE
                         WHEN R.IsConsideredEntireDay = 0
                              AND AR.FromTime IS NOT NULL AND AR.ToTime IS NOT NULL
@@ -403,6 +423,27 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
                     Timeclocking.dbo.RequestType R ON R.IDRequestType = AR.IDRequestType
                 INNER JOIN
                     Employee.dbo.Registry RE ON RE.RegistroId = AR.RegistroId
+                OUTER APPLY (
+                    SELECT
+                        COUNT(*) AS CalendarDays,
+                        SUM(CASE WHEN G.IsWeekend = 1 THEN 1 ELSE 0 END) AS WeekendDays,
+                        SUM(CASE WHEN G.IsWeekend = 0 AND G.IsHoliday = 1 THEN 1 ELSE 0 END) AS HolidayDays,
+                        SUM(CASE WHEN G.IsWeekend = 0 AND G.IsHoliday = 0 THEN 1 ELSE 0 END) AS WorkDays
+                    FROM Numbers N
+                    CROSS APPLY (
+                        SELECT DATEADD(DAY, N.n, CAST(AR.[DateStart] AS DATE)) AS D
+                    ) X
+                    CROSS APPLY (
+                        SELECT
+                            -- (DATEPART(WEEKDAY) + @@DATEFIRST - 2) % 7: 0=lunedi ... 5=sabato, 6=domenica
+                            -- indipendente dall'impostazione DATEFIRST della sessione
+                            CASE WHEN (DATEPART(WEEKDAY, X.D) + @@DATEFIRST - 2) % 7 >= 5
+                                 THEN 1 ELSE 0 END AS IsWeekend,
+                            CASE WHEN EXISTS (SELECT 1 FROM Festivi F WHERE F.DataFestivo = X.D)
+                                 THEN 1 ELSE 0 END AS IsHoliday
+                    ) G
+                    WHERE X.D <= CAST(AR.[DateEnd] AS DATE)
+                ) DD
                 WHERE
                     AR.Approved = '1900-01-01 00:00:00.000'
                     {subordinate_filter}
@@ -439,33 +480,34 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
         # Aggiunge le richieste
         for req in requests:
             is_hourly = hasattr(req, 'IsConsideredEntireDay') and req.IsConsideredEntireDay == 0
+            # Festivi (feriali) che cadono nel periodo: mostrati anche per le assenze
+            # orarie, cosi' si vede subito se la richiesta e' a cavallo di una festivita'
+            holidays = getattr(req, 'NrHolidays', 0) or 0
+            common = (
+                req.AbsenceRequestId,
+                req.RequestType,
+                req.Employee,
+                req.RecordedOnDate.strftime('%d/%m/%Y') if req.RecordedOnDate else '',
+                req.DateStart.strftime('%d/%m/%Y') if req.DateStart else '',
+                req.DateEnd.strftime('%d/%m/%Y') if req.DateEnd else '',
+            )
             if is_hourly:
                 # Assenza oraria: mostra ore, niente giorni
                 hours_display = ''
                 if req.NrHours is not None:
                     h = float(req.NrHours)
                     hours_display = f"{h:.1f}" if h != int(h) else str(int(h))
-                values = (
-                    req.AbsenceRequestId,
-                    req.RequestType,
-                    req.Employee,
-                    req.RecordedOnDate.strftime('%d/%m/%Y') if req.RecordedOnDate else '',
-                    req.DateStart.strftime('%d/%m/%Y') if req.DateStart else '',
-                    req.DateEnd.strftime('%d/%m/%Y') if req.DateEnd else '',
-                    '',   # Giorni vuoto per assenze orarie
-                    hours_display
+                values = common + (
+                    '',                       # Giorni vuoto per assenze orarie
+                    holidays if holidays else '',
+                    hours_display,
                 )
             else:
-                # Assenza giornaliera: mostra giorni, niente ore
-                values = (
-                    req.AbsenceRequestId,
-                    req.RequestType,
-                    req.Employee,
-                    req.RecordedOnDate.strftime('%d/%m/%Y') if req.RecordedOnDate else '',
-                    req.DateStart.strftime('%d/%m/%Y') if req.DateStart else '',
-                    req.DateEnd.strftime('%d/%m/%Y') if req.DateEnd else '',
-                    req.NrDays if req.NrDays else '',
-                    ''    # Ore vuoto per assenze giornaliere
+                # Assenza giornaliera: mostra i giorni LAVORATIVI, niente ore
+                values = common + (
+                    req.NrDays if req.NrDays else 0,
+                    holidays if holidays else '',
+                    '',                       # Ore vuoto per assenze giornaliere
                 )
             self.tree.insert('', tk.END, values=values)
             
@@ -534,12 +576,19 @@ class AbsenceAuthorizationWindow(tk.Toplevel):
             ore: {hours_display}
             """
             else:
+                # Dettaglio del conteggio: calendario = lavorativi + weekend + festivi
+                _cal = getattr(self.selected_request, 'NrCalendarDays', None) or 0
+                _wknd = getattr(self.selected_request, 'NrWeekendDays', None) or 0
+                _hol = getattr(self.selected_request, 'NrHolidays', None) or 0
+                _work = self.selected_request.NrDays or 0
+                breakdown = (f"(calendario {_cal} = lavorativi {_work}"
+                             f" + weekend {_wknd} + festivi {_hol})")
                 info_text = f"""
             Dipendente: {self.selected_request.Employee}
             Tipo Richiesta: {self.selected_request.RequestType}
             Data Inizio: {self.selected_request.DateStart.strftime('%d/%m/%Y')}
             Data Fine: {self.selected_request.DateEnd.strftime('%d/%m/%Y')}
-giorni: {self.selected_request.NrDays if self.selected_request.NrDays else 'N/A'}
+giorni lavorativi: {_work}  {breakdown}
             """
             self.info_label.config(text=info_text, foreground='black')  # Ripristina colore nero
             
@@ -1614,6 +1663,17 @@ giorni: {self.selected_request.NrDays if self.selected_request.NrDays else 'N/A'
                 <td style="padding:6px 12px;"><strong>{hours_display}</strong></td>
               </tr>"""
         else:
+            # Giorni lavorativi effettivi (weekend e sarbatori legale escluse)
+            work_days = getattr(req, 'NrDays', None) or 0
+            holidays = getattr(req, 'NrHolidays', None) or 0
+            holidays_row = ""
+            if holidays:
+                holidays_row = f"""
+              <tr>
+                <td style="padding:6px 12px;color:#555;">Sărbători legale în perioadă:</td>
+                <td style="padding:6px 12px;"><strong>{holidays}</strong>
+                    <span style="color:#777;">(nu se scad din concediu)</span></td>
+              </tr>"""
             date_rows_html = f"""
               <tr>
                 <td style="padding:6px 12px;color:#555;">Data început:</td>
@@ -1622,7 +1682,11 @@ giorni: {self.selected_request.NrDays if self.selected_request.NrDays else 'N/A'
               <tr style="background:#f8f9fa;">
                 <td style="padding:6px 12px;color:#555;">Data sfârșit:</td>
                 <td style="padding:6px 12px;"><strong>{date_end}</strong></td>
-              </tr>"""
+              </tr>
+              <tr>
+                <td style="padding:6px 12px;color:#555;">Zile lucrătoare:</td>
+                <td style="padding:6px 12px;"><strong>{work_days}</strong></td>
+              </tr>{holidays_row}"""
 
         # Path logo
         base_dir = os.path.dirname(os.path.abspath(__file__))
