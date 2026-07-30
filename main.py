@@ -13773,12 +13773,11 @@ class App(tk.Tk):
             win.protocol("WM_DELETE_WINDOW", lambda: None)  # non chiudibile
             frm = tk.Frame(win, bg="#1e2a3a")
             frm.pack(fill=tk.BOTH, expand=True, padx=28, pady=24)
-            title_txt = self.lang.get('update_handoff_title',
-                                      "Avvio aggiornamento alla versione {0}...")
-            try:
-                title_txt = title_txt.format(version)
-            except Exception:
-                pass
+            # _t_fmt e non lang.get(...).format(): con la traduzione presente,
+            # get() passerebbe il default a .format() e {0} verrebbe sostituito
+            # dal testo di default invece che dal numero di versione.
+            title_txt = self._t_fmt('update_handoff_title',
+                                    "Avvio aggiornamento alla versione {0}...", version)
             tk.Label(
                 frm, text=title_txt,
                 font=("Segoe UI", 12, "bold"), fg="#ffffff", bg="#1e2a3a"
