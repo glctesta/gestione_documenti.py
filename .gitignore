@@ -35,3 +35,7 @@ __pycache__/
 # Config generata a runtime (creata dall'app al primo avvio)
 kit_server_config.json
 kit_server_config.json.bak
+
+# Stato locale scritto dall'app (non va versionato)
+whatsnew_shown.txt
+update_skip_count.json
