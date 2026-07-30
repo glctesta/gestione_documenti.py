@@ -13,6 +13,13 @@ class SimpleSecurityWindow:
         """Mostra finestra di sicurezza"""
         root = tk.Tk()
         root.title("Accesso Bloccato")
+        try:
+            _base = getattr(sys, '_MEIPASS', None) or os.path.dirname(os.path.abspath(__file__))
+            _icon = os.path.join(_base, 'GTMC-ICO.ico')
+            if os.path.isfile(_icon):
+                root.iconbitmap(default=_icon)
+        except Exception:
+            pass
         root.geometry("450x220")
         root.resizable(False, False)
         root.configure(bg='#f8d7da')  # Sfondo rosso chiaro

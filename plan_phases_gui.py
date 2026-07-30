@@ -90,7 +90,9 @@ class PlanPhasesWindow(tk.Toplevel):
 
         all_phases = pp.get_all_plan_phases(self.db.conn)
         configured = pp.is_configured(self.db.conn)
-        selected = pp.get_selected_phases(self.db.conn) if configured else set(all_phases)
+        # Non configurato -> default restrittivo: solo le fasi finali (FCT, FQC)
+        selected = (pp.get_selected_phases(self.db.conn) if configured
+                    else set(pp.get_final_phases()))
         forced = set(pp.FORCED_PHASES)
 
         # 2 colonne

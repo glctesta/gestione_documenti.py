@@ -20,6 +20,7 @@ a = Analysis(
         ('updater.exe', '.'),
         ('logo.png', '.'),
         ('logo.ico', '.'),
+        ('GTMC-ICO.ico', '.'),
         ('DejaVuSans.ttf', '.'),
         ('DejaVuSans-Bold.ttf', '.'),
     ] + _tcl_data,

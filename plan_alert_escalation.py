@@ -263,9 +263,18 @@ def get_unresponded_alerts_summary(conn, date_from=None, date_to=None,
         return []
 
 
-def get_alerts_for_order_product(conn, order_number: str, product_name: str) -> list:
-    """Recupera tutti gli alert dettagliati per un ordine+prodotto specifico."""
-    query = """
+def get_alerts_for_order_product(conn, order_number: str, product_name: str,
+                                 phases=None) -> list:
+    """Recupera tutti gli alert dettagliati per un ordine+prodotto specifico.
+
+    phases: lista di PhaseName da includere (None/vuota = tutte). Serve a mostrare
+    nel dettaglio esattamente le stesse fasi conteggiate nel riepilogo.
+    """
+    ph_list = [p for p in (phases or []) if p]
+    phase_filter = ""
+    if ph_list:
+        phase_filter = " AND AL.PhaseName IN (%s) " % ','.join('?' for _ in ph_list)
+    query = f"""
     SELECT DISTINCT
         AL.AlertId,
         o.ordernumber AS OrderNumber,
@@ -287,6 +296,7 @@ def get_alerts_for_order_product(conn, order_number: str, product_name: str) -> 
     WHERE pa.AlertId IS NULL
       AND o.ordernumber = ?
       AND AL.ProductName = ?
+      {phase_filter}
       AND NOT EXISTS (
           SELECT 1 FROM [Traceability_RS].[dbo].[PlanAlerts] AX
           INNER JOIN [Traceability_RS].[dbo].[PlanAlertResponses] PX ON PX.AlertId = AX.AlertId
@@ -298,7 +308,7 @@ def get_alerts_for_order_product(conn, order_number: str, product_name: str) -> 
     """
     try:
         with conn.cursor() as cursor:
-            cursor.execute(query, (order_number, product_name))
+            cursor.execute(query, (order_number, product_name, *ph_list))
             return cursor.fetchall()
     except Exception as e:
         logger.error(f"Errore recupero alert dettaglio per {order_number}/{product_name}: {e}")
@@ -306,9 +316,18 @@ def get_alerts_for_order_product(conn, order_number: str, product_name: str) -> 
 
 
 def get_all_alert_ids_for_order_product(conn, order_number: str,
-                                         product_name: str) -> list:
-    """Recupera TUTTI gli AlertId non giustificati per un ordine+prodotto."""
-    query = """
+                                         product_name: str, phases=None) -> list:
+    """Recupera TUTTI gli AlertId non giustificati per un ordine+prodotto.
+
+    phases: lista di PhaseName da includere (None/vuota = tutte). Va passata la
+    stessa lista mostrata a video, altrimenti la giustificazione di gruppo
+    chiuderebbe anche alert di fasi che l'utente non ha mai visto.
+    """
+    ph_list = [p for p in (phases or []) if p]
+    phase_filter = ""
+    if ph_list:
+        phase_filter = " AND AL.PhaseName IN (%s) " % ','.join('?' for _ in ph_list)
+    query = f"""
     SELECT AL.AlertId
     FROM [Traceability_RS].[dbo].[PlanAlerts] AL
     INNER JOIN traceability_rs.dbo.orders o ON o.idorder = AL.idorder
@@ -316,6 +335,7 @@ def get_all_alert_ids_for_order_product(conn, order_number: str,
     WHERE pa.AlertId IS NULL
       AND o.ordernumber = ?
       AND AL.ProductName = ?
+      {phase_filter}
       AND NOT EXISTS (
           SELECT 1 FROM [Traceability_RS].[dbo].[PlanAlerts] AX
           INNER JOIN [Traceability_RS].[dbo].[PlanAlertResponses] PX ON PX.AlertId = AX.AlertId
@@ -326,7 +346,7 @@ def get_all_alert_ids_for_order_product(conn, order_number: str,
     """
     try:
         with conn.cursor() as cursor:
-            cursor.execute(query, (order_number, product_name))
+            cursor.execute(query, (order_number, product_name, *ph_list))
             return [row.AlertId for row in cursor.fetchall()]
     except Exception as e:
         logger.error(f"Errore recupero AlertId per {order_number}/{product_name}: {e}")

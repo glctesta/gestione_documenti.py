@@ -206,7 +206,6 @@ import json, socket
 import threading
 import time
 import utils
-import translations_manager
 from business_days import should_send_notification
 from npi.npi_manager import GestoreNPI
 from typing import Optional, List, Dict, Tuple
@@ -309,7 +308,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.7.5'  # Versione aggiornata 
+APP_VERSION = '2.4.2.7.7'  # Versione aggiornata 
 # Nome programma usato come chiave in SwVersions / VersionDMLogs.
 # In produzione = nome dell'exe; in sviluppo usa il nome canonico.
 APP_PROGRAM_NAME = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else 'DocumentManagement.exe'
@@ -1203,21 +1202,6 @@ class Database:
             logger.error(f"Errore validazione dichiarazione scrap {declaration_id}: {e}")
             return False, str(e)
 
-    def fetch_scrap_reasons(self):
-        """Recupera le causali di scarto"""
-        query = """
-                SELECT ScrapReasonId, Reason as ReasonCode, Reason as ReasonDescription, NoReference
-                FROM [Traceability_RS].[dbo].[ScrapResons]
-                ORDER BY Reason; \
-                """
-        try:
-            self.cursor.execute(query)
-            return self.cursor.fetchall()
-        except pyodbc.Error as e:
-            self.last_error_details = str(e)
-            logger.error(f"Errore fetch causali scrap: {e}")
-            return []
-
     def insert_scrap_reason(self, reason_text, no_reference=False):
         """Inserisce una nuova causale di scarto."""
         query = """
@@ -1233,22 +1217,6 @@ class Database:
             self.conn.rollback()
             self.last_error_details = str(e)
             logger.error(f"Errore insert causale scrap '{reason_text}': {e}")
-            return False
-
-    def delete_scrap_reason(self, reason_id):
-        """Elimina una causale di scarto."""
-        query = """
-                DELETE FROM [Traceability_RS].[dbo].[ScrapResons]
-                WHERE ScrapReasonId = ?
-                """
-        try:
-            self.cursor.execute(query, reason_id)
-            self.conn.commit()
-            return True
-        except pyodbc.Error as e:
-            self.conn.rollback()
-            self.last_error_details = str(e)
-            logger.error(f"Errore delete causale scrap ID={reason_id}: {e}")
             return False
 
     def fetch_all_product_checks(self):
@@ -3266,23 +3234,6 @@ class Database:
             logger.error(f"Errore nel recupero dettagli calibrazione {calibration_id}: {e}")
             raise
 
-    def update_calibration(self, calibration_id, expiry_date, supplier_id, pdf_bytes, username):
-        """Aggiorna una calibrazione esistente"""
-        try:
-            query = """
-                    UPDATE [Traceability_RS].[eqp].[Calibrations]
-                    SET [ExpireOn] = ?, [SupplierId] = ?, [NrCertificate] = ?, [User] = ?, [DateSys] = GETDATE()
-                    WHERE [CalibrationID] = ? \
-                    """
-
-            self.cursor.execute(query, (expiry_date, supplier_id, pdf_bytes, username, calibration_id))
-            self.conn.commit()
-
-        except Exception as e:
-            self.conn.rollback()
-            logger.error(f"Errore nell'aggiornamento calibrazione {calibration_id}: {e}")
-            raise
-
     def invalidate_previous_calibrations(self, equipment_id):
         """Imposta IsValid = 0 per tutte le calibrazioni precedenti di un'attrezzatura"""
         try:
@@ -3518,24 +3469,6 @@ class Database:
             cur.execute(q_assign, seg_id, ehh_id, safe_note)
             cur.execute(q_progress, seg_id )# , ehh_id)
 
-            self.conn.commit()
-            return True
-        except Exception as e:
-            self.conn.rollback()
-            self.last_error_details = str(e)
-            return False
-        finally:
-            try:
-                if cur: cur.close()
-            except:
-                pass
-
-    def insert_scrap_reason(self, reason):
-        query = "INSERT INTO Traceability_RS.dbo.ScrapResons ([Reason]) VALUES (?);"
-        cur = None
-        try:
-            cur = self.conn.cursor()
-            cur.execute(query, reason.strip())
             self.conn.commit()
             return True
         except Exception as e:
@@ -5073,18 +5006,6 @@ class Database:
         except pyodbc.Error:
             return True  # Per sicurezza, in caso di errore, si assume che sia usato
 
-    def update_brand(self, brand_id, brand_name, company_id, logo_data):
-        """Aggiorna un brand esistente."""
-        query = "UPDATE eqp.EquipmentBrands SET Brand = ?, CompanyId = ?, BrandLogo = ? WHERE EquipmentBrandId = ?;"
-        try:
-            company_id_to_save = int(company_id) if company_id is not None else None
-            self.cursor.execute(query, brand_name, company_id_to_save, logo_data, brand_id)
-            self.conn.commit()
-            return True, "Brand aggiornato con successo."
-        except pyodbc.Error as e:
-            self.conn.rollback()
-            return False, f"Errore database: {e}"
-
     def delete_brand(self, brand_id):
         """Cancella un brand."""
         query = "DELETE FROM eqp.EquipmentBrands WHERE EquipmentBrandId = ?;"
@@ -6620,84 +6541,6 @@ class Database:
             self.conn.rollback()
             print(f"Errore nell'inserimento richiesta: {e}")
             self.last_error_details = str(e)
-            return False
-
-    def fetch_and_open_document_by_task_id(self, task_id):
-        """Recupera e apre il documento associato a un CompitoId."""
-
-        self.last_error_details = ""
-
-        # Query fornita dall'utente. Aggiungiamo FileName e FileType necessari per l'apertura.
-        # Aggiungiamo ORDER BY per assicurarci di prendere il documento piÃ¹ recente se la JOIN ne producesse piÃ¹ di uno.
-        query = """
-                select emd.DocumentSource, emd.FileName, emd.FileType
-                from Traceability_rs.eqp.EquipmentMantainanceDocs emd
-                         left join Traceability_rs.eqp.CompitiManutenzione CM \
-                                   on cm.ProgrammedInterventionId = emd.ProgrammedInterventionId
-                where cm.compitoid = ?
-                -- Potresti voler aggiungere AND emd.DateOut IS NULL se vuoi mostrare solo documenti attivi
-                ORDER BY emd.DateSys DESC
-                """
-        try:
-            self.cursor.execute(query, task_id)
-            # Usiamo fetchone() per prendere solo il primo risultato (il piÃ¹ recente)
-            row = self.cursor.fetchone()
-
-            if row and row.DocumentSource:
-                binary_data = row.DocumentSource
-
-                # --- Logica Gestione File Temporaneo (Robusta) ---
-
-                # 1. Determina estensione e prefisso
-                file_extension = row.FileType if row.FileType else os.path.splitext(row.FileName)[1]
-                if not file_extension:
-                    print(f"Attenzione: Estensione mancante per task ID {task_id}. Usando default .pdf")
-                    file_extension = '.pdf'  # Default ragionevole
-
-                if not file_extension.startswith('.'):
-                    file_extension = '.' + file_extension
-
-                temp_prefix = "task_doc_"
-                if row.FileName:
-                    # Pulisce il nome del file (rimuove caratteri non sicuri) per usarlo come prefisso
-                    safe_name = re.sub(r'[^\w\-]', '_', os.path.splitext(row.FileName)[0])
-                    temp_prefix = safe_name[:50] + "_"
-
-                # 2. Crea e scrivi file temporaneo
-                # delete=False Ã¨ necessario affinchÃ© il programma esterno possa aprirlo
-                temp_file = tempfile.NamedTemporaryFile(prefix=temp_prefix, delete=False, suffix=file_extension)
-                temp_file.write(binary_data)
-                temp_file.close()  # Chiudi handle Python per permettere apertura esterna
-
-                print(f"Apertura documento per compito ID {task_id}: {temp_file.name}")
-
-                # 3. Apertura File (Cross-platform)
-                try:
-                    if sys.platform == "win32":
-                        # Metodo per Windows (es. apre con Adobe Reader o Word/Excel predefinito)
-                        os.startfile(temp_file.name)
-                    else:
-                        # Fallback per macOS e Linux
-                        opener = "open" if sys.platform == "darwin" else "xdg-open"
-                        subprocess.call([opener, temp_file.name])
-                except Exception as open_e:
-                    self.last_error_details = f"Errore OS nell'apertura del file: {open_e}"
-                    return False
-
-                return True
-            else:
-                # Caso in cui la query non restituisce risultati (nessun documento collegato)
-                self.last_error_details = f"Nessun documento trovato associato al compito ID {task_id}."
-                return False
-
-        except pyodbc.Error as e:
-            print(f"Errore durante il recupero del documento dal DB per task ID {task_id}: {e}")
-            self.last_error_details = f"Errore Database: {e}"
-            return False
-        except Exception as e:
-            # Gestione errori (es. permessi scrittura file temporaneo)
-            print(f"Errore imprevisto durante la gestione del file temporaneo: {e}")
-            self.last_error_details = f"Errore Applicazione (File System): {e}"
             return False
 
     def fetch_spare_parts(self):
@@ -11186,10 +11029,44 @@ class App(tk.Tk):
     """Classe principale dell'applicazione."""
     SIMPLE_LOGIN_CACHE_HOURS = 3
     AUTHORIZED_ACTION_CACHE_MINUTES = 15
+    APP_ICON_FILE = 'GTMC-ICO.ico'
+
+    @staticmethod
+    def _find_app_icon():
+        """Percorso dell'icona applicazione (dev, PyInstaller onedir/onefile)."""
+        candidates = []
+        meipass = getattr(sys, '_MEIPASS', None)
+        if meipass:
+            candidates.append(meipass)
+        if getattr(sys, 'frozen', False):
+            exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+            candidates.extend([exe_dir, os.path.join(exe_dir, '_internal')])
+        candidates.append(os.path.dirname(os.path.abspath(__file__)))
+        for base in candidates:
+            path = os.path.join(base, App.APP_ICON_FILE)
+            if os.path.isfile(path):
+                return path
+        return None
+
+    def _apply_app_icon(self):
+        """Imposta l'icona su questa finestra e, come default, su tutte le
+        Toplevel create in seguito (parametro `default` di iconbitmap)."""
+        icon_path = self._find_app_icon()
+        if not icon_path:
+            logger.warning("Icona applicazione '%s' non trovata", self.APP_ICON_FILE)
+            return
+        try:
+            self.iconbitmap(default=icon_path)
+        except Exception as icon_err:
+            logger.warning("Impossibile impostare l'icona applicazione: %s", icon_err)
 
     def __init__(self):
         super().__init__()
         logger.debug("INIT: start __init__")
+
+        # Icona applicazione (sostituisce la "penna" di default di Tk su tutte
+        # le finestre: root, splash e ogni Toplevel creata successivamente)
+        self._apply_app_icon()
 
         # ── Splash screen ────────────────────────────────────────────────────
         # Nascondi la finestra principale finché non è pronta
@@ -13130,14 +13007,6 @@ class App(tk.Tk):
         logger.info('File xls per richiesta materiali di kanban creato')
         return buf.getvalue()
 
-    def open_kanban_move(self):
-        ok = self._execute_authorized_action(
-            menu_translation_key='kanban_move',
-            action_callback=lambda: KanbanMoveForm(self, self.db, self.lang)
-        )
-        if not ok:
-            return
-
     def open_kanban_materials_report(self):
         import os
         from datetime import datetime
@@ -13881,6 +13750,69 @@ class App(tk.Tk):
             logger.warning(f"_show_update_prep_splash: {e}")
             return None
 
+    def _show_update_handoff_splash(self, version):
+        """Overlay di 'passaggio di consegne' mostrato tra il click 'Aggiorna' e
+        l'effettivo avvio dell'updater. Resta visibile in modo continuo (topmost,
+        non chiudibile, barra indeterminata) finché il processo termina con
+        os._exit: così l'operatore non vede MAI lo schermo vuoto tra il dialogo e
+        la finestra dell'updater (che altrimenti sembrerebbe un crash).
+        Ritorna il Toplevel o None."""
+        try:
+            win = tk.Toplevel(self)
+            win.overrideredirect(True)                 # niente barra titolo
+            win.configure(bg="#1e2a3a")
+            win.protocol("WM_DELETE_WINDOW", lambda: None)  # non chiudibile
+            frm = tk.Frame(win, bg="#1e2a3a")
+            frm.pack(fill=tk.BOTH, expand=True, padx=28, pady=24)
+            title_txt = self.lang.get('update_handoff_title',
+                                      "Avvio aggiornamento alla versione {0}...")
+            try:
+                title_txt = title_txt.format(version)
+            except Exception:
+                pass
+            tk.Label(
+                frm, text=title_txt,
+                font=("Segoe UI", 12, "bold"), fg="#ffffff", bg="#1e2a3a"
+            ).pack(pady=(0, 6))
+            tk.Label(
+                frm,
+                text=self.lang.get(
+                    'update_handoff_msg',
+                    "L'applicazione si chiuderà e ripartirà automaticamente.\n"
+                    "Non spegnere il PC e non chiudere questa finestra."),
+                font=("Segoe UI", 9), fg="#e0f7fa", bg="#1e2a3a",
+                justify=tk.CENTER
+            ).pack(pady=(0, 14))
+            style = ttk.Style(win)
+            try:
+                style.theme_use("clam")
+            except Exception:
+                pass
+            style.configure("Handoff.Horizontal.TProgressbar",
+                            troughcolor="#2c3e50", background="#4fc3f7",
+                            bordercolor="#1e2a3a", lightcolor="#4fc3f7",
+                            darkcolor="#4fc3f7", thickness=10)
+            pb = ttk.Progressbar(frm, mode='indeterminate', length=340,
+                                 style="Handoff.Horizontal.TProgressbar")
+            pb.pack()
+            pb.start(12)
+            win.update_idletasks()
+            w = max(win.winfo_reqwidth(), 420)
+            h = max(win.winfo_reqheight(), 170)
+            sw = win.winfo_screenwidth()
+            sh = win.winfo_screenheight()
+            win.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+            win.lift()
+            try:
+                win.attributes('-topmost', True)
+            except Exception:
+                pass
+            win.update()
+            return win
+        except Exception as e:
+            logger.warning(f"_show_update_handoff_splash: {e}")
+            return None
+
     def _trigger_update(self, version_info, mandatory=True):
         """
         Mostra un dialogo con conto alla rovescia (60s) e lancia l'updater.
@@ -14174,6 +14106,16 @@ class App(tk.Tk):
             return 'postponed'
 
         # action == 'update' → prosegue con il lancio updater
+        # ── Overlay di passaggio di consegne ─────────────────────────────────
+        # Resta visibile in modo CONTINUO dal click fino all'os._exit: elimina il
+        # "buco nero" tra la chiusura del dialogo e la comparsa della finestra
+        # dell'updater (che l'operatore leggerebbe come un crash).
+        handoff = self._show_update_handoff_splash(version_info.Version)
+        try:
+            self.update()
+        except Exception:
+            pass
+
         # Avvia updater
         logger.info(f"_trigger_update: lancio updater: {updater_path}")
         logger.info(f"  source={source}")
@@ -14189,6 +14131,11 @@ class App(tk.Tk):
             logger.info(f"_trigger_update: updater avviato con PID={proc.pid}")
         except Exception as e:
             logger.error(f"_trigger_update: ERRORE lancio updater: {e}", exc_info=True)
+            if handoff is not None:
+                try:
+                    handoff.destroy()
+                except Exception:
+                    pass
             messagebox.showerror(
                 self.lang.get('error', 'Errore'),
                 f"Impossibile avviare l'updater:\n{e}",
@@ -14196,8 +14143,17 @@ class App(tk.Tk):
             )
             return 'failed'
 
-        # Piccola attesa per dare tempo all'updater di avviarsi prima del force-exit
-        time.sleep(0.5)
+        # Mantieni l'overlay ANIMATO e visibile mentre l'updater si avvia e mostra
+        # la sua finestra di copia (~1.5s), invece di un time.sleep() che congela
+        # tutto. Così il passaggio di consegne è senza interruzioni visive.
+        _t = 0.0
+        while _t < 1.5:
+            try:
+                self.update()
+            except Exception:
+                pass
+            time.sleep(0.05)
+            _t += 0.05
 
         # Chiude l'app per liberare i file bloccati dall'EXE padre
         logger.info("_trigger_update: chiusura app per aggiornamento...")
@@ -14205,8 +14161,13 @@ class App(tk.Tk):
             self.db.disconnect()
         except Exception:
             pass
+        # NB: NON chiamiamo self.destroy(): distruggerebbe anche l'overlay. Lasciamo
+        # che os._exit termini il processo (e con esso l'overlay) all'ultimo istante,
+        # quando l'updater ha già preso il controllo dello schermo. Nascondiamo solo
+        # l'eventuale main window per non mostrare finestre a metà.
         try:
-            self.destroy()
+            if self.winfo_ismapped():
+                self.withdraw()
         except Exception:
             pass
 
@@ -15727,15 +15688,6 @@ class App(tk.Tk):
         except Exception as e:
             logger.error(f'Errore durante {task_name}: {e}', exc_info=True)
 
-    def _stop_product_check_background_task(self):
-        """Ferma/Pulisce il task di verifica discrepanze."""
-        if hasattr(self, 'product_check_bg_job') and self.product_check_bg_job:
-            try:
-                self.after_cancel(self.product_check_bg_job)
-            except Exception:
-                pass
-            self.product_check_bg_job = None
-
     def _run_verification_check_thread(self):
         """Esegue la logica di verifica in un thread separato."""
         import product_checks_gui
@@ -16244,14 +16196,6 @@ class App(tk.Tk):
             action_callback=lambda: tools_gui.open_doc_types_manager(self, self.db, self.lang)
         )
     
-    def open_translations_manager_with_login(self):
-        """Richiede il login e poi apre la finestra di gestione traduzioni."""
-        self._execute_authorized_action(
-            menu_translation_key='manage_translations',
-            action_callback=lambda: translations_manager.open_translations_manager(self, self.db, self.lang)
-        )
-
-
     def _open_general_docs_viewer(self, category_id, category_name):
         """Apre la finestra di visualizzazione dei documenti in modalitÃ  SOLA LETTURA (senza login)."""
         import general_docs_gui
@@ -16663,25 +16607,6 @@ class App(tk.Tk):
         if authenticated_user:
             tools_gui.open_suppliers_manager(self, self.db, self.lang)
 
-    def _save_language_setting(self, lang_code):
-        """Salva la lingua corrente nel file di configurazione."""
-        try:
-            with open("lang.conf", "w") as f:
-                f.write(lang_code)
-        except Exception as e:
-            print(f"Impossibile salvare le impostazioni della lingua: {e}")
-
-    def _load_language_setting(self):
-        """Carica la lingua dal file di configurazione, se esiste."""
-        try:
-            with open("lang.conf", "r") as f:
-                return f.read().strip()
-        except FileNotFoundError:
-            return 'it'  # Lingua di default se il file non esiste
-        except Exception as e:
-            print(f"Impossibile leggere le impostazioni della lingua: {e}")
-            return 'it'  # Ritorna al default in caso di errore
-
     def open_fill_templates_with_login(self):
         """Apre la finestra per compilare le schede dopo un login semplice."""
         import maintenance_gui
@@ -16725,7 +16650,17 @@ class App(tk.Tk):
 
             fetch_thread = threading.Thread(target=_fetch_version, daemon=True)
             fetch_thread.start()
-            fetch_thread.join(timeout=10)  # Max 10 secondi
+            # Attesa NON bloccante: invece di join() (che congela il thread Tk e
+            # fa sembrare lo splash bloccato/crashato), pompiamo l'event loop così
+            # lo splash resta animato e reattivo mentre la query gira in background.
+            _waited = 0.0
+            while fetch_thread.is_alive() and _waited < 10.0:
+                try:
+                    self.update()   # ridisegna lo splash (Toplevel figlio di self)
+                except Exception:
+                    pass
+                time.sleep(0.05)
+                _waited += 0.05
 
             if fetch_thread.is_alive():
                 logger.warning("check_version: timeout raggiunto (10s). Controllo versione saltato.")

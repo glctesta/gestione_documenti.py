@@ -15,10 +15,14 @@ La regola e' sempre applicata, ma puo' essere corretta manualmente dalla
 maschera di gestione (dbo.PlanResponsibleOverrides): si possono ESCLUDERE
 persone calcolate dalla regola o INCLUDERE indirizzi aggiuntivi.
 
-Trigger email: tutte le discrepanze di piano ancora NON giustificate
-(dbo.PlanAlerts) a partire da una data configurabile (Sys_plan_responsibles_start_date,
-default 27/07/2026), con le piu' recenti evidenziate, piu' le richieste urgenti
-di spedizione ancora pendenti (dyn.DynamicShippingRules).
+Contenuto email (in quest'ordine di priorita'):
+  1) le richieste urgenti di spedizione non rispettate/ancora pendenti
+     (dyn.DynamicShippingRules) — vanno giustificate per prime;
+  2) le discrepanze di piano ancora NON giustificate (dbo.PlanAlerts) limitate
+     alle SOLE FASI FINALI (FCT, FQC — vedi plan_phases.FORCED_PHASES), a partire
+     da una data configurabile (Sys_plan_resp_start_date, default 27/07/2026),
+     con le piu' recenti evidenziate.
+Le fasi intermedie (ICT, PTHM, PALETIZARE, ...) non vengono riportate.
 
 Invio: worker in-app giornaliero (vedi main.py), 1 volta al giorno, giorni
 lavorativi RO, con dedup atomico su dbo.settings e rispetto della modalita'
@@ -311,14 +315,22 @@ def set_start_date(conn, d: date) -> bool:
 # ============================================================
 # DATI: discrepanze aperte + urgenze spedizione
 # ============================================================
-def get_open_discrepancies(conn, start_date: date) -> list:
-    """Discrepanze di piano non giustificate da start_date a oggi, ordinate per
-    ultima alert (piu' recenti prima). Limitate alle fasi monitorate se configurate."""
+def get_monitored_phases(conn) -> list:
+    """Fasi da riportare nell'email: solo le finali (FCT, FQC) salvo diversa
+    configurazione esplicita in dbo.PlanMonitoredPhases."""
     try:
         import plan_phases
-        monitored = plan_phases.get_monitored_phases(conn)
-    except Exception:
-        monitored = None
+        return plan_phases.get_monitored_phases(conn)
+    except Exception as e:
+        logger.error(f"get_monitored_phases: uso default FCT/FQC: {e}")
+        return ['FCT', 'FQC']
+
+
+def get_open_discrepancies(conn, start_date: date) -> list:
+    """Discrepanze di piano non giustificate da start_date a oggi, ordinate per
+    ultima alert (piu' recenti prima). Limitate alle fasi finali (FCT/FQC):
+    le fasi intermedie non vanno riportate ai responsabili."""
+    monitored = get_monitored_phases(conn)
     rows = pae.get_unresponded_alerts_summary(
         conn, date_from=start_date, date_to=date.today(), phases=monitored)
     out = []
@@ -340,6 +352,7 @@ def get_open_discrepancies(conn, start_date: date) -> list:
 
 _QUERY_PENDING_URGENT = """
 SELECT
+    R.DybamicShippingRuleId AS ShippingRuleId,   -- refuso di nome presente nel DB
     PO.ordernumber   AS ProductionOrder,
     D.CustomerName,
     D.SONumber,
@@ -371,14 +384,21 @@ ORDER BY R.DateToship ASC
 """
 
 
-def get_pending_urgent_shipments(conn) -> list:
-    """Richieste urgenti di spedizione ancora pendenti (residuo da spedire > 0)."""
+def get_pending_urgent_shipments(conn, with_justifications: bool = True) -> list:
+    """Richieste urgenti di spedizione ancora pendenti (residuo da spedire > 0).
+
+    Se with_justifications, a ogni riga viene agganciata l'eventuale
+    giustificazione registrata (chiavi 'reason', 'notes', 'justified_by',
+    'justified_date'); 'reason' None = urgenza non ancora giustificata.
+    Ordinamento: prima le urgenze non giustificate, poi per data richiesta.
+    """
     out = []
     try:
         with conn.cursor() as cur:
             cur.execute(_QUERY_PENDING_URGENT)
             for r in cur.fetchall():
                 out.append({
+                    'rule_id': r.ShippingRuleId,
                     'order': r.ProductionOrder,
                     'customer': r.CustomerName,
                     'so': r.SONumber,
@@ -388,16 +408,139 @@ def get_pending_urgent_shipments(conn) -> list:
                     'qty': r.QtyToShip,
                     'ship_to': r.ShipTo,
                     'requested_by': r.AddBayUser,
+                    'reason': None,
+                    'notes': None,
+                    'justified_by': None,
+                    'justified_date': None,
                 })
     except Exception as e:
         logger.error(f"get_pending_urgent_shipments: {e}", exc_info=True)
+        return out
+
+    if with_justifications and out:
+        just = get_urgency_justifications(conn, [s['rule_id'] for s in out])
+        for s in out:
+            j = just.get(s['rule_id'])
+            if j:
+                s.update(j)
+
+    out.sort(key=lambda s: (s['reason'] is not None,
+                            s['date_to_ship'] or datetime.max))
     return out
 
 
-# Fasi che fanno da precursore del versamento a magazzino (FCT, fallback ICT):
-# regola empirica dell'utente. Il versamento e' atteso lo stesso giorno della
-# richiesta FCT pianificata; ICT si considera solo se manca FCT.
-DEPOSIT_PRECURSOR_PHASES = ('FCT', 'ICT')
+# ============================================================
+# GIUSTIFICAZIONE DELLE URGENZE DI SPEDIZIONE NON RISPETTATE
+# ============================================================
+# Le urgenze di spedizione vanno giustificate PRIMA delle discrepanze di piano.
+# Riusa le stesse motivazioni delle discrepanze (dbo.PlanResponses).
+URGENCY_TABLE = 'traceability_rs.dbo.ShippingUrgencyJustifications'
+
+
+def ensure_urgency_table(conn) -> None:
+    """Crea dbo.ShippingUrgencyJustifications se non esiste (idempotente)."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                IF OBJECT_ID('{URGENCY_TABLE}', 'U') IS NULL
+                BEGIN
+                    CREATE TABLE {URGENCY_TABLE} (
+                        JustificationId INT IDENTITY(1,1) PRIMARY KEY,
+                        ShippingRuleId  INT NOT NULL,
+                        OrderNumber     NVARCHAR(100)  NULL,
+                        PlanResponseId  INT            NULL,
+                        ReasonText      NVARCHAR(500)  NULL,
+                        Notes           NVARCHAR(1000) NULL,
+                        JustifiedBy     NVARCHAR(255)  NULL,
+                        JustifiedDate   DATETIME NOT NULL DEFAULT GETDATE()
+                    );
+                    CREATE INDEX IX_ShipUrgJust_RuleId
+                        ON {URGENCY_TABLE} (ShippingRuleId);
+                END
+            """)
+        conn.commit()
+    except Exception as e:
+        logger.error(f"ensure_urgency_table: {e}", exc_info=True)
+
+
+def get_urgency_justifications(conn, rule_ids=None) -> dict:
+    """Ultima giustificazione per ogni ShippingRuleId -> dict con reason/notes/...
+    Se rule_ids e' None ritorna tutte."""
+    ensure_urgency_table(conn)
+    ids = [int(i) for i in (rule_ids or []) if i is not None]
+    if rule_ids is not None and not ids:
+        return {}
+    where = ""
+    params = []
+    if ids:
+        where = "WHERE ShippingRuleId IN (%s)" % ','.join('?' for _ in ids)
+        params = ids
+    out = {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT ShippingRuleId, ReasonText, Notes, JustifiedBy, JustifiedDate
+                FROM (
+                    SELECT ShippingRuleId, ReasonText, Notes, JustifiedBy, JustifiedDate,
+                           ROW_NUMBER() OVER (PARTITION BY ShippingRuleId
+                                              ORDER BY JustifiedDate DESC,
+                                                       JustificationId DESC) AS rn
+                    FROM {URGENCY_TABLE}
+                    {where}
+                ) T
+                WHERE rn = 1
+            """, params)
+            for r in cur.fetchall():
+                out[r.ShippingRuleId] = {
+                    'reason': r.ReasonText,
+                    'notes': r.Notes,
+                    'justified_by': r.JustifiedBy,
+                    'justified_date': r.JustifiedDate,
+                }
+    except Exception as e:
+        logger.error(f"get_urgency_justifications: {e}", exc_info=True)
+    return out
+
+
+def save_urgency_justification(conn, rows, plan_response_id, reason_text,
+                               user: str, notes: str = None) -> int:
+    """Registra la giustificazione per le urgenze indicate.
+
+    rows: lista di dict con almeno 'rule_id' (e opzionalmente 'order').
+    Ritorna il numero di righe inserite.
+    """
+    ensure_urgency_table(conn)
+    saved = 0
+    try:
+        with conn.cursor() as cur:
+            for s in rows:
+                rid = s.get('rule_id')
+                if rid is None:
+                    continue
+                cur.execute(f"""
+                    INSERT INTO {URGENCY_TABLE}
+                        (ShippingRuleId, OrderNumber, PlanResponseId,
+                         ReasonText, Notes, JustifiedBy)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (int(rid), s.get('order'), plan_response_id,
+                      reason_text, notes or None, user))
+                saved += 1
+        conn.commit()
+        logger.info("Giustificate %d urgenze di spedizione da %s", saved, user)
+    except Exception as e:
+        logger.error(f"save_urgency_justification: {e}", exc_info=True)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return 0
+    return saved
+
+
+# Fasi che fanno da precursore del versamento a magazzino: le fasi finali
+# (FCT, FQC) e, come fallback storico, ICT. Il versamento e' atteso lo stesso
+# giorno della richiesta FCT pianificata.
+DEPOSIT_PRECURSOR_PHASES = ('FCT', 'FQC', 'ICT')
 
 
 def get_deposit_status_map(conn, date_from: date, date_to: date) -> dict:
@@ -453,6 +596,7 @@ def gather(conn) -> dict:
     _apply_deposit_status(discrepancies, deposit_map)
     return {
         'start_date': start_date,
+        'phases': get_monitored_phases(conn),
         'discrepancies': discrepancies,
         'shipments': get_pending_urgent_shipments(conn),
     }
@@ -479,11 +623,24 @@ def _fmt_datetime(d) -> str:
         return str(d)
 
 
+def _is_overdue(date_to_ship, today: date) -> bool:
+    """True se la data richiesta di spedizione e' gia' passata (urgenza non rispettata)."""
+    if not date_to_ship:
+        return False
+    try:
+        d = date_to_ship.date() if isinstance(date_to_ship, datetime) else date_to_ship
+        return d < today
+    except Exception:
+        return False
+
+
 def build_email_html(data: dict, logo_cid: str = 'company_logo') -> str:
     """Costruisce il corpo HTML dell'email (rumeno, professionale)."""
     start_date = data['start_date']
     discrepancies = data['discrepancies']
     shipments = data['shipments']
+    phases = data.get('phases') or ['FCT', 'FQC']
+    phases_txt = ', '.join(phases)
     today = date.today()
     recent_threshold = today - timedelta(days=RECENT_HIGHLIGHT_DAYS)
 
@@ -518,7 +675,8 @@ def build_email_html(data: dict, logo_cid: str = 'company_logo') -> str:
                 <td style="padding:6px 10px;border-bottom:1px solid #dee2e6;text-align:center;">{dep_html}</td>
             </tr>"""
         disc_table = f"""
-        <h3 style="color:#1F3864;margin:18px 0 6px;">Discrepanțe de plan nejustificate ({len(discrepancies)})</h3>
+        <h3 style="color:#1F3864;margin:18px 0 6px;">2. Discrepanțe de plan nejustificate —
+        fazele finale {phases_txt} ({len(discrepancies)})</h3>
         <table style="border-collapse:collapse;width:100%;font-size:13px;">
             <thead>
                 <tr style="background:#1F3864;color:#fff;">
@@ -535,31 +693,57 @@ def build_email_html(data: dict, logo_cid: str = 'company_logo') -> str:
             <tbody>{drows}</tbody>
         </table>
         <p style="font-size:12px;color:#666;margin:4px 0 0;">
+            Sunt raportate <b>exclusiv fazele finale ({phases_txt})</b>; fazele intermediare
+            nu fac obiectul acestei justificări.
             Rândurile evidențiate cu galben au alerte din ultimele {RECENT_HIGHLIGHT_DAYS} zile.
-            Coloana „Predare magazie" (doar pentru comenzile cu FCT/ICT): <b style="color:#0a7d28;">Predat</b>
+            Coloana „Predare magazie": <b style="color:#0a7d28;">Predat</b>
             = produs deja predat în magazie (D365); <b style="color:#B71C1C;">Lipsă</b> = încă nepredat.</p>
         """
     else:
-        disc_table = ('<h3 style="color:#1F3864;margin:18px 0 6px;">Discrepanțe de plan '
-                      'nejustificate</h3><p>Nu există discrepanțe deschise în perioada '
+        disc_table = ('<h3 style="color:#1F3864;margin:18px 0 6px;">2. Discrepanțe de plan '
+                      f'nejustificate — fazele finale {phases_txt}</h3>'
+                      '<p>Nu există discrepanțe deschise în perioada '
                       f'analizată (începând cu {_fmt_date(start_date)}).</p>')
 
-    # Tabella urgenze spedizione
+    # Tabella urgenze spedizione — PRIORITA' 1: vanno giustificate per prime
     if shipments:
         srows = ""
+        overdue_count = 0
+        unjustified_count = 0
         for s in shipments:
+            overdue = _is_overdue(s['date_to_ship'], today)
+            if overdue:
+                overdue_count += 1
+            if not s.get('reason'):
+                unjustified_count += 1
+            bg = '#F8D7DA' if overdue else '#ffffff'
+            state = ('<b style="color:#7A1F1F;">ÎNTÂRZIAT</b>' if overdue
+                     else '<span style="color:#666;">În termen</span>')
+            if s.get('reason'):
+                just = (f'<span style="color:#0a7d28;font-weight:bold;">{s["reason"]}</span>'
+                        f'<br><span style="font-size:11px;color:#666;">'
+                        f'{s.get("justified_by") or "—"}, {_fmt_date(s.get("justified_date"))}'
+                        f'{" — " + s["notes"] if s.get("notes") else ""}</span>')
+            else:
+                just = '<b style="color:#B71C1C;">NEJUSTIFICAT</b>'
             srows += f"""
-            <tr>
+            <tr style="background:{bg};">
                 <td style="padding:6px 10px;border-bottom:1px solid #dee2e6;">{s['order']}</td>
                 <td style="padding:6px 10px;border-bottom:1px solid #dee2e6;">{s['customer'] or '—'}</td>
                 <td style="padding:6px 10px;border-bottom:1px solid #dee2e6;">{(s['item_code'] or '')} {(s['item_name'] or '')}</td>
                 <td style="padding:6px 10px;border-bottom:1px solid #dee2e6;text-align:center;">{_fmt_datetime(s['date_to_ship'])}</td>
                 <td style="padding:6px 10px;border-bottom:1px solid #dee2e6;text-align:center;">{s['qty']}</td>
+                <td style="padding:6px 10px;border-bottom:1px solid #dee2e6;text-align:center;">{state}</td>
                 <td style="padding:6px 10px;border-bottom:1px solid #dee2e6;">{s['ship_to'] or '—'}</td>
                 <td style="padding:6px 10px;border-bottom:1px solid #dee2e6;">{s['requested_by'] or '—'}</td>
+                <td style="padding:6px 10px;border-bottom:1px solid #dee2e6;">{just}</td>
             </tr>"""
         ship_table = f"""
-        <h3 style="color:#1F3864;margin:18px 0 6px;">Cereri urgente de livrare în așteptare ({len(shipments)})</h3>
+        <h3 style="color:#7A1F1F;margin:18px 0 6px;">1. PRIORITATE — Cereri urgente de livrare
+        nerespectate ({len(shipments)}, din care {overdue_count} întârziate,
+        {unjustified_count} nejustificate)</h3>
+        <p style="font-size:13px;margin:0 0 6px;"><b>Acestea trebuie justificate primele</b>,
+        înaintea discrepanțelor de plan.</p>
         <table style="border-collapse:collapse;width:100%;font-size:13px;">
             <thead>
                 <tr style="background:#7A1F1F;color:#fff;">
@@ -568,16 +752,18 @@ def build_email_html(data: dict, logo_cid: str = 'company_logo') -> str:
                     <th style="padding:8px 10px;text-align:left;">Articol</th>
                     <th style="padding:8px 10px;">Data livrării</th>
                     <th style="padding:8px 10px;">Cantitate</th>
+                    <th style="padding:8px 10px;">Stare</th>
                     <th style="padding:8px 10px;text-align:left;">Livrare către</th>
                     <th style="padding:8px 10px;text-align:left;">Solicitat de</th>
+                    <th style="padding:8px 10px;text-align:left;">Justificare</th>
                 </tr>
             </thead>
             <tbody>{srows}</tbody>
         </table>
         """
     else:
-        ship_table = ('<h3 style="color:#1F3864;margin:18px 0 6px;">Cereri urgente de '
-                      'livrare</h3><p>Nu există cereri urgente de livrare în așteptare.</p>')
+        ship_table = ('<h3 style="color:#7A1F1F;margin:18px 0 6px;">1. PRIORITATE — Cereri urgente '
+                      'de livrare</h3><p>Nu există cereri urgente de livrare în așteptare.</p>')
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -591,10 +777,14 @@ def build_email_html(data: dict, logo_cid: str = 'company_logo') -> str:
 
     <p>Stimați responsabili de producție,</p>
 
-    <p>Vă transmitem situația actualizată a <b>discrepanțelor de plan de producție rămase
-    nejustificate</b> (începând cu data de <b>{_fmt_date(start_date)}</b>) și a
-    <b>cererilor urgente de livrare</b> aflate în așteptare. Vă rugăm să furnizați
+    <p>Vă transmitem situația actualizată a <b>cererilor urgente de livrare nerespectate</b>
+    și a <b>discrepanțelor de plan de producție rămase nejustificate pe fazele finale
+    ({phases_txt})</b> (începând cu data de <b>{_fmt_date(start_date)}</b>). Vă rugăm să furnizați
     <b>explicații punctuale și corecte</b> pentru fiecare situație în parte.</p>
+
+    <p><b>Ordinea justificărilor:</b> mai întâi cererile urgente de livrare nerespectate
+    (punctul 1), apoi discrepanțele de plan pe fazele finale <b>{phases_txt}</b> (punctul 2).
+    Fazele intermediare nu se raportează în acest document.</p>
 
     <p>Aceste informații trebuie să fie <b>exacte și complete</b>: numai pe baza unor date
     corecte conducerea poate analiza cauzele reale și îmbunătăți gestionarea producției.</p>
@@ -605,12 +795,13 @@ def build_email_html(data: dict, logo_cid: str = 'company_logo') -> str:
     că, în cele din urmă, <b>calitatea rezultatelor dumneavoastră depinde în primul rând de
     echipa pe care ați ales-o</b>.</p>
 
-    {disc_table}
-
     {ship_table}
 
+    {disc_table}
+
     <p style="margin-top:18px;">Vă rugăm să accesați formularul <b>„Plan de producție —
-    Discrepanțe"</b> din aplicație pentru a justifica fiecare discrepanță în cel mai scurt timp.</p>
+    Discrepanțe"</b> din aplicație pentru a justifica, în cel mai scurt timp, mai întâi
+    livrările urgente nerespectate și apoi discrepanțele pe fazele finale {phases_txt}.</p>
 
     <p>Vă mulțumim pentru colaborare și pentru profesionalismul dumneavoastră.</p>
     <p style="margin-top:10px;color:#1F3864;"><b>Conducerea Producției</b></p>

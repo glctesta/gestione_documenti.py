@@ -8,6 +8,7 @@ files_to_include = [
     'Logo.png',
     'logo.png', 
     'Logo.ico',
+    'GTMC-ICO.ico',  # icona finestre applicazione
     'DejaVuSans.ttf',
     'DejaVuSans-Bold.ttf',
     'Frigo_acclimate.jpg',

@@ -6,16 +6,19 @@ Consente di selezionare da una lista SOLO le fasi importanti (su cui c'e'
 tensione) per cui il non rispetto del piano deve essere osservato e giustificato,
 invece di monitorare tutte le fasi.
 
-Fasi sempre presenti e forzate (non deselezionabili):
-  - FCT        (ultima fase di qualita')
-  - PALETIZARE (paletizzazione finale)
+Fasi FINALI, sempre presenti e forzate (non deselezionabili):
+  - FCT (ultima fase di test)
+  - FQC (Final Quality Control)
+Sono le uniche fasi che contano per la giustificazione delle mancate produzioni
+e per l'email giornaliera ai responsabili: le fasi intermedie (ICT, PTHM,
+PALETIZARE, ...) NON vanno riportate.
 (Il "versamento a magazzino" NON e' una fase di PlanAlerts: la quantita'
 effettivamente prodotta e versata a magazzino si ricava dalla query D365
 get_warehouse_finished_goods — integrazione a parte.)
 
 Storage: tabella dbo.PlanMonitoredPhases (una riga per fase monitorata) +
-flag settings Sys_plan_monitored_phases_configured. Finche' non e' configurato,
-get_monitored_phases() ritorna None = "tutte le fasi" (comportamento invariato).
+flag settings Sys_plan_phases_configured. Finche' non e' configurato,
+get_monitored_phases() ritorna le sole fasi finali (FCT, FQC).
 
 La selezione e' modificabile dalla maschera plan_phases_gui (login autorizzato,
 chiave 'fasi_da_giustificare_mancata_produzione').
@@ -25,8 +28,11 @@ import logging
 
 logger = logging.getLogger("TraceabilityRS")
 
-# Fasi finali forzate come default, non deselezionabili (fasi reali di PlanAlerts).
-FORCED_PHASES = ['FCT', 'PALETIZARE']
+# Fasi FINALI forzate, non deselezionabili (fasi reali di dbo.Phases).
+# Sono anche il default quando la selezione non e' mai stata configurata:
+# solo queste finiscono nell'email responsabili e nella maschera di
+# giustificazione delle mancate produzioni.
+FORCED_PHASES = ['FCT', 'FQC']
 
 # NB: settings.Atribute è nvarchar(30) -> chiave <= 30 caratteri.
 CONFIG_FLAG_SETTING = 'Sys_plan_phases_configured'  # 26 char
@@ -47,6 +53,11 @@ def ensure_table(conn) -> None:
         conn.commit()
     except Exception as e:
         logger.error(f"plan_phases.ensure_table: {e}", exc_info=True)
+
+
+def get_final_phases() -> list:
+    """Fasi finali (FCT, FQC): le uniche da riportare/giustificare per default."""
+    return list(FORCED_PHASES)
 
 
 def get_all_plan_phases(conn) -> list:
@@ -89,14 +100,16 @@ def is_configured(conn) -> bool:
 
 
 def get_monitored_phases(conn):
-    """Fasi effettivamente monitorate.
+    """Fasi effettivamente monitorate. Ritorna SEMPRE una lista (mai None):
 
-    Ritorna:
-      - None  se non ancora configurato -> nessun filtro (TUTTE le fasi, come oggi)
-      - list  se configurato -> fasi selezionate UNITE ai forzati (FCT, PALETIZARE)
+      - non configurato -> solo le fasi finali forzate (FCT, FQC)
+      - configurato     -> fasi selezionate UNITE ai forzati
+
+    Il default e' volutamente restrittivo: nell'email ai responsabili e nella
+    maschera di giustificazione devono comparire solo le fasi finali.
     """
     if not is_configured(conn):
-        return None
+        return get_final_phases()
     phases = get_selected_phases(conn) | set(FORCED_PHASES)
     return sorted(phases)
 
