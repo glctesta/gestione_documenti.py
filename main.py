@@ -13647,7 +13647,16 @@ class App(tk.Tk):
         manifest_path = os.path.join(source_path, 'deploy_manifest.json')
 
         if not os.path.exists(manifest_path):
-            logger.info("deploy_manifest.json non trovato, skip verifica manifest (backward compat)")
+            # Non blocca l'update (retrocompatibilita'), ma va segnalato: senza
+            # manifest updater.py non puo' confrontare gli hash e ripiega sul
+            # confronto byte-a-byte, rileggendo dalla rete TUTTI i file. L'update
+            # sembra ricopiare tutto ed e' molto piu' lento. Rimedio: eseguire
+            # generate_deploy_manifest.py sulla cartella di distribuzione
+            # (ultimo passo del deploy, vedi .agent/workflows/deploy.md).
+            logger.warning(
+                "deploy_manifest.json ASSENTE in %s: l'aggiornamento non sara' "
+                "incrementale (confronto byte-a-byte su tutti i file). "
+                "Rigenerare il manifest sulla cartella di deploy.", source_path)
             return True, ""
 
         try:
@@ -13971,15 +13980,17 @@ class App(tk.Tk):
             dialog.grab_set()
         else:
             logger.info("_trigger_update: parent non ancora mappato, dialogo standalone")
-        dialog.resizable(False, False)
+        # Verticalmente ridimensionabile: valvola di sfogo se una traduzione lunga
+        # o note di versione voluminose richiedono piu' spazio dei bottoni
+        dialog.resizable(False, True)
 
         frame = ttk.Frame(dialog, padding=20)
         frame.pack(fill=tk.BOTH, expand=True)
 
         ttk.Label(
             frame,
-            text=self.lang.get('update_ready_head',
-                               "Aggiornamento alla versione {0} pronto.").format(version_info.Version),
+            text=self._t_fmt('update_ready_head',
+                             "Aggiornamento alla versione {0} pronto.", version_info.Version),
             justify=tk.LEFT, wraplength=460, font=('Segoe UI', 10, 'bold')
         ).pack(anchor='w')
 
@@ -14051,10 +14062,10 @@ class App(tk.Tk):
             if not dialog.winfo_exists():
                 return
             m, s = divmod(max(0, remaining['sec']), 60)
-            info_lbl.config(text=self.lang.get(
+            info_lbl.config(text=self._t_fmt(
                 'update_countdown_msg',
                 "L'aggiornamento partirà automaticamente tra {0:02d}:{1:02d}.\n"
-                "Salvare il lavoro nelle finestre aperte.").format(m, s))
+                "Salvare il lavoro nelle finestre aperte.", m, s))
             if remaining['sec'] <= 0:
                 _proceed()
                 return
@@ -14068,21 +14079,38 @@ class App(tk.Tk):
             left = UPDATE_MAX_POSTPONES - self._update_postpone_count
             ttk.Button(
                 btn_frame,
-                text=self.lang.get('update_postpone_btn', '⏱ Posticipa {0} min ({1} rimasti)').format(pm, left),
+                text=self._t_fmt('update_postpone_btn',
+                                 '⏱ Posticipa {0} min ({1} rimasti)', pm, left),
                 command=_postpone
             ).pack(side=tk.LEFT, padx=6)
 
         # X: posticipa se possibile, altrimenti resta (non si può sfuggire all'update)
         dialog.protocol("WM_DELETE_WINDOW", _postpone if can_postpone else (lambda: None))
 
+        # L'etichetta del countdown va riempita PRIMA di misurare la finestra:
+        # occupa 2 righe e, misurando a etichetta vuota, l'altezza calcolata
+        # tagliava i bottoni in basso. Qui si imposta solo il testo iniziale;
+        # il countdown vero parte con _update_label() piu' sotto (una sola volta,
+        # altrimenti si pianificherebbero due tick e scorrerebbe a doppia velocita').
+        _m0, _s0 = divmod(max(0, remaining['sec']), 60)
+        info_lbl.config(text=self._t_fmt(
+            'update_countdown_msg',
+            "L'aggiornamento partirà automaticamente tra {0:02d}:{1:02d}.\n"
+            "Salvare il lavoro nelle finestre aperte.", _m0, _s0))
+
         dialog.update_idletasks()
         dw = dialog.winfo_reqwidth()
         dh = dialog.winfo_reqheight()
         sw = dialog.winfo_screenwidth()
         sh = dialog.winfo_screenheight()
+        # Margine di sicurezza: traduzioni piu' lunghe possono aggiungere una riga
+        dw = max(dw, 520)
+        dh = max(dh + 24, 340)
+        dh = min(dh, sh - 80)
         x = (sw - dw) // 2
         y = (sh - dh) // 2
-        dialog.geometry(f"{max(dw, 480)}x{max(dh, 260)}+{x}+{y}")
+        dialog.geometry(f"{dw}x{dh}+{x}+{y}")
+        dialog.minsize(dw, dh)
 
         dialog.lift()
         dialog.attributes('-topmost', True)
@@ -18235,6 +18263,84 @@ class App(tk.Tk):
         self.help_menu.add_separator()
         about_menu_label = f"{self.lang.get('menu_about')} {APP_VERSION}"
         self.help_menu.add_command(label=about_menu_label, command=self._show_about)
+        self.help_menu.add_command(
+            label=self.lang.get('menu_check_updates', '⬆ Verifica nuova versione...'),
+            command=self._check_updates_manually
+        )
+
+    def _check_updates_manually(self):
+        """Verifica su richiesta se esiste una versione piu' recente e, se c'e',
+        chiede all'utente se vuole scaricarla subito.
+
+        Riusa la stessa sorgente del controllo periodico (dbo.SwVersions) e lo
+        stesso avvio dell'aggiornamento (_trigger_update), ma qui l'esito viene
+        sempre comunicato: anche 'sei gia' aggiornato' o 'verifica non riuscita'.
+        """
+        # NB: LanguageManager.get(key, *args) usa il 2o argomento come testo di
+        # fallback SOLO se la chiave manca, altrimenti lo passa a .format(). Per
+        # questo le stringhe qui non contengono segnaposto: i numeri di versione
+        # vengono concatenati a parte.
+        L = self.lang.get
+        title = L('check_updates_title', 'Verifica aggiornamenti')
+        try:
+            self.config(cursor='watch')
+            self.update_idletasks()
+            try:
+                version_info = self.db.fetch_latest_version_info(APP_PROGRAM_NAME)
+            finally:
+                self.config(cursor='')
+
+            if not version_info or not version_info.Version or not version_info.MainPath:
+                messagebox.showwarning(
+                    title,
+                    L('check_updates_unavailable',
+                      'Non è stato possibile verificare la disponibilità di aggiornamenti.\n'
+                      'Nessuna informazione di versione trovata per questo programma.'),
+                    parent=self)
+                return
+
+            installed_lbl = L('check_updates_installed_label', 'Versione installata:')
+            new_lbl = L('check_updates_new_label', 'Nuova versione:')
+
+            if not is_update_needed(APP_VERSION, version_info.Version):
+                messagebox.showinfo(
+                    title,
+                    f"{L('check_updates_up_to_date', 'Il programma è aggiornato.')}\n\n"
+                    f"{installed_lbl} {APP_VERSION}",
+                    parent=self)
+                return
+
+            # Aggiornamento disponibile: prima di proporlo verifica che i file
+            # sorgente sulla rete siano completi, altrimenti l'update fallirebbe
+            ready, reason = self._is_source_file_ready(
+                version_info.MainPath, APP_PROGRAM_NAME)
+            if not ready:
+                logger.warning(f"_check_updates_manually: sorgente non pronto - {reason}")
+                messagebox.showwarning(
+                    title,
+                    f"{new_lbl} {version_info.Version}\n\n"
+                    + L('check_updates_not_ready',
+                        'I file di aggiornamento non sono ancora pronti sul server.\n'
+                        'Riprovare più tardi.'),
+                    parent=self)
+                return
+
+            if messagebox.askyesno(
+                title,
+                f"{L('check_updates_available', 'È disponibile una nuova versione.')}\n\n"
+                f"{installed_lbl} {APP_VERSION}\n{new_lbl} {version_info.Version}\n\n"
+                + L('check_updates_download_question',
+                    'Vuoi scaricarla e installarla adesso?'),
+                parent=self
+            ):
+                reset_update_skip_count()
+                self._trigger_update(version_info, mandatory=False)
+        except Exception as e:
+            logger.error(f"_check_updates_manually: {e}", exc_info=True)
+            messagebox.showerror(
+                title,
+                f"{L('check_updates_error', 'Errore durante la verifica degli aggiornamenti:')}\n{e}",
+                parent=self)
 
     def _open_version_notes_viewer(self):
         """Apre il viewer LIFO del registro modifiche (accesso libero, sola lettura)."""
@@ -21294,6 +21400,23 @@ class App(tk.Tk):
         finally:
             if not getattr(self, '_closing', False) and getattr(self, '_touchup_noresponse_running', False):
                 self.after(300_000, self._touchup_noresponse_tick)  # ogni 5 minuti
+
+    def _t_fmt(self, key, default, *fmt_args):
+        """Traduzione di una stringa CON segnaposto, nella lingua corrente.
+
+        Serve perche' LanguageManager.get(key, *args) tratta il 2o argomento come
+        testo di fallback solo se la chiave manca: se la chiave esiste, lo passa
+        invece a .format() e il segnaposto {0} viene sostituito dal testo di
+        default anziche' dal valore. Qui il template viene preso da get_raw() e
+        formattato una sola volta, quindi la traduzione dal DB vince sempre.
+        """
+        template = self.lang.get_raw(key)
+        if not template or template == key:
+            template = default
+        try:
+            return template.format(*fmt_args)
+        except (IndexError, KeyError, ValueError):
+            return template
 
     def _collect_shutdown_services(self):
         """Servizi/monitor ancora attivi da fermare alla chiusura.

@@ -48,7 +48,9 @@ class UpdateProgressWindow(tk.Tk):
         self._stats_var = tk.StringVar(value="")
 
         self.title("Aggiornamento Applicazione")
-        self.geometry("500x210")
+        # 2 righe di statistiche (rimanenti + copiati/invariati): serve piu' altezza
+        # e larghezza, altrimenti la seconda riga resta fuori dalla finestra
+        self.geometry("620x250")
         self.resizable(False, False)
         self.eval('tk::PlaceWindow . center')
 
@@ -68,7 +70,7 @@ class UpdateProgressWindow(tk.Tk):
         self.progress_bar = ttk.Progressbar(
             main_frame,
             orient="horizontal",
-            length=460,
+            length=580,
             mode="determinate",
             maximum=100
         )
@@ -80,7 +82,8 @@ class UpdateProgressWindow(tk.Tk):
             textvariable=self._stats_var,
             font=("Helvetica", 9),
             foreground="#1F3864",
-            anchor="w"
+            anchor="w",
+            justify="left"
         )
         self.stats_label.pack(fill='x', pady=(0, 4))
 
@@ -138,14 +141,21 @@ class UpdateProgressWindow(tk.Tk):
         return f"{h} h {m} min"
 
     def _update_stats(self, percent, name, speed_bps, eta_s,
-                      remaining_files, remaining_bytes):
-        """Aggiorna barra, percentuale, velocità ed ETA (thread-safe via after)."""
+                      remaining_files, remaining_bytes, copied=0, skipped=0):
+        """Aggiorna barra, percentuale, velocità ed ETA (thread-safe via after).
+
+        Mostra anche copiati/invariati: l'aggiornamento e' incrementale e in genere
+        copia poche decine di file su ~6000; senza questo dato la barra, che avanza
+        su TUTTI i file esaminati, fa sembrare che li stia ricopiando tutti.
+        """
         self.progress_bar["value"] = percent
         self.progress_label.config(text=f"{percent:.0f}% completato")
         self._stats_var.set(
             f"Velocità: {self._fmt_bytes(speed_bps)}/s        "
             f"Tempo rimanente: {self._fmt_eta(eta_s)}        "
-            f"Rimanenti: {remaining_files} file ({self._fmt_bytes(remaining_bytes)})"
+            f"Rimanenti: {remaining_files} file ({self._fmt_bytes(remaining_bytes)})\n"
+            f"Da aggiornare: {copied} file copiati        "
+            f"Già aggiornati: {skipped} file invariati (non ricopiati)"
         )
         self._file_var.set(f"Nome: {name}" if name else "")
 
@@ -256,6 +266,7 @@ class UpdateProgressWindow(tk.Tk):
         """
         errors = []
         skipped = 0
+        copied = 0
         total = len(file_list)
         total_bytes = getattr(self, "_total_bytes", 0)
         # Manifest sorgente (hash per file): permette di rilevare i file invariati
@@ -306,6 +317,7 @@ class UpdateProgressWindow(tk.Tk):
                             try:
                                 shutil.copy2(source_file, dest_file)
                                 transferred_bytes += size
+                                copied += 1
                                 break
                             except PermissionError:
                                 if attempt < max_retries - 1:
@@ -340,7 +352,7 @@ class UpdateProgressWindow(tk.Tk):
                 remaining_files = total - (i + 1)
 
                 self.after(0, self._update_stats, percent, name, cur_speed,
-                           eta, remaining_files, remaining_bytes)
+                           eta, remaining_files, remaining_bytes, copied, skipped)
 
         log(f"_copy_worker: copia completata. {total - len(errors) - skipped} copiati, "
             f"{skipped} invariati (saltati), {len(errors)} errori")
