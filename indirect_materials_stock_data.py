@@ -388,7 +388,7 @@ def _claim_materials_today(db, items, recipients):
                     "INSERT INTO ind.RiordineEmailLog "
                     "(MaterialeId, GiacenzaRilevata, LivelloMinimo, InviatoA) "
                     "SELECT ?, ?, ?, ? "
-                    "WHERE NOT EXISTS (SELECT 1 FROM ind.RiordineEmailLog "
+                    "WHERE NOT EXISTS (SELECT 1 FROM ind.RiordineEmailLog WITH (UPDLOCK, HOLDLOCK) "
                     "  WHERE MaterialeId = ? AND CAST(DataInvio AS DATE) = CAST(GETDATE() AS DATE))",
                     (it['materiale_id'], it['giacenza'], it['livello_minimo'],
                      inviato_a, it['materiale_id'])

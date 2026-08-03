@@ -101,11 +101,24 @@ def log_event(cursor, order_number: str, event_type: str, phase: str = PHASE_WH,
 
 # ──────────────────────── Matching BOM (§5.1.2) ───────────────────────── #
 
+# Un componente SMT (descrizione dbo.Components contenente 'SMT') non fa
+# parte del kit PTH: la regola vale in TUTTI i punti del flusso — import del
+# file Essegi, confronto con la BOM e conteggi di chiusura. Definita qui una
+# volta sola perche' applicarla a meta' produceva righe fantasma: il codice
+# veniva escluso dall'import e poi rimesso dal confronto BOM come
+# MISSING_FROM_LIST con quantita' 0 (369 righe su 558 al 31/07/2026).
+SQL_NOT_SMT = ("(C.ComponentDescription IS NULL "
+               "OR C.ComponentDescription NOT LIKE '%SMT%')")
+
+
 def bom_codes_for_orders(cursor, orders: List[str]) -> Dict[str, Set[str]]:
-    """BOM (ComponentCode) per ciascun ordine, dalla query etichette."""
+    """BOM (ComponentCode) per ciascun ordine, dalla query etichette.
+
+    Esclude i componenti SMT: il kit e' solo PTH, quindi un codice SMT non deve
+    nemmeno essere confrontato con la lista (altrimenti risulta 'mancante')."""
     out = {}
     for order in orders:
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT DISTINCT C.ComponentCode
             FROM Traceability_RS.dbo.Orders O
             INNER JOIN Traceability_RS.dbo.Products P ON P.IDProduct = O.IDProduct
@@ -113,6 +126,7 @@ def bom_codes_for_orders(cursor, orders: List[str]) -> Dict[str, Set[str]]:
             INNER JOIN Traceability_RS.dbo.ProductRiferiments PR ON PR.IDProductCompErp = PCE.IDProductCompErp
             INNER JOIN Traceability_RS.dbo.Components C ON PCE.IDComponent = C.IDComponent
             WHERE O.OrderNumber = ?
+              AND {SQL_NOT_SMT}
         """, (order,))
         out[order] = {r[0] for r in cursor.fetchall()}
     return out

@@ -17,7 +17,7 @@ Uso:
 Spec: docs/NPI_Commerciali_Spec_v1.0.md
 """
 import sys, io, os, argparse
-from datetime import date
+from datetime import date, timedelta
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
@@ -135,6 +135,16 @@ def run(dry_run: bool = False):
     commerciali = get_commerciali_auto(cur)
     print(f"Commerciali con AutoEmail=1 ed email: {len(commerciali)}")
 
+    # Claim atomico settimanale: se il task venisse lanciato due volte (o da due
+    # macchine) i commerciali riceverebbero due copie dello stesso riepilogo.
+    today = date.today()
+    week_start = today - timedelta(days=today.weekday())
+    if not args.dry_run:
+        if not utils.claim_email_send(conn, week_start, 'npi_commerciali_weekly'):
+            print(f"Riepilogo commerciali NPI già inviato per la settimana del {week_start}. Esco.")
+            conn.close()
+            return
+
     inviate = 0
     for sid, nome, email in commerciali:
         da_chiudere, in_ritardo, chiusi = get_progetti_commerciale(cur, sid)
@@ -158,6 +168,10 @@ def run(dry_run: bool = False):
             inviate += 1
         except Exception as e:
             print(f"    ERRORE invio a {email}: {e}")
+
+    if not args.dry_run and inviate == 0:
+        # Nessuna email partita: libera lo slot per un nuovo tentativo
+        utils.release_email_claim(conn, week_start, 'npi_commerciali_weekly')
 
     conn.close()
     print(f"Completato. Email inviate: {inviate}{' (DRY-RUN)' if args.dry_run else ''}")

@@ -237,11 +237,92 @@ class NpiAutoNotificationService:
                 return None
         return None
     
+    def _claim_notification_cycle_today(self) -> bool:
+        """
+        Prenota in modo ATOMICO il ciclo notifiche di oggi.
+
+        Il record sentinella '__SENTINEL__' viene scritto PRIMA di inviare le
+        email (non piu' alla fine): l'indice UNIQUE (NotificationDate,
+        RecipientEmail) fa si' che, tra tutte le istanze che partono insieme,
+        una sola ottenga il claim. Senza questo ogni PC che avvia l'app nello
+        stesso giorno rispedisce l'intero giro di notifiche NPI.
+
+        Returns:
+            True solo se questo processo deve eseguire il ciclo.
+        """
+        session = self.npi_manager._get_session()
+        try:
+            result = session.execute(
+                text("""
+                    INSERT INTO [dbo].[NpiProjectDelayEmailLog]
+                        ([NotificationDate], [RecipientEmail], [OverdueCount], [PotentialCount])
+                    SELECT :today, '__SENTINEL__', 0, 0
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM [dbo].[NpiProjectDelayEmailLog] WITH (UPDLOCK, HOLDLOCK)
+                        WHERE [NotificationDate] = :today AND [RecipientEmail] = '__SENTINEL__'
+                    )
+                """),
+                {"today": date.today()}
+            )
+            claimed = (result.rowcount == 1)
+            session.commit()
+            return claimed
+        except Exception as e:
+            # Violazione dell'indice UNIQUE = un'altra istanza ha vinto la corsa
+            session.rollback()
+            logger.info(f"[SENTINEL] Claim ciclo notifiche non ottenuto: {e}")
+            return False
+        finally:
+            session.close()
+
+    def _update_notification_cycle_counters(self, sent: int, skipped: int) -> None:
+        """Aggiorna i contatori sul record sentinella del ciclo odierno."""
+        session = self.npi_manager._get_session()
+        try:
+            session.execute(
+                text("""
+                    UPDATE [dbo].[NpiProjectDelayEmailLog]
+                    SET [OverdueCount] = :sent, [PotentialCount] = :skipped
+                    WHERE [NotificationDate] = :today AND [RecipientEmail] = '__SENTINEL__'
+                """),
+                {"today": date.today(), "sent": int(sent or 0), "skipped": int(skipped or 0)}
+            )
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.warning(f"[SENTINEL] Errore aggiornamento contatori: {e}")
+        finally:
+            session.close()
+
+    def _release_notification_cycle_claim(self) -> None:
+        """Rilascia il claim del ciclo odierno (nessun invio effettuato)."""
+        session = self.npi_manager._get_session()
+        try:
+            session.execute(
+                text("""
+                    DELETE FROM [dbo].[NpiProjectDelayEmailLog]
+                    WHERE [NotificationDate] = :today AND [RecipientEmail] = '__SENTINEL__'
+                """),
+                {"today": date.today()}
+            )
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.warning(f"[SENTINEL] Impossibile rilasciare il claim del ciclo: {e}")
+        finally:
+            session.close()
+
     def _check_and_send_notifications(self):
         """Controlla task e invia notifiche consolidate (1 email per Project Owner)."""
         # Verifica schedule: giorno lavorativo + intervallo minimo
         if not self._is_send_day():
             logger.info("[SCHEDULE] Invio email NPI non dovuto oggi. Controllo saltato.")
+            return
+
+        # Claim ATOMICO del ciclo odierno: una sola istanza invia, le altre escono
+        self._ensure_project_delay_email_log_table()
+        if not self._claim_notification_cycle_today():
+            logger.info("[SENTINEL] Ciclo notifiche NPI già eseguito oggi da un'altra istanza. Skip.")
             return
 
         logger.info("=== INIZIO CONTROLLO NOTIFICHE NPI (CONSOLIDATE) ===")
@@ -276,17 +357,12 @@ class NpiAutoNotificationService:
             total_skipped += skipped
             total_failed += failed
 
-            # ── SENTINEL: Registra che il ciclo notifiche è stato eseguito oggi ──
+            # ── SENTINEL: aggiorna i contatori sul record di claim odierno ──
+            # (il record e' gia' stato scritto PRIMA dell'invio, come claim)
             try:
-                self._ensure_project_delay_email_log_table()
-                self._mark_project_delay_email_sent(
-                    owner_email='__SENTINEL__',
-                    overdue_count=total_sent,
-                    potential_count=total_skipped
-                )
-                logger.info("[SENTINEL] Record sentinella scritto in NpiProjectDelayEmailLog per oggi.")
+                self._update_notification_cycle_counters(total_sent, total_skipped)
             except Exception as sentinel_err:
-                logger.warning(f"[SENTINEL] Impossibile scrivere sentinella: {sentinel_err}")
+                logger.warning(f"[SENTINEL] Impossibile aggiornare i contatori: {sentinel_err}")
 
             logger.info("=== FINE CONTROLLO NOTIFICHE NPI (CONSOLIDATE) ===")
             logger.info(f"Totale email inviate: {total_sent}")
@@ -2024,45 +2100,61 @@ class NpiAutoNotificationService:
             return False
         return True
 
-    def _was_global_view_email_sent_this_week(self) -> bool:
-        """Ritorna True se questa settimana è già stata inviata la email globale NPI."""
+    def _claim_global_view_email_this_week(self) -> bool:
+        """
+        Prenota in modo ATOMICO l'invio settimanale della vista globale NPI.
+
+        Il record viene scritto PRIMA dell'invio: con il vecchio schema
+        "verifica se gia' inviata -> invia -> registra" tutte le istanze attive
+        il lunedi' passavano insieme la verifica e mandavano una copia a testa.
+
+        Returns:
+            True solo se questo processo deve inviare l'email.
+        """
         session = self.npi_manager._get_session()
         try:
             today = date.today()
             # Inizio settimana corrente (lunedì)
             week_start = today - timedelta(days=today.weekday())
-            row = session.execute(
+            result = session.execute(
                 text("""
-                    SELECT TOP 1 1
-                    FROM [dbo].[NpiProjectDelayEmailLog]
-                    WHERE [RecipientEmail] = '__global_npi_view__'
-                      AND [NotificationDate] >= :week_start
+                    INSERT INTO [dbo].[NpiProjectDelayEmailLog]
+                        ([NotificationDate], [RecipientEmail], [OverdueCount], [PotentialCount])
+                    SELECT :today, '__global_npi_view__', 0, 0
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM [dbo].[NpiProjectDelayEmailLog] WITH (UPDLOCK, HOLDLOCK)
+                        WHERE [RecipientEmail] = '__global_npi_view__'
+                          AND [NotificationDate] >= :week_start
+                    )
                 """),
-                {"week_start": week_start}
-            ).first()
-            return row is not None
+                {"today": today, "week_start": week_start}
+            )
+            claimed = (result.rowcount == 1)
+            session.commit()
+            return claimed
         except Exception as e:
-            logger.error("[GLOBAL_VIEW] Errore verifica invio settimanale: %s", e, exc_info=True)
+            session.rollback()
+            logger.info("[GLOBAL_VIEW] Claim settimanale non ottenuto: %s", e)
             return False
         finally:
             session.close()
 
-    def _mark_global_view_email_sent(self) -> None:
-        """Registra l'invio della email globale NPI con chiave sentinella."""
+    def _release_global_view_email_claim(self) -> None:
+        """Rilascia il claim settimanale (invio non effettuato) per ritentare."""
         session = self.npi_manager._get_session()
         try:
             session.execute(
                 text("""
-                    INSERT INTO [dbo].[NpiProjectDelayEmailLog]
-                        ([NotificationDate], [RecipientEmail], [OverdueCount], [PotentialCount])
-                    VALUES (:today, '__global_npi_view__', 0, 0)
+                    DELETE FROM [dbo].[NpiProjectDelayEmailLog]
+                    WHERE [NotificationDate] = :today
+                      AND [RecipientEmail] = '__global_npi_view__'
                 """),
                 {"today": date.today()}
             )
             session.commit()
         except Exception as e:
             session.rollback()
-            logger.error("[GLOBAL_VIEW] Errore registrazione invio: %s", e, exc_info=True)
+            logger.warning("[GLOBAL_VIEW] Impossibile rilasciare il claim: %s", e)
         finally:
             session.close()
 
@@ -2258,7 +2350,8 @@ class NpiAutoNotificationService:
         if not self._is_global_view_send_day():
             return 0, 1, 0
 
-        if self._was_global_view_email_sent_this_week():
+        # Claim ATOMICO prima di raccogliere dati e inviare
+        if not self._claim_global_view_email_this_week():
             logger.info("[GLOBAL_VIEW] Email globale NPI già inviata questa settimana. Skip.")
             return 0, 1, 0
 
@@ -2266,6 +2359,7 @@ class NpiAutoNotificationService:
             recipients = self._get_setting_email_list('Sys_email_npi_global_view')
             if not recipients:
                 logger.warning("[GLOBAL_VIEW] Nessun destinatario configurato in 'Sys_email_npi_global_view'. Email globale NPI saltata.")
+                self._release_global_view_email_claim()
                 return 0, 1, 0
 
             stats = self._collect_global_npi_stats()
@@ -2300,7 +2394,7 @@ class NpiAutoNotificationService:
                 cc_emails=recipients[1:] if len(recipients) > 1 else []
             )
 
-            self._mark_global_view_email_sent()
+            # Il claim preso prima dell'invio vale da registrazione dell'invio.
             logger.info(
                 "[GLOBAL_VIEW] Email globale NPI inviata a %d destinatari. "
                 "Totale=%d, Attivi=%d, Chiusi=%d, In ritardo=%d",
@@ -2318,6 +2412,8 @@ class NpiAutoNotificationService:
 
         except Exception as e:
             logger.error("[GLOBAL_VIEW] Errore invio email globale NPI: %s", e, exc_info=True)
+            # Invio non riuscito: libera il claim, la settimana resta aperta
+            self._release_global_view_email_claim()
             return 0, 0, 1
 
 

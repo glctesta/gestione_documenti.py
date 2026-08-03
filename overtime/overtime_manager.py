@@ -2864,9 +2864,17 @@ class OvertimeManager:
         Destinatari da: settings.atribute = 'Sys_email_overtimeNotAuth'
         Include Logo.png e allegato Excel.
 
+        Deduplicazione: claim ATOMICO su NpiWeeklyGeneralEmailLog (chiave =
+        lunedi' della settimana analizzata) preso PRIMA dell'invio, cosi' una
+        sola istanza invia anche se il worker gira su piu' PC.
+
         Returns:
             bool: True se email inviata con successo
         """
+        last_monday = None
+        dedup_attribute = 'Sys_email_overtimeNotAuth'
+        claimed = False
+
         try:
             from datetime import timedelta
             import openpyxl
@@ -2881,23 +2889,15 @@ class OvertimeManager:
 
             logger.info(f"Generating weekly unauthorized overtime report for: {last_monday} to {last_sunday}")
 
-            # === DEDUP: verifica se email già inviata per questa settimana ===
-            dedup_attribute = 'Sys_email_overtimeNotAuth'
-            try:
-                dedup_cursor = self.db.conn.cursor()
-                dedup_cursor.execute("""
-                    SELECT TOP 1 1 FROM [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
-                    WHERE WeekStartDate = ? AND Attribute = ?
-                """, (last_monday, dedup_attribute))
-                already_sent = dedup_cursor.fetchone() is not None
-                dedup_cursor.close()
-
-                if already_sent:
-                    logger.info(f"Weekly unauthorized overtime email already sent for week {last_monday}. Skipping.")
-                    return True
-            except Exception as dedup_err:
-                logger.warning(f"Dedup check failed (fail-safe: skip send): {dedup_err}")
-                return True  # Fail-safe: evita duplicati
+            # === CLAIM ATOMICO: una sola email per settimana, anche con piu' PC ===
+            # Va preso PRIMA di generare l'Excel e di inviare: con un semplice
+            # SELECT "gia' inviata?" tutte le istanze in polling del lunedi'
+            # mattina lo supererebbero insieme e invierebbero il report.
+            if not self._claim_weekly_report(last_monday, dedup_attribute):
+                logger.info(
+                    f"Weekly unauthorized overtime email already sent for week {last_monday}. Skipping.")
+                return True
+            claimed = True
 
             # Query: dipendenti con FunctionCode <= 60, timbrature weekend o > 8h feriali
             query = """
@@ -2994,6 +2994,8 @@ class OvertimeManager:
 
             if not results:
                 logger.info("No weekend/over-8h overtime found for last week. Email not sent.")
+                # Niente da segnalare: il claim resta, la settimana e' comunque
+                # "processata" e non va rianalizzata dagli altri PC.
                 return True
 
             # Conta autorizzati / non autorizzati
@@ -3116,6 +3118,8 @@ class OvertimeManager:
 
             if not recipients:
                 logger.warning("No email recipients configured for 'Sys_email_overtimeNotAuth'")
+                if claimed:
+                    self._release_weekly_report_claim(last_monday, dedup_attribute)
                 return False
 
             # === LOGO BASE64 ===
@@ -3230,20 +3234,7 @@ class OvertimeManager:
             )
 
             logger.info(f"Weekly unauthorized overtime email sent to: {recipients}")
-
-            # === DEDUP: registra invio riuscito ===
-            try:
-                log_cursor = self.db.conn.cursor()
-                log_cursor.execute("""
-                    INSERT INTO [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
-                    (WeekStartDate, Attribute)
-                    VALUES (?, ?)
-                """, (last_monday, dedup_attribute))
-                self.db.conn.commit()
-                log_cursor.close()
-                logger.info(f"Dedup log saved for week {last_monday}")
-            except Exception as log_err:
-                logger.warning(f"Failed to write dedup log: {log_err}")
+            # Il claim preso prima dell'invio vale anche da log di invio riuscito.
 
             # Rimuovi file temporaneo
             try:
@@ -3255,6 +3246,9 @@ class OvertimeManager:
 
         except Exception as e:
             logger.error(f"Error sending weekly unauthorized overtime email: {e}", exc_info=True)
+            # Invio non riuscito: libera il claim cosi' il giro successivo ritenta
+            if claimed and last_monday:
+                self._release_weekly_report_claim(last_monday, dedup_attribute)
             return False
 
     # ==================================================================
@@ -3276,8 +3270,11 @@ class OvertimeManager:
             (ResetServices.dbo.OverTimeDefaults, DescpriptionId = 3)
 
         Destinatari: traceability_rs.dbo.settings.atribute = 'sys_email_report_overtime'
-        Deduplicazione: NpiWeeklyGeneralEmailLog con Attribute = 'overtime_monthly_report'
-                        e WeekStartDate = primo giorno del mese di riferimento.
+        Deduplicazione: claim ATOMICO su NpiWeeklyGeneralEmailLog con
+                        Attribute = 'overtime_monthly_report' e WeekStartDate =
+                        primo giorno del mese di riferimento. Il claim viene preso
+                        PRIMA di generare/inviare: garantisce un solo invio al mese
+                        anche con piu' PC in polling e tra riavvii dell'app.
 
         Args:
             force: se True ignora il controllo anti-duplicato e re-invia.
@@ -3294,6 +3291,10 @@ class OvertimeManager:
         import base64
         import sys
 
+        dedup_attribute = 'overtime_monthly_report'
+        dedup_key = None      # primo giorno del mese di riferimento
+        claimed = False       # True solo se il claim e' stato preso da questo processo
+
         try:
             # === PERIODI ===
             today = date.today()
@@ -3307,24 +3308,22 @@ class OvertimeManager:
             month_label = month_start.strftime('%B %Y')
             ytd_label = f"Year to Date ({month_start.year})"
 
-            dedup_attribute = 'overtime_monthly_report'
             dedup_key = month_start  # primo giorno mese di riferimento (chiave univoca per mese)
 
-            # === DEDUP CHECK ===
-            if not force and not is_test:
-                try:
-                    dcur = self.db.conn.cursor()
-                    dcur.execute("""
-                        SELECT TOP 1 1 FROM [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
-                        WHERE WeekStartDate = ? AND Attribute = ?
-                    """, (dedup_key, dedup_attribute))
-                    already = dcur.fetchone() is not None
-                    dcur.close()
-                    if already:
-                        logger.info(f"Monthly overtime report already sent for {month_start:%Y-%m}. Skipping.")
-                        return True
-                except Exception as de:
-                    logger.warning(f"Monthly overtime dedup check failed (continuo): {de}")
+            # === CLAIM ATOMICO (un solo invio al mese, anche con piu' PC) ===
+            # Il claim si prende PRIMA di generare il PDF e di inviare: se ci si
+            # limitasse a un SELECT "gia' inviato?", tutte le istanze che fanno
+            # polling alle 09:00 lo supererebbero insieme e invierebbero il report.
+            if not is_test:
+                if force:
+                    # Re-invio esplicito: libera il claim del mese e riprendilo
+                    self._release_monthly_report_claim(dedup_key, dedup_attribute)
+                if not self._claim_monthly_report(dedup_key, dedup_attribute):
+                    logger.info(
+                        f"Monthly overtime report already sent for {month_start:%Y-%m}. Skipping."
+                    )
+                    return True
+                claimed = True
 
             # === TARIFFA ORARIA STANDARD (DescpriptionId = 3) ===
             std_rate = 0.0
@@ -3436,6 +3435,8 @@ class OvertimeManager:
             )
             if not pdf_path:
                 logger.error("Monthly overtime report: PDF non generato")
+                if claimed:
+                    self._release_monthly_report_claim(dedup_key, dedup_attribute)
                 return False
 
             # === DESTINATARI ===
@@ -3453,6 +3454,8 @@ class OvertimeManager:
                     os.remove(pdf_path)
                 except Exception:
                     pass
+                if claimed:
+                    self._release_monthly_report_claim(dedup_key, dedup_attribute)
                 return False
 
             # === LOGO INLINE (base64) ===
@@ -3527,24 +3530,7 @@ class OvertimeManager:
                 attachments=[pdf_path]
             )
             logger.info(f"Monthly overtime report email sent to: {recipients}")
-
-            # === DEDUP: registra invio riuscito (saltato in modalita' test) ===
-            if not is_test:
-              try:
-                log_cursor = self.db.conn.cursor()
-                log_cursor.execute("""
-                    IF NOT EXISTS (
-                        SELECT 1 FROM [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
-                        WHERE WeekStartDate = ? AND Attribute = ?
-                    )
-                    INSERT INTO [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
-                        (WeekStartDate, Attribute)
-                    VALUES (?, ?)
-                """, (dedup_key, dedup_attribute, dedup_key, dedup_attribute))
-                self.db.conn.commit()
-                log_cursor.close()
-              except Exception as log_err:
-                logger.warning(f"Failed to write monthly overtime dedup log: {log_err}")
+            # Il claim registrato prima dell'invio vale anche da log di invio riuscito.
 
             # === Pulizia file temporaneo ===
             try:
@@ -3556,7 +3542,78 @@ class OvertimeManager:
 
         except Exception as e:
             logger.error(f"Error sending monthly overtime report: {e}", exc_info=True)
+            # Invio non riuscito: libera il claim cosi' il giro successivo puo' ritentare
+            if claimed and dedup_key:
+                self._release_monthly_report_claim(dedup_key, dedup_attribute)
             return False
+
+    def _claim_report_send(self, key_date, attribute: str) -> bool:
+        """
+        Prenota in modo ATOMICO l'invio di un report periodico (chiave = data di
+        riferimento del periodo + attributo dell'email).
+
+        Ritorna True solo se il claim e' stato ottenuto adesso da questo processo;
+        False se un altro PC (o una precedente esecuzione) lo ha gia' preso, ossia
+        il report del periodo e' gia' stato inviato o e' in corso di invio.
+
+        L'INSERT ... SELECT ... WHERE NOT EXISTS e' una singola istruzione: con
+        UPDLOCK/HOLDLOCK sul controllo, due istanze concorrenti si serializzano e
+        una sola ottiene rowcount = 1.
+        """
+        try:
+            cur = self.db.conn.cursor()
+            cur.execute("""
+                INSERT INTO [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
+                    (WeekStartDate, Attribute)
+                SELECT ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
+                    WITH (UPDLOCK, HOLDLOCK)
+                    WHERE WeekStartDate = ? AND Attribute = ?
+                )
+            """, (key_date, attribute, key_date, attribute))
+            claimed = cur.rowcount == 1
+            self.db.conn.commit()
+            cur.close()
+            return claimed
+        except Exception as e:
+            # Violazione dell'indice UNIQUE / race con un altro PC => gia' inviato
+            logger.info(f"Overtime report claim not acquired ({attribute} / {key_date}): {e}")
+            try:
+                self.db.conn.rollback()
+            except Exception:
+                pass
+            return False
+
+    def _release_report_claim(self, key_date, attribute: str) -> None:
+        """Rimuove il claim del periodo (invio fallito o re-invio forzato) per ritentare."""
+        try:
+            cur = self.db.conn.cursor()
+            cur.execute("""
+                DELETE FROM [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
+                WHERE WeekStartDate = ? AND Attribute = ?
+            """, (key_date, attribute))
+            self.db.conn.commit()
+            cur.close()
+        except Exception as e:
+            logger.warning(f"Cannot release overtime report claim ({attribute} / {key_date}): {e}")
+            try:
+                self.db.conn.rollback()
+            except Exception:
+                pass
+
+    # Alias storici usati dal report mensile
+    def _claim_monthly_report(self, month_start, attribute: str) -> bool:
+        return self._claim_report_send(month_start, attribute)
+
+    def _release_monthly_report_claim(self, month_start, attribute: str) -> None:
+        self._release_report_claim(month_start, attribute)
+
+    def _claim_weekly_report(self, week_start, attribute: str) -> bool:
+        return self._claim_report_send(week_start, attribute)
+
+    def _release_weekly_report_claim(self, week_start, attribute: str) -> None:
+        self._release_report_claim(week_start, attribute)
 
     def _resolve_overtime_logo_path(self):
         """Trova il percorso del logo aziendale (Logo.png) nella root del progetto."""

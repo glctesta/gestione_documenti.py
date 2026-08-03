@@ -292,7 +292,7 @@ def setup_logging(debug: bool = False,
     app_logger = logging.getLogger(logger_name)
     app_logger.setLevel(level)
     app_logger.debug("Logging inizializzato. Livello=%s, file=%s",
-                     logging.getLevelName(level), file_path)
+                     logging.getLevelName(level), file_path)                             
 
     return str(Path(file_path).resolve())
 
@@ -308,14 +308,14 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.7.8'  # Versione aggiornata 
+APP_VERSION = '2.4.2.8.3'  # Versione aggiornata 
 # Nome programma usato come chiave in SwVersions / VersionDMLogs.
 # In produzione = nome dell'exe; in sviluppo usa il nome canonico.
 APP_PROGRAM_NAME = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else 'DocumentManagement.exe'
 APP_DEVELOPER = 'GTMC - Gianluca Testa'
 APP_DEVELOPER = f"{APP_DEVELOPER} (Version: {APP_VERSION})"
 
-# # --- CONFIGURAZIONE DATABASE ---u
+# # --- CONFIGURAZIONE DATABASE ---
 # Carica le credenziali dal sistema criptato
 from config_manager import ConfigManager
 
@@ -406,6 +406,10 @@ UPDATE_COUNTDOWN_SECONDS = 60
 UPDATE_MAX_POSTPONES = 3
 UPDATE_MAX_SINGLE_POSTPONE_SECONDS = 30 * 60
 UPDATE_MAX_TOTAL_POSTPONE_SECONDS = 60 * 60
+# Oltre questo tempo un dialogo di update ancora "aperto" e' considerato morto
+# (crash durante la costruzione) e il guard di re-entrancy viene rilasciato:
+# senza questo, un solo errore blocca gli aggiornamenti fino al riavvio.
+UPDATE_DIALOG_STALE_SECONDS = 5 * 60
 
 
 def save_update_skip_count(skip_count, version_str):
@@ -717,7 +721,16 @@ class LanguageManager:
         if format_args:
             try:
                 return translated_text.format(*format_args)
-            except (IndexError, KeyError):
+            except (IndexError, KeyError, ValueError, TypeError) as fmt_err:
+                # ValueError/TypeError: il template ha un segnaposto tipizzato
+                # (es. "{0:02d}") e riceve il TESTO DI DEFAULT invece del numero,
+                # perche' la chiave esiste a DB e il default finisce in args[0].
+                # Non deve MAI propagare: questa eccezione ha ucciso il dialogo
+                # di countdown dell'aggiornamento (30/07/2026), impedendo
+                # l'avvio dell'updater su tutti i PC.
+                logger.warning(
+                    "Traduzione '%s' non formattabile (%s): uso il testo grezzo",
+                    key, fmt_err)
                 return translated_text
         return translated_text
 
@@ -1840,41 +1853,68 @@ class Database:
                 self.conn.rollback()
                 return False
 
-    def check_weekly_npi_email_sent(self, week_start_date, attribute):
+    def claim_email_send(self, key_date, attribute):
         """
-        Verifica se l'email settimanale NPI è già stata inviata per la settimana.
-        """
-        query = """
-        SELECT TOP 1 1
-        FROM [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
-        WHERE WeekStartDate = ? AND Atribute = ?
-        """
-        with self._lock:
-            try:
-                self._clear_cursor_state()
-                self.cursor.execute(query, (week_start_date, attribute))
-                return self.cursor.fetchone() is not None
-            except Exception as e:
-                logger.error(f"Errore verifica invio email settimanale NPI: {e}")
-                return True  # Fail-safe: evita duplicati
+        Prenota in modo ATOMICO l'invio di un'email automatica periodica.
 
-    def log_weekly_npi_email_sent(self, week_start_date, attribute):
-        """
-        Registra l'invio dell'email settimanale NPI.
+        Regola generale del progetto: le email automatiche NON si inviano dopo un
+        semplice "SELECT: gia' inviata?" — i worker girano su piu' PC e allo
+        scoccare dell'orario lo supererebbero tutti insieme, inviando N copie.
+        Si prenota lo slot PRIMA di generare allegati e di inviare; solo chi
+        ottiene rowcount = 1 procede.
+
+        Args:
+            key_date:  data che identifica il periodo (giorno / lunedi' / 1o del mese)
+            attribute: identificativo dell'email
+
+        Returns:
+            bool: True solo se il claim e' stato ottenuto ora da questo processo.
+                  False = gia' inviata altrove, oppure errore DB (fail-safe:
+                  meglio saltare che duplicare).
         """
         query = """
         INSERT INTO [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog] (WeekStartDate, Attribute)
-        VALUES (?, ?)
+        SELECT ?, ?
+        WHERE NOT EXISTS (
+            SELECT 1 FROM [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
+            WITH (UPDLOCK, HOLDLOCK)
+            WHERE WeekStartDate = ? AND Attribute = ?
+        )
         """
         with self._lock:
             try:
                 self._clear_cursor_state()
-                self.cursor.execute(query, (week_start_date, attribute))
+                self.cursor.execute(query, (key_date, attribute, key_date, attribute))
+                claimed = self.cursor.rowcount == 1
+                self.conn.commit()
+                return claimed
+            except Exception as e:
+                # Violazione dell'indice UNIQUE = un altro PC ha vinto la corsa
+                logger.info(f"Claim email '{attribute}' per {key_date} non ottenuto: {e}")
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    pass
+                return False
+
+    def release_email_claim(self, key_date, attribute):
+        """Rilascia il claim (invio fallito) cosi' il giro successivo ritenta."""
+        query = """
+        DELETE FROM [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
+        WHERE WeekStartDate = ? AND Attribute = ?
+        """
+        with self._lock:
+            try:
+                self._clear_cursor_state()
+                self.cursor.execute(query, (key_date, attribute))
                 self.conn.commit()
                 return True
             except Exception as e:
-                logger.error(f"Errore log invio email settimanale NPI: {e}")
-                self.conn.rollback()
+                logger.warning(f"Impossibile rilasciare il claim email '{attribute}': {e}")
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    pass
                 return False
 
     # ------------------------------------------------------------------
@@ -1882,41 +1922,61 @@ class Database:
     # Riusa NpiWeeklyGeneralEmailLog con Attribute='fai_fails_notification'
     # e WeekStartDate = data odierna (la chiave UNIQUE garantisce atomicità).
     # ------------------------------------------------------------------
-    def check_fai_fails_email_sent_today(self):
+    def claim_fai_fails_email_today(self):
         """
-        Verifica se l'email FAI fails è già stata inviata oggi.
-        Returns True se già inviata (o in caso di errore DB – fail-safe).
+        Prenota l'invio odierno dell'email FAI fails (claim atomico PRIMA
+        dell'invio). True solo se questo PC ha vinto la corsa.
+        """
+        return self.claim_email_send(datetime.now().date(), 'fai_fails_notification')
+
+    def release_fai_fails_email_claim(self):
+        """Rilascia il claim odierno FAI fails (invio fallito) per ritentare."""
+        return self.release_email_claim(datetime.now().date(), 'fai_fails_notification')
+
+    # ------------------------------------------------------------------
+    # Report mensile check prodotti – claim atomico sul marcatore lastcheck
+    # ------------------------------------------------------------------
+    def claim_monthly_report_send(self):
+        """
+        Prenota l'invio del report mensile con un UPDATE condizionato: il
+        marcatore (settings.lastcheck di 'Sys_Verify_check_fail') viene portato a
+        oggi solo se non e' gia' del mese corrente. rowcount > 0 = claim vinto.
+
+        Due PC che ci provano insieme si serializzano sull'UPDATE: il secondo
+        rivaluta la WHERE dopo il commit del primo e trova 0 righe.
+
+        Returns:
+            bool: True se questo processo deve inviare il report.
         """
         query = """
-        SELECT TOP 1 1
-        FROM [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
-        WHERE WeekStartDate = CAST(GETDATE() AS DATE)
-          AND Attribute = 'fai_fails_notification'
+        UPDATE traceability_rs.dbo.settings
+        SET lastcheck = GETDATE()
+        WHERE atribute = 'Sys_Verify_check_fail'
+          AND (lastcheck IS NULL
+               OR MONTH(lastcheck) <> MONTH(GETDATE())
+               OR YEAR(lastcheck) <> YEAR(GETDATE()))
         """
         with self._lock:
             try:
                 self._clear_cursor_state()
                 self.cursor.execute(query)
-                return self.cursor.fetchone() is not None
+                claimed = self.cursor.rowcount > 0
+                self.conn.commit()
+                return claimed
             except Exception as e:
-                logger.error(f"Errore verifica invio email FAI fails: {e}")
-                return True  # Fail-safe: evita duplicati
+                logger.error(f"Errore claim report mensile: {e}")
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    pass
+                return False  # Fail-safe: meglio saltare che duplicare
 
-    def log_fai_fails_email_sent_today(self):
-        """
-        Registra nel log che l'email FAI fails è stata inviata oggi.
-        Se il record esiste già (race condition) l'INSERT fallisce
-        silenziosamente grazie all'indice UNIQUE.
-        """
+    def release_monthly_report_claim(self):
+        """Rilascia il claim del report mensile (invio fallito) azzerando lastcheck."""
         query = """
-        IF NOT EXISTS (
-            SELECT 1 FROM [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
-            WHERE WeekStartDate = CAST(GETDATE() AS DATE)
-              AND Attribute = 'fai_fails_notification'
-        )
-        INSERT INTO [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
-            (WeekStartDate, Attribute)
-        VALUES (CAST(GETDATE() AS DATE), 'fai_fails_notification')
+        UPDATE traceability_rs.dbo.settings
+        SET lastcheck = NULL
+        WHERE atribute = 'Sys_Verify_check_fail'
         """
         with self._lock:
             try:
@@ -1925,8 +1985,11 @@ class Database:
                 self.conn.commit()
                 return True
             except Exception as e:
-                logger.error(f"Errore log invio email FAI fails: {e}")
-                self.conn.rollback()
+                logger.warning(f"Impossibile rilasciare il claim report mensile: {e}")
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    pass
                 return False
 
     def fetch_assigned_submissions(self, employee_hire_history_id: int):
@@ -11308,6 +11371,7 @@ class App(tk.Tk):
         self._plan_alert_monthly_sent = None  # Track mese corrente
         self._plan_alert_weekly_sent = None   # Track settimana corrente
         self._plan_responsibles_sent = None   # Track invio email responsabili odierno
+        self._stale_clients_sent = None       # Track report client obsoleti odierno
         # _plan_check_mode gia' letto all'avvio (dopo connessione DB)
         if self._plan_check_mode != 'False':
             self._start_plan_alert_background_task()
@@ -11654,7 +11718,11 @@ class App(tk.Tk):
                     continue
                 
                 # Verifica se il report Ã¨ giÃ  stato inviato questo mese
-                if self.db.check_monthly_report_sent():
+                # Claim ATOMICO del mese: prenota l'invio PRIMA di generare
+                # l'Excel. Con il vecchio schema "verifica -> invia -> registra"
+                # tutti i PC in polling alle 09:00 superavano insieme la verifica
+                # e mandavano una copia a testa del report.
+                if not self.db.claim_monthly_report_send():
                     logger.info("Report mensile giÃ  inviato questo mese, skip")
                     continue
                 
@@ -11674,6 +11742,7 @@ class App(tk.Tk):
                 
                 if not excel_file:
                     logger.error("Errore nella generazione del report Excel")
+                    self.db.release_monthly_report_claim()
                     continue
                 
                 # Ottieni destinatari email
@@ -11684,22 +11753,27 @@ class App(tk.Tk):
                     # Pulisci file temporaneo
                     if os.path.exists(excel_file):
                         os.remove(excel_file)
+                    self.db.release_monthly_report_claim()
                     continue
                 
                 logger.info(f"Destinatari email: {recipients}")
                 
                 # Invia email con allegato
-                send_monthly_report_email(
-                    recipients=recipients,
-                    attachment_path=excel_file,
-                    logo_path="logo.png"
-                )
+                try:
+                    send_monthly_report_email(
+                        recipients=recipients,
+                        attachment_path=excel_file,
+                        logo_path="logo.png"
+                    )
+                except Exception as send_err:
+                    logger.error(f"Errore invio report mensile: {send_err}", exc_info=True)
+                    # Invio fallito: libera il claim, il giro successivo ritenta
+                    self.db.release_monthly_report_claim()
+                    continue
                 
-                # Aggiorna timestamp nel database
-                if self.db.update_monthly_report_timestamp():
-                    logger.info("âœ“ Report mensile inviato con successo")
-                else:
-                    logger.error("Errore nell'aggiornamento del timestamp")
+                # Il claim (lastcheck aggiornato prima dell'invio) vale anche
+                # come registrazione dell'invio riuscito.
+                logger.info("âœ“ Report mensile inviato con successo")
                 
                 # Pulisci file temporaneo
                 try:
@@ -11746,12 +11820,65 @@ class App(tk.Tk):
         except Exception as e:
             logger.error(f"Errore nell'avvio del background task email settimanale NPI: {e}", exc_info=True)
 
+    def _send_weekly_npi_overview(self, week_start, attribute, context=''):
+        """
+        Invia (una sola volta a settimana) il report NPI Overview.
+
+        Il diritto di invio si prenota con un claim ATOMICO prima di generare
+        allegati e grafici: piu' PC eseguono questo worker in parallelo e un
+        semplice controllo "gia' inviata?" li lascerebbe passare tutti.
+        """
+        from utils import get_email_recipients, send_npi_weekly_overview_email
+
+        self.db.ensure_npi_weekly_email_log_table()
+        if not self.db.claim_email_send(week_start, attribute):
+            logger.info("Email NPI settimanale già inviata per questa settimana, skip")
+            return False
+
+        try:
+            recipients = get_email_recipients(self.db.conn, attribute=attribute)
+            if not recipients:
+                logger.warning("Email NPI settimanale: nessun destinatario configurato")
+                self.db.release_email_claim(week_start, attribute)
+                return False
+
+            report_data = self.npi_manager.get_npi_overview_report_data()
+            report_path = self.npi_manager.export_npi_overview_report()
+            chart_path = self._create_npi_overview_pie_chart(report_data, prefix="NPI_Overview_Pie")
+            # Genera Excel task scaduti per allegarlo
+            overdue_path = None
+            overdue_count = 0
+            try:
+                overdue_tasks = self.npi_manager.get_all_overdue_tasks()
+                overdue_count = len(overdue_tasks)
+                if overdue_tasks:
+                    overdue_path = self.npi_manager.export_overdue_tasks_to_excel(overdue_tasks)
+            except Exception as oe:
+                logger.warning(f"Impossibile generare Excel task scaduti per email settimanale: {oe}")
+
+            send_npi_weekly_overview_email(
+                recipients,
+                report_path,
+                summary=(report_data or {}).get('summary'),
+                chart_path=chart_path,
+                overdue_attachment_path=overdue_path,
+                overdue_count=overdue_count
+            )
+            logger.info(f"Email NPI settimanale inviata con successo{context}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Errore invio email settimanale NPI: {e}", exc_info=True)
+            # Invio fallito: libera il claim per ritentare
+            self.db.release_email_claim(week_start, attribute)
+            return False
+
     def _weekly_npi_email_worker(self):
         """
         Worker thread che invia il report NPI Overview ogni lunedì lavorativo.
+        Deduplicazione: claim atomico in _send_weekly_npi_overview().
         """
         from business_days import should_send_notification
-        from utils import get_email_recipients, send_npi_weekly_overview_email
         from datetime import datetime, timedelta
         import time
 
@@ -11767,35 +11894,8 @@ class App(tk.Tk):
                     today = datetime.now().date()
                     if today.weekday() == 0 and should_send_notification(country_code='IT'):
                         week_start = today - timedelta(days=today.weekday())
-                        self.db.ensure_npi_weekly_email_log_table()
-                        if not self.db.check_weekly_npi_email_sent(week_start, attribute):
-                            recipients = get_email_recipients(self.db.conn, attribute=attribute)
-                            if recipients:
-                                report_data = self.npi_manager.get_npi_overview_report_data()
-                                report_path = self.npi_manager.export_npi_overview_report()
-                                chart_path = self._create_npi_overview_pie_chart(report_data, prefix="NPI_Overview_Pie")
-                                # Genera Excel task scaduti per allegarlo
-                                overdue_path = None
-                                overdue_count = 0
-                                try:
-                                    overdue_tasks = self.npi_manager.get_all_overdue_tasks()
-                                    overdue_count = len(overdue_tasks)
-                                    if overdue_tasks:
-                                        overdue_path = self.npi_manager.export_overdue_tasks_to_excel(overdue_tasks)
-                                except Exception as oe:
-                                    logger.warning(f"Impossibile generare Excel task scaduti per email settimanale: {oe}")
-                                send_npi_weekly_overview_email(
-                                    recipients,
-                                    report_path,
-                                    summary=(report_data or {}).get('summary'),
-                                    chart_path=chart_path,
-                                    overdue_attachment_path=overdue_path,
-                                    overdue_count=overdue_count
-                                )
-                                self.db.log_weekly_npi_email_sent(week_start, attribute)
-                                logger.info("Email settimanale NPI inviata (prima esecuzione)")
-                            else:
-                                logger.warning("Email NPI settimanale: nessun destinatario configurato")
+                        self._send_weekly_npi_overview(
+                            week_start, attribute, context=' (prima esecuzione)')
 
                 # Attendi fino alle 09:00 del giorno successivo
                 now = datetime.now()
@@ -11823,39 +11923,7 @@ class App(tk.Tk):
                     continue
 
                 week_start = today - timedelta(days=today.weekday())
-                self.db.ensure_npi_weekly_email_log_table()
-                if self.db.check_weekly_npi_email_sent(week_start, attribute):
-                    logger.info("Email NPI settimanale già inviata per questa settimana, skip")
-                    continue
-
-                recipients = get_email_recipients(self.db.conn, attribute=attribute)
-                if not recipients:
-                    logger.warning("Email NPI settimanale: nessun destinatario configurato")
-                    continue
-
-                report_data = self.npi_manager.get_npi_overview_report_data()
-                report_path = self.npi_manager.export_npi_overview_report()
-                chart_path = self._create_npi_overview_pie_chart(report_data, prefix="NPI_Overview_Pie")
-                # Genera Excel task scaduti per allegarlo
-                overdue_path = None
-                overdue_count = 0
-                try:
-                    overdue_tasks = self.npi_manager.get_all_overdue_tasks()
-                    overdue_count = len(overdue_tasks)
-                    if overdue_tasks:
-                        overdue_path = self.npi_manager.export_overdue_tasks_to_excel(overdue_tasks)
-                except Exception as oe:
-                    logger.warning(f"Impossibile generare Excel task scaduti per email settimanale: {oe}")
-                send_npi_weekly_overview_email(
-                    recipients,
-                    report_path,
-                    summary=(report_data or {}).get('summary'),
-                    chart_path=chart_path,
-                    overdue_attachment_path=overdue_path,
-                    overdue_count=overdue_count
-                )
-                self.db.log_weekly_npi_email_sent(week_start, attribute)
-                logger.info("Email NPI settimanale inviata con successo")
+                self._send_weekly_npi_overview(week_start, attribute)
 
             except Exception as e:
                 logger.error(f"Errore nel worker email settimanale NPI: {e}", exc_info=True)
@@ -12101,10 +12169,13 @@ class App(tk.Tk):
                 if current_hour == 7:
                     logger.info("FAI fails email: orario corretto (07:00) - tentativo invio")
                     
-                    # Controllo DB: già inviata oggi? (persistente tra riavvii)
+                    # Claim atomico PRIMA dell'invio (persistente tra riavvii e
+                    # valido tra piu' PC): senza questo, tutte le istanze in
+                    # polling alle 07:00 supererebbero insieme il controllo
+                    # "gia' inviata?" e invierebbero una copia a testa.
                     self.db.ensure_npi_weekly_email_log_table()
-                    if self.db.check_fai_fails_email_sent_today():
-                        logger.info("FAI fails email: già inviata oggi (log DB), skip")
+                    if not self.db.claim_fai_fails_email_today():
+                        logger.info("FAI fails email: già inviata oggi (claim DB), skip")
                         self._fai_fails_email_last_sent = current_date
                         time.sleep(3600)
                         continue
@@ -12112,21 +12183,23 @@ class App(tk.Tk):
                     try:
                         # Invia email FAI fails
                         success = utils.send_fai_fails_notification(
-                            self.db.conn, 
+                            self.db.conn,
                             logo_path="logo.png"
                         )
-                        
+
                         if success:
                             logger.info("✅ Email FAI fails inviata con successo")
-                            self.db.log_fai_fails_email_sent_today()
                         else:
                             logger.info("ℹ️ Nessun FAI fail non analizzato - email non inviata")
+                            # Nessuna email partita: libera lo slot
+                            self.db.release_fai_fails_email_claim()
                         # In entrambi i casi marca il giorno come processato in memoria
                         self._fai_fails_email_last_sent = current_date
-                    
+
                     except Exception as e:
                         logger.error(f"Errore nell'invio email FAI fails: {e}", exc_info=True)
-                        # Non marcare come inviata in caso di errore - riproverà
+                        # Invio fallito: libera il claim, riproverà
+                        self.db.release_fai_fails_email_claim()
                     
                     # Attendi 1 ora per evitare invii multipli nella stessa ora
                     time.sleep(3600)
@@ -12303,6 +12376,24 @@ class App(tk.Tk):
                     except Exception as e:
                         logger.error(
                             f"Errore email responsabili piano: {e}", exc_info=True)
+
+                # --- 5) Report client con versione obsoleta (ore 8) ---
+                #     Un aggiornamento che fallisce e' silenzioso: il client
+                #     ritenta ogni 15 min e resta indietro per settimane senza
+                #     avvisare nessuno. Questo report lo rende visibile.
+                #     Dedup cross-PC nel modulo (claim su settings); la guardia
+                #     in-memory evita di rianalizzare ogni minuto.
+                if (current_hour == 8
+                        and self._stale_clients_sent != current_date):
+                    self._stale_clients_sent = current_date
+                    try:
+                        import stale_clients_report as scr
+                        sent, msg = scr.send_stale_clients_email(
+                            conn, mode=None, logo_path="logo.png")
+                        logger.info(f"Report client obsoleti: {msg}")
+                    except Exception as e:
+                        logger.error(
+                            f"Errore report client obsoleti: {e}", exc_info=True)
 
                 # Attendi 60 secondi
                 time.sleep(60)
@@ -13241,7 +13332,8 @@ class App(tk.Tk):
         try:
             import line_validation_gui
             line_validation_gui.open_line_validation_window(
-                self, self.db, self.lang, self.last_authenticated_user_name
+                self, self.db, self.lang, self.last_authenticated_user_name,
+                user_hhid=getattr(self, 'last_authorized_user_id', None)
             )
         except Exception as e:
             logger.error(f"Errore apertura validazioni linea: {e}", exc_info=True)
@@ -13481,9 +13573,10 @@ class App(tk.Tk):
             self.status_label.config(text="Invio email FAI fails in corso...")
             self.update_idletasks()
 
-            # Controllo DB: già inviata oggi? (evita duplicati con il worker automatico)
+            # Claim atomico PRIMA dell'invio: evita duplicati con il worker
+            # automatico e con gli altri PC.
             self.db.ensure_npi_weekly_email_log_table()
-            if self.db.check_fai_fails_email_sent_today():
+            if not self.db.claim_fai_fails_email_today():
                 messagebox.showwarning(
                     "Email già inviata",
                     "L'email FAI fails è già stata inviata oggi.\n\n"
@@ -13493,10 +13586,17 @@ class App(tk.Tk):
                 return
 
             # Invia email
-            success = utils.send_fai_fails_notification(self.db.conn, logo_path="logo.png")
-            
+            try:
+                success = utils.send_fai_fails_notification(self.db.conn, logo_path="logo.png")
+            except Exception:
+                self.db.release_fai_fails_email_claim()
+                raise
+
+            if not success:
+                # Nessuna email partita: libera lo slot per un tentativo successivo
+                self.db.release_fai_fails_email_claim()
+
             if success:
-                self.db.log_fai_fails_email_sent_today()
                 messagebox.showinfo(
                     "Successo", 
                     "Email FAI fails inviata con successo!\n\n"
@@ -13719,13 +13819,24 @@ class App(tk.Tk):
         """Finestrella 'preparazione aggiornamento in corso' con progressbar
         indeterminata, mostrata durante la copia dell'updater e la verifica dei
         file sorgente (fasi che possono durare qualche secondo su rete). Evita
-        l'impressione che l'app sia bloccata. Ritorna il Toplevel o None."""
+        l'impressione che l'app sia bloccata.
+
+        Il Toplevel restituito espone `set_status(testo, secondi)` per raccontare
+        la fase in corso e il tempo trascorso: senza questo l'utente vedeva una
+        barra che scorreva senza sapere cosa stesse succedendo.
+        Ritorna il Toplevel o None."""
         try:
             win = tk.Toplevel(self)
             win.title(self.lang.get('update_prep_title', 'Aggiornamento'))
             win.resizable(False, False)
+            # ATTENZIONE: niente transient() se la finestra principale non e'
+            # ancora mappata (all'avvio e' withdrawn fino a fine __init__).
+            # Tk withdrawa automaticamente una finestra transient di un master
+            # nascosto: lo splash risultava INVISIBILE e l'utente restava a
+            # fissare lo schermo vuoto per tutta la preparazione.
             try:
-                win.transient(self)
+                if self.winfo_ismapped():
+                    win.transient(self)
             except Exception:
                 pass
             win.protocol("WM_DELETE_WINDOW", lambda: None)  # non chiudibile
@@ -13738,16 +13849,35 @@ class App(tk.Tk):
                     "Preparazione dell'aggiornamento in corso...\n"
                     "Attendere: caricamento dei dati aggiornati.\n"
                     "Non chiudere l'applicazione."),
-                justify=tk.LEFT, wraplength=360).pack(pady=(0, 12))
-            pb = ttk.Progressbar(frm, mode='indeterminate', length=320)
+                justify=tk.LEFT, wraplength=380).pack(pady=(0, 10))
+            status_var = tk.StringVar(
+                value=self.lang.get('update_prep_step_start', 'Avvio della preparazione...'))
+            ttk.Label(frm, textvariable=status_var, justify=tk.LEFT, wraplength=380,
+                      font=('Segoe UI', 9, 'bold')).pack(anchor='w', pady=(0, 8))
+            pb = ttk.Progressbar(frm, mode='indeterminate', length=340)
             pb.pack()
             pb.start(12)
+
+            def _set_status(text, seconds=None):
+                try:
+                    if seconds is not None:
+                        text = f"{text}  ({int(seconds)}s)"
+                    if status_var.get() != text:
+                        status_var.set(text)
+                except Exception:
+                    pass
+            win.set_status = _set_status
+
             win.update_idletasks()
-            w = max(win.winfo_reqwidth(), 400)
-            h = max(win.winfo_reqheight(), 150)
+            w = max(win.winfo_reqwidth(), 430)
+            h = max(win.winfo_reqheight(), 190)
             sw = win.winfo_screenwidth()
             sh = win.winfo_screenheight()
             win.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+            # Solo ORA si chiude la splash di avvio: prima la finestra di
+            # preparazione e' gia' a schermo, cosi' non c'e' mai un istante
+            # (ne' minuti) di schermo vuoto durante il passaggio di consegne.
+            self._hide_splash_for_dialog()
             win.lift()
             try:
                 win.attributes('-topmost', True)
@@ -13757,6 +13887,7 @@ class App(tk.Tk):
             return win
         except Exception as e:
             logger.warning(f"_show_update_prep_splash: {e}")
+            self._hide_splash_for_dialog()
             return None
 
     def _show_update_handoff_splash(self, version):
@@ -13856,12 +13987,14 @@ class App(tk.Tk):
         #    possono durare secondi su rete: senza feedback l'app sembra bloccata
         #    e l'utente rilancia il programma. ──────────────────────────────────
         prep = self._show_update_prep_splash()
-        prep_result = {'updater_path': None, 'ready': None, 'reason': '', 'done': False}
+        prep_result = {'updater_path': None, 'ready': None, 'reason': '', 'done': False,
+                       'phase': 'start'}
 
         def _prep_worker():
             try:
                 up = None
                 try:
+                    prep_result['phase'] = 'updater'
                     if os.path.isdir(source_updater_dir) and os.path.exists(source_updater_onedir):
                         shutil.copytree(
                             source_updater_dir,
@@ -13887,20 +14020,38 @@ class App(tk.Tk):
 
                 # Verifica integrità file sorgente (solo se abbiamo un updater valido)
                 if up and os.path.exists(up):
+                    prep_result['phase'] = 'verify'
                     ready, reason = self._is_source_file_ready(source, exe_name)
                     prep_result['ready'] = ready
                     prep_result['reason'] = reason
             except Exception as e:
                 logger.error(f"_trigger_update: errore prep updater: {e}", exc_info=True)
             finally:
+                prep_result['phase'] = 'done'
                 prep_result['done'] = True
 
         _prep_thread = threading.Thread(target=_prep_worker, daemon=True)
         _prep_thread.start()
-        # Pump dell'event loop per mantenere animato lo splash finché il prep finisce
+        # Pump dell'event loop per mantenere animato lo splash finché il prep
+        # finisce, raccontando la fase in corso e i secondi trascorsi: sono i
+        # minuti in cui l'app sembrava sparita dallo schermo.
+        _phase_texts = {
+            'start':   self.lang.get('update_prep_step_start',
+                                     'Avvio della preparazione...'),
+            'updater': self.lang.get('update_prep_step_updater',
+                                     'Copia del programma di aggiornamento dal server...'),
+            'verify':  self.lang.get('update_prep_step_verify',
+                                     'Verifica dei file della nuova versione sul server...'),
+            'done':    self.lang.get('update_prep_step_done',
+                                     'Preparazione completata.'),
+        }
         _waited = 0.0
+        _last_sec = -1
         while not prep_result['done'] and _waited < 180:
             try:
+                if prep is not None and int(_waited) != _last_sec:
+                    _last_sec = int(_waited)
+                    prep.set_status(_phase_texts.get(prep_result['phase'], ''), _last_sec)
                 self.update()
             except Exception:
                 pass
@@ -13949,9 +14100,22 @@ class App(tk.Tk):
             logger.warning(f"_trigger_update: errore lift/focus: {e}")
 
         # Re-entrancy guard: se un dialogo di update è già aperto, non stackare.
+        # Il guard va pero' rilasciato se il dialogo e' MORTO senza chiudersi
+        # (es. eccezione durante la costruzione): altrimenti resta chiuso per
+        # sempre e ogni tentativo successivo ritorna 'postponed' — l'app non
+        # si aggiorna piu' fino al riavvio. E' successo il 30/07/2026.
         if getattr(self, '_update_dialog_open', False):
-            logger.info("_trigger_update: dialogo già aperto, ritorno postponed")
-            return 'postponed'
+            opened_at = getattr(self, '_update_dialog_opened_at', None)
+            stale = (opened_at is None
+                     or (datetime.now() - opened_at).total_seconds() > UPDATE_DIALOG_STALE_SECONDS)
+            if stale:
+                logger.warning(
+                    "_trigger_update: guard dialogo rimasto chiuso da troppo tempo "
+                    "(dialogo non piu' vivo): lo rilascio e riprovo")
+                self._update_dialog_open = False
+            else:
+                logger.info("_trigger_update: dialogo già aperto, ritorno postponed")
+                return 'postponed'
 
         # Stato posticipi (reset se la versione target è cambiata)
         if getattr(self, '_update_postpone_version', None) != version_info.Version:
@@ -13967,6 +14131,9 @@ class App(tk.Tk):
 
         dialog = tk.Toplevel(self)
         self._update_dialog_open = True
+        # Istante di apertura: serve a riconoscere un guard rimasto chiuso per
+        # un dialogo morto (vedi il controllo di re-entrancy piu' sopra).
+        self._update_dialog_opened_at = datetime.now()
         dialog.title(self.lang.get('update_ready_title', 'Aggiornamento Pronto'))
 
         parent_is_ready = False
@@ -13976,7 +14143,10 @@ class App(tk.Tk):
             pass
         if parent_is_ready:
             dialog.transient(self)
-            dialog.grab_set()
+            # NIENTE grab_set(): il dialogo dice "salvate il lavoro nelle
+            # finestre aperte", ma con il grab l'operatore non poteva toccare
+            # nulla del programma. Resta sempre in primo piano (vedi il job
+            # _keep_dialog_on_top piu' sotto) senza bloccare l'applicazione.
         else:
             logger.info("_trigger_update: parent non ancora mappato, dialogo standalone")
         # Verticalmente ridimensionabile: valvola di sfogo se una traduzione lunga
@@ -14057,14 +14227,26 @@ class App(tk.Tk):
             self._update_retrigger_job = self.after(
                 postpone_secs * 1000, lambda: self._trigger_update(version_info, mandatory))
 
+        def _countdown_text(seconds):
+            """Testo del countdown: il tempo lo compone il codice, la frase
+            tradotta NON contiene segnaposto.
+
+            I segnaposto tipizzati ("{0:02d}") nelle traduzioni sono una mina:
+            se la chiave esiste a DB, LanguageManager.get() ci infila il testo
+            di default e format() solleva ValueError. E' esattamente cio' che
+            ha impedito l'avvio dell'updater il 30/07/2026.
+            """
+            m, s = divmod(max(0, seconds), 60)
+            msg = self.lang.get(
+                'update_countdown_msg',
+                "L'aggiornamento partirà automaticamente allo scadere del tempo.\n"
+                "Salvare il lavoro nelle finestre aperte.")
+            return f"⏱ {m:02d}:{s:02d}\n{msg}"
+
         def _update_label():
             if not dialog.winfo_exists():
                 return
-            m, s = divmod(max(0, remaining['sec']), 60)
-            info_lbl.config(text=self._t_fmt(
-                'update_countdown_msg',
-                "L'aggiornamento partirà automaticamente tra {0:02d}:{1:02d}.\n"
-                "Salvare il lavoro nelle finestre aperte.", m, s))
+            info_lbl.config(text=_countdown_text(remaining['sec']))
             if remaining['sec'] <= 0:
                 _proceed()
                 return
@@ -14091,11 +14273,7 @@ class App(tk.Tk):
         # tagliava i bottoni in basso. Qui si imposta solo il testo iniziale;
         # il countdown vero parte con _update_label() piu' sotto (una sola volta,
         # altrimenti si pianificherebbero due tick e scorrerebbe a doppia velocita').
-        _m0, _s0 = divmod(max(0, remaining['sec']), 60)
-        info_lbl.config(text=self._t_fmt(
-            'update_countdown_msg',
-            "L'aggiornamento partirà automaticamente tra {0:02d}:{1:02d}.\n"
-            "Salvare il lavoro nelle finestre aperte.", _m0, _s0))
+        info_lbl.config(text=_countdown_text(remaining['sec']))
 
         dialog.update_idletasks()
         dw = dialog.winfo_reqwidth()
@@ -14111,13 +14289,30 @@ class App(tk.Tk):
         dialog.geometry(f"{dw}x{dh}+{x}+{y}")
         dialog.minsize(dw, dh)
 
+        # ── Resta SEMPRE in primo piano finché esiste ────────────────────────
+        # Prima il topmost veniva rilasciato dopo 200 ms: bastava che la
+        # finestra principale (o un altro popup) si alzasse perché il dialogo
+        # con le novità della versione finisse DIETRO al programma, invisibile
+        # mentre il countdown continuava a scorrere. Ora il topmost resta
+        # attivo e un job periodico rialza la finestra.
         dialog.lift()
         dialog.attributes('-topmost', True)
-        dialog.after(200, lambda: dialog.attributes('-topmost', False))
         try:
             dialog.focus_force()
         except Exception:
             pass
+
+        def _keep_dialog_on_top():
+            if not dialog.winfo_exists():
+                return
+            try:
+                dialog.lift()
+                dialog.attributes('-topmost', True)
+            except Exception:
+                return
+            dialog.after(1500, _keep_dialog_on_top)
+
+        dialog.after(1500, _keep_dialog_on_top)
 
         _update_label()  # avvia il countdown
         dialog.update()
@@ -14238,9 +14433,26 @@ class App(tk.Tk):
                 skip_count = 0  # nuova versione → reset contatore
 
             # ── Verifica integrità file sorgente PRIMA di qualsiasi dialogo ──
+            # Gira su percorso di RETE e può durare parecchi secondi: va fatta
+            # in un thread pompando l'event loop, altrimenti la finestra del
+            # programma si congela mentre l'operatore ci sta lavorando.
             source = version_info.MainPath
             exe_name = os.path.basename(sys.executable)
-            file_ready, reason = self._is_source_file_ready(source, exe_name)
+            _ready_res = {}
+
+            def _check_source_ready():
+                try:
+                    _ready_res['value'] = self._is_source_file_ready(source, exe_name)
+                except Exception as _e:
+                    _ready_res['value'] = (False, str(_e))
+
+            threading.Thread(target=_check_source_ready, daemon=True).start()
+            if not self._pump_until(lambda: 'value' in _ready_res, 180.0):
+                logger.warning("_periodic_version_check: timeout verifica file sorgente, ripianificato")
+                self.periodic_check_job_id = self.after(15 * 60 * 1000, self._periodic_version_check)
+                return
+
+            file_ready, reason = _ready_res['value']
             if not file_ready:
                 logger.warning(f"_periodic_version_check: file sorgente non pronto, ripianificato - {reason}")
                 self.periodic_check_job_id = self.after(15 * 60 * 1000, self._periodic_version_check)
@@ -14303,6 +14515,9 @@ class App(tk.Tk):
 
         except Exception as e:
             logger.error(f"Errore in _periodic_version_check: {e}", exc_info=True)
+            # Se il dialogo di update e' morto a metà, libera subito il guard:
+            # altrimenti il prossimo giro si limiterebbe a rispondere 'postponed'.
+            self._update_dialog_open = False
             # In caso di errore ripianifica tra 120 minuti senza interrompere
             self.periodic_check_job_id = self.after(30 * 60 * 1000, self._periodic_version_check)
 
@@ -15249,10 +15464,14 @@ class App(tk.Tk):
         # â±ï¸ SCAGLIONAMENTO OPERAZIONI IN BACKGROUND
         # Ogni operazione viene ritardata progressivamente per evitare conflitti DB
         
-        # Ritardo 3 secondi: Check versione programma
+        # Ritardo 3 secondi: Check versione programma.
+        # Se all'avvio e' stata trovata una nuova versione, il controllo (che
+        # prepara e propone l'aggiornamento) parte prima: il programma resta
+        # visibile e utilizzabile per tutto il tempo della preparazione.
+        _update_delay = 30000 if getattr(self, '_pending_update_version', None) else 120000
         self.after(3000, lambda: self._delayed_task(
             'check_versione',
-            lambda: self.after(120000, self._periodic_version_check)
+            lambda: self.after(_update_delay, self._periodic_version_check)
         ))
         
         # Ritardo 6 secondi: Controllo calibrazioni
@@ -15459,6 +15678,7 @@ class App(tk.Tk):
                         SELECT ?, ?
                         WHERE NOT EXISTS (
                             SELECT 1 FROM traceability_rs.dbo.settings
+                            WITH (UPDLOCK, HOLDLOCK)
                             WHERE atribute = ?
                         )
                     """, (setting_key,
@@ -16653,6 +16873,32 @@ class App(tk.Tk):
                 pass
             self._splash = None
 
+    def _pump_until(self, is_done, timeout=120.0, on_tick=None):
+        """Attende che `is_done()` diventi vero POMPANDO l'event loop di Tk.
+
+        Serve per le attese su rete (query, verifica file sul server): un join()
+        congelerebbe il thread Tk e splash/finestre resterebbero disegnate a
+        meta', dando l'impressione che il programma sia bloccato o sparito.
+        `on_tick(secondi)` viene chiamata una volta al secondo per aggiornare i
+        messaggi a video. Ritorna True se completato, False se scaduto il timeout.
+        """
+        waited = 0.0
+        last_sec = -1
+        while not is_done() and waited < timeout:
+            if on_tick is not None and int(waited) != last_sec:
+                last_sec = int(waited)
+                try:
+                    on_tick(last_sec)
+                except Exception:
+                    pass
+            try:
+                self.update()
+            except Exception:
+                pass
+            time.sleep(0.05)
+            waited += 0.05
+        return is_done()
+
     def check_version(self):
         """
         Controlla se l'app Ã¨ eseguita dalla sorgente, poi verifica la versione
@@ -16722,81 +16968,28 @@ class App(tk.Tk):
                 return False
 
             if is_update_needed(APP_VERSION, version_info.Version):
-                # Recupera il flag Must (default False se non presente)
-                is_mandatory = getattr(version_info, 'Must', False)
-                
-                # Carica il conteggio dei rinvii e l'ultima versione vista
-                skip_count, last_version = load_update_skip_count()
-                
-                # Se la versione disponibile è cambiata, resetta il conteggio
-                if last_version != version_info.Version:
-                    skip_count = 0
-                    logger.info(f"Nuova versione disponibile ({version_info.Version}), reset conteggio rinvii")
-                
-                # ── Verifica integrità file sorgente PRIMA di qualsiasi dialogo ──
-                # Se il file non è pronto (copia incompleta, bloccato, etc.)
-                # non mostrare nessun dialogo di update.
-                source = version_info.MainPath
-                exe_name = os.path.basename(sys.executable)
-                file_ready, reason = self._is_source_file_ready(source, exe_name)
-                if not file_ready:
-                    logger.warning(f"check_version: file sorgente non pronto, update saltato - {reason}")
-                    return True  # Procedi normalmente, il periodic check riproverà
-
-                # Determina se l'update è obbligatorio
-                # L'update è obbligatorio se:
-                # 1. Il campo Must è True, OPPURE
-                # 2. L'utente ha già saltato l'update 3 volte
-                force_update = is_mandatory or skip_count >= 3
-
-                # ── Chiudi la splash PRIMA di mostrare dialoghi di update ──
-                # Altrimenti la messagebox/trigger_update appare dietro la splash
-                # e l'utente non la vede (sembra bloccato).
-                self._hide_splash_for_dialog()
-
-                if force_update:
-                    # Update obbligatorio: countdown automatico. Se l'utente aggiorna,
-                    # _trigger_update esce (os._exit). Se posticipa (o updater non pronto),
-                    # l'app CONTINUA a funzionare e il ritrigger/periodico ci riprovano.
-                    logger.info(f"check_version: update obbligatorio (mandatory={is_mandatory}, skip={skip_count})")
-                    reset_update_skip_count()
-                    self._trigger_update(version_info, mandatory=True)
-                    return True
-                else:
-                    # Update opzionale - chiedi all'utente
-                    title = self.lang.get("upgrade_available_title")
-                    remaining_skips = 3 - skip_count
-                    message = self.lang.get(
-                        "optional_upgrade_message",
-                        version_info.Version, APP_VERSION, remaining_skips
-                    )
-
-                    response = messagebox.askyesno(title, message, parent=self)
-
-                    if response:
-                        # L'utente vuole aggiornare (countdown; se posticipa, l'app continua)
-                        reset_update_skip_count()
-                        self._trigger_update(version_info, mandatory=False)
-                        return True
-                    else:
-                        # L'utente ha scelto di rinviare
-                        skip_count += 1
-                        save_update_skip_count(skip_count, version_info.Version)
-                        logger.info(f"Update rinviato. Conteggio rinvii: {skip_count}/3")
-
-                        # Mostra un messaggio informativo
-                        info_message = self.lang.get(
-                            "update_skipped_message",
-                            "Aggiornamento rinviato.\n\n"
-                            "Rinvii rimanenti: {0}/3",
-                            remaining_skips - 1
-                        )
-                        messagebox.showinfo(
-                            self.lang.get("update_skipped_title", "Aggiornamento Rinviato"),
-                            info_message,
-                            parent=self
-                        )
-                        return True
+                # ── L'AGGIORNAMENTO NON SI FA PIU' DURANTE L'AVVIO ───────────
+                # Prima qui si fermava tutto: verifica dei file sul server,
+                # copia dell'updater e dialogo di countdown avvenivano mentre
+                # la finestra principale era ancora nascosta. Risultato: barra
+                # ferma su "Verifica versione" per minuti e poi schermo vuoto,
+                # come se il programma fosse sparito.
+                #
+                # Ora si registra soltanto che c'e' una nuova versione e si
+                # lascia proseguire l'avvio: il programma parte, e' subito
+                # utilizzabile, e la preparazione dell'aggiornamento avviene
+                # dopo, in background, tramite _periodic_version_check().
+                self._pending_update_version = version_info.Version
+                logger.info(
+                    f"check_version: nuova versione {version_info.Version} disponibile "
+                    f"(attuale {APP_VERSION}) — aggiornamento rimandato a dopo l'avvio, "
+                    f"l'applicazione parte normalmente")
+                if self._splash:
+                    self._splash.update_progress(48, self._t_fmt(
+                        'splash_update_found',
+                        "Nuova versione {0} disponibile: si aggiornerà dopo l'avvio",
+                        version_info.Version))
+                return True
             else:
                 # Versione aggiornata - reset del conteggio se esiste
                 reset_update_skip_count()
@@ -16806,6 +16999,9 @@ class App(tk.Tk):
         except Exception as e:
             logger.error(f"Errore imprevisto durante il controllo versione: {e}", exc_info=True)
             print(f"Errore imprevisto durante il controllo versione: {e}")
+            # Libera il guard: un dialogo morto non deve bloccare i tentativi
+            # successivi del controllo periodico.
+            self._update_dialog_open = False
             return True
 
 

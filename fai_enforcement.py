@@ -92,6 +92,58 @@ ARTICOLO_LEGALE_ID = 33  # Non osservanza del regolamento interno
 REGISTRO_TYPE_ID = 60    # Referat
 EMPLOYER_ID = 2          # Vandewiele Romania
 
+# Interruttore della pipeline SHIFT_CHECK (settings.Atribute, max 30 char).
+# SHIFT_CHECK pretende un FAI Autocheck da OGNI capolinea presente a ogni
+# turno, senza alcun legame con gli ordini: sanziona anche quando in quel
+# turno nessun ordine richiedeva la preparazione linea. L'obbligo reale
+# ("FAI 3 ore prima dell'ordine successivo") e' coperto da PLANNING_CHECK,
+# che e' ancorato al singolo ordine. Default DISATTIVATO.
+SHIFT_CHECK_SETTING = 'Sys_fai_shift_check_on'
+
+# Generazione automatica del REFERAT disciplinare a livello L3.
+# Default DISATTIVATO: le email di escalation partono comunque, ma nessun
+# provvedimento disciplinare viene registrato finche' non si attiva
+# esplicitamente il settaggio. Serve a non ripetere l'emissione massiva di
+# referat non validi (30/07/2026, 213 referat annullati).
+REFERAT_AUTO_SETTING = 'Sys_fai_referat_auto'
+
+# Ore di anticipo con cui il FAI di preparazione linea DEVE essere compilato
+# rispetto all'avvio della produzione ("FAI 3 ore prima").
+FAI_LEAD_HOURS = 3
+# Margine minimo tollerato: sotto questa soglia (o senza FAI) scatta la sanzione.
+FAI_MIN_LEAD_MINUTES = 30
+# Da quante ore indietro cercare gli ordini appena entrati in PTHM.
+PTHM_START_LOOKBACK_HOURS = 24
+# Da quanti giorni indietro considerare la coda della linea PTH (ordini con AOI
+# fatto e PTHM non ancora iniziata): oltre sono residui fermi, non il prossimo
+# ordine di produzione.
+PENDING_LOOKBACK_DAYS = 45
+
+
+def _setting_is_on(conn, attribute: str) -> bool:
+    """Legge un settaggio booleano da traceability_rs.dbo.settings (default False)."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT TOP 1 [Value] FROM traceability_rs.dbo.settings "
+                "WHERE Atribute = ?", attribute)
+            row = cur.fetchone()
+        if row and row[0]:
+            return str(row[0]).strip().lower() in ('true', '1', 'yes', 'on')
+    except Exception as e:
+        logger.warning(f"FAI Enforcement: errore lettura {attribute}: {e}")
+    return False
+
+
+def is_shift_check_enabled(conn) -> bool:
+    """True se la pipeline SHIFT_CHECK e' abilitata da settings (default False)."""
+    return _setting_is_on(conn, SHIFT_CHECK_SETTING)
+
+
+def is_auto_referat_enabled(conn) -> bool:
+    """True se la generazione automatica del referat e' abilitata (default False)."""
+    return _setting_is_on(conn, REFERAT_AUTO_SETTING)
+
 
 # ================================================================
 # 1. IDENTIFICAZIONE RESPONSABILI (riuso da fai_autocheck)
@@ -207,17 +259,35 @@ def check_night_shift_active(conn) -> bool:
 # 4. VERIFICA FAI COMPILATO
 # ================================================================
 
-def check_shift_fai_completed(conn, operator_name: str, shift_start_dt: datetime) -> bool:
+def _person_tokens(name: str) -> frozenset:
+    """Insieme dei token di un nome, per confronti indipendenti dall'ordine.
+
+    'MALAU ANDREEA-GABRIELA' e 'ANDREEA-GABRIELA MALAU' danno lo stesso set.
+    Serve per i FaiLogs storici, scritti prima dell'introduzione di OperatorHHID.
+    """
+    if not name:
+        return frozenset()
+    cleaned = name.replace(',', ' ').replace('.', ' ').strip().lower()
+    return frozenset(t for t in cleaned.split() if t)
+
+
+def check_shift_fai_completed(conn, operator_name: str, shift_start_dt: datetime,
+                              employee_hhid: int = None) -> bool:
     """Verifica se l'operatore ha compilato almeno un FAI Autocheck dopo l'inizio turno.
-    
-    Filtra solo FaiLogs collegati a template con Autocheck=1 tramite la catena:
-    FaiLogs → FaiStepDetails → FaiSteps → FaiTemplates.
-    
+
+    Il riconoscimento avviene per IDENTITA' (fai.FaiLogs.OperatorHHID =
+    EmployeeHireHistoryId), non per stringa: il login scrive l'operatore come
+    "Nome Cognome" mentre l'anagrafica dei responsabili lo compone come
+    "Cognome Nome", quindi il vecchio confronto `l.Operator = ?` non era MAI
+    vero e l'escalation arrivava sempre fino al referat.
+    Per le righe storiche (OperatorHHID NULL) si ripiega sul confronto dei
+    token del nome, insensibile all'ordine e al maiuscolo/minuscolo.
+
     NOTA: NON si filtra su DateOut IS NULL — un FAI già chiuso (DateOut impostato)
     è comunque un FAI COMPILATO e non deve generare escalation.
     """
     query = """
-        SELECT TOP 1 l.FaiLogId 
+        SELECT DISTINCT l.Operator, l.OperatorHHID
         FROM [Traceability_RS].[fai].[FaiLogs] l
         INNER JOIN [Traceability_RS].[fai].[FaiStepDetails] d
             ON l.FaiStepDetailId = d.FaiStepDetailId
@@ -225,15 +295,21 @@ def check_shift_fai_completed(conn, operator_name: str, shift_start_dt: datetime
             ON d.FatStepId = s.FatStepId
         INNER JOIN [Traceability_RS].[fai].[FaiTemplates] t
             ON s.FaiTemplateId = t.FaiTemplateId
-        WHERE l.Operator = ? 
-          AND l.DateIn >= ?
+        WHERE l.DateIn >= ?
           AND t.Autocheck = 1
     """
     try:
         with conn.cursor() as cur:
-            cur.execute(query, (operator_name, shift_start_dt))
-            row = cur.fetchone()
-        return row is not None
+            cur.execute(query, (shift_start_dt,))
+            rows = cur.fetchall()
+
+        wanted = _person_tokens(operator_name)
+        for r in rows:
+            if employee_hhid and r.OperatorHHID and int(r.OperatorHHID) == int(employee_hhid):
+                return True
+            if wanted and _person_tokens(r.Operator) == wanted:
+                return True
+        return False
     except Exception as e:
         logger.error(f"FAI Enforcement: errore check FAI completato: {e}", exc_info=True)
         return False
@@ -1075,7 +1151,17 @@ def create_automatic_referat(conn, employee_hhid: int, employee_name: str,
     """
     Genera un REFERAT automatico per mancata compilazione FAI.
     Ritorna il percorso del PDF generato, o None.
+
+    Gate: senza il settaggio Sys_fai_referat_auto attivo NON si registra alcun
+    provvedimento disciplinare (le email di escalation partono comunque).
     """
+    if not is_auto_referat_enabled(conn):
+        logger.info(
+            f"FAI Enforcement: referat automatico DISATTIVATO "
+            f"({REFERAT_AUTO_SETTING}) — nessun provvedimento per "
+            f"'{employee_name}', parte solo l'email di escalation")
+        return None
+
     try:
         # Validazione: EmployeeHireHistoryId obbligatorio per il referat
         if not employee_hhid:
@@ -1460,12 +1546,18 @@ def run_shift_check(conn, logo_path: str = "logo.png"):
     Orchestratore principale per il check FAI ad inizio turno.
     Chiamato 60 minuti dopo ogni inizio turno.
     """
+    if not is_shift_check_enabled(conn):
+        logger.info("FAI Enforcement: SHIFT_CHECK disattivato "
+                    f"({SHIFT_CHECK_SETTING}) — l'obbligo FAI e' verificato "
+                    "per ordine da PLANNING_CHECK")
+        return
+
     now = datetime.now()
     shift_key = should_check_shift(now)
-    
+
     if not shift_key:
         return
-    
+
     shift = SHIFT_TIMES[shift_key]
     shift_label = shift['label']
     
@@ -1522,8 +1614,9 @@ def run_shift_check(conn, logo_path: str = "logo.png"):
             logger.debug(f"FAI Enforcement: {emp['Employee']} non presente, skip")
             continue
         
-        # Verifica FAI compilato
-        if check_shift_fai_completed(conn, emp['Employee'], shift_start_dt):
+        # Verifica FAI compilato (per identita', non per nome)
+        if check_shift_fai_completed(conn, emp['Employee'], shift_start_dt,
+                                     employee_hhid=emp['EmployeeHireHistoryId']):
             logger.debug(f"FAI Enforcement: {emp['Employee']} ha compilato FAI ✓")
             continue
         
@@ -1578,12 +1671,15 @@ def process_pending_escalations(conn, logo_path: str = "logo.png"):
     Controlla eventi aperti e processa escalation L1→L2 e L2→L3.
     Chiamato ad ogni ciclo del worker.
     """
+    if not is_shift_check_enabled(conn):
+        return  # pipeline SHIFT_CHECK disattivata: niente escalation L2/L3
+
     now = datetime.now()
     esc_info = should_escalate(now)
-    
+
     if not esc_info:
         return
-    
+
     shift_key, target_level = esc_info
     source_level = target_level - 1
     shift_label = SHIFT_TIMES[shift_key]['label']
@@ -1604,7 +1700,8 @@ def process_pending_escalations(conn, logo_path: str = "logo.png"):
     
     for event in pending:
         # Re-check: forse il FAI è stato compilato nel frattempo
-        if check_shift_fai_completed(conn, event['EmployeeName'], shift_start_dt):
+        if check_shift_fai_completed(conn, event['EmployeeName'], shift_start_dt,
+                                     employee_hhid=event['EmployeeHireHistoryId']):
             logger.info(f"FAI Enforcement: ✅ {event['EmployeeName']} ha compilato FAI - "
                          f"chiudo evento {event['EnforcementLogId']}")
             update_enforcement_event(conn, event['EnforcementLogId'],
@@ -2115,46 +2212,109 @@ def resolve_referat_target(conn, phase_name: str,
     return None
 
 
-def determine_planning_escalation_level(now: datetime,
-                                        actual_start: datetime) -> Optional[int]:
-    """Determina il livello di escalation basato sulla produzione REALE.
+def classify_fai_lead_time(pthm_start: datetime,
+                           fai_done_at: Optional[datetime]) -> Tuple[str, Optional[float]]:
+    """Classifica il FAI di preparazione linea rispetto all'avvio del PTHM.
 
-    Deadline FAI = actual_start (da qui l'ordine e' verificabile)
-    L1 scatta a actual_start + 1h
-    L2 scatta a actual_start + 2h
-    L3 scatta a actual_start + 3h
+    Regola (decisa il 30/07/2026):
+      - FAI compilato almeno 3 ore PRIMA dell'avvio produzione   → 'ok'
+      - FAI compilato prima dell'avvio ma con meno di 3 ore e
+        almeno 30 minuti di margine                              → 'late' (solo avviso)
+      - FAI mancante, oppure compilato con meno di 30 minuti di
+        margine, oppure dopo l'avvio della produzione            → 'violation' (sanzione)
 
-    Ritorna il livello massimo raggiunto, o None se troppo presto (prima ora
-    di grazia dall'avvio produzione).
+    Ritorna (esito, ore_di_anticipo) — ore_di_anticipo e' None se il FAI manca,
+    negativo se il FAI e' stato compilato a produzione gia' avviata.
     """
-    if now < actual_start:
-        return None  # Produzione non ancora avviata: FAI non dovuto
+    if fai_done_at is None:
+        return 'violation', None
 
-    l1_time = actual_start + timedelta(hours=1)
-    l2_time = actual_start + timedelta(hours=2)
-    l3_time = actual_start + timedelta(hours=3)
+    lead_hours = (pthm_start - fai_done_at).total_seconds() / 3600.0
 
-    if now >= l3_time:
+    if lead_hours >= FAI_LEAD_HOURS:
+        return 'ok', lead_hours
+    if lead_hours >= (FAI_MIN_LEAD_MINUTES / 60.0):
+        return 'late', lead_hours
+    return 'violation', lead_hours
+
+
+def determine_escalation_level_since(now: datetime,
+                                     detected_at: datetime) -> int:
+    """Livello di escalation in base a quanto tempo e' passato dall'evento.
+
+    L'avvio della produzione senza FAI e' un fatto compiuto: i livelli servono a
+    dare visibilita' crescente alla gerarchia (e tempo per giustificare).
+      L1 subito → Capo Reparto
+      L2 dopo 1h → Capo Produzione
+      L3 dopo 2h → Qualita' + Amministratore (referat)
+    """
+    elapsed_h = (now - detected_at).total_seconds() / 3600.0
+    if elapsed_h >= 2:
         return 3
-    elif now >= l2_time:
+    if elapsed_h >= 1:
         return 2
-    elif now >= l1_time:
-        return 1
-    else:
-        # Prima ora dall'avvio produzione — fase di grazia
+    return 1
+
+
+SQL_FAI_DONE_AT = """
+    SELECT MIN(l.DateIn) AS FaiDoneAt
+    FROM [Traceability_RS].[fai].[FaiLogs] l
+    INNER JOIN [Traceability_RS].[fai].[FaiStepDetails] d
+        ON l.FaiStepDetailId = d.FaiStepDetailId
+    INNER JOIN [Traceability_RS].[fai].[FaiSteps] s
+        ON d.FatStepId = s.FatStepId
+    INNER JOIN [Traceability_RS].[fai].[FaiTemplates] t
+        ON s.FaiTemplateId = t.FaiTemplateId
+    WHERE l.OrderId = ?
+      AND t.IdPhase = ?
+      AND t.Autocheck = 1
+"""
+
+# Ordini entrati in PTHM (o nella fase del template Autocheck) di recente.
+# HAVING sul MIN: interessa il PRIMO ingresso in assoluto in quella fase, non
+# una scansione qualsiasi dentro la finestra.
+SQL_ORDERS_STARTED_PHASE = """
+    SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+    SELECT o.IDOrder, o.OrderNumber, p.ProductCode, p.ProductName,
+           MIN(s.ScanTimeStart) AS PhaseStart
+    FROM Traceability_RS.dbo.Scannings s
+    INNER JOIN Traceability_RS.dbo.OrderPhases op ON op.IDOrderPhase = s.IDOrderPhase
+    INNER JOIN Traceability_RS.dbo.Orders o ON o.IDOrder = op.IDOrder
+    INNER JOIN Traceability_RS.dbo.Products p ON p.IDProduct = o.IDProduct
+    WHERE op.IDPhase = ?
+    GROUP BY o.IDOrder, o.OrderNumber, p.ProductCode, p.ProductName
+    HAVING MIN(s.ScanTimeStart) >= DATEADD(HOUR, -?, GETDATE());
+    SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+"""
+
+
+def get_fai_completion_time(conn, order_id: int, id_phase: int) -> Optional[datetime]:
+    """Quando e' stato compilato il FAI Autocheck di quell'ordine/fase (None se mai).
+
+    Si prende la PRIMA compilazione: e' il momento in cui la linea e' stata
+    dichiarata pronta.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(SQL_FAI_DONE_AT, (order_id, id_phase))
+            row = cur.fetchone()
+        return row.FaiDoneAt if row and row.FaiDoneAt else None
+    except Exception as e:
+        logger.warning(f"FAI Enforcement: errore lettura data FAI ordine {order_id}: {e}")
         return None
 
 
 def get_planning_violations(conn) -> List[Dict]:
-    """Legge il piano di produzione Excel e identifica ordini Autocheck=1
-    con FAI mancante che richiedono enforcement.
+    """Ordini entrati in produzione SENZA il FAI preventivo di preparazione linea.
 
-    Per ogni ordine nel PlanningMachine:
-    1. Verifica se il template della fase ha Autocheck=1
-    2. Verifica se l'ordine e' REALMENTE entrato in produzione in quella fase
-       (se non lo e', non e' verificabile → nessuna violazione)
-    3. Determina il livello di escalation dal tempo trascorso dall'avvio reale
-    4. Verifica se il FAI è stato compilato
+    Il controllo scatta sull'AVVIO REALE della fase (primo scan in PTHM), non su
+    un countdown del piano: quello che conta e' se, quando l'ordine e' entrato in
+    linea, il FAI era gia' stato fatto e con quanto anticipo.
+
+      anticipo >= 3h            → conforme, nessuna azione
+      30 min <= anticipo < 3h   → avviso (solo L1, nessun referat)
+      anticipo < 30 min o FAI
+      assente/fatto dopo        → violazione, escalation fino al referat
 
     Restituisce lista di violazioni con dettagli per l'escalation.
     """
@@ -2178,91 +2338,97 @@ def get_planning_violations(conn) -> List[Dict]:
         logger.debug("FAI Enforcement: nessun template con Autocheck=1")
         return []
     
-    # 2. Leggi piano produzione dal file Excel
-    #    Finestra ampia all'indietro: l'ancora e' la produzione reale, quindi un
-    #    ordine pianificato molte ore fa e avviato solo ora deve essere ancora
-    #    visibile qui, altrimenti sfuggirebbe all'enforcement.
+    # 2. Orari pianificati (solo informativi nell'email): se il planning non e'
+    #    leggibile il controllo funziona lo stesso, perche' l'ancora e' l'avvio
+    #    reale della produzione.
+    planned_by_order = {}
     try:
-        planning_rows = fai_autocheck.read_planning_excel(
-            lookback_hours=PLANNING_LOOKBACK_HOURS)
+        for pr in fai_autocheck.read_planning_excel(
+                lookback_hours=PLANNING_LOOKBACK_HOURS):
+            planned_by_order.setdefault(
+                (pr['phase'].upper(), pr['order_number']), pr['planned_start'])
     except Exception as e:
-        logger.error(f"FAI Enforcement: errore lettura planning Excel: {e}")
-        return []
-    
-    if not planning_rows:
-        logger.debug("FAI Enforcement: nessuna riga nel planning Excel")
-        return []
-    
-    # 3. Per ogni riga del planning
-    for pr in planning_rows:
-        phase_upper = pr['phase'].upper()
-        template = templates.get(phase_upper)
-        if not template:
-            continue  # Fase senza template Autocheck
-        
-        planned_start = pr['planned_start']
-        order_number = pr['order_number']
+        logger.warning(f"FAI Enforcement: planning non leggibile ({e}), proseguo")
+
+    # 3. Per ogni fase con template Autocheck, gli ordini appena entrati in
+    #    produzione in quella fase.
+    for phase_upper, template in templates.items():
         id_phase = template['IdPhase']
-
-        # 4. L'ordine e' realmente in produzione in questa fase?
-        #    Se non lo e', nessuno puo' fisicamente verificarlo: niente escalation.
-        actual_start = get_actual_production_start(
-            conn, order_number, id_phase, planned_start)
-        if actual_start is None:
-            logger.debug(
-                f"FAI Enforcement: ordine {order_number} fase {phase_upper} "
-                f"non ancora in produzione (PlannedStart "
-                f"{planned_start.strftime('%d/%m %H:%M')}) — skip")
-            continue
-
-        # 5. Determina livello di escalation dal tempo trascorso dall'avvio reale
-        level = determine_planning_escalation_level(now, actual_start)
-        if level is None:
-            continue  # Prima ora dall'avvio: fase di grazia
-
-        # 6. Verifica se FAI già compilato
         try:
-            if check_order_fai_completed_by_number(conn, order_number, id_phase):
-                logger.debug(
-                    f"FAI Enforcement: ordine {order_number} fase {phase_upper} "
-                    f"ha FAI Autocheck compilato ✓")
-                continue
+            rows = _execute_with_deadlock_retry(
+                conn, SQL_ORDERS_STARTED_PHASE,
+                (id_phase, PTHM_START_LOOKBACK_HOURS))
         except Exception as e:
-            logger.warning(
-                f"FAI Enforcement: errore verifica FAI per {order_number}: {e}")
+            logger.error(f"FAI Enforcement: errore lettura avvii fase {phase_upper}: {e}")
             continue
 
-        # 7. Violazione trovata!
-        violations.append({
-            'order_number': order_number,
-            'phase': pr['phase'],
-            'phase_upper': phase_upper,
-            'planned_start': planned_start,
-            'actual_start': actual_start,
-            'deadline': actual_start,
-            'current_level': level,
-            'id_phase': id_phase,
-            'template': template,
-        })
-    
+        for r in rows:
+            phase_start = r.PhaseStart
+            order_number = r.OrderNumber
+
+            # 4. Il FAI preventivo c'era? E con quanto anticipo?
+            fai_done_at = get_fai_completion_time(conn, r.IDOrder, id_phase)
+            outcome, lead_hours = classify_fai_lead_time(phase_start, fai_done_at)
+
+            if outcome == 'ok':
+                logger.debug(
+                    f"FAI Enforcement: ordine {order_number} conforme — FAI "
+                    f"compilato {lead_hours:.1f}h prima dell'avvio {phase_start:%d/%m %H:%M}")
+                continue
+
+            # 5. Livello: cresce col tempo trascorso dall'avvio produzione.
+            #    Il caso 'late' (FAI fatto, ma con meno di 3h di anticipo) si
+            #    ferma a L1: e' un richiamo, non una sanzione.
+            level = determine_escalation_level_since(now, phase_start)
+            if outcome == 'late':
+                level = 1
+
+            violations.append({
+                'order_number': order_number,
+                'order_id': r.IDOrder,
+                'product_code': r.ProductCode,
+                'phase': template.get('PhaseName') or phase_upper,
+                'phase_upper': phase_upper,
+                'planned_start': planned_by_order.get((phase_upper, order_number)),
+                'actual_start': phase_start,
+                'fai_done_at': fai_done_at,
+                'lead_hours': lead_hours,
+                'outcome': outcome,          # 'violation' | 'late'
+                'current_level': level,
+                'id_phase': id_phase,
+                'template': template,
+            })
+
     if violations:
+        gravi = sum(1 for v in violations if v['outcome'] == 'violation')
         logger.info(
-            f"FAI Enforcement: {len(violations)} violazioni planning rilevate")
-    
+            f"FAI Enforcement: {len(violations)} ordini avviati senza FAI conforme "
+            f"({gravi} sanzionabili, {len(violations) - gravi} solo in ritardo)")
+
     return violations
 
 
 def run_planning_based_enforcement(conn, logo_path: str = "logo.png"):
-    """Orchestratore principale per enforcement dei FAI sugli ordini a piano.
+    """Orchestratore principale per enforcement del FAI di preparazione linea.
 
-    Il piano (PlanningMachine) dice QUALI ordini/fasi richiedono un FAI Autocheck;
-    l'orologio invece parte dalla produzione REALE, non dal piano:
+    Chi viene considerato: gli ordini in ATTESA della linea PTH, cioe' con
+    almeno una scheda passata dall'AOI dell'SMT, PTHM non ancora iniziato e
+    ordine non completato (versato a magazzino < quantita' ordine). Il piano
+    (PlanningMachine) dice QUANDO sono attesi in linea (informazione di corredo).
 
-      - ActualStart = primo scan dell'ordine in quella fase
-      - Ordine non ancora in produzione → nessuna escalation (non e' verificabile)
-      - L1 a ActualStart + 1h → email Capo Reparto
-      - L2 a ActualStart + 2h → email Capo Produzione
-      - L3 a ActualStart + 3h → email Qualità + Amministratore
+    La sanzione scatta quando un ordine ENTRA in PTHM senza un FAI preventivo
+    conforme:
+
+      - FAI compilato >= 3h prima dell'avvio        → conforme, nessuna azione
+      - FAI compilato tra 30 min e 3h prima         → solo L1 (richiamo), niente referat
+      - FAI assente, o compilato con < 30 min di
+        margine, o dopo l'avvio della produzione    → violazione:
+            L1 subito → Capo Reparto
+            L2 dopo 1h → Capo Produzione
+            L3 dopo 2h → Qualità + Amministratore (referat)
+
+    Il referat viene intestato allo shift leader del reparto in turno all'avvio
+    della produzione.
 
     Escalation progressiva: il sistema invia SOLO il livello appropriato
     e non salta direttamente a L3. Per passare da L(n) a L(n+1) devono
@@ -2271,11 +2437,6 @@ def run_planning_based_enforcement(conn, logo_path: str = "logo.png"):
     Deduplicazione cross-pipeline: se un'altra pipeline (SHIFT_CHECK o
     NEW_ORDER) ha già generato un'escalation per lo stesso ordine allo
     stesso livello, l'email non viene re-inviata.
-
-    Esempio: ordine programmato alle 15:00 ma avviato davvero alle 19:00
-      → nessuna email fino alle 19:00
-      → L1 alle 20:00, L2 alle 21:00, L3 alle 22:00
-    Se l'ordine non entra mai in produzione, non parte nulla.
     """
     logger.info("FAI Enforcement: ===== PLANNING-BASED ENFORCEMENT CHECK =====")
 
@@ -2293,13 +2454,20 @@ def run_planning_based_enforcement(conn, logo_path: str = "logo.png"):
         order_number = v['order_number']
         max_level = v['current_level']  # livello massimo raggiungibile per timing
         template = v['template']
-        planned_start = v['planned_start']
-        planned_str = planned_start.strftime('%d/%m/%Y %H:%M')
         actual_start = v['actual_start']
         actual_str = actual_start.strftime('%d/%m/%Y %H:%M')
+        planned_start = v.get('planned_start')
+        planned_str = (planned_start.strftime('%d/%m/%Y %H:%M')
+                       if planned_start else 'n/d')
+        fai_done_at = v.get('fai_done_at')
+        lead_hours = v.get('lead_hours')
+        if fai_done_at is None:
+            fai_str = "MAI COMPILATO"
+        else:
+            fai_str = (f"{fai_done_at:%d/%m/%Y %H:%M} "
+                       f"({lead_hours:+.1f}h rispetto all'avvio)")
 
-        # Risolvi IDOrder per il tracking
-        order_id = _resolve_order_id(conn, order_number)
+        order_id = v.get('order_id') or _resolve_order_id(conn, order_number)
 
         # Determina il livello effettivo da inviare (progressivo, non diretto)
         # Cerca il livello più alto già registrato per questo ordine
@@ -2357,23 +2525,24 @@ def run_planning_based_enforcement(conn, logo_path: str = "logo.png"):
             continue  # Tutti i livelli raggiungibili sono già coperti
 
         logger.warning(
-            f"FAI Enforcement: ⚠️ PLANNING VIOLATION L{effective_level} — "
-            f"Ordine {order_number} ({template['FaiTitle']}), "
-            f"PlannedStart={planned_str}, ActualStart={actual_str}, "
-            f"FAI mancante da {(datetime.now() - actual_start).total_seconds() / 3600:.1f}h")
+            f"FAI Enforcement: ⚠️ {v['outcome'].upper()} L{effective_level} — "
+            f"Ordine {order_number} ({template['FaiTitle']}) entrato in "
+            f"{v['phase_upper']} il {actual_str} (a piano: {planned_str}); "
+            f"FAI: {fai_str}")
 
         shift_key = get_current_shift()
         shift_label = SHIFT_TIMES.get(shift_key, {}).get('label', '??:??')
 
         order_info = (
             f"{order_number} ({template['FaiTitle']}) — "
-            f"Produzione avviata: {actual_str} (a piano: {planned_str})"
+            f"Produzione avviata: {actual_str} (a piano: {planned_str}) — "
+            f"FAI preventivo: {fai_str}"
         )
 
         # 3. L3: REFERAT intestato allo shift leader del reparto che era in turno
-        # quando l'ordine e' realmente entrato in produzione. Se il reparto non ha
-        # uno shift leader, o non era in turno, non si intesta nulla: parte solo
-        # l'email (send_escalation_email omette il blocco REFERAT senza PDF).
+        # alla SCADENZA del FAI (quando la linea andava preparata). Se il reparto
+        # non ha uno shift leader, o non era in turno, non si intesta nulla: parte
+        # solo l'email (send_escalation_email omette il blocco REFERAT senza PDF).
         # Claim atomico PRIMA del lavoro pesante (PDF + SMTP): se un'altra
         # istanza dell'applicativo ha gia' preso questo (ordine, livello),
         # qui ci si ferma e l'email non parte una seconda volta.
@@ -2432,10 +2601,10 @@ def run_planning_based_enforcement(conn, logo_path: str = "logo.png"):
             NotificationSent=1,
             NotificationTime=datetime.now(),
             Notes=(
-                f"Planning-based enforcement L{effective_level} — "
+                f"FAI preventivo L{effective_level} ({v['outcome']}) — "
                 f"Template: {template['FaiTitle']}, "
-                f"PlannedStart: {planned_str}, "
-                f"ActualStart: {actual_str} (FAI dovuto da qui)"
+                f"Avvio produzione: {actual_str} (a piano: {planned_str}), "
+                f"FAI: {fai_str}"
                 + (f", REFERAT a {target['Employee']} (SHIFT LEADER)"
                    if referat_pdf else "")
             )

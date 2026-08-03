@@ -516,16 +516,24 @@ class MatchProductionOrdersWindow(tk.Toplevel):
                 )
                 return
             
+            item_id = int(selection[0])
+
+            # ── L'associazione è già stata spedita/pianificata? ───────────────
+            # dyn.ShipmentPallets e dyn.DynamicShippingRules la referenziano con
+            # FK NO ACTION: senza questo controllo il server rifiutava il DELETE
+            # e all'operatore arrivava l'errore SQL grezzo, incomprensibile.
+            if not self._confirm_association_deletable(item_id):
+                return
+
             if not messagebox.askyesno(
                 self.lang.get('confirm', 'Conferma'),
                 self.lang.get('confirm_delete_association', 'Confermare eliminazione associazione?'),
                 parent=self
             ):
                 return
-            
-            item_id = int(selection[0])
+
             self.orders_manager.delete_production_association(item_id, self.user_name)
-            
+
             messagebox.showinfo(
                 self.lang.get('success', 'Successo'),
                 self.lang.get('association_deleted', 'Associazione eliminata'),
@@ -539,11 +547,91 @@ class MatchProductionOrdersWindow(tk.Toplevel):
             
         except Exception as e:
             logger.error(f"Errore eliminazione associazione: {e}", exc_info=True)
+            # Rete di sicurezza: se qualcuno ha spedito questa associazione tra
+            # il controllo e il DELETE, il server risponde con la violazione di
+            # chiave esterna. Mostrare la causa, non lo stack SQL.
+            if 'REFERENCE constraint' in str(e) or 'IntegrityError' in type(e).__name__:
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    self.lang.get(
+                        'assoc_delete_blocked_generic',
+                        "Impossibile eliminare l'associazione: è già utilizzata "
+                        "da spedizioni o regole di spedizione."),
+                    parent=self
+                )
+                return
             messagebox.showerror(
                 self.lang.get('error', 'Errore'),
                 f"Errore eliminazione associazione: {e}",
                 parent=self
             )
+
+    def _confirm_association_deletable(self, dpo_id):
+        """True se l'associazione può essere eliminata; altrimenti spiega il
+        perché all'operatore (spedizioni confermate / regole di spedizione) e
+        ritorna False."""
+        try:
+            blockers = self.orders_manager.get_association_delete_blockers(dpo_id)
+        except Exception as e:
+            logger.warning(f"Verifica vincoli associazione {dpo_id} fallita: {e}")
+            return True  # in caso di dubbio si prova: il DB resta l'ultima difesa
+
+        pallets = blockers.get('pallets') or []
+        rules = blockers.get('rules') or []
+        if not pallets and not rules:
+            return True
+
+        righe = []
+        if pallets:
+            righe.append(self.lang.get(
+                'assoc_delete_blocked_shipped',
+                "L'associazione è già stata spedita e non può essere eliminata."))
+            righe.append("")
+            righe.append(self._t_fmt(
+                'assoc_delete_blocked_pallets',
+                "Pallet confermati: {0} (quantità totale {1})",
+                len(pallets), int(blockers.get('pallets_qty') or 0)))
+            for p in pallets[:5]:
+                data = p['ConfirmedAt'].strftime('%d/%m/%Y %H:%M') if p.get('ConfirmedAt') else '-'
+                righe.append(f"  • {self.lang.get('shipment', 'Spedizione')} #{p['ShipmentId']} "
+                             f"— pallet {p['PalletCode']} — {int(p['ConfirmedQty'] or 0)} pz — {data}")
+            if len(pallets) > 5:
+                righe.append(f"  ... (+{len(pallets) - 5})")
+        if rules:
+            if righe:
+                righe.append("")
+            righe.append(self._t_fmt(
+                'assoc_delete_blocked_rules',
+                "Regole di spedizione collegate: {0}. Eliminarle prima "
+                "dalla finestra dei report ordini.", len(rules)))
+            for r in rules[:5]:
+                data = r['DateToship'].strftime('%d/%m/%Y') if r.get('DateToship') else '-'
+                righe.append(f"  • {int(r['QtyToShip'] or 0)} pz — {data} — {r.get('ShipTo') or '-'}")
+
+        messagebox.showerror(
+            self.lang.get('cannot_delete', 'Eliminazione non possibile'),
+            "\n".join(righe),
+            parent=self
+        )
+        logger.info(f"[ProdAssoc] DELETE bloccato per DPO={dpo_id}: "
+                    f"{len(pallets)} pallet, {len(rules)} regole")
+        return False
+
+    def _t_fmt(self, key, default, *args):
+        """Traduzione con segnaposto: lang.get() userebbe il default come
+        argomento di format() quando la chiave esiste, sostituendo {0} col testo
+        italiano invece che col valore."""
+        template = None
+        try:
+            template = self.lang.get_raw(key)
+        except Exception:
+            template = None
+        if not template or template == key:
+            template = default
+        try:
+            return template.format(*args)
+        except (IndexError, KeyError, ValueError):
+            return template
 
 
 def open_match_production_orders_window(master, db, lang, user_name):

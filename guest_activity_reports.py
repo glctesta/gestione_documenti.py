@@ -712,14 +712,19 @@ class GuestActivityReportGenerator:
         from email_connector import EmailSender
 
         try:
-            # Guard: non reinviare se già inviata
+            # Claim ATOMICO: valorizza EmailSentDate PRIMA di inviare, solo se
+            # ancora NULL. Il batch parte all'avvio dell'app su ogni PC: con un
+            # semplice "gia' inviata?" tutti passavano insieme e l'ospite
+            # riceveva N copie del rapporto.
             cursor = self.db.conn.cursor()
             cursor.execute("""
-                SELECT EmailSentDate
-                FROM Employee.dbo.VisitorActivityReports
-                WHERE VisitorActivityReportId = ? AND EmailSentDate IS NOT NULL
+                UPDATE Employee.dbo.VisitorActivityReports
+                SET EmailSentDate = GETDATE()
+                WHERE VisitorActivityReportId = ? AND EmailSentDate IS NULL
             """, (report_id,))
-            if cursor.fetchone():
+            claimed = cursor.rowcount == 1
+            self.db.conn.commit()
+            if not claimed:
                 logger.info(f"Email per report {report_id} già inviata, skip")
                 cursor.close()
                 return True
@@ -734,6 +739,7 @@ class GuestActivityReportGenerator:
             row = cursor.fetchone()
             if not row:
                 logger.error(f"Report {report_id} non trovato")
+                self._release_activity_email_claim(report_id)
                 cursor.close()
                 return False
 
@@ -766,6 +772,7 @@ class GuestActivityReportGenerator:
 
             if not to_list:
                 logger.error("Nessun destinatario email configurato")
+                self._release_activity_email_claim(report_id)
                 cursor.close()
                 return False
 
@@ -861,7 +868,7 @@ class GuestActivityReportGenerator:
                 cc_emails=cc_email
             )
 
-            # Aggiorna DB
+            # Completa il claim con i destinatari effettivi
             cursor.execute("""
                 UPDATE Employee.dbo.VisitorActivityReports
                 SET EmailSentDate = GETDATE(), EmailSentTo = ?
@@ -882,7 +889,27 @@ class GuestActivityReportGenerator:
 
         except Exception as e:
             logger.error(f"Errore invio email rapporto {report_id}: {e}")
+            # Invio fallito: libera il claim cosi' il batch successivo ritenta
+            self._release_activity_email_claim(report_id)
             return False
+
+    def _release_activity_email_claim(self, report_id):
+        """Riporta EmailSentDate a NULL: l'email non e' partita, si puo' ritentare."""
+        try:
+            cur = self.db.conn.cursor()
+            cur.execute("""
+                UPDATE Employee.dbo.VisitorActivityReports
+                SET EmailSentDate = NULL
+                WHERE VisitorActivityReportId = ? AND EmailSentTo IS NULL
+            """, (report_id,))
+            self.db.conn.commit()
+            cur.close()
+        except Exception as e:
+            logger.warning(f"Impossibile rilasciare il claim email rapporto {report_id}: {e}")
+            try:
+                self.db.conn.rollback()
+            except Exception:
+                pass
 
     # --------------------------------------------------------
     # Batch: processa visitatori partiti in un intervallo

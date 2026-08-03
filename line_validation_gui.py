@@ -43,13 +43,31 @@ class ToolTip:
 
 class LineValidationWindow(tk.Toplevel):
     """Finestra per l'inserimento e gestione delle validazioni FAI"""
-    
-    def __init__(self, parent, db, lang, user_name):
+
+    # Finestra del planning usata per popolare il combo ordini sui template
+    # Autocheck=1 (FAI "3 ore prima"). Deve essere abbondante: il FAI certifica
+    # che la linea e' pronta per l'ordine SUCCESSIVO, quindi si compila con ore
+    # di anticipo — e va lasciato compilabile anche poco dopo l'avvio, se
+    # l'ordine e' partito nel frattempo.
+    PLANNING_AHEAD_HOURS = 16
+    PLANNING_BACK_HOURS = 4
+    # Quanti ordini mostrare nel dropdown quando non si sta filtrando
+    COMBO_MAX_ITEMS = 50
+    # Da quanti giorni indietro considerare la coda della linea PTH: oltre
+    # questo limite si tratta di residui fermi, non del "prossimo ordine".
+    PENDING_LOOKBACK_DAYS = 45
+
+    def __init__(self, parent, db, lang, user_name, user_hhid=None):
         super().__init__(parent)
         self.db = db
         self.lang = lang
         self.user_name = user_name
-        
+        # Identita' anagrafica di chi compila (EmployeeHireHistoryId).
+        # Il nome testuale non e' una chiave affidabile: l'enforcement lo
+        # componeva come "Cognome Nome" mentre il login lo salva come
+        # "Nome Cognome", e il FAI non veniva mai riconosciuto.
+        self.user_hhid = user_hhid
+
         self.title(self.lang.get('line_validation_title', 'FAI - Validazione Linea'))
         self.geometry('1400x900')
         self.transient(parent)
@@ -64,6 +82,10 @@ class LineValidationWindow(tk.Toplevel):
         self.templates_map = {}  # Dizionario per mappare i template
         self.orders_map = {}  # Dizionario per mappare gli ordini
         self.all_orders = []  # Lista completa ordini per filtro
+        # display_key -> numero d'ordine: la ricerca nel combo deve guardare
+        # SOLO il numero d'ordine, non il codice/descrizione prodotto o le note
+        # (digitando "PF" si finiva per filtrare sui codici prodotto).
+        self._order_number_by_display = {}
         self.validation_keys = [
             'NPI',
             'Test',
@@ -191,7 +213,9 @@ class LineValidationWindow(tk.Toplevel):
         row6 = ttk.Frame(header_frame)
         row6.pack(fill=tk.X, pady=5)
         
-        ttk.Label(row6, text="LabelCode:", font=('Arial', 10, 'bold')).grid(row=0, column=0, sticky=tk.W, padx=5)
+        ttk.Label(row6,
+                  text=self.lang.get('labelcode_optional_label', 'LabelCode (opzionale):'),
+                  font=('Arial', 10, 'bold')).grid(row=0, column=0, sticky=tk.W, padx=5)
         self.labelcode_entry = ttk.Entry(row6, width=30)
         self.labelcode_entry.grid(row=0, column=1, sticky=tk.W, padx=5)
         self.labelcode_entry.bind('<Return>', self._validate_labelcode)  # Validazione con Enter
@@ -456,8 +480,8 @@ class LineValidationWindow(tk.Toplevel):
                 self._load_orders_from_planning(phase_name)
             else:
                 # Template normale: ripristina tutti gli ordini
-                self.order_combo['values'] = []
                 self.all_orders = list(self.orders_map.keys())
+                self.order_combo['values'] = self.all_orders[:self.COMBO_MAX_ITEMS]
         else:
             self.template_desc_label.config(text="")
     
@@ -486,21 +510,24 @@ class LineValidationWindow(tk.Toplevel):
             # Verifica che result abbia elementi
             if result and len(result) > 0:
                 logger.info(f"Trovati {len(result)} ordini")
-                self.orders_map = {
-                    f"{row.OrderNumber} - {row.productcode} - {row.productname}": {
+                # Ordinati alfabeticamente per numero d'ordine
+                self.orders_map = {}
+                for row in sorted(result, key=lambda r: r.OrderNumber or ''):
+                    display_key = f"{row.OrderNumber} - {row.productcode} - {row.productname}"
+                    self.orders_map[display_key] = {
                         'IDOrder': row.IDOrder,
                         'OrderNumber': row.OrderNumber,
                         'OrderQuantity': row.orderquantity,
                         'ProductCode': row.productcode,
                         'ProductName': row.productname
                     }
-                    for row in result
-                }
-                
+                    self._order_number_by_display[display_key] = row.OrderNumber or ''
+
                 # Salva lista completa per filtro ricerca
                 self.all_orders = list(self.orders_map.keys())
-                # 🆕 Combo inizia vuoto — l'utente digita per filtrare
-                self.order_combo['values'] = []
+                # Il combo mostra subito i primi N (i piu' recenti): digitando
+                # si filtra su tutto l'elenco.
+                self.order_combo['values'] = self.all_orders[:self.COMBO_MAX_ITEMS]
             else:
                 logger.warning("Nessun ordine trovato")
                 messagebox.showwarning(
@@ -522,28 +549,33 @@ class LineValidationWindow(tk.Toplevel):
     def _load_orders_from_planning(self, phase_name):
         """
         Carica ordini dal file Excel PlanningMachine per template Autocheck=1.
-        
+
         Logica:
         - Legge il file più recente in T:\Planning\, tab PlanningMachine
-        - Filtra righe con PHASE matching e PlannedStart nelle prossime 4 ore
+        - Filtra righe con PHASE matching e PlannedStart nella finestra
+          [-PLANNING_BACK_HOURS, +PLANNING_AHEAD_HOURS]
         - Cross-reference con Traceability_RS.dbo.Orders per ottenere IDOrder
         - Ordini con start >= 3h → direttamente nella lista
         - Ordini con start < 3h → nella lista ma marcati, al salvataggio
           registra TimeOnSchedule nella tabella tracking
+
+        La finestra è volutamente ampia: il FAI serve a certificare che la linea
+        è pronta a ricevere l'ordine SUCCESSIVO, quindi si compila con ore di
+        anticipo. Con la vecchia finestra [adesso, +4h] il combo restava vuoto
+        ogni volta che il prossimo ordine partiva più tardi, e l'operatore non
+        poteva compilare nulla.
         """
-        from datetime import timedelta
         import fai_autocheck
 
         try:
             # 1. Leggi planning Excel (riusa la logica di fai_autocheck)
-            planning_rows = fai_autocheck.read_planning_excel()
+            planning_rows = fai_autocheck.read_planning_excel(
+                lookback_hours=self.PLANNING_BACK_HOURS,
+                lookahead_hours=self.PLANNING_AHEAD_HOURS)
             if not planning_rows:
                 logger.warning("Autocheck: nessuna riga nel planning Excel")
-                self.all_orders = list(self.orders_map.keys())
-                self.order_combo['values'] = []
-                self.status_label.config(
-                    text="⚠️ Nessuna riga trovata nel planning Excel",
-                    foreground="orange")
+                self._fallback_to_db_orders(
+                    "⚠️ Planning non leggibile: elenco ordini dal database")
                 return
 
             # 2. Filtra per fase
@@ -553,104 +585,114 @@ class LineValidationWindow(tk.Toplevel):
 
             if not matching_rows:
                 logger.info(f"Autocheck: nessun ordine per fase {phase_name}")
-                self.all_orders = list(self.orders_map.keys())
-                self.order_combo['values'] = []
-                self.status_label.config(
-                    text=f"⚠️ Nessun ordine pianificato per fase {phase_name}",
-                    foreground="orange")
+                self._fallback_to_db_orders(
+                    f"⚠️ Nessun ordine a piano per la fase {phase_name} nelle "
+                    f"prossime {self.PLANNING_AHEAD_HOURS}h — elenco dal database")
                 return
 
-            # 3. Risolvi OrderNumber → IDOrder dal DB
+            # 3. CODA REALE della linea: ordini con almeno una scheda passata
+            #    dall'AOI (SMT), che NON hanno ancora iniziato il PTHM e non
+            #    sono completati (versato a magazzino < quantita' ordine).
+            #    Sono questi gli ordini per cui la linea va preparata; il
+            #    planning serve solo a dire QUANDO sono attesi.
             now = datetime.now()
-            three_hours = timedelta(hours=3)
-            autocheck_orders = {}  # key = display_str, value = order_data
-            self._planning_schedule = {}  # Track PlannedStart per ordine
+            pending = fai_autocheck.get_pth_pending_orders(
+                self.db.conn, lookback_days=self.PENDING_LOOKBACK_DAYS)
 
-            for pr in matching_rows:
-                order_number = pr['order_number']
-                planned_start = pr['planned_start']
-                hours_until = (planned_start - now).total_seconds() / 3600
+            planned_by_order = {pr['order_number']: pr['planned_start']
+                                for pr in matching_rows}
 
-                # Cerca ordine nel DB
-                try:
-                    self.db.cursor.execute("""
-                        SELECT o.IDOrder, o.OrderNumber, o.orderquantity,
-                               p.productcode, p.productname
-                        FROM [Traceability_RS].[dbo].[Orders] o
-                        INNER JOIN [Traceability_RS].[dbo].[Products] p
-                            ON o.IDProduct = p.IDProduct
-                        WHERE o.OrderNumber = ?
-                    """, (order_number,))
-                    row = self.db.cursor.fetchone()
-                except Exception as e:
-                    logger.warning(f"Autocheck: errore ricerca ordine {order_number}: {e}")
-                    continue
+            autocheck_orders = {}   # key = display_str, value = order_data
+            self._planning_schedule = {}   # Track PlannedStart per ordine
+            entries = []            # (numero_ordine, display_key, dati)
 
-                if not row:
-                    logger.debug(f"Autocheck: ordine {order_number} non trovato in DB")
-                    continue
+            for order_number, info in pending.items():
+                planned_start = planned_by_order.get(order_number)
 
-                # Indicatore temporale
-                planned_str = planned_start.strftime('%H:%M')
-                if hours_until >= 3:
-                    time_icon = "✅"
-                    time_note = f"Start {planned_str} (in {hours_until:.0f}h)"
+                if planned_start:
+                    hours_until = (planned_start - now).total_seconds() / 3600
+                    planned_str = planned_start.strftime('%d/%m %H:%M')
+                    if hours_until >= 3:
+                        icon = "✅"
+                        note = f"Start {planned_str} (tra {hours_until:.0f}h)"
+                    else:
+                        icon = "⏰"
+                        note = f"Start {planned_str} (tra {hours_until:.0f}h — IN RITARDO!)"
+                    self._planning_schedule[info['IDOrder']] = {
+                        'planned_start': planned_start,
+                        'hours_until': hours_until,
+                        'is_late': hours_until < 3,
+                    }
                 else:
-                    time_icon = "⏰"
-                    time_note = f"Start {planned_str} (in {hours_until:.0f}h — LATE!)"
+                    # In coda ma non ancora a piano: si puo' comunque preparare
+                    # la linea (e' proprio il caso "ordine successivo").
+                    icon = "🕒"
+                    last_aoi = info.get('LastAoi')
+                    note = ("non a piano — AOI "
+                            f"{last_aoi.strftime('%d/%m %H:%M')}" if last_aoi
+                            else "non a piano")
 
-                display_key = f"{time_icon} {row.OrderNumber} - {row.productcode} - {row.productname} [{time_note}]"
+                display_key = (f"{icon} {order_number} - {info['ProductCode']} - "
+                               f"{info['ProductName']} [{note}]")
+                entries.append((order_number, display_key, {
+                    'IDOrder': info['IDOrder'],
+                    'OrderNumber': order_number,
+                    'OrderQuantity': info['OrderQuantity'],
+                    'ProductCode': info['ProductCode'],
+                    'ProductName': info['ProductName'],
+                }))
 
-                autocheck_orders[display_key] = {
-                    'IDOrder': row.IDOrder,
-                    'OrderNumber': row.OrderNumber,
-                    'OrderQuantity': row.orderquantity,
-                    'ProductCode': row.productcode,
-                    'ProductName': row.productname
-                }
-
-                # Salva PlannedStart per questo ordine (per registrazione)
-                self._planning_schedule[row.IDOrder] = {
-                    'planned_start': planned_start,
-                    'hours_until': hours_until,
-                    'is_late': hours_until < 3
-                }
+            # Ordinamento alfabetico per numero d'ordine
+            for order_number, display_key, data in sorted(entries, key=lambda e: e[0]):
+                autocheck_orders[display_key] = data
+                self._order_number_by_display[display_key] = order_number
 
             if not autocheck_orders:
-                logger.info("Autocheck: nessun ordine matchato nel DB")
-                self.all_orders = list(self.orders_map.keys())
-                self.order_combo['values'] = []
-                self.status_label.config(
-                    text="⚠️ Ordini planning non trovati nel database",
-                    foreground="orange")
+                logger.info("Autocheck: nessun ordine in attesa della linea PTH")
+                self._fallback_to_db_orders(
+                    "⚠️ Nessun ordine in attesa della linea PTH — elenco completo")
                 return
 
-            # 4. Aggiorna orders_map con gli ordini dal planning
+            # 4. Aggiorna orders_map con la coda della linea
             self.orders_map.update(autocheck_orders)
             planning_keys = list(autocheck_orders.keys())
             self.all_orders = planning_keys
-            self.order_combo['values'] = planning_keys
+            self.order_combo['values'] = planning_keys[:self.COMBO_MAX_ITEMS]
 
             # Info
             late_count = sum(1 for s in self._planning_schedule.values()
                              if s['is_late'])
+            in_plan = len(self._planning_schedule)
             self.status_label.config(
-                text=f"📋 {len(planning_keys)} ordini da planning "
-                     f"({late_count} in ritardo <3h)",
+                text=f"📋 {len(planning_keys)} ordini in attesa della linea PTH "
+                     f"({in_plan} a piano, {late_count} entro 3h)",
                 foreground='#B71C1C' if late_count else '#2E7D32')
 
-            logger.info(f"Autocheck: caricati {len(planning_keys)} ordini "
-                        f"dal planning Excel per fase {phase_name}")
+            logger.info(f"Autocheck: {len(planning_keys)} ordini in coda per la fase "
+                        f"{phase_name} ({in_plan} presenti nel planning)")
 
         except Exception as e:
             logger.error(f"Errore caricamento ordini da planning: {e}",
                          exc_info=True)
             # Fallback agli ordini DB normali
-            self.all_orders = list(self.orders_map.keys())
-            self.order_combo['values'] = []
-            self.status_label.config(
-                text=f"❌ Errore lettura planning: {e}",
-                foreground="red")
+            self._fallback_to_db_orders(
+                f"❌ Errore lettura planning ({e}) — elenco ordini dal database",
+                color="red")
+
+    def _fallback_to_db_orders(self, message, color="orange"):
+        """Ripiega sull'elenco ordini del database e lo mostra comunque nel combo.
+
+        Prima, quando il planning non produceva righe, il combo veniva lasciato
+        VUOTO: l'operatore non poteva selezionare nulla e il FAI non si poteva
+        compilare. Meglio degradare mostrando gli ordini reali del DB.
+        """
+        self.all_orders = list(self.orders_map.keys())
+        self.order_combo['values'] = self.all_orders[:self.COMBO_MAX_ITEMS]
+        try:
+            self.status_label.config(text=message, foreground=color)
+        except Exception:
+            pass
+        logger.info(f"Autocheck: fallback ordini DB ({len(self.all_orders)} disponibili)")
 
     def _load_fai_steps(self):
         """Carica gli step FAI dal database per il template selezionato"""
@@ -745,12 +787,20 @@ class LineValidationWindow(tk.Toplevel):
             # Ottieni il testo corrente
             search_text = self.order_var.get().lower()
             
-            # Filtra gli ordini che contengono il testo (minimo 2 caratteri)
+            # Il filtro guarda SOLO il numero d'ordine: cercare "PF" non deve
+            # far comparire tutti i prodotti che hanno "PF" nel codice.
+            # Senza testo si mostra comunque l'elenco (troncato): prima il
+            # dropdown restava vuoto finche' non si digitava, e sembrava che il
+            # combo non caricasse nulla.
             if search_text and len(search_text) >= 2:
-                filtered = [order for order in self.all_orders if search_text in order.lower()]
+                filtered = [
+                    order for order in self.all_orders
+                    if search_text in self._order_number_by_display.get(
+                        order, order).lower()
+                ]
             else:
-                filtered = []
-            
+                filtered = self.all_orders[:self.COMBO_MAX_ITEMS]
+
             # Aggiorna i valori del combobox senza aprire il dropdown
             self.order_combo['values'] = filtered
             
@@ -1037,7 +1087,10 @@ class LineValidationWindow(tk.Toplevel):
         labelcode_value = self.labelcode_entry.get().strip()
         
         if not labelcode_value:
-            self.labelcode_status_label.config(text="Inserire un LabelCode", foreground="orange")
+            self.labelcode_status_label.config(
+                text=self.lang.get('labelcode_optional_hint',
+                                   "Campo opzionale — si può salvare senza"),
+                foreground="gray")
             self.labelcode_validated = False
             return
         
@@ -1185,17 +1238,29 @@ class LineValidationWindow(tk.Toplevel):
             logger.info(f"📊 Order data recuperato: IDOrder={order_data['IDOrder']}")
             
             # Verifica se esiste già una validazione per questo ordine oggi
+            # SULLO STESSO TEMPLATE: il FAI "3 ore prima" (preparazione linea) e
+            # il FAI prima piastra sono due documenti distinti sullo stesso
+            # ordine. Senza il filtro sul template, salvando il secondo si
+            # chiedeva di annullare il primo (e gli si scriveva DateOut).
             check_query = """
             SELECT TOP 1 l.FaiLogId, h.FaiLogHeatherId
             FROM [Traceability_RS].[fai].[FaiLogs] l
             LEFT JOIN [Traceability_RS].[fai].[FaiLogHeathers] h ON l.FaiLogId = h.FaiLogId
-            WHERE l.OrderId = ? 
+            INNER JOIN [Traceability_RS].[fai].[FaiStepDetails] d
+                ON l.FaiStepDetailId = d.FaiStepDetailId
+            INNER JOIN [Traceability_RS].[fai].[FaiSteps] s
+                ON d.FatStepId = s.FatStepId
+            WHERE l.OrderId = ?
+                AND s.FaiTemplateId = ?
                 AND CAST(l.DateIn AS DATE) = CAST(GETDATE() AS DATE)
             ORDER BY l.DateIn DESC
             """
-            
-            logger.info(f"🔍 Controllo duplicati per ordine {order_data['IDOrder']}...")
-            self.db.cursor.execute(check_query, (order_data['IDOrder'],))
+
+            current_template_id = getattr(self, 'current_template_id', None)
+            logger.info(f"🔍 Controllo duplicati per ordine {order_data['IDOrder']} "
+                        f"template {current_template_id}...")
+            self.db.cursor.execute(check_query,
+                                   (order_data['IDOrder'], current_template_id))
             existing = self.db.cursor.fetchone()
             
             if existing:
@@ -1214,13 +1279,25 @@ class LineValidationWindow(tk.Toplevel):
                     try:
                         logger.info(f"Annullamento validazione precedente per ordine {order_data['IDOrder']}")
                         
-                        # UPDATE DateOut sui record vecchi per annullarli (NO DELETE)
+                        # UPDATE DateOut sui record vecchi per annullarli (NO DELETE).
+                        # Anche qui il filtro sul template è indispensabile:
+                        # altrimenti si annullavano anche i FAI di template
+                        # diversi compilati sullo stesso ordine in giornata.
                         update_dateout_query = """
-                        UPDATE [Traceability_RS].[fai].[FaiLogs]
-                        SET DateOut = GETDATE()
-                        WHERE OrderId = ? AND CAST(DateIn AS DATE) = CAST(GETDATE() AS DATE) AND DateOut IS NULL
+                        UPDATE l
+                        SET l.DateOut = GETDATE()
+                        FROM [Traceability_RS].[fai].[FaiLogs] l
+                        INNER JOIN [Traceability_RS].[fai].[FaiStepDetails] d
+                            ON l.FaiStepDetailId = d.FaiStepDetailId
+                        INNER JOIN [Traceability_RS].[fai].[FaiSteps] s
+                            ON d.FatStepId = s.FatStepId
+                        WHERE l.OrderId = ?
+                          AND s.FaiTemplateId = ?
+                          AND CAST(l.DateIn AS DATE) = CAST(GETDATE() AS DATE)
+                          AND l.DateOut IS NULL
                         """
-                        self.db.cursor.execute(update_dateout_query, (order_data['IDOrder'],))
+                        self.db.cursor.execute(update_dateout_query,
+                                               (order_data['IDOrder'], current_template_id))
                         rows_updated = self.db.cursor.rowcount
                         
                         # UPDATE anche header
@@ -1269,24 +1346,30 @@ class LineValidationWindow(tk.Toplevel):
                 )
                 return
             
-            # 🆕 Validazione LabelCode
+            # LabelCode OPZIONALE.
+            # Il FAI "3 ore prima" si compila quando la linea viene preparata per
+            # l'ordine successivo: in quel momento non esiste ancora nessuna
+            # scheda, quindi nessun LabelCode da leggere. Pretenderlo bloccava
+            # la compilazione proprio nel caso d'uso principale.
+            # Se l'operatore lo inserisce e NON risulta valido, si chiede
+            # conferma; se lo lascia vuoto si salva NULL.
             labelcode_value = self.labelcode_entry.get().strip()
+            if labelcode_value and not self.labelcode_validated:
+                if not messagebox.askyesno(
+                    self.lang.get('warning', 'Attenzione'),
+                    self.lang.get(
+                        'labelcode_unverified_confirm',
+                        "Il LabelCode inserito non è stato verificato (o non "
+                        "corrisponde all'ordine selezionato).\n\n"
+                        "Salvare comunque la validazione?"),
+                    parent=self
+                ):
+                    return
             if not labelcode_value:
-                messagebox.showwarning(
-                    self.lang.get('warning', 'Attenzione'),
-                    'Inserire un LabelCode prima di salvare',
-                    parent=self
-                )
-                return
-            
-            if not self.labelcode_validated:
-                messagebox.showwarning(
-                    self.lang.get('warning', 'Attenzione'),
-                    'Verificare il LabelCode prima di salvare (premere il pulsante Verifica)',
-                    parent=self
-                )
-                return
-            
+                labelcode_value = None
+                logger.info("Salvataggio FAI senza LabelCode (campo opzionale)")
+
+
             # Verifica almeno un tipo di validazione selezionato
             if not any(self.validation_vars[key].get() for key in self.validation_keys):
                 messagebox.showwarning(
@@ -1335,10 +1418,10 @@ class LineValidationWindow(tk.Toplevel):
             
             # Usa OUTPUT per recuperare l'ID generato direttamente
             first_log_query = """
-            INSERT INTO Traceability_RS.fai.FaiLogs 
-            (FaiStepDetailId, Operator, IsOk, ProblemDescription, RoutCauseProblem, CorrectiveAction, Dati, OrderId, DateIn, LabelCode, IsNA)
+            INSERT INTO Traceability_RS.fai.FaiLogs
+            (FaiStepDetailId, Operator, OperatorHHID, IsOk, ProblemDescription, RoutCauseProblem, CorrectiveAction, Dati, OrderId, DateIn, LabelCode, IsNA)
             OUTPUT INSERTED.FaiLogId
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), ?, ?)
             """
             
             # Recupera dettagli problema se NOT OK (e non N/A)
@@ -1348,6 +1431,7 @@ class LineValidationWindow(tk.Toplevel):
             first_log_params = (
                 first_step_with_answer.FaiStepDetailId,
                 self.user_name,
+                self.user_hhid,   # identita' anagrafica: usata dall'enforcement
                 1 if is_ok else 0,
                 problem_desc,
                 root_cause,
@@ -1401,9 +1485,9 @@ class LineValidationWindow(tk.Toplevel):
                     
                     if has_answer:
                         log_query = """
-                        INSERT INTO Traceability_RS.fai.FaiLogs 
-                        (FaiStepDetailId, Operator, IsOk, ProblemDescription, RoutCauseProblem, CorrectiveAction, Dati, OrderId, DateIn, LabelCode, IsNA)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), ?, ?)
+                        INSERT INTO Traceability_RS.fai.FaiLogs
+                        (FaiStepDetailId, Operator, OperatorHHID, IsOk, ProblemDescription, RoutCauseProblem, CorrectiveAction, Dati, OrderId, DateIn, LabelCode, IsNA)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), ?, ?)
                         """
                         
                         problem_desc = notes if (is_logical_response and is_not_ok and not step_is_na) else None
@@ -1413,6 +1497,7 @@ class LineValidationWindow(tk.Toplevel):
                         log_params = (
                             step_id,
                             self.user_name,
+                            self.user_hhid,
                             1 if is_ok else 0,
                             problem_desc,
                             root_cause,
@@ -1763,7 +1848,12 @@ class LineValidationWindow(tk.Toplevel):
             )
 
 
-def open_line_validation_window(parent, db, lang, user_name):
-    """Apre la finestra di validazione linea"""
-    LineValidationWindow(parent, db, lang, user_name)
+def open_line_validation_window(parent, db, lang, user_name, user_hhid=None):
+    """Apre la finestra di validazione linea.
+
+    user_hhid = EmployeeHireHistoryId di chi ha fatto login: viene scritto in
+    fai.FaiLogs.OperatorHHID ed e' la chiave con cui l'enforcement riconosce
+    che il FAI e' stato compilato (il nome testuale non e' affidabile).
+    """
+    LineValidationWindow(parent, db, lang, user_name, user_hhid=user_hhid)
 

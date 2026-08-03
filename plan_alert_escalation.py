@@ -36,12 +36,73 @@ SHIFT_END_WINDOWS = {
 # riassunto come "... + N altri alerts per questa fase").
 MAX_ROWS_PER_PHASE = 10
 
+# ── Escalation al management ────────────────────────────────────────────────
+# L'email "[ESCALARE MANAGEMENT]" riguarda SOLO le fasi finali di controllo:
+# al management non interessa il dettaglio di tutte le fasi di linea, e con 24
+# fasi l'email arrivava due volte al giorno con tutto dentro.
+# Le fasi sono configurabili da settings (Sys_plan_mgmt_esc_phases, elenco
+# separato da virgola); il default vale se il settaggio non esiste.
+MGMT_PHASES_SETTING = 'Sys_plan_mgmt_esc_phases'   # max 30 char (colonna Atribute)
+MGMT_LAST_SENT_SETTING = 'Sys_plan_mgmt_esc_last'
+DEFAULT_MGMT_PHASES = ('FCT', 'FQC')
+# Frequenza massima dell'email al management: una alla settimana.
+MGMT_MIN_INTERVAL_DAYS = 7
+
 # Stato in-memory: tiene traccia dei turni (1 o 2) per cui una email e'
 # gia' stata inviata oggi. Si resetta al cambio di data.
+# ATTENZIONE: e' solo una scorciatoia locale per non rilavorare ogni minuto.
+# La garanzia "una sola email per turno" e' data dal CLAIM ATOMICO su DB
+# (_claim_shift_escalation): lo stato in memoria non sopravvive ai riavvii e
+# non protegge dagli altri PC che eseguono lo stesso worker.
 _SENT_SHIFTS_STATE: Dict[str, object] = {
     "date": None,      # data corrente (ddate) del tracking
     "shifts": set(),   # set di int (1/2) dei turni gia' notificati
 }
+
+# ── Claim atomici anti-duplicato (validi tra PC e tra riavvii) ───────────────
+# Tabella di log generica delle email automatiche: chiave (data, attributo).
+EMAIL_CLAIM_TABLE = '[Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]'
+
+
+def _claim_email_send(conn, key_date, attribute: str) -> bool:
+    """Prenota in modo atomico un invio: True solo se vinto da questo processo."""
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(f"""
+                INSERT INTO {EMAIL_CLAIM_TABLE} (WeekStartDate, Attribute)
+                SELECT ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM {EMAIL_CLAIM_TABLE} WITH (UPDLOCK, HOLDLOCK)
+                    WHERE WeekStartDate = ? AND Attribute = ?
+                )
+            """, (key_date, attribute, key_date, attribute))
+            claimed = cursor.rowcount == 1
+            conn.commit()
+        return claimed
+    except Exception as e:
+        # Violazione dell'indice UNIQUE = un altro PC ha vinto la corsa
+        logger.info(f"Plan Alert: claim '{attribute}' ({key_date}) non ottenuto: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def _release_email_claim(conn, key_date, attribute: str) -> None:
+    """Rilascia il claim (nessuna email partita o invio fallito)."""
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"DELETE FROM {EMAIL_CLAIM_TABLE} WHERE WeekStartDate = ? AND Attribute = ?",
+                (key_date, attribute))
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"Plan Alert: impossibile rilasciare il claim '{attribute}': {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
 
 def _current_shift_window(now: datetime) -> Optional[int]:
@@ -613,6 +674,77 @@ def get_escalation_recipients(conn) -> List[str]:
 # ESCALATION LOGIC
 # ============================================================
 
+def get_management_escalation_phases(conn) -> set:
+    """Fasi per cui e' ammessa l'escalation al management (default FCT/FQC)."""
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT TOP 1 [Value] FROM traceability_rs.dbo.settings "
+                "WHERE Atribute = ?", MGMT_PHASES_SETTING)
+            row = cursor.fetchone()
+        if row and row[0]:
+            phases = {p.strip().upper() for p in str(row[0]).split(',') if p.strip()}
+            if phases:
+                return phases
+    except Exception as e:
+        logger.warning(f"Errore lettura {MGMT_PHASES_SETTING}: {e}")
+    return {p.upper() for p in DEFAULT_MGMT_PHASES}
+
+
+def get_last_management_escalation(conn) -> Optional[datetime]:
+    """Data/ora dell'ultima email inviata al management (None se mai)."""
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT TOP 1 [Value] FROM traceability_rs.dbo.settings "
+                "WHERE Atribute = ?", MGMT_LAST_SENT_SETTING)
+            row = cursor.fetchone()
+        if row and row[0]:
+            return datetime.strptime(str(row[0])[:19], '%Y-%m-%d %H:%M:%S')
+    except Exception as e:
+        logger.warning(f"Errore lettura {MGMT_LAST_SENT_SETTING}: {e}")
+    return None
+
+
+def mark_management_escalation_sent(conn, when: datetime = None) -> None:
+    """Registra l'invio dell'email al management (gate settimanale).
+
+    Il marker sta in settings e non in memoria: il worker viene riavviato con
+    l'applicativo e gira su piu' PC, quindi uno stato in RAM non garantirebbe
+    il limite di una email a settimana.
+    """
+    when = when or datetime.now()
+    stamp = when.strftime('%Y-%m-%d %H:%M:%S')
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                IF EXISTS (SELECT 1 FROM traceability_rs.dbo.settings WHERE Atribute = ?)
+                    UPDATE traceability_rs.dbo.settings
+                    SET [Value] = ?, LastCheck = GETDATE() WHERE Atribute = ?
+                ELSE
+                    INSERT INTO traceability_rs.dbo.settings (Atribute, [Value], LastCheck, [Name])
+                    VALUES (?, ?, GETDATE(), 'Ultima escalation piano al management')
+            """, MGMT_LAST_SENT_SETTING, stamp, MGMT_LAST_SENT_SETTING,
+                 MGMT_LAST_SENT_SETTING, stamp)
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Errore scrittura {MGMT_LAST_SENT_SETTING}: {e}")
+
+
+def management_escalation_allowed(conn) -> bool:
+    """True se e' passata almeno una settimana dall'ultima email al management."""
+    last = get_last_management_escalation(conn)
+    if last is None:
+        return True
+    days = (datetime.now() - last).total_seconds() / 86400.0
+    if days < MGMT_MIN_INTERVAL_DAYS:
+        logger.info(
+            f"Plan Alert: escalation management inviata {days:.1f} giorni fa "
+            f"(min {MGMT_MIN_INTERVAL_DAYS}), skip.")
+        return False
+    return True
+
+
 def get_escalation_count(conn, alert_id: int) -> int:
     """Conta quante escalation sono già state inviate per un alert."""
     try:
@@ -813,10 +945,13 @@ def check_and_escalate(conn, logo_path: str = None, mode: str = 'True') -> int:
     """Controlla alert non giustificati e invia escalation se necessario.
 
     POLITICA DI INVIO (aggiornata):
-      - Al massimo 1 email per TURNO produzione, inviata negli ULTIMI 30
-        MINUTI del turno:
+      - Al massimo 1 email per TURNO produzione ai RESPONSABILI DI FASE,
+        inviata negli ULTIMI 30 MINUTI del turno:
             Turno 1: finestra 15:00 - 15:30 (fine turno 15:30)
             Turno 2: finestra 23:00 - 23:30 (fine turno 23:30)
+      - Email "[ESCALARE MANAGEMENT]": SOLO per le fasi di controllo finale
+        (Sys_plan_mgmt_esc_phases, default FCT/FQC) e al massimo UNA VOLTA
+        A SETTIMANA (marker Sys_plan_mgmt_esc_last in settings).
       - Niente invio se fuori finestra o se il turno e' gia' stato notificato
         oggi (tracking in memoria, si resetta a mezzanotte).
       - Niente invio nei giorni non lavorativi (gate esterno nel worker via
@@ -846,7 +981,8 @@ def check_and_escalate(conn, logo_path: str = None, mode: str = 'True') -> int:
 
     # ── Gate temporale: invio solo nella finestra di fine turno ──────────
     now_dt = datetime.now()
-    _reset_shift_state_if_new_day(now_dt.date())
+    today_key = now_dt.date()
+    _reset_shift_state_if_new_day(today_key)
     shift_now = _current_shift_window(now_dt)
     if shift_now is None:
         # Fuori finestra: silenzioso, nessun lavoro.
@@ -855,11 +991,14 @@ def check_and_escalate(conn, logo_path: str = None, mode: str = 'True') -> int:
         logger.info(
             f"Plan Alert: turno {shift_now} gia' notificato oggi, skip.")
         return 0
-    
+
     alerts = get_unresponded_alerts(conn)
     if not alerts:
         return 0
-    
+
+    shift_attribute = f'plan_escalation_shift{shift_now}'
+    shift_claimed = False
+
     now = datetime.now()
     
     # Raggruppa alert per PhaseName
@@ -934,49 +1073,60 @@ def check_and_escalate(conn, logo_path: str = None, mode: str = 'True') -> int:
     
     if not phases_ready:
         return 0
-    
-    # Determina destinatari per l'email unica raggruppata
-    if max_level <= 3:
-        # Livelli 1-3: TO ai leader, CC ai manager
-        to_emails = list(all_leader_emails)
-        cc_emails = list(all_manager_emails)
-    else:
-        # Livello 4+: TO al management, CC ai leader + manager
-        mgmt_emails = get_escalation_recipients(conn)
-        to_emails = mgmt_emails
-        cc_emails = list(all_leader_emails | all_manager_emails)
-    
-    if not to_emails:
-        logger.warning("Nessun destinatario per escalation raggruppata")
+
+    # ── Claim ATOMICO del turno (una sola email per turno, su TUTTI i PC) ──
+    # Il tracking in memoria non sopravvive ai riavvii e non vede gli altri PC:
+    # nella finestra di fine turno ogni istanza inviava la sua copia
+    # dell'escalation. Il claim si prende qui, subito prima di comporre e
+    # inviare le email.
+    if not _claim_email_send(conn, today_key, shift_attribute):
+        logger.info(
+            f"Plan Alert: turno {shift_now} gia' notificato oggi (claim DB), skip.")
+        _mark_shift_sent(shift_now)
         return 0
-    
-    # Costruisci email unica con TUTTE le fasi raggruppate
-    all_phase_alerts = {}
-    for phase, info in phases_ready.items():
-        all_phase_alerts[phase] = info['alerts']
-    
-    body_html = _build_escalation_html(all_phase_alerts, max_level)
-    
-    try:
-        sender = EmailSender()
-        attachments = []
-        if os.path.exists(logo_path):
-            attachments.append(('inline', logo_path, 'company_logo'))
-        
-        to_addr_list = to_emails
-        all_cc = to_emails[1:] + cc_emails if len(to_emails) > 1 else cc_emails
-        
-        level_label = (f"Solicitare {max_level}/3"
-                       if max_level <= 3 else "ESCALARE MANAGEMENT")
-        
-        phases_str = ', '.join(phases_ready.keys())
-        total_alerts = sum(len(info['alerts']) for info in phases_ready.values())
-        subj = f"[{level_label}] Alerte plan producție — {total_alerts} alerte ({phases_str})"
-        
-        # Applica override in modalità Test
+    shift_claimed = True
+
+    # ── Separazione dei due flussi ───────────────────────────────────────────
+    # 1) Email ai RESPONSABILI: tutte le fasi con alert non giustificati.
+    # 2) Email al MANAGEMENT ("[ESCALARE MANAGEMENT]"): solo le fasi di
+    #    controllo finale (FCT/FQC, configurabili) e non piu' di una alla
+    #    settimana. Prima bastava che una fase qualsiasi superasse il livello 3
+    #    perche' l'intera email — con tutte e 24 le fasi — finisse al
+    #    management due volte al giorno.
+    mgmt_phases_cfg = get_management_escalation_phases(conn)
+    mgmt_ready = {p: i for p, i in phases_ready.items()
+                  if i['next_level'] > 3 and p.strip().upper() in mgmt_phases_cfg}
+    leader_ready = {p: i for p, i in phases_ready.items() if p not in mgmt_ready}
+
+    sender = EmailSender()
+    attachments = []
+    if os.path.exists(logo_path):
+        attachments.append(('inline', logo_path, 'company_logo'))
+    sent_count = 0
+
+    def _send(phases_subset, level_label, to_emails, cc_emails, display_level):
+        """Invia una email di escalation per il sottoinsieme di fasi indicato.
+        Ritorna True se inviata (e registra le escalation)."""
+        if not phases_subset:
+            return False
+        if not to_emails:
+            logger.warning(f"Nessun destinatario per escalation '{level_label}'")
+            return False
+
+        body_html = _build_escalation_html(
+            {p: i['alerts'] for p, i in phases_subset.items()}, display_level)
+
+        to_addr_list = list(to_emails)
+        all_cc = (to_addr_list[1:] + list(cc_emails)
+                  if len(to_addr_list) > 1 else list(cc_emails))
+
+        phases_str = ', '.join(phases_subset.keys())
+        total = sum(len(i['alerts']) for i in phases_subset.values())
+        subj = f"[{level_label}] Alerte plan producție — {total} alerte ({phases_str})"
+
         to_addr_list, all_cc, subj = _apply_test_mode_override(
             mode, to_addr_list, all_cc, subj)
-        
+
         sender.send_email(
             to_email=to_addr_list[0],
             subject=subj,
@@ -985,27 +1135,57 @@ def check_and_escalate(conn, logo_path: str = None, mode: str = 'True') -> int:
             attachments=attachments if attachments else None,
             cc_emails=all_cc if all_cc else None
         )
-        
-        # Registra escalation per tutti gli alert di tutte le fasi
-        recipients_log = '; '.join(to_emails + cc_emails)
-        for phase, info in phases_ready.items():
+
+        recipients_log = '; '.join(list(to_emails) + list(cc_emails))
+        for phase, info in phases_subset.items():
             for alert_data in info['alerts']:
                 record_escalation(conn, alert_data['alert_id'],
                                   info['next_level'], recipients_log, phase)
 
-        # Segna il turno come gia' notificato per evitare doppi invii nella
-        # stessa finestra di 30 minuti prima della fine turno.
-        _mark_shift_sent(shift_now)
+        logger.info(f"Escalation '{level_label}' turno {shift_now}: {total} alert "
+                    f"in {len(phases_subset)} fasi ({phases_str}) a {to_addr_list}")
+        return True
 
-        logger.info(f"Escalation turno {shift_now} inviata (livello max "
-                    f"{max_level}): {total_alerts} alert in "
-                    f"{len(phases_ready)} fasi a {to_addr_list}")
+    try:
+        # 1) Responsabili di fase (TO leader, CC manager). Il livello mostrato
+        #    e' limitato a 3: oltre non ha piu' senso, l'escalation successiva
+        #    e' quella al management.
+        leader_level = min(
+            max((i['next_level'] for i in leader_ready.values()), default=1), 3)
+        if _send(leader_ready, f"Solicitare {leader_level}/3",
+                 list(all_leader_emails), list(all_manager_emails), leader_level):
+            sent_count += 1
 
-        return 1
-        
+        # 2) Management: solo fasi configurate e al massimo 1 volta a settimana
+        if mgmt_ready:
+            if management_escalation_allowed(conn):
+                mgmt_emails = get_escalation_recipients(conn)
+                if _send(mgmt_ready, "ESCALARE MANAGEMENT", mgmt_emails,
+                         list(all_leader_emails | all_manager_emails), 4):
+                    mark_management_escalation_sent(conn)
+                    sent_count += 1
+            else:
+                logger.info(
+                    f"Plan Alert: escalation management per "
+                    f"{', '.join(mgmt_ready.keys())} rimandata (limite settimanale)")
+
+        if sent_count:
+            # Segna il turno come gia' notificato per evitare doppi invii nella
+            # stessa finestra di 30 minuti prima della fine turno.
+            _mark_shift_sent(shift_now)
+        elif shift_claimed:
+            # Nessuna email partita davvero: libera il turno per un ritentativo
+            _release_email_claim(conn, today_key, shift_attribute)
+
+        return sent_count
+
     except Exception as e:
         logger.error(f"Errore invio escalation raggruppata: {e}")
-        return 0
+        if not sent_count and shift_claimed:
+            _release_email_claim(conn, today_key, shift_attribute)
+        elif sent_count:
+            _mark_shift_sent(shift_now)
+        return sent_count
 
 
 # ============================================================
@@ -1035,7 +1215,16 @@ def send_monthly_summary(conn, logo_path: str = None, mode: str = 'True') -> boo
     last_month_end = first_of_month - timedelta(days=1)
     last_month_start = last_month_end.replace(day=1)
     month_label = last_month_start.strftime('%B %Y')
-    
+
+    # ── Claim ATOMICO del mese (una sola email, anche con piu' PC) ──
+    # Prima l'unica guardia era in memoria nel worker chiamante: ogni PC
+    # acceso il 1o del mese alle 08:00 inviava la sua copia del report.
+    monthly_attribute = 'plan_monthly_summary'
+    monthly_key = last_month_start.date()
+    if not _claim_email_send(conn, monthly_key, monthly_attribute):
+        logger.info(f"Report mensile piano: gia' inviato per {month_label}, skip")
+        return False
+
     try:
         # Statistiche totali
         with conn.cursor() as cursor:
@@ -1060,8 +1249,9 @@ def send_monthly_summary(conn, logo_path: str = None, mode: str = 'True') -> boo
         
         if not stats or stats.TotalAlerts == 0:
             logger.info("Report mensile: nessun alert nel mese precedente")
+            _release_email_claim(conn, monthly_key, monthly_attribute)
             return False
-        
+
         total = stats.TotalAlerts
         responded = stats.Responded or 0
         not_responded = stats.NotResponded or 0
@@ -1214,8 +1404,9 @@ def send_monthly_summary(conn, logo_path: str = None, mode: str = 'True') -> boo
         
         if not all_to:
             logger.warning("Report mensile: nessun destinatario")
+            _release_email_claim(conn, monthly_key, monthly_attribute)
             return False
-        
+
         sender = EmailSender()
         attachments = []
         if os.path.exists(logo_path):
@@ -1242,6 +1433,8 @@ def send_monthly_summary(conn, logo_path: str = None, mode: str = 'True') -> boo
         
     except Exception as e:
         logger.error(f"Errore invio report mensile piano: {e}")
+        # Invio fallito: libera il claim per ritentare
+        _release_email_claim(conn, monthly_key, monthly_attribute)
         return False
 
 
@@ -1267,27 +1460,19 @@ def send_weekly_pattern_check(conn, logo_path: str = None, mode: str = 'True') -
     now = datetime.now()
     four_weeks_ago = now - timedelta(weeks=4)
     
+    # ── Claim ATOMICO settimanale (una sola email, anche con piu' PC) ──
+    # Prima il claim usava settings.atribute con chiave
+    # 'SentWeeklyPatternEmail_<data>' (33 caratteri): la colonna ne ammette 30,
+    # quindi l'INSERT falliva e il report non partiva mai. Ora la chiave sta
+    # nella tabella di log delle email, dove Attribute e' NVARCHAR(100).
+    weekly_attribute = 'plan_weekly_pattern'
+    weekly_key = now.date()
+    if not _claim_email_send(conn, weekly_key, weekly_attribute):
+        logger.info(f"Report settimanale pattern: già inviato per {weekly_key}, skip")
+        return False
+    logger.info(f"Report settimanale pattern: claim acquisito per {weekly_key}")
+
     try:
-        # ── Dedup atomica cross-istanza ──
-        # INSERT atomico: solo la prima istanza riesce a inserire il claim
-        week_key = now.strftime('%Y-%m-%d')
-        setting_key = f'SentWeeklyPatternEmail_{week_key}'
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                INSERT INTO traceability_rs.dbo.settings (atribute, [value])
-                SELECT ?, ?
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM traceability_rs.dbo.settings
-                    WHERE atribute = ?
-                )
-            """, (setting_key, now.strftime('%Y-%m-%d %H:%M:%S'), setting_key))
-            claimed = cursor.rowcount > 0
-            conn.commit()
-            if not claimed:
-                logger.info(f"Report settimanale pattern: già inviato per {week_key} "
-                            f"(altra istanza), skip")
-                return False
-            logger.info(f"Report settimanale pattern: claim '{setting_key}' acquisito")
         # Trova pattern ricorrenti
         with conn.cursor() as cursor:
             cursor.execute("""
@@ -1315,8 +1500,9 @@ def send_weekly_pattern_check(conn, logo_path: str = None, mode: str = 'True') -
         
         if not patterns:
             logger.info("Report settimanale: nessun pattern ricorrente trovato")
+            _release_email_claim(conn, weekly_key, weekly_attribute)
             return False
-        
+
         # Salva in PlanAlertWeeklyChecks
         with conn.cursor() as cursor:
             for p in patterns:
@@ -1423,8 +1609,9 @@ def send_weekly_pattern_check(conn, logo_path: str = None, mode: str = 'True') -
         
         if not to_emails:
             logger.warning("Report settimanale: nessun destinatario")
+            _release_email_claim(conn, weekly_key, weekly_attribute)
             return False
-        
+
         sender = EmailSender()
         attachments = []
         if os.path.exists(logo_path):
@@ -1454,4 +1641,6 @@ def send_weekly_pattern_check(conn, logo_path: str = None, mode: str = 'True') -
         
     except Exception as e:
         logger.error(f"Errore invio report settimanale pattern: {e}")
+        # Invio fallito: libera il claim per ritentare
+        _release_email_claim(conn, weekly_key, weekly_attribute)
         return False

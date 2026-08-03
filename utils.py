@@ -7,6 +7,143 @@ import os
 
 logger = logging.getLogger("TraceabilityRS")  # usa la config fatta in main.py
 
+
+# =============================================================================
+# CLAIM ATOMICO PER EMAIL AUTOMATICHE (anti-duplicati cross-PC e cross-riavvio)
+# =============================================================================
+# REGOLA GENERALE del progetto: un'email automatica NON si invia mai dopo un
+# semplice "SELECT: e' gia' stata inviata?". I monitor di background girano in
+# polling su PIU' PC contemporaneamente: allo scoccare dell'orario tutte le
+# istanze superano insieme il controllo (nessuna vede ancora il record di log)
+# e inviano la stessa email.
+#
+# Si PRENOTA il diritto di invio con una singola istruzione atomica PRIMA di
+# generare allegati e di inviare; solo chi ottiene rowcount = 1 procede.
+# Se l'invio poi fallisce, il claim si rilascia e il giro successivo ritenta.
+#
+# Tabella di claim generica: [Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]
+#   WeekStartDate DATE      -> chiave temporale (giorno / lunedi' / 1o del mese)
+#   Attribute     NVARCHAR(100) -> identificativo dell'email
+# (indice UNIQUE su WeekStartDate+Attribute; i lock hint rendono il claim
+#  atomico anche se in produzione l'indice non fosse presente).
+
+EMAIL_CLAIM_TABLE = '[Traceability_RS].[dbo].[NpiWeeklyGeneralEmailLog]'
+
+
+def claim_email_send(conn, key_date, attribute: str) -> bool:
+    """
+    Prenota in modo atomico l'invio di un'email automatica.
+
+    Args:
+        conn:      connessione pyodbc.
+        key_date:  date/datetime che identifica il periodo (giorno per le email
+                   giornaliere, lunedi' per le settimanali, primo del mese per
+                   le mensili).
+        attribute: identificativo dell'email (es. 'overtime_monthly_report').
+
+    Returns:
+        True SOLO se il claim e' stato ottenuto ora da questo processo: in tal
+        caso e' questo processo a dover inviare. False se l'email e' gia' stata
+        inviata (o e' in corso di invio su un altro PC), o in caso di errore DB
+        (fail-safe: meglio non inviare che inviare doppio).
+    """
+    try:
+        cur = conn.cursor()
+        cur.execute(f"""
+            INSERT INTO {EMAIL_CLAIM_TABLE} (WeekStartDate, Attribute)
+            SELECT ?, ?
+            WHERE NOT EXISTS (
+                SELECT 1 FROM {EMAIL_CLAIM_TABLE} WITH (UPDLOCK, HOLDLOCK)
+                WHERE WeekStartDate = ? AND Attribute = ?
+            )
+        """, (key_date, attribute, key_date, attribute))
+        claimed = cur.rowcount == 1
+        conn.commit()
+        cur.close()
+        if not claimed:
+            logger.info(f"Email '{attribute}' per {key_date}: gia' inviata, skip")
+        return claimed
+    except Exception as e:
+        # Violazione dell'indice UNIQUE = un altro PC ha vinto la corsa
+        logger.info(f"Claim email '{attribute}' per {key_date} non ottenuto: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def release_email_claim(conn, key_date, attribute: str) -> None:
+    """Rilascia il claim (invio fallito o non piu' dovuto) per poter ritentare."""
+    try:
+        cur = conn.cursor()
+        cur.execute(f"""
+            DELETE FROM {EMAIL_CLAIM_TABLE}
+            WHERE WeekStartDate = ? AND Attribute = ?
+        """, (key_date, attribute))
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        logger.warning(f"Impossibile rilasciare il claim email '{attribute}' ({key_date}): {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
+def claim_setting_slot(conn, setting_key: str) -> bool:
+    """
+    Variante del claim su traceability_rs.dbo.settings, per i moduli che usano
+    gia' quella tabella come marcatore di invio.
+
+    ATTENZIONE: la colonna 'atribute' e' VARCHAR(30) — chiavi piu' lunghe
+    verrebbero troncate/rifiutate dal DB, quindi vengono rifiutate qui.
+    """
+    if len(setting_key) > 30:
+        logger.error(
+            f"Claim slot '{setting_key}' ignorato: la chiave supera i 30 caratteri "
+            f"ammessi da settings.atribute — usare claim_email_send()")
+        return False
+    try:
+        from datetime import datetime as _dt
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO traceability_rs.dbo.settings (atribute, [value])
+            SELECT ?, ?
+            WHERE NOT EXISTS (
+                SELECT 1 FROM traceability_rs.dbo.settings WITH (UPDLOCK, HOLDLOCK)
+                WHERE atribute = ?
+            )
+        """, (setting_key, _dt.now().strftime('%Y-%m-%d %H:%M:%S'), setting_key))
+        claimed = cur.rowcount == 1
+        conn.commit()
+        cur.close()
+        return claimed
+    except Exception as e:
+        logger.info(f"Claim slot '{setting_key}' non ottenuto: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def release_setting_slot(conn, setting_key: str) -> None:
+    """Rilascia il claim su settings (invio fallito) per poter ritentare."""
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM traceability_rs.dbo.settings WHERE atribute = ?",
+                    (setting_key,))
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        logger.warning(f"Impossibile rilasciare il claim slot '{setting_key}': {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
 def get_email_recipients(conn, attribute: str = 'Sys_Email_Purchase') -> List[str]:
     """
     Recupera gli indirizzi email dei destinatari dal database per lo specifico attributo.

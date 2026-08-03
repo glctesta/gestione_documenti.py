@@ -592,6 +592,60 @@ class OrdersManager:
         finally:
             session.close()
     
+    def get_association_delete_blockers(self, dynamic_production_order_id: int) -> dict:
+        """
+        Verifica se un'associazione puo' essere eliminata.
+
+        Su dyn.DynamicProductionOrders insistono due vincoli di chiave esterna
+        (entrambi NO ACTION, quindi il DELETE viene rifiutato dal server):
+          - FK_dyn_ShipmentPallets_DPO            → dyn.ShipmentPallets
+          - FK_DybamicShippingRules_DynamicProductionOrders → dyn.DynamicShippingRules
+        Senza questo controllo l'utente riceveva in faccia l'errore SQL grezzo
+        ("The DELETE statement conflicted with the REFERENCE constraint...")
+        senza capire che l'associazione era gia' stata spedita.
+
+        Returns:
+            {'pallets': [ {...} ], 'pallets_qty': int, 'rules': [ {...} ]}
+        """
+        pallets_query = text("""
+            SELECT sp.ShipmentPalletId, sp.ShipmentId, sp.PalletCode,
+                   sp.ConfirmedQty, sp.ConfirmedAt, sp.ConfirmedByUser
+            FROM [Traceability_RS].[dyn].[ShipmentPallets] sp
+            WHERE sp.DynamicProductionOrderID = :id
+            ORDER BY sp.ConfirmedAt
+        """)
+        rules_query = text("""
+            SELECT r.DybamicShippingRuleId, r.QtyToShip, r.DateToship, r.ShipTo, r.ConfirmedAt
+            FROM [Traceability_RS].[dyn].[DynamicShippingRules] r
+            WHERE r.DynamicProductionOrderID = :id
+            ORDER BY r.DateToship
+        """)
+
+        session = self._get_session()
+        try:
+            pallets = [
+                {'ShipmentPalletId': r[0], 'ShipmentId': r[1], 'PalletCode': r[2],
+                 'ConfirmedQty': r[3], 'ConfirmedAt': r[4], 'ConfirmedByUser': r[5]}
+                for r in session.execute(pallets_query, {'id': dynamic_production_order_id})
+            ]
+            rules = [
+                {'RuleId': r[0], 'QtyToShip': r[1], 'DateToship': r[2],
+                 'ShipTo': r[3], 'ConfirmedAt': r[4]}
+                for r in session.execute(rules_query, {'id': dynamic_production_order_id})
+            ]
+            return {
+                'pallets': pallets,
+                'pallets_qty': sum((p['ConfirmedQty'] or 0) for p in pallets),
+                'rules': rules,
+            }
+        except Exception as e:
+            logger.error(f"Errore verifica vincoli associazione "
+                         f"{dynamic_production_order_id}: {e}", exc_info=True)
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
     def delete_production_association(self, dynamic_production_order_id: int, user_name: str = None) -> bool:
         """
         Elimina un'associazione tra ordine di vendita e ordine di produzione

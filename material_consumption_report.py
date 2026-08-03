@@ -73,7 +73,8 @@ _Q_CLAIM_SLOT = """
 INSERT INTO traceability_rs.dbo.settings (atribute, [value])
 SELECT ?, ?
 WHERE NOT EXISTS (
-    SELECT 1 FROM traceability_rs.dbo.settings WHERE atribute = ?
+    SELECT 1 FROM traceability_rs.dbo.settings WITH (UPDLOCK, HOLDLOCK)
+    WHERE atribute = ?
 )
 """
 

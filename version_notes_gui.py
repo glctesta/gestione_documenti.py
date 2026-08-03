@@ -390,7 +390,29 @@ def show_version_summary_popup(master, lang, version, summary):
     ttk.Button(dlg, text=L('btn_close', 'Chiudi'), command=dlg.destroy).pack(pady=(0, 10))
     dlg.lift()
     dlg.attributes('-topmost', True)
-    dlg.after(300, lambda: dlg.attributes('-topmost', False))
+    try:
+        dlg.focus_force()
+    except Exception:
+        pass
+
+    # Il popup si apre a ridosso dell'avvio, quando la finestra principale e i
+    # monitor post-avvio si alzano ancora in primo piano: rilasciando subito il
+    # topmost la finestra delle novità finiva DIETRO al programma. Lo si tiene
+    # davanti per qualche secondo rialzandolo periodicamente, poi lo si libera.
+    def _keep_on_top(remaining=8):
+        if not dlg.winfo_exists():
+            return
+        try:
+            if remaining <= 0:
+                dlg.attributes('-topmost', False)
+                return
+            dlg.lift()
+            dlg.attributes('-topmost', True)
+        except Exception:
+            return
+        dlg.after(500, _keep_on_top, remaining - 1)
+
+    dlg.after(500, _keep_on_top)
 
 
 def open_version_notes_viewer(master, db, lang, name_program):

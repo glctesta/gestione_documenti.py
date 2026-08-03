@@ -96,24 +96,32 @@ def _find_latest_excel(folder: str) -> Optional[str]:
     return latest
 
 
-def read_planning_excel(lookback_hours: int = 0) -> List[dict]:
+def read_planning_excel(lookback_hours: int = 0,
+                        lookahead_hours: int = None) -> List[dict]:
     """
     Legge il tab PlanningMachine dal file Excel più recente.
-    Filtra righe con PlannedStart tra (now - lookback_hours) e (now + LOOKAHEAD_HOURS).
+    Filtra righe con PlannedStart tra (now - lookback_hours) e (now + lookahead_hours).
     Restituisce lista di dict con phase, order_number, planned_start.
-    
+
     Args:
         lookback_hours: ore nel passato da includere (default 0 = solo futuro).
-                        Usato dall'enforcement per catturare ordini il cui 
+                        Usato dall'enforcement per catturare ordini il cui
                         PlannedStart è appena passato (es. per L3 escalation).
+        lookahead_hours: ore nel futuro (default LOOKAHEAD_HOURS = 4).
+                        La form di compilazione usa una finestra più ampia:
+                        il FAI si fa quando la linea viene preparata, anche
+                        molte ore prima dell'avvio dell'ordine.
     """
     filepath = _find_latest_excel(PLANNING_PATH)
     if not filepath:
         return []
 
+    if lookahead_hours is None:
+        lookahead_hours = LOOKAHEAD_HOURS
+
     now = datetime.now()
     earliest = now - timedelta(hours=lookback_hours)
-    cutoff = now + timedelta(hours=LOOKAHEAD_HOURS)
+    cutoff = now + timedelta(hours=lookahead_hours)
 
     rows = []
     try:
@@ -181,8 +189,99 @@ def read_planning_excel(lookback_hours: int = 0) -> List[dict]:
         logger.error(f"FAI Autocheck: errore lettura Excel: {e}", exc_info=True)
 
     logger.info(f"FAI Autocheck: {len(rows)} righe valide in finestra "
-                f"[-{lookback_hours}h, +{LOOKAHEAD_HOURS}h]")
+                f"[-{lookback_hours}h, +{lookahead_hours}h]")
     return rows
+
+
+# ================================================================
+# 2-bis. CODA ORDINI IN ATTESA DELLA LINEA PTH
+# ================================================================
+
+# Fasi coinvolte (Traceability_RS.dbo.Phases)
+PHASE_AOI = 2    # AOI dopo SMT
+PHASE_PTHM = 4   # PTHM (montaggio manuale)
+
+# Ordini per cui il FAI "3 ore prima" ha senso: la linea PTH deve essere
+# preparata per riceverli.
+#   1. almeno una scheda ha superato l'AOI dell'SMT  → il materiale esiste
+#   2. la fase PTHM non e' ancora iniziata           → la linea li deve ancora ricevere
+#   3. l'ordine non e' completato                    → versato a magazzino < qta ordine
+# La quantita' versata arriva da D365 (LogApiDynamics / ProdFinishedGoods):
+# in Traceability non esiste un campo di versamento valorizzato.
+PTH_PENDING_ORDERS_QUERY = """
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+WITH WH AS (
+    SELECT JSON_VALUE(L.MessageSend,'$.Message.Reference') AS OrderNumber,
+           SUM(TRY_CAST(JSON_VALUE(j.value,'$.RealValue') AS int)) AS QtyWarehouse
+    FROM Traceability_RS.dbo.LogApiDynamics L
+    CROSS APPLY OPENJSON(L.MessageSend,
+        '$.Message.KeyValue.ListValue[0].ListValue[0].ListValue') j
+    WHERE L.EndPointName = 'ProdFinishedGoods'
+      AND JSON_VALUE(j.value,'$.Key') = 'GoodQty'
+    GROUP BY JSON_VALUE(L.MessageSend,'$.Message.Reference')
+)
+SELECT o.IDOrder, o.OrderNumber, p.ProductCode, p.ProductName,
+       o.OrderQuantity, ISNULL(wh.QtyWarehouse, 0) AS QtyWarehouse,
+       aoi.BoardsAoi, aoi.LastAoi
+FROM Traceability_RS.dbo.Orders o
+INNER JOIN Traceability_RS.dbo.Products p ON p.IDProduct = o.IDProduct
+CROSS APPLY (
+    SELECT COUNT(DISTINCT s.IDBoard) AS BoardsAoi, MAX(s.ScanTimeFinish) AS LastAoi
+    FROM Traceability_RS.dbo.Scannings s
+    INNER JOIN Traceability_RS.dbo.OrderPhases op ON op.IDOrderPhase = s.IDOrderPhase
+    WHERE op.IDOrder = o.IDOrder
+      AND op.IDPhase = {aoi}
+      AND s.ScanTimeFinish IS NOT NULL
+) aoi
+LEFT JOIN WH wh ON wh.OrderNumber = o.OrderNumber
+WHERE aoi.BoardsAoi > 0
+  AND NOT EXISTS (
+        SELECT 1
+        FROM Traceability_RS.dbo.Scannings s2
+        INNER JOIN Traceability_RS.dbo.OrderPhases op2 ON op2.IDOrderPhase = s2.IDOrderPhase
+        WHERE op2.IDOrder = o.IDOrder AND op2.IDPhase = {pthm})
+  AND ISNULL(wh.QtyWarehouse, 0) < o.OrderQuantity
+  {age_filter}
+ORDER BY aoi.LastAoi DESC;
+SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+"""
+
+
+def get_pth_pending_orders(conn, lookback_days: int = None) -> Dict[str, dict]:
+    """Ordini in attesa della linea PTH (vedi PTH_PENDING_ORDERS_QUERY).
+
+    Args:
+        lookback_days: se valorizzato, considera solo gli ordini con AOI
+                       completato negli ultimi N giorni (esclude i residui
+                       fermi da mesi).
+    Returns:
+        {OrderNumber: {IDOrder, OrderNumber, ProductCode, ProductName,
+                       OrderQuantity, QtyWarehouse, BoardsAoi, LastAoi}}
+    """
+    age_filter = (f"AND aoi.LastAoi >= DATEADD(day, -{int(lookback_days)}, GETDATE())"
+                  if lookback_days else "")
+    query = PTH_PENDING_ORDERS_QUERY.format(
+        aoi=PHASE_AOI, pthm=PHASE_PTHM, age_filter=age_filter)
+    orders = {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query)
+            for r in cur.fetchall():
+                orders[r.OrderNumber] = {
+                    'IDOrder': r.IDOrder,
+                    'OrderNumber': r.OrderNumber,
+                    'ProductCode': r.ProductCode,
+                    'ProductName': r.ProductName,
+                    'OrderQuantity': r.OrderQuantity,
+                    'QtyWarehouse': r.QtyWarehouse,
+                    'BoardsAoi': r.BoardsAoi,
+                    'LastAoi': r.LastAoi,
+                }
+        logger.info(f"FAI Autocheck: {len(orders)} ordini in attesa della linea PTH "
+                    f"(AOI fatto, PTHM non iniziata, non completati)")
+    except Exception as e:
+        logger.error(f"FAI Autocheck: errore get_pth_pending_orders: {e}", exc_info=True)
+    return orders
 
 
 # ================================================================
@@ -327,17 +426,125 @@ SQL_CHECK_ALREADY_SENT = """
       AND IdPhase = ?
       AND FaiTemplateId = ?
       AND PlannedStart = ?
-      AND NotificationStatus IN ('SENT', 'SKIPPED_ALREADY_STARTED')
+      AND NotificationStatus IN ('SENT', 'SKIPPED_ALREADY_STARTED', 'SENDING')
 """
 
 
 def check_already_notified(conn, order_number: str, id_phase: int,
                            template_id: int, planned_start: datetime) -> bool:
-    """Verifica se esiste già una notifica per questa combinazione."""
+    """Verifica se esiste già una notifica per questa combinazione.
+
+    E' solo un filtro rapido: la garanzia anti-duplicato e' il claim atomico
+    (claim_notification), perche' il ciclo gira in parallelo su piu' PC.
+    """
     with conn.cursor() as cur:
         cur.execute(SQL_CHECK_ALREADY_SENT,
                     (order_number, id_phase, template_id, planned_start))
         return cur.fetchone() is not None
+
+
+# ── Claim atomico: prenota l'invio PRIMA di mandare l'email ──────────────────
+SQL_CLAIM_NOTIFICATION = """
+    INSERT INTO [Traceability_RS].[fai].[FaiAutocheckNotifications]
+        (OrderNumber, IdPhase, PhaseName, FaiTemplateId, FaiTitle,
+         NrDocument, Revision, PlannedStart, DetectionTime,
+         EmailSentTime, EmailTo, EmailCc, ProductionQtyAtCheck,
+         PresenceChecked, NotificationStatus)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), NULL, '', '', 0, 1, 'SENDING'
+    WHERE NOT EXISTS (
+        SELECT 1 FROM [Traceability_RS].[fai].[FaiAutocheckNotifications]
+        WITH (UPDLOCK, HOLDLOCK)
+        WHERE OrderNumber = ?
+          AND IdPhase = ?
+          AND FaiTemplateId = ?
+          AND PlannedStart = ?
+          AND NotificationStatus IN ('SENT', 'SKIPPED_ALREADY_STARTED', 'SENDING')
+    )
+"""
+
+SQL_FINALIZE_NOTIFICATION = """
+    UPDATE [Traceability_RS].[fai].[FaiAutocheckNotifications]
+    SET NotificationStatus = 'SENT',
+        EmailSentTime = ?,
+        EmailTo = ?,
+        EmailCc = ?
+    WHERE OrderNumber = ? AND IdPhase = ? AND FaiTemplateId = ?
+      AND PlannedStart = ? AND NotificationStatus = 'SENDING'
+"""
+
+SQL_RELEASE_NOTIFICATION = """
+    DELETE FROM [Traceability_RS].[fai].[FaiAutocheckNotifications]
+    WHERE OrderNumber = ? AND IdPhase = ? AND FaiTemplateId = ?
+      AND PlannedStart = ? AND NotificationStatus = 'SENDING'
+"""
+
+
+def claim_notification(conn, order_number: str, id_phase: int, template_id: int,
+                       planned_start: datetime, template: dict) -> bool:
+    """
+    Prenota in modo ATOMICO l'invio della notifica FAI per questa combinazione
+    (ordine + fase + template + inizio pianificato).
+
+    Ritorna True solo se il claim e' stato ottenuto adesso: senza questo, tutte
+    le istanze del ciclo in esecuzione sui vari PC superano insieme il controllo
+    "gia' notificato?" e inviano una copia a testa della stessa segnalazione.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(SQL_CLAIM_NOTIFICATION, (
+                order_number, id_phase, template.get('PhaseName'), template_id,
+                template.get('FaiTitle'), template.get('NrDocument'),
+                template.get('Revision'), planned_start,
+                order_number, id_phase, template_id, planned_start
+            ))
+            claimed = cur.rowcount == 1
+        conn.commit()
+        return claimed
+    except Exception as e:
+        logger.info(
+            f"FAI Autocheck: claim non ottenuto per {order_number}/{id_phase}: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def finalize_notification(conn, order_number: str, id_phase: int, template_id: int,
+                          planned_start: datetime, email_time, to_list, cc_list) -> None:
+    """Chiude il claim come inviato, registrando orario e destinatari."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(SQL_FINALIZE_NOTIFICATION, (
+                email_time, '; '.join(to_list), '; '.join(cc_list),
+                order_number, id_phase, template_id, planned_start
+            ))
+        conn.commit()
+    except Exception as e:
+        logger.error(
+            f"FAI Autocheck: errore chiusura notifica {order_number}/{id_phase}: {e}",
+            exc_info=True)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
+def release_notification_claim(conn, order_number: str, id_phase: int,
+                               template_id: int, planned_start: datetime) -> None:
+    """Rilascia il claim (invio fallito) cosi' il ciclo successivo ritenta."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(SQL_RELEASE_NOTIFICATION,
+                        (order_number, id_phase, template_id, planned_start))
+        conn.commit()
+    except Exception as e:
+        logger.warning(
+            f"FAI Autocheck: impossibile rilasciare il claim {order_number}/{id_phase}: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
 
 # ================================================================
@@ -696,7 +903,15 @@ def run_autocheck_cycle(conn, logo_path: str = "Logo.png") -> int:
                 f"{order_number}/{phase_upper}")
             continue
 
-        # 3e. Invia email
+        # 3e. Claim atomico PRIMA dell'invio: solo un PC manda questa notifica
+        if not claim_notification(conn, order_number, id_phase, template_id,
+                                  planned_start, template):
+            logger.debug(
+                f"FAI Autocheck: {order_number}/{phase_upper} gia' preso in "
+                f"carico da un'altra istanza, skip")
+            continue
+
+        # 3f. Invia email
         try:
             send_fai_autocheck_email(
                 to_list, cc_list, pr, template, logo_path)
@@ -706,29 +921,14 @@ def run_autocheck_cycle(conn, logo_path: str = "Logo.png") -> int:
             logger.error(
                 f"FAI Autocheck: errore invio email per "
                 f"{order_number}/{phase_upper}: {e}", exc_info=True)
-            email_time = None
+            # Invio fallito: libera il claim, il ciclo successivo ritenta
+            release_notification_claim(conn, order_number, id_phase,
+                                       template_id, planned_start)
+            continue
 
-        # 3f. Registra evento
-        try:
-            record_notification(conn, {
-                'order_number': order_number,
-                'id_phase': id_phase,
-                'phase_name': template['PhaseName'],
-                'template_id': template_id,
-                'fai_title': template.get('FaiTitle'),
-                'nr_document': template.get('NrDocument'),
-                'revision': template.get('Revision'),
-                'planned_start': planned_start,
-                'email_sent_time': email_time,
-                'email_to': '; '.join(to_list),
-                'email_cc': '; '.join(cc_list),
-                'production_qty': 0,
-                'status': 'SENT' if email_time else 'PENDING'
-            })
-        except Exception as e:
-            logger.error(
-                f"FAI Autocheck: errore registrazione notifica: {e}",
-                exc_info=True)
+        # 3g. Chiude il claim come inviato
+        finalize_notification(conn, order_number, id_phase, template_id,
+                              planned_start, email_time, to_list, cc_list)
 
     logger.info(f"FAI Autocheck: ciclo completato, {sent_count} email inviate")
     return sent_count

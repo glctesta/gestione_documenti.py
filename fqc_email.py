@@ -86,16 +86,20 @@ WHERE  atribute = 'Sys_check_final_product'
   AND  ISNULL(DateOut, '9999-01-01') > GETDATE()
 """
 
-# Anti-duplication
-_Q_ALREADY_SENT = """
-SELECT COUNT(*)
-FROM   traceability_rs.dbo.settings
-WHERE  atribute = ?
+# Anti-duplication: claim ATOMICO (una sola istruzione). Con SELECT + INSERT
+# separati due PC potevano leggere entrambi "non inviata" e mandare l'email
+# tutti e due; qui solo chi ottiene rowcount = 1 procede.
+_Q_CLAIM_SLOT = """
+INSERT INTO traceability_rs.dbo.settings (atribute, [VALUE])
+SELECT ?, ?
+WHERE NOT EXISTS (
+    SELECT 1 FROM traceability_rs.dbo.settings WITH (UPDLOCK, HOLDLOCK)
+    WHERE atribute = ?
+)
 """
 
-_Q_MARK_SENT = """
-INSERT INTO traceability_rs.dbo.settings (atribute, [VALUE])
-VALUES (?, ?)
+_Q_RELEASE_SLOT = """
+DELETE FROM traceability_rs.dbo.settings WHERE atribute = ?
 """
 
 # ── Logo helper ───────────────────────────────────────────────────────────────
@@ -130,22 +134,32 @@ def run_fqc_shift_email(db, shift_start: datetime.datetime, shift_end: datetime.
 
     conn = db.conn
 
-    # ── Anti-duplication ──────────────────────────────────────────────────────
+    # ── Anti-duplication: claim atomico prima di qualsiasi invio ─────────────
     try:
         cur = conn.cursor()
-        cur.execute(_Q_ALREADY_SENT, (setting_key,))
-        count = cur.fetchone()[0]
-        if count > 0:
-            logger.info(f"fqc_email: {setting_key} already sent — skip")
-            return
-        # Claim the slot immediately (before any await)
-        cur.execute(_Q_MARK_SENT, (setting_key,
-                                   datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        cur.execute(_Q_CLAIM_SLOT, (
+            setting_key,
+            datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            setting_key))
+        claimed = cur.rowcount == 1
         conn.commit()
         cur.close()
+        if not claimed:
+            logger.info(f"fqc_email: {setting_key} already sent — skip")
+            return
     except Exception as exc:
         logger.error(f"fqc_email anti-dup: {exc}")
         return
+
+    def _release_slot():
+        """Nessuna email partita: libera lo slot per un nuovo tentativo."""
+        try:
+            c = conn.cursor()
+            c.execute(_Q_RELEASE_SLOT, (setting_key,))
+            conn.commit()
+            c.close()
+        except Exception as rel_exc:
+            logger.warning(f"fqc_email: impossibile rilasciare {setting_key}: {rel_exc}")
 
     # ── Recipients ────────────────────────────────────────────────────────────
     try:
@@ -156,10 +170,12 @@ def run_fqc_shift_email(db, shift_start: datetime.datetime, shift_end: datetime.
         recipients = [r[0].strip() for r in rows if r[0] and r[0].strip()]
     except Exception as exc:
         logger.error(f"fqc_email recipients: {exc}")
+        _release_slot()
         return
 
     if not recipients:
         logger.warning("fqc_email: no recipients for Sys_check_final_product")
+        _release_slot()
         return
 
     # ── Data retrieval ────────────────────────────────────────────────────────
@@ -181,6 +197,7 @@ def run_fqc_shift_email(db, shift_start: datetime.datetime, shift_end: datetime.
         cur.close()
     except Exception as exc:
         logger.error(f"fqc_email data query: {exc}", exc_info=True)
+        _release_slot()
         return
 
     missing = {pid: code for pid, code in all_products.items()
@@ -317,7 +334,7 @@ def run_fqc_shift_email(db, shift_start: datetime.datetime, shift_end: datetime.
     try:
         import utils
         utils.send_email(
-            to_addresses=recipients,
+            recipients=recipients,
             subject=subject,
             body=body_html,
             is_html=True
@@ -325,6 +342,8 @@ def run_fqc_shift_email(db, shift_start: datetime.datetime, shift_end: datetime.
         logger.info(f"fqc_email: sent to {recipients} ({shift_label})")
     except Exception as exc:
         logger.error(f"fqc_email send: {exc}", exc_info=True)
+        # Invio fallito: libera lo slot, il prossimo trigger ritenta
+        _release_slot()
 
 
 # ── Convenience wrappers called by the scheduler ──────────────────────────────

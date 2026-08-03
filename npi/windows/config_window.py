@@ -1131,6 +1131,15 @@ class TaskManagementFrame(ttk.Frame):
         # Configura il tag per la formattazione dei titoli
         self.tree.tag_configure('title_row', font='Helvetica 10 bold', background='#eeeeee')
 
+        # Barra strumenti sotto la lista (export)
+        tools_frame = ttk.Frame(list_frame)
+        tools_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(8, 0))
+        ttk.Button(
+            tools_frame,
+            text=self.lang.get('btn_export_task_catalog', '📥 Esporta Excel (per categoria)'),
+            command=self._export_catalog_to_excel
+        ).pack(side=tk.LEFT)
+
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.tree.bind('<<TreeviewSelect>>', self._on_task_select)
 
@@ -1202,6 +1211,207 @@ class TaskManagementFrame(ttk.Frame):
         current_category = self.fields['CategoryId'].get() if 'CategoryId' in self.fields else None
         self._load_categories_for_combobox(current_category)
         self._load_tasks()
+
+    # ------------------------------------------------------------------
+    # Export Excel del catalogo task (tutti i task, raggruppati per categoria)
+    # ------------------------------------------------------------------
+    def _export_catalog_to_excel(self):
+        """Esporta in Excel TUTTI i task del catalogo, ordinati per categoria.
+
+        Il file ha la riga 1 con le intestazioni e il filtro automatico attivo,
+        piu' un foglio di riepilogo con il conteggio dei task per categoria.
+        L'export ignora il filtro di categoria della form: estrae sempre tutto
+        il catalogo presente a database.
+        """
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+            from openpyxl.utils import get_column_letter
+        except ImportError:
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                self.lang.get('excel_lib_missing',
+                              "La libreria 'openpyxl' non è installata."),
+                parent=self)
+            return
+
+        from datetime import datetime
+
+        try:
+            tasks = self.npi_manager.get_catalogo_task() or []
+        except Exception as e:
+            logger.error(f"Export catalogo task: errore lettura dati: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('db_error_title', 'Errore Database'), str(e), parent=self)
+            return
+
+        if not tasks:
+            messagebox.showinfo(
+                self.lang.get('info', 'Info'),
+                self.lang.get('export_no_data', 'Nessun task da esportare.'),
+                parent=self)
+            return
+
+        # Ordine categorie: NrOrdin della categoria, poi nome. Dentro la
+        # categoria: NrOrdin del task, poi ItemID.
+        try:
+            categories = self.npi_manager.get_categories() or []
+        except Exception:
+            categories = []
+        cat_order = {c.CategoryId: (c.NrOrdin if c.NrOrdin is not None else 9999,
+                                    (c.Category or '').lower())
+                     for c in categories}
+        no_category_label = self.lang.get('no_category', '(senza categoria)')
+
+        def sort_key(t):
+            cat_key = cat_order.get(t.CategoryId, (9999, 'zzz'))
+            return (cat_key[0], cat_key[1],
+                    t.NrOrdin if t.NrOrdin is not None else 9999,
+                    str(t.ItemID or ''))
+
+        tasks = sorted(tasks, key=sort_key)
+
+        default_name = f"Catalogo_Task_NPI_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+        file_path = filedialog.asksaveasfilename(
+            parent=self,
+            title=self.lang.get('btn_export_task_catalog', 'Esporta Catalogo Task'),
+            defaultextension='.xlsx',
+            initialfile=default_name,
+            filetypes=[('Excel', '*.xlsx')]
+        )
+        if not file_path:
+            return
+
+        # ── Stili ────────────────────────────────────────────────────────
+        header_fill = PatternFill(start_color="2E5090", end_color="2E5090", fill_type="solid")
+        header_font = Font(bold=True, color="FFFFFF", size=11)
+        title_task_font = Font(bold=True)
+        zebra_fill = PatternFill(start_color="F2F5FA", end_color="F2F5FA", fill_type="solid")
+        thin = Side(style='thin', color="BFBFBF")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        headers = [
+            self.lang.get('col_category', 'Categoria'),
+            self.lang.get('col_item_id', 'ItemID'),
+            self.lang.get('col_task_name', 'Nome Task'),
+            self.lang.get('label_description', 'Descrizione'),
+            self.lang.get('label_order_number', 'Nr. Ordine'),
+            self.lang.get('label_is_title', 'È Titolo'),
+            self.lang.get('col_default_task', 'Default'),
+            'TaskID',
+        ]
+        widths = [28, 14, 45, 60, 12, 10, 10, 10]
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = self.lang.get('tab_task_catalog_title', 'Catalogo Task')[:31]
+
+        # Riga 1: intestazioni (con filtro automatico)
+        for col_idx, header in enumerate(headers, start=1):
+            cell = ws.cell(row=1, column=col_idx, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            cell.border = border
+            ws.column_dimensions[get_column_letter(col_idx)].width = widths[col_idx - 1]
+        ws.row_dimensions[1].height = 26
+
+        yes_label = self.lang.get('yes', 'Sì')
+        no_label = self.lang.get('no', 'No')
+
+        counts = {}
+        row_idx = 2
+        for t in tasks:
+            category_name = t.categoria.Category if t.categoria else no_category_label
+            counts[category_name] = counts.get(category_name, 0) + 1
+
+            values = [
+                category_name,
+                t.ItemID or '',
+                t.NomeTask or '',
+                t.Descrizione or '',
+                t.NrOrdin,
+                yes_label if t.IsTitle else no_label,
+                yes_label if getattr(t, 'DefaultTask', False) else no_label,
+                t.TaskID,
+            ]
+            for col_idx, value in enumerate(values, start=1):
+                cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                cell.border = border
+                cell.alignment = Alignment(
+                    vertical='top',
+                    wrap_text=col_idx in (3, 4),
+                    horizontal='center' if col_idx in (5, 6, 7, 8) else 'left'
+                )
+                if row_idx % 2 == 0:
+                    cell.fill = zebra_fill
+                if t.IsTitle:
+                    cell.font = title_task_font
+            row_idx += 1
+
+        last_row = row_idx - 1
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{last_row}"
+        ws.freeze_panes = 'A2'
+
+        # ── Foglio di riepilogo per categoria ────────────────────────────
+        ws2 = wb.create_sheet(self.lang.get('summary', 'Riepilogo')[:31])
+        summary_headers = [
+            self.lang.get('col_category', 'Categoria'),
+            self.lang.get('col_task_count', 'Numero task'),
+        ]
+        for col_idx, header in enumerate(summary_headers, start=1):
+            cell = ws2.cell(row=1, column=col_idx, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            cell.border = border
+        ws2.column_dimensions['A'].width = 35
+        ws2.column_dimensions['B'].width = 15
+
+        srow = 2
+        for cat_name, cnt in sorted(counts.items(), key=lambda kv: kv[0].lower()):
+            ws2.cell(row=srow, column=1, value=cat_name).border = border
+            c = ws2.cell(row=srow, column=2, value=cnt)
+            c.border = border
+            c.alignment = Alignment(horizontal='center')
+            srow += 1
+
+        total_cell = ws2.cell(row=srow, column=1, value=self.lang.get('total', 'Totale'))
+        total_cell.font = Font(bold=True)
+        total_cell.border = border
+        tot = ws2.cell(row=srow, column=2, value=len(tasks))
+        tot.font = Font(bold=True)
+        tot.border = border
+        tot.alignment = Alignment(horizontal='center')
+
+        ws2.auto_filter.ref = f"A1:B{srow - 1}" if srow > 2 else "A1:B1"
+        ws2.freeze_panes = 'A2'
+
+        try:
+            wb.save(file_path)
+        except PermissionError:
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                self.lang.get('export_file_locked',
+                              'Impossibile salvare: il file è aperto in Excel. Chiudilo e riprova.'),
+                parent=self)
+            return
+        except Exception as e:
+            logger.error(f"Export catalogo task: errore salvataggio: {e}", exc_info=True)
+            messagebox.showerror(self.lang.get('error', 'Errore'), str(e), parent=self)
+            return
+
+        logger.info(f"Catalogo task NPI esportato: {file_path} ({len(tasks)} task)")
+        if messagebox.askyesno(
+                self.lang.get('info', 'Info'),
+                self.lang.get('export_done_open',
+                              'Export completato ({count} task).\n\n{path}\n\nVuoi aprire il file?')
+                .format(count=len(tasks), path=file_path),
+                parent=self):
+            try:
+                os.startfile(file_path)
+            except Exception as e:
+                logger.warning(f"Impossibile aprire il file esportato: {e}")
 
     def _load_categories_for_combobox(self, selected_category=None):
         """Carica le categorie nella combobox con opzione per mostrare tutti i task
