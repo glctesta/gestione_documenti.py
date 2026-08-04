@@ -13923,22 +13923,43 @@ class App(tk.Tk):
         Il Toplevel restituito espone `set_status(testo, secondi)` per raccontare
         la fase in corso e il tempo trascorso: senza questo l'utente vedeva una
         barra che scorreva senza sapere cosa stesse succedendo.
+
+        La finestra si puo' ridurre a icona: la preparazione su rete dura
+        minuti e nel frattempo l'applicazione resta usabile (l'event loop viene
+        pompato da _trigger_update), quindi l'operatore non deve restare fermo
+        a guardarla.
         Ritorna il Toplevel o None."""
         try:
             win = tk.Toplevel(self)
             win.title(self.lang.get('update_prep_title', 'Aggiornamento'))
             win.resizable(False, False)
-            # ATTENZIONE: niente transient() se la finestra principale non e'
-            # ancora mappata (all'avvio e' withdrawn fino a fine __init__).
-            # Tk withdrawa automaticamente una finestra transient di un master
-            # nascosto: lo splash risultava INVISIBILE e l'utente restava a
-            # fissare lo schermo vuoto per tutta la preparazione.
-            try:
-                if self.winfo_ismapped():
-                    win.transient(self)
-            except Exception:
-                pass
-            win.protocol("WM_DELETE_WINDOW", lambda: None)  # non chiudibile
+            # NIENTE transient(), per due motivi:
+            #  1. Tk RIFIUTA di iconificare una finestra transient, e questa
+            #     deve potersi ridurre a icona;
+            #  2. Tk withdrawa automaticamente una finestra transient di un
+            #     master nascosto (all'avvio la principale e' withdrawn fino a
+            #     fine __init__): lo splash risultava INVISIBILE e l'utente
+            #     restava a fissare lo schermo vuoto per tutta la preparazione.
+            # Senza transient la finestra ha anche un pulsante sulla barra delle
+            # applicazioni, quindi si ritrova facilmente dopo averla ridotta.
+
+            def _minimize():
+                """Riduce a icona liberando il topmost, altrimenti la finestra
+                tornerebbe subito davanti al lavoro dell'operatore."""
+                try:
+                    win.attributes('-topmost', False)
+                except Exception:
+                    pass
+                try:
+                    win.iconify()
+                except Exception as e:
+                    logger.debug(f"_show_update_prep_splash: iconify non riuscito ({e})")
+
+            win.minimize = _minimize
+            # La X non chiude (l'aggiornamento deve proseguire) ma riduce a icona:
+            # prima non faceva assolutamente nulla e sembrava una finestra rotta.
+            win.protocol("WM_DELETE_WINDOW", _minimize)
+
             frm = ttk.Frame(win, padding=20)
             frm.pack(fill=tk.BOTH, expand=True)
             ttk.Label(
@@ -13948,7 +13969,14 @@ class App(tk.Tk):
                     "Preparazione dell'aggiornamento in corso...\n"
                     "Attendere: caricamento dei dati aggiornati.\n"
                     "Non chiudere l'applicazione."),
-                justify=tk.LEFT, wraplength=380).pack(pady=(0, 10))
+                justify=tk.LEFT, wraplength=380).pack(pady=(0, 6))
+            ttk.Label(
+                frm,
+                text=self.lang.get(
+                    'update_prep_can_work',
+                    "Puoi continuare a lavorare: ti avviso io quando e' tutto pronto."),
+                justify=tk.LEFT, wraplength=380,
+                foreground="#1F6F3D").pack(anchor='w', pady=(0, 10))
             status_var = tk.StringVar(
                 value=self.lang.get('update_prep_step_start', 'Avvio della preparazione...'))
             ttk.Label(frm, textvariable=status_var, justify=tk.LEFT, wraplength=380,
@@ -13956,6 +13984,11 @@ class App(tk.Tk):
             pb = ttk.Progressbar(frm, mode='indeterminate', length=340)
             pb.pack()
             pb.start(12)
+            btn_row = ttk.Frame(frm)
+            btn_row.pack(fill=tk.X, pady=(12, 0))
+            ttk.Button(btn_row,
+                       text=self.lang.get('update_prep_minimize', 'Riduci a icona'),
+                       command=_minimize).pack(side=tk.RIGHT)
 
             def _set_status(text, seconds=None):
                 try:
@@ -13968,8 +14001,8 @@ class App(tk.Tk):
             win.set_status = _set_status
 
             win.update_idletasks()
-            w = max(win.winfo_reqwidth(), 430)
-            h = max(win.winfo_reqheight(), 190)
+            w = max(win.winfo_reqwidth(), 460)
+            h = max(win.winfo_reqheight(), 230)
             sw = win.winfo_screenwidth()
             sh = win.winfo_screenheight()
             win.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
@@ -13982,6 +14015,18 @@ class App(tk.Tk):
                 win.attributes('-topmost', True)
             except Exception:
                 pass
+
+            def _drop_topmost():
+                """Il topmost serve solo a farla comparire davanti: tenerlo per
+                tutta la preparazione significherebbe coprire il lavoro
+                dell'operatore proprio mentre gli diciamo di continuare."""
+                try:
+                    if win.winfo_exists():
+                        win.attributes('-topmost', False)
+                except Exception:
+                    pass
+
+            win.after(2500, _drop_topmost)
             win.update()
             return win
         except Exception as e:
