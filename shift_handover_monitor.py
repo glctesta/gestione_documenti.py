@@ -516,6 +516,10 @@ entro {CONFIRM_GRACE_MIN} minuti dall'inizio del turno successivo.</p>
             if not self._claim_monthly_report(report_month):
                 return
 
+            # Il claim si rilascia SOLO per errori precedenti all'invio: dopo la
+            # consegna (aggiornamento del log, logging) rilasciarlo farebbe
+            # rispedire il report dal poll successivo o da un altro PC.
+            email_sent = False
             try:
                 recipients = _get_alert_recipients(self.db)
                 if not recipients:
@@ -532,13 +536,18 @@ entro {CONFIRM_GRACE_MIN} minuti dall'inizio del turno successivo.</p>
                 attachments = [('inline', logo, 'company_logo')] if os.path.exists(logo) else None
 
                 utils.send_email(recipients, subj, html, is_html=True, attachments=attachments)
+                email_sent = True
                 self._update_monthly_report_recipients(report_month, len(recipients))
                 logger.info(
                     f"Report mensile cambi turno inviato per {report_month:%Y-%m} "
                     f"a {len(recipients)} destinatari"
                 )
             except Exception as e:
-                # Invio fallito: rilascia il claim così verrà ritentato al prossimo poll
+                if email_sent:
+                    logger.error(f"Report mensile cambi turno inviato, errore successivo: {e}; "
+                                 f"claim mantenuto per non duplicare", exc_info=True)
+                    return
+                # Nulla e' partito: rilascia il claim così verrà ritentato al prossimo poll
                 logger.error(f"Errore invio report mensile cambi turno: {e}", exc_info=True)
                 self._release_monthly_report(report_month)
         except Exception as e:

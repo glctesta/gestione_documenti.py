@@ -1103,6 +1103,11 @@ def check_and_escalate(conn, logo_path: str = None, mode: str = 'True') -> int:
     if os.path.exists(logo_path):
         attachments.append(('inline', logo_path, 'company_logo'))
     sent_count = 0
+    # Email gia' consegnate al relay. Serve perche' dopo la send in _send ci sono
+    # ancora scritture su DB (record_escalation): se falliscono, _send solleva
+    # senza incrementare sent_count e il claim verrebbe rilasciato — con l'email
+    # gia' partita. Questa lista dice la verita' su cosa e' uscito davvero.
+    emails_out = []
 
     def _send(phases_subset, level_label, to_emails, cc_emails, display_level):
         """Invia una email di escalation per il sottoinsieme di fasi indicato.
@@ -1135,6 +1140,7 @@ def check_and_escalate(conn, logo_path: str = None, mode: str = 'True') -> int:
             attachments=attachments if attachments else None,
             cc_emails=all_cc if all_cc else None
         )
+        emails_out.append(level_label)   # da qui il messaggio e' fuori: mai piu' rilasciare il claim
 
         recipients_log = '; '.join(list(to_emails) + list(cc_emails))
         for phase, info in phases_subset.items():
@@ -1169,7 +1175,7 @@ def check_and_escalate(conn, logo_path: str = None, mode: str = 'True') -> int:
                     f"Plan Alert: escalation management per "
                     f"{', '.join(mgmt_ready.keys())} rimandata (limite settimanale)")
 
-        if sent_count:
+        if sent_count or emails_out:
             # Segna il turno come gia' notificato per evitare doppi invii nella
             # stessa finestra di 30 minuti prima della fine turno.
             _mark_shift_sent(shift_now)
@@ -1181,11 +1187,16 @@ def check_and_escalate(conn, logo_path: str = None, mode: str = 'True') -> int:
 
     except Exception as e:
         logger.error(f"Errore invio escalation raggruppata: {e}")
-        if not sent_count and shift_claimed:
-            _release_email_claim(conn, today_key, shift_attribute)
-        elif sent_count:
+        if emails_out:
+            # Almeno una escalation e' gia' uscita e l'errore e' successivo
+            # (tipicamente la registrazione su PlanAlertEscalations): il claim
+            # RESTA, altrimenti un altro PC rispedisce la stessa escalation.
+            logger.error(f"Plan Alert: {len(emails_out)} email gia' inviate "
+                         f"({', '.join(emails_out)}); claim mantenuto per non duplicare")
             _mark_shift_sent(shift_now)
-        return sent_count
+        elif shift_claimed:
+            _release_email_claim(conn, today_key, shift_attribute)
+        return sent_count or len(emails_out)
 
 
 # ============================================================
@@ -1224,6 +1235,13 @@ def send_monthly_summary(conn, logo_path: str = None, mode: str = 'True') -> boo
     if not _claim_email_send(conn, monthly_key, monthly_attribute):
         logger.info(f"Report mensile piano: gia' inviato per {month_label}, skip")
         return False
+
+    # Traccia se il messaggio e' gia' uscito: il claim si rilascia SOLO per
+    # errori avvenuti prima dell'invio. Prima il try copriva anche la send e
+    # tutto cio' che veniva dopo, quindi un errore post-consegna (tipicamente la
+    # chiusura della connessione SMTP) cancellava il claim e un altro PC
+    # rispediva il report.
+    email_sent = False
 
     try:
         # Statistiche totali
@@ -1428,12 +1446,18 @@ def send_monthly_summary(conn, logo_path: str = None, mode: str = 'True') -> boo
             attachments=attachments if attachments else None,
             cc_emails=cc_list if cc_list else None
         )
+        email_sent = True
         logger.info(f"Report mensile piano produzione inviato a {len(all_to)} destinatari")
         return True
-        
+
     except Exception as e:
+        if email_sent:
+            # Il report e' gia' partito: il claim RESTA, altrimenti si rispedisce.
+            logger.error(f"Report mensile piano: email inviata, errore successivo ({e}); "
+                         f"claim mantenuto per non duplicare l'invio")
+            return True
         logger.error(f"Errore invio report mensile piano: {e}")
-        # Invio fallito: libera il claim per ritentare
+        # Nulla e' partito: libera il claim per ritentare
         _release_email_claim(conn, monthly_key, monthly_attribute)
         return False
 
@@ -1471,6 +1495,9 @@ def send_weekly_pattern_check(conn, logo_path: str = None, mode: str = 'True') -
         logger.info(f"Report settimanale pattern: già inviato per {weekly_key}, skip")
         return False
     logger.info(f"Report settimanale pattern: claim acquisito per {weekly_key}")
+
+    # Vedi send_monthly_summary: il claim si rilascia solo per errori PRIMA dell'invio
+    email_sent = False
 
     try:
         # Trova pattern ricorrenti
@@ -1634,13 +1661,18 @@ def send_weekly_pattern_check(conn, logo_path: str = None, mode: str = 'True') -
             attachments=attachments if attachments else None,
             cc_emails=all_cc if all_cc else None
         )
+        email_sent = True
         logger.info(f"Report settimanale pattern ricorrenti inviato "
                      f"({len(patterns)} pattern trovati)")
 
         return True
-        
+
     except Exception as e:
+        if email_sent:
+            logger.error(f"Report settimanale pattern: email inviata, errore successivo ({e}); "
+                         f"claim mantenuto per non duplicare l'invio")
+            return True
         logger.error(f"Errore invio report settimanale pattern: {e}")
-        # Invio fallito: libera il claim per ritentare
+        # Nulla e' partito: libera il claim per ritentare
         _release_email_claim(conn, weekly_key, weekly_attribute)
         return False

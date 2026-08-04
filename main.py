@@ -308,7 +308,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.8.3'  # Versione aggiornata 
+APP_VERSION = '2.4.2.9.1'  # Versione aggiornata 
 # Nome programma usato come chiave in SwVersions / VersionDMLogs.
 # In produzione = nome dell'exe; in sviluppo usa il nome canonico.
 APP_PROGRAM_NAME = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else 'DocumentManagement.exe'
@@ -11156,6 +11156,14 @@ class App(tk.Tk):
         self.current_image_index = 0
         self.slideshow_interval_ms = 60000
         self.slideshow_job_id = None
+        # Cache locale delle immagini: la cartella sta su una share di rete e
+        # senza copia locale ogni cambio immagine (e ogni ridimensionamento
+        # della finestra) rileggeva il file dal server.
+        self._slideshow_sync_thread = None
+        # Ultima immagine decodificata, tenuta in memoria per i ridisegni
+        self._slideshow_img = None
+        self._slideshow_img_path = None
+        self._slideshow_drawn_size = None
 
         # --- Flag di chiusura per evitare callback dopo destroy ---
         self._closing = False
@@ -11835,6 +11843,11 @@ class App(tk.Tk):
             logger.info("Email NPI settimanale già inviata per questa settimana, skip")
             return False
 
+        # Il claim si rilascia SOLO per errori avvenuti prima dell'invio: un
+        # errore dopo la consegna (chiusura SMTP, logging) rilasciandolo farebbe
+        # ripartire l'email da un altro PC.
+        email_sent = False
+
         try:
             recipients = get_email_recipients(self.db.conn, attribute=attribute)
             if not recipients:
@@ -11864,12 +11877,17 @@ class App(tk.Tk):
                 overdue_attachment_path=overdue_path,
                 overdue_count=overdue_count
             )
+            email_sent = True
             logger.info(f"Email NPI settimanale inviata con successo{context}")
             return True
 
         except Exception as e:
+            if email_sent:
+                logger.error(f"Email NPI settimanale: inviata, errore successivo ({e}); "
+                             f"claim mantenuto per non duplicare l'invio", exc_info=True)
+                return True
             logger.error(f"Errore invio email settimanale NPI: {e}", exc_info=True)
-            # Invio fallito: libera il claim per ritentare
+            # Nulla e' partito: libera il claim per ritentare
             self.db.release_email_claim(week_start, attribute)
             return False
 
@@ -13679,15 +13697,22 @@ class App(tk.Tk):
             action_callback=lambda user_name: self.traceability_manager.open_manage_links()
         )
 
-    def _is_source_file_ready(self, source_path, exe_name):
+    def _is_source_file_ready(self, source_path, exe_name, full=True):
         """Verifica che i file sorgente sulla rete siano completi e pronti per l'aggiornamento.
 
         Esegue tre controlli in sequenza:
-        0. Manifest (deploy_manifest.json): se presente, verifica che TUTTI i file
+        0. Manifest (deploy_manifest.json): se presente, verifica che i file
            elencati siano presenti con le dimensioni corrette.
            Questo previene upgrade parziali quando il trasferimento non è completato.
         1. Stabilità dimensione file EXE (2 letture a distanza di 2 secondi)
         2. Lock esclusivo sull'EXE (verifica che nessun processo stia scrivendo)
+
+        Args:
+            full: True  → controlla TUTTI i file del manifest. Costa ~6000
+                          exists+getsize sulla share (~100 s, ~12.000 richieste
+                          SMB): va fatto solo subito prima di copiare davvero.
+                  False → controllo rapido (solo eseguibile + data del manifest),
+                          per i poll periodici. Vedi _verify_deploy_manifest.
 
         Returns:
             (bool, str): (pronto, motivo_errore)
@@ -13699,7 +13724,8 @@ class App(tk.Tk):
             return False, "File sorgente non trovato"
 
         # Check 0: Verifica manifest di deploy (previene upgrade parziali)
-        manifest_ok, manifest_reason = self._verify_deploy_manifest(source_path)
+        manifest_ok, manifest_reason = self._verify_deploy_manifest(
+            source_path, exe_name=exe_name, full=full)
         if not manifest_ok:
             return False, manifest_reason
 
@@ -13735,11 +13761,17 @@ class App(tk.Tk):
         logger.info(f"File sorgente pronto per l'aggiornamento: {source_file} ({size2} bytes)")
         return True, ""
 
-    def _verify_deploy_manifest(self, source_path):
-        """Verifica che tutti i file elencati nel deploy_manifest.json siano presenti.
+    # Tolleranza sul confronto fra data del manifest e data dell'eseguibile:
+    # i due timestamp possono venire da macchine diverse (build e deploy).
+    MANIFEST_CLOCK_TOLERANCE_S = 120
+
+    def _verify_deploy_manifest(self, source_path, exe_name=None, full=True):
+        """Verifica che i file elencati nel deploy_manifest.json siano presenti.
 
         Se il manifest non esiste (deploy precedente al sistema), salta il controllo.
-        Se il manifest esiste, verifica che OGNI file sia presente con la dimensione corretta.
+
+        Con full=True verifica che OGNI file sia presente con la dimensione
+        corretta. Con full=False fa il controllo rapido descritto sotto.
 
         Returns:
             (bool, str): (ok, motivo_errore)
@@ -13772,6 +13804,10 @@ class App(tk.Tk):
         if not expected_files:
             logger.warning("deploy_manifest.json vuoto o senza lista file")
             return False, "Manifest di deploy vuoto"
+
+        if not full:
+            return self._verify_deploy_manifest_quick(
+                source_path, manifest, expected_files, exe_name)
 
         missing = []
         wrong_size = []
@@ -13813,6 +13849,69 @@ class App(tk.Tk):
             f"Deploy manifest OK: {total_expected}/{total_expected} file verificati "
             f"(manifest: {manifest.get('generated_at', '?')})"
         )
+        return True, ""
+
+    def _verify_deploy_manifest_quick(self, source_path, manifest, expected_files, exe_name):
+        """Controllo rapido del deploy: manifest allineato all'eseguibile?
+
+        La verifica integrale costa ~12.000 richieste di metadata sulla share
+        (~100 s). Ripetuta da ogni postazione a ogni controllo periodico —
+        e il ciclo si accorcia a 15 minuti proprio quando il deploy e' a meta' —
+        e' il carico che mette in ginocchio la share mentre si sta copiando.
+
+        Qui bastano due domande, due richieste in tutto, che riconoscono
+        esattamente il caso pericoloso (deploy a meta': exe nuovo, manifest
+        vecchio o viceversa):
+          1. l'eseguibile ha la dimensione che il manifest si aspetta?
+          2. il manifest e' stato generato DOPO l'ultima scrittura dell'eseguibile?
+        Se passano entrambe, la verifica integrale la fa _trigger_update subito
+        prima di copiare davvero.
+
+        Returns:
+            (bool, str): (ok, motivo_errore)
+        """
+        if not exe_name:
+            return True, ""
+
+        entry = next((e for e in expected_files
+                      if (e.get('path') or '').replace('\\', '/').lower() == exe_name.lower()),
+                     None)
+        if entry is None:
+            reason = f"Manifest di deploy non aggiornato: {exe_name} non e' elencato"
+            logger.warning(f"_verify_deploy_manifest_quick: {reason}")
+            return False, reason
+
+        exe_path = os.path.join(source_path, exe_name)
+        try:
+            actual_size = os.path.getsize(exe_path)
+            exe_mtime = os.path.getmtime(exe_path)
+        except OSError as e:
+            logger.warning(f"_verify_deploy_manifest_quick: accesso a {exe_path} fallito: {e}")
+            return False, f"Errore accesso file: {e}"
+
+        expected_size = entry.get('size')
+        if expected_size is not None and actual_size != expected_size:
+            reason = (f"Trasferimento file incompleto: {exe_name} e' di {actual_size} byte, "
+                      f"il manifest ne dichiara {expected_size} (deploy in corso)")
+            logger.warning(f"_verify_deploy_manifest_quick: {reason}")
+            return False, reason
+
+        generated_at = manifest.get('generated_at')
+        if generated_at:
+            try:
+                gen_ts = datetime.fromisoformat(generated_at).timestamp()
+                if gen_ts + self.MANIFEST_CLOCK_TOLERANCE_S < exe_mtime:
+                    reason = (f"Manifest di deploy piu' vecchio dell'eseguibile "
+                              f"(manifest {generated_at}): deploy non completato")
+                    logger.warning(f"_verify_deploy_manifest_quick: {reason}")
+                    return False, reason
+            except (ValueError, OSError) as e:
+                logger.warning(f"_verify_deploy_manifest_quick: data manifest illeggibile "
+                               f"('{generated_at}': {e}), controllo data saltato")
+
+        logger.info(f"Deploy manifest OK (controllo rapido): {exe_name} allineato al manifest "
+                    f"del {generated_at or '?'}; {len(expected_files)} file verranno verificati "
+                    f"prima della copia")
         return True, ""
 
     def _show_update_prep_splash(self):
@@ -14018,7 +14117,10 @@ class App(tk.Tk):
                         up = dest_updater_legacy
                 prep_result['updater_path'] = up
 
-                # Verifica integrità file sorgente (solo se abbiamo un updater valido)
+                # Verifica integrità file sorgente (solo se abbiamo un updater valido).
+                # Qui SI la verifica integrale (full=True, default): e' l'ultimo
+                # istante prima di copiare, ed e' l'unico punto in cui vale la pena
+                # pagare i ~6000 controlli sulla share.
                 if up and os.path.exists(up):
                     prep_result['phase'] = 'verify'
                     ready, reason = self._is_source_file_ready(source, exe_name)
@@ -14433,16 +14535,20 @@ class App(tk.Tk):
                 skip_count = 0  # nuova versione → reset contatore
 
             # ── Verifica integrità file sorgente PRIMA di qualsiasi dialogo ──
-            # Gira su percorso di RETE e può durare parecchi secondi: va fatta
-            # in un thread pompando l'event loop, altrimenti la finestra del
-            # programma si congela mentre l'operatore ci sta lavorando.
+            # Gira su percorso di RETE: va fatta in un thread pompando l'event
+            # loop, altrimenti la finestra del programma si congela mentre
+            # l'operatore ci sta lavorando.
+            # NB: controllo RAPIDO (full=False). Qui si passa ogni 15-30 minuti
+            # finche' l'utente non aggiorna: la verifica integrale dei ~6000 file
+            # la fa _trigger_update una volta sola, subito prima di copiare.
             source = version_info.MainPath
             exe_name = os.path.basename(sys.executable)
             _ready_res = {}
 
             def _check_source_ready():
                 try:
-                    _ready_res['value'] = self._is_source_file_ready(source, exe_name)
+                    _ready_res['value'] = self._is_source_file_ready(
+                        source, exe_name, full=False)
                 except Exception as _e:
                     _ready_res['value'] = (False, str(_e))
 
@@ -14939,6 +15045,10 @@ class App(tk.Tk):
             resized_image = ImageOps.fit(image, (w, h), Image.Resampling.LANCZOS)
             self.slideshow_photo = ImageTk.PhotoImage(resized_image)
             self.slideshow_label.config(image=self.slideshow_photo)
+            # La label ora mostra l'immagine speciale, non quella dello slideshow:
+            # azzera il marcatore di "gia' disegnata", altrimenti al ritorno del
+            # ciclo normale _draw_current_image la considererebbe ancora a video.
+            self._slideshow_drawn_size = None
         except Exception as e:
             print(f"ERRORE: Impossibile visualizzare l'immagine speciale: {e}")
             self._setup_slideshow()
@@ -16111,6 +16221,17 @@ class App(tk.Tk):
     )
     # Directory di default per le immagini slideshow
     SLIDESHOW_DEFAULT_FOLDER = r"T:\Traceability_RESET_Services\Pict\SlideShows"
+    # Estensioni riconosciute come immagine dello slideshow
+    SLIDESHOW_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.bmp', '.gif')
+    # Copia locale delle immagini. La cartella originale sta su una share di rete:
+    # lo slideshow legge da qui e un thread riallinea la cache in background.
+    SLIDESHOW_CACHE_DIR = os.path.join(
+        os.getenv("LOCALAPPDATA", os.path.expanduser("~")),
+        "TraceabilityRS", "slideshow_cache"
+    )
+    # Le foto possono essere da decine di Mpixel: tenerle in memoria a piena
+    # risoluzione costerebbe centinaia di MB e per un pannello non serve.
+    SLIDESHOW_MAX_DECODED = (2560, 1440)
 
     def _get_slideshow_lang_text(self, key: str) -> str:
         """
@@ -16167,7 +16288,7 @@ class App(tk.Tk):
         translations = _INLINE.get(key, {})
         return translations.get(lang_code, translations.get('ro', key))
 
-    def _get_slideshow_folder(self) -> str:
+    def _get_slideshow_folder(self, allow_prompt: bool = True) -> str:
         """
         Ritorna il percorso valido della cartella immagini slideshow.
         Priorità:
@@ -16176,6 +16297,12 @@ class App(tk.Tk):
           3. Directory di default SLIDESHOW_DEFAULT_FOLDER
           4. Dialog di selezione cartella (con salvataggio nel JSON)
         Ritorna stringa vuota se nessun percorso valido viene trovato.
+
+        Args:
+            allow_prompt: se False salta il passo 4 e ritorna "". Serve quando
+                abbiamo gia' le immagini in cache locale: se la share e'
+                irraggiungibile lo slideshow prosegue con la copia locale invece
+                di fermare l'operatore con una richiesta di scegliere la cartella.
         """
         # 1. Prova dal DB
         try:
@@ -16205,6 +16332,10 @@ class App(tk.Tk):
             return default_folder
 
         # 4. Chiede all'utente tramite dialog (messaggi nella lingua locale)
+        if not allow_prompt:
+            logger.info("Slideshow: nessun percorso raggiungibile, si prosegue con la cache locale")
+            return ""
+
         messagebox.showinfo(
             self._get_slideshow_lang_text('slideshow_path_title'),
             self._get_slideshow_lang_text('slideshow_path_message')
@@ -16224,11 +16355,110 @@ class App(tk.Tk):
 
         return ""
 
+    @classmethod
+    def _slideshow_cached_images(cls):
+        """Nomi delle immagini presenti nella cache locale (lista vuota se assente)."""
+        try:
+            return [f for f in os.listdir(cls.SLIDESHOW_CACHE_DIR)
+                    if f.lower().endswith(cls.SLIDESHOW_EXTENSIONS)]
+        except OSError:
+            return []
+
+    def _start_slideshow_cache_sync(self, remote_folder):
+        """Avvia (se serve) il riallineamento della cache locale in background."""
+        if not remote_folder:
+            return
+        same = (os.path.normcase(os.path.normpath(remote_folder)) ==
+                os.path.normcase(os.path.normpath(self.SLIDESHOW_CACHE_DIR)))
+        if same:
+            return
+        if self._slideshow_sync_thread is not None and self._slideshow_sync_thread.is_alive():
+            return
+        self._slideshow_sync_thread = threading.Thread(
+            target=self._slideshow_cache_worker, args=(remote_folder,),
+            daemon=True, name="SlideshowCacheSync")
+        self._slideshow_sync_thread.start()
+
+    def _slideshow_cache_worker(self, remote_folder):
+        """Specchia la cartella immagini nella cache locale.
+
+        Copia solo cio' che manca o e' cambiato (confronto dimensione + data,
+        preservata da copy2) e cancella quello che sul server non c'e' piu'.
+        Gira in un thread perche' la prima sincronizzazione scarica l'intera
+        cartella (decine di MB su rete) e bloccherebbe la GUI.
+
+        A regime il traffico verso la share si riduce a una listdir e uno stat
+        per immagine a ogni riavvio, invece di un download completo del file a
+        ogni cambio immagine.
+        """
+        cache_dir = self.SLIDESHOW_CACHE_DIR
+        copied = 0
+        removed = 0
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+            remote_names = set()
+            for name in os.listdir(remote_folder):
+                if not name.lower().endswith(self.SLIDESHOW_EXTENSIONS):
+                    continue
+                remote_names.add(name)
+                src = os.path.join(remote_folder, name)
+                dst = os.path.join(cache_dir, name)
+                try:
+                    src_st = os.stat(src)
+                    if os.path.exists(dst):
+                        dst_st = os.stat(dst)
+                        if (dst_st.st_size == src_st.st_size and
+                                int(dst_st.st_mtime) == int(src_st.st_mtime)):
+                            continue
+                    shutil.copy2(src, dst)   # copy2 preserva l'mtime: e' la chiave del confronto
+                    copied += 1
+                except OSError as e:
+                    logger.warning(f"Slideshow cache: '{name}' non copiato ({e})")
+
+            for name in self._slideshow_cached_images():
+                if name not in remote_names:
+                    try:
+                        os.remove(os.path.join(cache_dir, name))
+                        removed += 1
+                    except OSError:
+                        pass
+
+            logger.info(f"Slideshow cache: {len(remote_names)} immagini su '{remote_folder}', "
+                        f"{copied} copiate, {removed} rimosse")
+        except Exception as e:
+            logger.warning(f"Slideshow cache: sincronizzazione non riuscita ({e}); "
+                           f"si continua con le immagini gia' in cache")
+
+        # Ricarica la lista solo se qualcosa e' cambiato: al giro successivo non
+        # ci sara' nulla da copiare e quindi nessuna ricarica (niente loop).
+        if (copied or removed) and not self._closing:
+            try:
+                self.after(0, self._setup_slideshow)
+            except Exception:
+                pass
+
     def _setup_slideshow(self):
         """Legge le impostazioni e avvia il ciclo dello slideshow."""
         logger.debug("_setup_slideshow: start")
-        folder_path = self._get_slideshow_folder()
-        logger.debug(f"_setup_slideshow: folder_path='{folder_path}'")
+
+        # Annulla un eventuale ciclo gia' in corso: questa funzione viene
+        # richiamata piu' volte (fine compleanni, cache aggiornata, errori) e
+        # senza questo si accumulavano piu' catene di _cycle_image in parallelo.
+        if self.slideshow_job_id:
+            try:
+                self.after_cancel(self.slideshow_job_id)
+            except Exception:
+                pass
+            self.slideshow_job_id = None
+
+        # Le immagini stanno su una share di rete: si lavora sulla copia locale
+        # e la si riallinea in background.
+        cached = self._slideshow_cached_images()
+        remote_folder = self._get_slideshow_folder(allow_prompt=not cached)
+        self._start_slideshow_cache_sync(remote_folder)
+        folder_path = self.SLIDESHOW_CACHE_DIR if cached else remote_folder
+
+        logger.debug(f"_setup_slideshow: folder_path='{folder_path}' (remoto='{remote_folder}')")
         interval_min_str = self.db.fetch_setting('SlideshowIntervalMinutes') if self.db.conn else None
         logger.debug(f"_setup_slideshow: SlideshowIntervalMinutes='{interval_min_str}'")
 
@@ -16243,7 +16473,7 @@ class App(tk.Tk):
         except (ValueError, TypeError):
             pass
 
-        valid_extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.gif')
+        valid_extensions = self.SLIDESHOW_EXTENSIONS
         try:
             all_images = [
                 f for f in os.listdir(folder_path)
@@ -16353,7 +16583,13 @@ class App(tk.Tk):
 
 
         except Exception as e:
-            print(f"Errore durante la lettura della cartella immagini: {e}")
+            logger.warning(f"Slideshow: errore durante la lettura della cartella immagini: {e}")
+
+        # La lista puo' cambiare lunghezza fra una chiamata e l'altra (immagini
+        # tolte dal server, passaggio dalla cartella di rete alla cache): senza
+        # questo l'indice resterebbe fuori intervallo e il disegno andrebbe in errore.
+        if self.current_image_index >= len(self.image_files):
+            self.current_image_index = 0
 
         if not self.image_files:
             self.slideshow_label.config(text="Nessuna immagine trovata nella cartella specificata.", foreground="white")
@@ -16373,24 +16609,48 @@ class App(tk.Tk):
         self.slideshow_job_id = self.after(self.slideshow_interval_ms, self._cycle_image)
 
     def _draw_current_image(self, event=None):  # Aggiunto 'event=None' per la compatibilitÃ  con bind
-        """Funzione dedicata a disegnare l'immagine corrente alla dimensione corretta."""
+        """Funzione dedicata a disegnare l'immagine corrente alla dimensione corretta.
+
+        L'immagine decodificata resta in memoria fino al cambio successivo:
+        questa funzione e' agganciata anche a <Configure>, quindi ogni
+        ridimensionamento della finestra rileggeva il file — e con la cartella
+        immagini su una share di rete voleva dire riscaricarlo dal server.
+        """
         from PIL import ImageOps
         if not self.image_files:
             return
 
-        image_path = self.image_files[self.current_image_index]
+        # Modulo: la lista puo' essersi accorciata dopo un riallineamento della cache
+        image_path = self.image_files[self.current_image_index % len(self.image_files)]
         w, h = self.slideshow_label.winfo_width(), self.slideshow_label.winfo_height()
 
         if w <= 1 or h <= 1:
             return
 
+        # Stessa immagine e stesse dimensioni: non c'e' nulla da ridisegnare
+        if image_path == self._slideshow_img_path and (w, h) == self._slideshow_drawn_size:
+            return
+
         try:
-            image = Image.open(image_path)
-            resized_image = ImageOps.fit(image, (w, h), Image.Resampling.LANCZOS)
+            if image_path != self._slideshow_img_path or self._slideshow_img is None:
+                image = Image.open(image_path)
+                # draft: sui JPEG decodifica gia' in scala ridotta (no-op sugli altri)
+                image.draft('RGB', self.SLIDESHOW_MAX_DECODED)
+                image.load()          # legge subito il file e chiude l'handle
+                if (image.width > self.SLIDESHOW_MAX_DECODED[0] or
+                        image.height > self.SLIDESHOW_MAX_DECODED[1]):
+                    image.thumbnail(self.SLIDESHOW_MAX_DECODED, Image.Resampling.LANCZOS)
+                self._slideshow_img = image
+                self._slideshow_img_path = image_path
+            resized_image = ImageOps.fit(self._slideshow_img, (w, h), Image.Resampling.LANCZOS)
             self.slideshow_photo = ImageTk.PhotoImage(resized_image)
             self.slideshow_label.config(image=self.slideshow_photo)
+            self._slideshow_drawn_size = (w, h)
         except Exception as e:
-            print(f"Errore nel disegnare l'immagine {image_path}: {e}")
+            logger.warning(f"Slideshow: impossibile disegnare '{image_path}': {e}")
+            self._slideshow_img = None
+            self._slideshow_img_path = None
+            self._slideshow_drawn_size = None
 
     def _update_clock(self):
         """Aggiorna l'etichetta dell'orologio ogni secondo."""
@@ -18506,9 +18766,12 @@ class App(tk.Tk):
                 return
 
             # Aggiornamento disponibile: prima di proporlo verifica che i file
-            # sorgente sulla rete siano completi, altrimenti l'update fallirebbe
+            # sorgente sulla rete siano completi, altrimenti l'update fallirebbe.
+            # Controllo RAPIDO: gira sul thread della GUI, e la verifica integrale
+            # (~100 s su rete) congelava la finestra dopo un semplice click di menu.
+            # Se l'utente accetta, _trigger_update fa comunque quella integrale.
             ready, reason = self._is_source_file_ready(
-                version_info.MainPath, APP_PROGRAM_NAME)
+                version_info.MainPath, APP_PROGRAM_NAME, full=False)
             if not ready:
                 logger.warning(f"_check_updates_manually: sorgente non pronto - {reason}")
                 messagebox.showwarning(

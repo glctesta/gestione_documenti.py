@@ -331,6 +331,7 @@ def run_fqc_shift_email(db, shift_start: datetime.datetime, shift_end: datetime.
     subject = (f"FQC Shift Report — {date_str} "
                f"[{shift_str}] — "
                f"{len(verified)}/{len(all_products)} verified")
+    email_sent = False
     try:
         import utils
         utils.send_email(
@@ -339,10 +340,15 @@ def run_fqc_shift_email(db, shift_start: datetime.datetime, shift_end: datetime.
             body=body_html,
             is_html=True
         )
+        email_sent = True   # da qui lo slot non va piu' liberato
         logger.info(f"fqc_email: sent to {recipients} ({shift_label})")
     except Exception as exc:
+        if email_sent:
+            logger.error(f"fqc_email: sent, error afterwards: {exc}; slot kept "
+                         f"(avoids a duplicate report)", exc_info=True)
+            return
         logger.error(f"fqc_email send: {exc}", exc_info=True)
-        # Invio fallito: libera lo slot, il prossimo trigger ritenta
+        # Nulla e' partito: libera lo slot, il prossimo trigger ritenta
         _release_slot()
 
 

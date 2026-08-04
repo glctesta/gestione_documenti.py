@@ -457,8 +457,12 @@ def send_fai_fails_notification(conn, logo_path: str = "logo.png") -> bool:
         logo_path: Percorso del logo aziendale
         
     Returns:
-        True se email inviata con successo, False altrimenti
+        True se email inviata con successo, False altrimenti.
+        NB: True anche se l'email e' partita ma la marcatura IsAnalized e'
+        fallita — il chiamante rilascia il claim quando riceve False, e
+        rilasciarlo dopo un invio riuscito significa mandare un duplicato.
     """
+    email_sent = False
     try:
         # 1. Recupera i fails non analizzati (DISTINCT per LabelCode)
         query_fails = """
@@ -663,6 +667,11 @@ def send_fai_fails_notification(conn, logo_path: str = "logo.png") -> bool:
             attachments=attachments,
             cc_emails=recipients_cc
         )
+        # Da qui in poi l'email E' PARTITA: qualunque errore successivo deve
+        # comunque produrre un ritorno True. Il chiamante usa il valore di
+        # ritorno per decidere se rilasciare il claim anti-duplicato, e un
+        # False qui significava rispedire l'email da un altro PC.
+        email_sent = True
 
         logger.info(f"Email FAI fails inviata con successo a {len(recipients_to)} destinatari")
 
@@ -689,5 +698,9 @@ def send_fai_fails_notification(conn, logo_path: str = "logo.png") -> bool:
         return True
 
     except Exception as e:
+        if email_sent:
+            logger.error(f"Email FAI fails: inviata, errore nella marcatura successiva "
+                         f"({str(e)}); NON verra' rispedita", exc_info=True)
+            return True
         logger.error(f"Errore nell'invio email FAI fails: {str(e)}", exc_info=True)
         return False

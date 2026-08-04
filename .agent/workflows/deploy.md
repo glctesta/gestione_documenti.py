@@ -6,6 +6,29 @@ description: Build, sign, deploy and version update for DocumentManagement.exe
 
 // turbo-all
 
+## Ordine dei passi: perche' e' quello che conta
+
+Il passo che fa partire tutto sui client e' l'**ultimo** (8, aggiornamento della
+versione in `SwVersions`), non la copia dei file. Finche' il DB dichiara la
+versione vecchia, nessuna postazione guarda la cartella di deploy. Appena la
+dichiara nuova, **tutte** le postazioni accese iniziano a controllare la
+sorgente e continuano a farlo ogni 15-30 minuti finche' l'operatore non
+aggiorna.
+
+Regole che ne discendono:
+
+- **Non anticipare mai il passo 8.** Va eseguito solo quando il passo 7 e'
+  finito con successo. Con exe nuovo e manifest vecchio i client vedono un
+  deploy incoerente e riprovano ogni 15 minuti — sulla stessa share su cui
+  `generate_deploy_manifest.py` sta leggendo 6000 file (era il motivo per cui
+  la generazione del manifest impiegava mezz'ora invece di 30 secondi).
+- **Se il deploy si interrompe a meta', non lasciare il DB aggiornato**:
+  riportare `SwVersions` alla versione precedente finche' non si ricomincia.
+- I client si difendono da soli (`_verify_deploy_manifest_quick` in `main.py`
+  confronta dimensione dell'exe e data del manifest), ma la difesa costa
+  comunque una richiesta di rete per postazione a ogni giro: l'ordine giusto
+  la rende superflua.
+
 ## Steps
 
 1. **Increment version** in `main.py` (`APP_VERSION`, cerca `^APP_VERSION` — la riga
@@ -44,9 +67,20 @@ Impiega ~30 secondi per ~6000 file / 280 MB e stampa il progresso ogni 2 secondi
 (file processati, MB, tempo trascorso, ETA): se resta zitto e' bloccato davvero.
 Su share piu' lente si puo' alzare il parallelismo con `--workers 16`.
 
-Poi verifica che il file esista:
-```
-Test-Path "T:\Traceability_RESET_Services\!!!!VW SoftWare\DocumentManagement\deploy_manifest.json"
+Poi verifica che il manifest esista **e sia coerente con l'eseguibile**: sono
+esattamente i due controlli che ogni client fa a ogni giro (dimensione dell'exe
+dichiarata dal manifest, manifest generato dopo l'exe). Se questo comando non
+stampa `DEPLOY COERENTE`, **non passare al punto 8**:
+```powershell
+$d = "T:\Traceability_RESET_Services\!!!!VW SoftWare\DocumentManagement"
+$m = Get-Content "$d\deploy_manifest.json" -Raw | ConvertFrom-Json
+$exe = Get-Item "$d\DocumentManagement.exe"
+$entry = $m.files | Where-Object { $_.path -eq 'DocumentManagement.exe' }
+$sizeOk = $entry -and $entry.size -eq $exe.Length
+$dateOk = ([datetime]$m.generated_at) -ge $exe.LastWriteTime
+"exe {0:N0} byte, manifest dichiara {1:N0}  -> {2}" -f $exe.Length, $entry.size, $(if($sizeOk){'OK'}else{'DIVERSI'})
+"manifest {0}, exe {1}  -> {2}" -f $m.generated_at, $exe.LastWriteTime, $(if($dateOk){'OK'}else{'MANIFEST VECCHIO'})
+if ($sizeOk -and $dateOk) { "DEPLOY COERENTE ($($m.total_files) file)" } else { "NON PROCEDERE AL PUNTO 8" }
 ```
 
 > **Perche' e' l'ultimo passo e non prima della copia.** Il manifest contiene
@@ -59,7 +93,10 @@ Test-Path "T:\Traceability_RESET_Services\!!!!VW SoftWare\DocumentManagement\dep
 > generandolo sulla destinazione come ultimo passo il manifest descrive
 > esattamente cio' che i client vedranno.
 
-8. **Update DB version** — Run SQL using `@NewVersion` = the new APP_VERSION, and `@Must` = 1 if major/new features, 0 if minor fix:
+8. **Update DB version** — ULTIMO passo, solo a punto 7 verificato (vedi
+   "Ordine dei passi" in cima): e' questo che mette tutte le postazioni sulla
+   share. Run SQL using `@NewVersion` = the new APP_VERSION, and `@Must` = 1 if
+   major/new features, 0 if minor fix:
 ```sql
 use Traceability_RS
 go

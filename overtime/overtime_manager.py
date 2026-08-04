@@ -2874,6 +2874,7 @@ class OvertimeManager:
         last_monday = None
         dedup_attribute = 'Sys_email_overtimeNotAuth'
         claimed = False
+        email_sent = False    # True dopo la consegna: da li' il claim non si rilascia piu'
 
         try:
             from datetime import timedelta
@@ -3233,6 +3234,7 @@ class OvertimeManager:
                 attachments=[file_path]
             )
 
+            email_sent = True   # da qui il claim non va piu' rilasciato
             logger.info(f"Weekly unauthorized overtime email sent to: {recipients}")
             # Il claim preso prima dell'invio vale anche da log di invio riuscito.
 
@@ -3245,6 +3247,10 @@ class OvertimeManager:
             return True
 
         except Exception as e:
+            if email_sent:
+                logger.error(f"Weekly unauthorized overtime email inviata, errore successivo: {e}; "
+                             f"claim mantenuto", exc_info=True)
+                return True
             logger.error(f"Error sending weekly unauthorized overtime email: {e}", exc_info=True)
             # Invio non riuscito: libera il claim cosi' il giro successivo ritenta
             if claimed and last_monday:
@@ -3294,6 +3300,7 @@ class OvertimeManager:
         dedup_attribute = 'overtime_monthly_report'
         dedup_key = None      # primo giorno del mese di riferimento
         claimed = False       # True solo se il claim e' stato preso da questo processo
+        email_sent = False    # True dopo la consegna: da li' il claim non si rilascia piu'
 
         try:
             # === PERIODI ===
@@ -3529,6 +3536,7 @@ class OvertimeManager:
                 is_html=True,
                 attachments=[pdf_path]
             )
+            email_sent = True   # da qui il claim non va piu' rilasciato
             logger.info(f"Monthly overtime report email sent to: {recipients}")
             # Il claim registrato prima dell'invio vale anche da log di invio riuscito.
 
@@ -3541,6 +3549,12 @@ class OvertimeManager:
             return True
 
         except Exception as e:
+            if email_sent:
+                # Report gia' consegnato: rilasciare il claim significherebbe
+                # rispedirlo dal giro (o dal PC) successivo.
+                logger.error(f"Monthly overtime report inviato, errore successivo: {e}; "
+                             f"claim mantenuto", exc_info=True)
+                return True
             logger.error(f"Error sending monthly overtime report: {e}", exc_info=True)
             # Invio non riuscito: libera il claim cosi' il giro successivo puo' ritentare
             if claimed and dedup_key:

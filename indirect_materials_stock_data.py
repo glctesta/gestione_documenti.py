@@ -527,17 +527,25 @@ def check_and_send_reorder(db, lang, force=False):
             return {'sent': False, 'count': 0, 'recipients': recipients, 'reason': 'already_sent_today'}
 
     subject, body = _build_reorder_email(lang, to_send)
+    email_sent = False   # dopo la consegna le prenotazioni non si rilasciano piu'
     try:
         from email_connector import EmailSender
         sender = EmailSender()
         # Un'unica email a tutti i destinatari (in TO), invece di una per ciascuno.
         sender.send_email(to_email='; '.join(recipients), subject=subject,
                           body=body, is_html=True)
+        email_sent = True
         if force:
             _log_reorder_sent(db, to_send, recipients)  # log per il dedup dei run automatici
         logger.info(f"Riordino: email inviata a {len(recipients)} destinatari per {len(to_send)} materiali.")
         return {'sent': True, 'count': len(to_send), 'recipients': recipients, 'reason': 'ok'}
     except Exception as e:
+        if email_sent:
+            # Email gia' consegnata: le prenotazioni RESTANO, altrimenti il giro
+            # successivo rimanda lo stesso riordino.
+            logger.error(f"Riordino: email inviata, errore successivo: {e}; "
+                         f"prenotazioni mantenute", exc_info=True)
+            return {'sent': True, 'count': len(to_send), 'recipients': recipients, 'reason': 'ok'}
         logger.error(f"Riordino: errore invio email: {e}", exc_info=True)
         if not force:
             _unclaim_materials_today(db, to_send)   # rilascia le prenotazioni: si ritenta al prossimo giro

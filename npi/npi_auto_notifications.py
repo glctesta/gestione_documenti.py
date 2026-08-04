@@ -2355,6 +2355,9 @@ class NpiAutoNotificationService:
             logger.info("[GLOBAL_VIEW] Email globale NPI già inviata questa settimana. Skip.")
             return 0, 1, 0
 
+        # Il claim si rilascia SOLO per errori precedenti all'invio
+        email_sent = False
+
         try:
             recipients = self._get_setting_email_list('Sys_email_npi_global_view')
             if not recipients:
@@ -2393,6 +2396,7 @@ class NpiAutoNotificationService:
                 attachments=attachments,
                 cc_emails=recipients[1:] if len(recipients) > 1 else []
             )
+            email_sent = True   # da qui il claim settimanale non si rilascia piu'
 
             # Il claim preso prima dell'invio vale da registrazione dell'invio.
             logger.info(
@@ -2411,6 +2415,11 @@ class NpiAutoNotificationService:
             return 1, 0, 0
 
         except Exception as e:
+            if email_sent:
+                # Email gia' consegnata: il claim resta, altrimenti si rispedisce.
+                logger.error("[GLOBAL_VIEW] Email inviata, errore successivo: %s; "
+                             "claim mantenuto per non duplicare", e, exc_info=True)
+                return 1, 0, 0
             logger.error("[GLOBAL_VIEW] Errore invio email globale NPI: %s", e, exc_info=True)
             # Invio non riuscito: libera il claim, la settimana resta aperta
             self._release_global_view_email_claim()

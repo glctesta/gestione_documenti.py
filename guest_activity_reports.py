@@ -711,6 +711,9 @@ class GuestActivityReportGenerator:
         """
         from email_connector import EmailSender
 
+        # Il claim si rilascia solo per errori PRIMA dell'invio
+        email_sent = False
+
         try:
             # Claim ATOMICO: valorizza EmailSentDate PRIMA di inviare, solo se
             # ancora NULL. Il batch parte all'avvio dell'app su ogni PC: con un
@@ -867,6 +870,9 @@ class GuestActivityReportGenerator:
                 attachments=attachments if attachments else None,
                 cc_emails=cc_email
             )
+            # Email consegnata: da qui il claim (EmailSentDate) non va piu'
+            # riportato a NULL, altrimenti il batch successivo la rispedisce.
+            email_sent = True
 
             # Completa il claim con i destinatari effettivi
             cursor.execute("""
@@ -888,8 +894,12 @@ class GuestActivityReportGenerator:
             return True
 
         except Exception as e:
+            if email_sent:
+                logger.error(f"Email rapporto {report_id} inviata, errore successivo: {e}; "
+                             f"claim mantenuto per non duplicare l'invio")
+                return True
             logger.error(f"Errore invio email rapporto {report_id}: {e}")
-            # Invio fallito: libera il claim cosi' il batch successivo ritenta
+            # Nulla e' partito: libera il claim cosi' il batch successivo ritenta
             self._release_activity_email_claim(report_id)
             return False
 

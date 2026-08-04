@@ -142,6 +142,7 @@ class EmailSender:
                             print(f"Warning: Could not attach file {file_path}: {e}")
 
 
+        server = None
         try:
             print(f"Tentativo di connessione a {self.smtp_server}:{self.smtp_port}...")
             server = smtplib.SMTP(self.smtp_server, self.smtp_port)
@@ -164,10 +165,27 @@ class EmailSender:
             server.sendmail(from_email, recipients, msg.as_string())
             print("Email inviata con successo!")
 
-            server.quit()
-            return True
-
         except Exception as e:
             print(f"Errore nell'invio dell'email: {str(e)}")
+            if server is not None:
+                try:
+                    server.close()
+                except Exception:
+                    pass
             raise
+
+        # ATTENZIONE: da qui in poi il messaggio E' GIA' STATO CONSEGNATO al
+        # relay. Nessun errore di chiusura della connessione deve piu' propagarsi:
+        # i chiamanti automatici interpretano l'eccezione come "invio fallito",
+        # rilasciano il claim anti-duplicato e la mail riparte da un altro PC.
+        # E' cosi' che il report mensile del piano usciva piu' volte.
+        try:
+            server.quit()
+        except Exception as e:
+            print(f"Email consegnata; chiusura connessione SMTP non pulita: {e}")
+            try:
+                server.close()
+            except Exception:
+                pass
+        return True
 
