@@ -189,6 +189,11 @@ class ConsumptionAnalysisWindow(tk.Toplevel):
         ttk.Button(bctrl, text=self.lang.get('ind_cons_recalc', 'Ricalcola budget'),
                    command=self._load_budget).pack(side="left", padx=8)
 
+        # Il contenitore si impacchetta DOPO la barra dei controlli e prende lo
+        # spazio restante: prima si passava pack=False e si tentava di
+        # impacchettare il treeview direttamente nel tab, ma il suo master e' il
+        # frame interno e Tk vieta di impacchettare un widget in un antenato del
+        # proprio genitore (la form non si apriva affatto).
         self.tree_budget = self._make_tree(
             self.tab_budget,
             [('codice', self.lang.get('ind_import_col_code', 'Codice'), 110, 'w'),
@@ -196,14 +201,11 @@ class ConsumptionAnalysisWindow(tk.Toplevel):
              ('tipo', self.lang.get('ind_req_col_type', 'Tipo'), 100, 'w'),
              ('consumo12m', self.lang.get('ind_cons_col_12m', 'Consumo 12 mesi'), 130, 'e'),
              ('budgeta', self.lang.get('ind_cons_col_budget_year', 'Budget annuo'), 120, 'e'),
-             ('budgetm', self.lang.get('ind_cons_col_budget_month', 'Budget mensile'), 120, 'e')],
-            pack=False)
-        self.tree_budget.pack(in_=self.tab_budget, side="left", fill="both", expand=True)
+             ('budgetm', self.lang.get('ind_cons_col_budget_month', 'Budget mensile'), 120, 'e')])
 
-    def _make_tree(self, parent, columns, pack=True):
+    def _make_tree(self, parent, columns):
         frame = ttk.Frame(parent)
-        if pack:
-            frame.pack(fill="both", expand=True)
+        frame.pack(fill="both", expand=True)
         cols = [c[0] for c in columns]
         tree = ttk.Treeview(frame, columns=cols, show='headings', selectmode='browse')
         for key, label, width, anchor in columns:
@@ -211,9 +213,8 @@ class ConsumptionAnalysisWindow(tk.Toplevel):
             tree.column(key, width=width, anchor=anchor)
         vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=vsb.set)
-        if pack:
-            tree.pack(side="left", fill="both", expand=True)
-            vsb.pack(side="right", fill="y")
+        tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
         return tree
 
     # ------------------------------------------------------------------ #
