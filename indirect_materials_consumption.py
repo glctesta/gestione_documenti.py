@@ -3,8 +3,16 @@ indirect_materials_consumption.py
 Analisi consumi materiali indiretti su base settimanale / mensile / annuale
 e motore di proposta budget per l'anno successivo.
 
-I consumi si basano sui movimenti di SCARICO (ind.MaterialiMovimenti):
-  consumo = -SUM(Qty)  (Qty degli scarichi e' negativa).
+I consumi si basano sui PRELIEVI EFFETTIVI, cioe' le richieste materiali
+indiretti in stato PRELEVATA (ind.MaterialiRichieste), datate su DataPrelievo:
+  consumo = SUM(QtaRichiesta).
+
+Perche' non i movimenti di SCARICO (ind.MaterialiMovimenti): il ritiro poteva
+avvenire da due percorsi e solo uno scriveva il movimento, quindi il libro
+movimenti conteneva 8 scarichi contro 1008 prelievi realmente avvenuti
+(247.362 pezzi dal 20/03/2026) e l'analisi risultava vuota. La falla e' stata
+chiusa (indirect_materials_stock_data.conferma_ritiro_richiesta), ma le
+richieste restano la fonte completa anche per lo storico precedente.
 """
 
 import os
@@ -24,17 +32,23 @@ MONTH_NAMES = {
 # ----------------------------------------------------------------------------
 #  Query consumi (riutilizzabili)
 # ----------------------------------------------------------------------------
+# Sorgente unica dei consumi: i prelievi effettivamente avvenuti.
+CONSUMPTION_SOURCE = """
+        FROM ind.MaterialiRichieste r
+        WHERE r.Stato = 'PRELEVATA' AND r.DataPrelievo IS NOT NULL
+"""
+
+
 def get_weekly_consumption(db, weeks=26):
     """Consumo totale per settimana ISO nelle ultime `weeks` settimane."""
-    query = """
-        SELECT DATEPART(YEAR, mv.DataMovimento)     AS Anno,
-               DATEPART(ISO_WEEK, mv.DataMovimento) AS Settimana,
-               -SUM(mv.Qty)                          AS Consumo,
-               COUNT(*)                              AS NMovimenti
-        FROM ind.MaterialiMovimenti mv
-        WHERE mv.TipoMovimento = 'SCARICO'
-          AND mv.DataMovimento >= DATEADD(WEEK, -?, GETDATE())
-        GROUP BY DATEPART(YEAR, mv.DataMovimento), DATEPART(ISO_WEEK, mv.DataMovimento)
+    query = f"""
+        SELECT DATEPART(YEAR, r.DataPrelievo)     AS Anno,
+               DATEPART(ISO_WEEK, r.DataPrelievo) AS Settimana,
+               SUM(r.QtaRichiesta)                AS Consumo,
+               COUNT(*)                           AS NPrelievi
+        {CONSUMPTION_SOURCE}
+          AND r.DataPrelievo >= DATEADD(WEEK, -?, GETDATE())
+        GROUP BY DATEPART(YEAR, r.DataPrelievo), DATEPART(ISO_WEEK, r.DataPrelievo)
         ORDER BY Anno, Settimana
     """
     rows = db.fetch_all(query, (weeks,))
@@ -44,15 +58,14 @@ def get_weekly_consumption(db, weeks=26):
 
 def get_monthly_consumption(db, months=24):
     """Consumo totale per mese negli ultimi `months` mesi."""
-    query = """
-        SELECT YEAR(mv.DataMovimento)  AS Anno,
-               MONTH(mv.DataMovimento) AS Mese,
-               -SUM(mv.Qty)            AS Consumo,
-               COUNT(*)                AS NMovimenti
-        FROM ind.MaterialiMovimenti mv
-        WHERE mv.TipoMovimento = 'SCARICO'
-          AND mv.DataMovimento >= DATEADD(MONTH, -?, GETDATE())
-        GROUP BY YEAR(mv.DataMovimento), MONTH(mv.DataMovimento)
+    query = f"""
+        SELECT YEAR(r.DataPrelievo)  AS Anno,
+               MONTH(r.DataPrelievo) AS Mese,
+               SUM(r.QtaRichiesta)   AS Consumo,
+               COUNT(*)              AS NPrelievi
+        {CONSUMPTION_SOURCE}
+          AND r.DataPrelievo >= DATEADD(MONTH, -?, GETDATE())
+        GROUP BY YEAR(r.DataPrelievo), MONTH(r.DataPrelievo)
         ORDER BY Anno, Mese
     """
     rows = db.fetch_all(query, (months,))
@@ -61,14 +74,13 @@ def get_monthly_consumption(db, months=24):
 
 
 def get_yearly_consumption(db):
-    """Consumo totale per anno (tutto lo storico movimenti)."""
-    query = """
-        SELECT YEAR(mv.DataMovimento) AS Anno,
-               -SUM(mv.Qty)           AS Consumo,
-               COUNT(*)               AS NMovimenti
-        FROM ind.MaterialiMovimenti mv
-        WHERE mv.TipoMovimento = 'SCARICO'
-        GROUP BY YEAR(mv.DataMovimento)
+    """Consumo totale per anno (tutto lo storico prelievi)."""
+    query = f"""
+        SELECT YEAR(r.DataPrelievo) AS Anno,
+               SUM(r.QtaRichiesta)  AS Consumo,
+               COUNT(*)             AS NPrelievi
+        {CONSUMPTION_SOURCE}
+        GROUP BY YEAR(r.DataPrelievo)
         ORDER BY Anno
     """
     rows = db.fetch_all(query)
@@ -86,14 +98,14 @@ def get_budget_proposal(db, growth_pct=0.0):
     query = """
         SELECT m.CodiceMateriale, m.DescrizioneMateriale,
                ISNULL(t.Tipo, 'Generico') AS Tipo,
-               -SUM(mv.Qty) AS Consumo12m
-        FROM ind.MaterialiMovimenti mv
-        JOIN ind.Materiali m ON m.MaterialeId = mv.MaterialeId
+               SUM(r.QtaRichiesta) AS Consumo12m
+        FROM ind.MaterialiRichieste r
+        JOIN ind.Materiali m ON m.MaterialeId = r.MaterialeId
         LEFT JOIN ind.TipoMateriali t ON t.TipoMaterialeId = m.TipoMaterialeId
-        WHERE mv.TipoMovimento = 'SCARICO'
-          AND mv.DataMovimento >= DATEADD(MONTH, -12, GETDATE())
+        WHERE r.Stato = 'PRELEVATA' AND r.DataPrelievo IS NOT NULL
+          AND r.DataPrelievo >= DATEADD(MONTH, -12, GETDATE())
         GROUP BY m.CodiceMateriale, m.DescrizioneMateriale, ISNULL(t.Tipo, 'Generico')
-        HAVING -SUM(mv.Qty) > 0
+        HAVING SUM(r.QtaRichiesta) > 0
         ORDER BY Consumo12m DESC
     """
     rows = db.fetch_all(query)
@@ -157,7 +169,7 @@ class ConsumptionAnalysisWindow(tk.Toplevel):
             self.tab_week,
             [('periodo', self.lang.get('ind_cons_col_period', 'Periodo'), 160, 'w'),
              ('consumo', self.lang.get('ind_cons_col_consumption', 'Consumo'), 140, 'e'),
-             ('nmov', self.lang.get('ind_cons_col_moves', 'N. movimenti'), 120, 'e')])
+             ('nmov', self.lang.get('ind_cons_col_pickups', 'N. prelievi'), 120, 'e')])
 
         # --- Tab mensile ---
         self.tab_month = ttk.Frame(self.nb)
@@ -166,7 +178,7 @@ class ConsumptionAnalysisWindow(tk.Toplevel):
             self.tab_month,
             [('periodo', self.lang.get('ind_cons_col_period', 'Periodo'), 160, 'w'),
              ('consumo', self.lang.get('ind_cons_col_consumption', 'Consumo'), 140, 'e'),
-             ('nmov', self.lang.get('ind_cons_col_moves', 'N. movimenti'), 120, 'e')])
+             ('nmov', self.lang.get('ind_cons_col_pickups', 'N. prelievi'), 120, 'e')])
 
         # --- Tab annuale ---
         self.tab_year = ttk.Frame(self.nb)
@@ -175,7 +187,7 @@ class ConsumptionAnalysisWindow(tk.Toplevel):
             self.tab_year,
             [('periodo', self.lang.get('ind_cons_col_year', 'Anno'), 160, 'w'),
              ('consumo', self.lang.get('ind_cons_col_consumption', 'Consumo'), 140, 'e'),
-             ('nmov', self.lang.get('ind_cons_col_moves', 'N. movimenti'), 120, 'e')])
+             ('nmov', self.lang.get('ind_cons_col_pickups', 'N. prelievi'), 120, 'e')])
 
         # --- Tab budget ---
         self.tab_budget = ttk.Frame(self.nb)
@@ -313,16 +325,16 @@ class ConsumptionAnalysisWindow(tk.Toplevel):
 
             ws1 = wb.active
             ws1.title = 'Settimanale'
-            fill_sheet(ws1, ['Anno', 'Settimana', 'Consumo', 'N. movimenti'],
+            fill_sheet(ws1, ['Anno', 'Settimana', 'Consumo', 'N. prelievi'],
                        [[r['anno'], r['settimana'], r['consumo'], r['n_mov']] for r in self._week_data])
 
             ws2 = wb.create_sheet('Mensile')
-            fill_sheet(ws2, ['Anno', 'Mese', 'Consumo', 'N. movimenti'],
+            fill_sheet(ws2, ['Anno', 'Mese', 'Consumo', 'N. prelievi'],
                        [[r['anno'], MONTH_NAMES.get(r['mese'], r['mese']), r['consumo'], r['n_mov']]
                         for r in self._month_data])
 
             ws3 = wb.create_sheet('Annuale')
-            fill_sheet(ws3, ['Anno', 'Consumo', 'N. movimenti'],
+            fill_sheet(ws3, ['Anno', 'Consumo', 'N. prelievi'],
                        [[r['anno'], r['consumo'], r['n_mov']] for r in self._year_data])
 
             ws4 = wb.create_sheet('Budget')

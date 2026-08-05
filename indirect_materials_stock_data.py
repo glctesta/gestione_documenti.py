@@ -214,26 +214,21 @@ def scorie_confermate_per_richiesta(db, richiesta_id):
         return False, 'error'
 
 
-def registra_scarico_richiesta(db, richiesta_id, user_name, hostname=None):
-    """Porta una richiesta a stato PRELEVATA e genera il movimento di SCARICO
-    (Qty negativa = -QtaRichiesta) collegato, in un'unica transazione.
+def _esegui_scarico(db, richiesta_id, user_name, hostname):
+    """Nucleo: transizione a PRELEVATA + movimento di SCARICO in un'unica
+    transazione. NON applica il gate scorie/rientri, perche' dipende dal punto
+    del flusso (vedi registra_scarico_richiesta e conferma_ritiro_richiesta).
 
     Idempotente: se la richiesta e' gia' PRELEVATA o lo scarico esiste gia',
-    non duplica. Ritorna (ok, code) dove code in:
-        'ok', 'not_found', 'already', 'annullata', 'scrap_not_confirmed', 'error'
+    non duplica. Ritorna (ok, code) con code in:
+        'ok', 'not_found', 'already', 'annullata', 'error'
     """
-    # Gate scorie/rientri: blocca il rilascio se le scorie collegate non sono confermate
-    allowed, gate_code = scorie_confermate_per_richiesta(db, richiesta_id)
-    if not allowed and gate_code == 'scrap_not_confirmed':
-        return False, 'scrap_not_confirmed'
-
-    hostname = hostname or socket.gethostname()
     db._ensure_connection()
     with db._lock:
         cur = db.cursor
         try:
             cur.execute(
-                "SELECT Stato, MaterialeId, QtaRichiesta "
+                "SELECT Stato, MaterialeId, QtaRichiesta, RichiestoDa "
                 "FROM ind.MaterialiRichieste WHERE RichiestaId = ?",
                 (richiesta_id,)
             )
@@ -241,6 +236,7 @@ def registra_scarico_richiesta(db, richiesta_id, user_name, hostname=None):
             if not row:
                 return False, 'not_found'
             stato, materiale_id, qta = row[0], row[1], float(row[2] or 0)
+            user_name = user_name or row[3] or hostname
             if stato == 'PRELEVATA':
                 return False, 'already'
             if stato == 'ANNULLATA':
@@ -265,12 +261,47 @@ def registra_scarico_richiesta(db, richiesta_id, user_name, hostname=None):
             )
             db.conn.commit()
             logger.info(f"Scarico registrato per richiesta {richiesta_id} "
-                        f"(materiale {materiale_id}, qty -{abs(qta)})")
+                        f"(materiale {materiale_id}, qty -{abs(qta)}, da {user_name})")
             return True, 'ok'
         except Exception as e:
             db.conn.rollback()
-            logger.error(f"registra_scarico_richiesta errore: {e}", exc_info=True)
+            logger.error(f"_esegui_scarico errore: {e}", exc_info=True)
             return False, 'error'
+
+
+def registra_scarico_richiesta(db, richiesta_id, user_name, hostname=None):
+    """Rilascio dal magazzino: porta la richiesta a PRELEVATA e genera lo scarico.
+
+    Passa dal gate scorie/rientri: qui il materiale sta per uscire, quindi se le
+    scorie collegate non sono confermate il rilascio va bloccato.
+
+    Ritorna (ok, code) con code in:
+        'ok', 'not_found', 'already', 'annullata', 'scrap_not_confirmed', 'error'
+    """
+    allowed, gate_code = scorie_confermate_per_richiesta(db, richiesta_id)
+    if not allowed and gate_code == 'scrap_not_confirmed':
+        return False, 'scrap_not_confirmed'
+    return _esegui_scarico(db, richiesta_id, user_name,
+                           hostname or socket.gethostname())
+
+
+def conferma_ritiro_richiesta(db, richiesta_id, user_name=None, hostname=None):
+    """Conferma del RITIRO da parte del richiedente (popup "Ritirato").
+
+    Stessa transizione di registra_scarico_richiesta ma SENZA il gate scorie: a
+    questo punto il materiale e' gia' fisicamente in mano all'operatore e
+    bloccare la conferma lascerebbe la richiesta aperta.
+
+    Serve perche' questo percorso faceva una UPDATE secca sullo stato senza
+    scrivere nulla nel libro movimenti: e' li' che il consumo spariva (1008
+    prelievi, 247.362 pezzi, mai contabilizzati) e per cui la giacenza scendeva
+    solo al successivo import del file Excel, ritardando le soglie di riordino.
+
+    Se user_name non e' noto (il monitor identifica il PC, non la persona) usa
+    il richiedente registrato sulla richiesta.
+    """
+    return _esegui_scarico(db, richiesta_id, user_name,
+                           hostname or socket.gethostname())
 
 
 def avanza_stato_richiesta(db, richiesta_id, nuovo_stato, user_name):

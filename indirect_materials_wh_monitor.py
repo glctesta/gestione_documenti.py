@@ -333,14 +333,22 @@ class RequesterMonitor:
         btn_frame.pack(fill="x", pady=10)
 
         def on_pickup():
+            # Non basta cambiare stato: il ritiro e' un CONSUMO e va scritto nel
+            # libro movimenti. Prima qui c'era una UPDATE secca sullo stato, e
+            # da questo percorso passa la quasi totalita' dei prelievi: il
+            # risultato era che l'analisi consumi non vedeva nulla e la giacenza
+            # scendeva solo al successivo import del file Excel, facendo
+            # scattare in ritardo le soglie di riordino.
             try:
-                self.db.execute_query(
-                    "UPDATE ind.MaterialiRichieste SET Stato = 'PRELEVATA', DataPrelievo = GETDATE() WHERE RichiestaId = ?",
-                    (rid,)
-                )
-                logger.info(f"Richiesta {rid} marcata come PRELEVATA")
+                import indirect_materials_stock_data as stock_data
+                ok, code = stock_data.conferma_ritiro_richiesta(
+                    self.db, rid, hostname=self.hostname)
+                if ok or code == 'already':
+                    logger.info(f"Richiesta {rid} marcata come PRELEVATA (scarico registrato)")
+                else:
+                    logger.error(f"Richiesta {rid}: ritiro non registrato (esito '{code}')")
             except Exception as e:
-                logger.error(f"Errore aggiornamento prelievo: {e}")
+                logger.error(f"Errore aggiornamento prelievo: {e}", exc_info=True)
             self._popup_open = False
             popup.destroy()
 
