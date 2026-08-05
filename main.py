@@ -308,7 +308,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.9.1'  # Versione aggiornata 
+APP_VERSION = '2.4.2.9.2'  # Versione aggiornata 
 # Nome programma usato come chiave in SwVersions / VersionDMLogs.
 # In produzione = nome dell'exe; in sviluppo usa il nome canonico.
 APP_PROGRAM_NAME = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else 'DocumentManagement.exe'
@@ -21522,6 +21522,7 @@ class App(tk.Tk):
         )
 
     def _open_indirect_materials_report(self):
+        logger.info("Apertura Report Materiali Indiretti")
         """Apre la finestra Report Mensile Materiali Indiretti."""
         try:
             from indirect_materials_report import open_indirect_materials_report
@@ -21532,6 +21533,7 @@ class App(tk.Tk):
 
     def _open_indirect_materials_stats(self):
         """Apre la finestra Statistiche & Anomalie Materiali Indiretti."""
+        logger.info("Apertura Statistiche Materiali Indiretti")
         try:
             from indirect_materials_stats import open_indirect_materials_stats
             open_indirect_materials_stats(self, self.db, self.lang)
@@ -21540,6 +21542,7 @@ class App(tk.Tk):
             messagebox.showerror(self.lang.get('error', 'Errore'), f"Impossibile aprire le statistiche:\n{e}", parent=self)
 
     def _open_confirm_indirect_materials(self):
+        logger.info("Apertura Conferma Materiali Indiretti")
         """Apre lo storico richieste materiali / conferma (con autorizzazione 'rilascia_materiali')."""
         def authorized_action():
             try:
@@ -21556,6 +21559,7 @@ class App(tk.Tk):
         self._execute_authorized_action('rilascia_materiali', authorized_action)
 
     def _open_indirect_materials_consumption(self):
+        logger.info("Apertura Analisi Consumi & Budget Materiali Indiretti")
         """Apre l'analisi consumi & budget materiali indiretti."""
         try:
             import indirect_materials_consumption
@@ -21571,6 +21575,7 @@ class App(tk.Tk):
 
     def _open_check_stock(self):
         """Apre la finestra Verifica Giacenze materiali indiretti."""
+        logger.info("Apertura Verifica Giacenze Materiali Indiretti")
         try:
             import indirect_materials_stock
             user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
@@ -21585,8 +21590,10 @@ class App(tk.Tk):
 
     def _open_min_stock_config(self):
         """Apre il form di configurazione scorte minime previa autorizzazione
+        loggando l'utente (chiave permesso: Stock_minimo_met_indiretti).
         (chiave permesso: Stock_minimo_met_indiretti)."""
         def _after_login():
+            logger.info("Apertura Configura Scorte Minime Materiali Indiretti")
             try:
                 import indirect_materials_stock
                 user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
@@ -21606,6 +21613,7 @@ class App(tk.Tk):
 
     def _open_tipo_materiali(self):
         """Apre la finestra gestione Tipi Materiale."""
+        logger.info("Apertura Tipi Materiale")
         try:
             import indirect_materials_types
             indirect_materials_types.open_tipo_materiali(self, self.db, self.lang)
@@ -21619,6 +21627,7 @@ class App(tk.Tk):
 
     def _open_confirm_wh_workstation(self):
         """Apre la finestra Conferma WH WorkStation."""
+        logger.info("Apertura Conferma WH WorkStation")
         try:
             import wh_workstation_config
             user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
@@ -21633,6 +21642,7 @@ class App(tk.Tk):
 
     def _open_confirm_kit_prep_workstation(self):
         """Apre la finestra Conferma Postazione Formazione Kit."""
+        logger.info("Apertura Conferma Postazione Formazione Kit")
         try:
             import kit_workstation_config
             user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
@@ -21647,6 +21657,7 @@ class App(tk.Tk):
 
     def _open_confirm_kit_prod_workstation(self):
         """Apre la finestra Conferma Postazione Ricezione Kit Produzione."""
+        logger.info("Apertura Conferma Postazione Ricezione Kit Produzione")
         try:
             import kit_workstation_config
             user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
@@ -21661,6 +21672,7 @@ class App(tk.Tk):
 
     def _open_align_codes(self):
         """Apre la finestra Allinea Codici con controllo autorizzazione."""
+        logger.info("Apertura Allinea Codici")
         def authorized_action():
             try:
                 import indirect_materials_import
