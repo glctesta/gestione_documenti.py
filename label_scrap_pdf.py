@@ -68,6 +68,71 @@ def get_warehouse_responsible(conn):
         return ''
 
 
+# Famiglia materiali indiretti che raccoglie le etichette (ind.FamigliaMateriali).
+# Stesso valore usato dalla dichiarazione scarti in label_scrap_gui.py.
+LABEL_FAMILY_ID = 1
+
+
+def fetch_labels_vs_withdrawn(conn, date_from, date_to, family_id=LABEL_FAMILY_ID):
+    """Etichette prelevate dal magazzino nel periodo, per materiale, con la quota
+    finita a scarto.
+
+    Il totale degli scarti da solo non dice se sono tanti o pochi: serve il
+    confronto con quanto e' stato ritirato dal magazzino nello stesso periodo.
+
+    Prelevato = richieste materiali indiretti in stato PRELEVATA con DataPrelievo
+    nel periodo. Si usano le richieste e non i movimenti di SCARICO perche' il
+    ledger dei movimenti e' partito dopo ed e' vuoto per i mesi precedenti,
+    mentre le richieste coprono tutto lo storico.
+
+    Il dato NON e' per operatore (i prelievi non sono attribuiti a chi scarta):
+    va sempre letto sul totale del periodo.
+
+    Ritorna (rows, totals):
+      rows   = [(codice, descrizione, prelevate, scartate, perc), ...]
+      totals = (prelevate, scartate, perc)
+    """
+    sql = """
+        WITH prelievi AS (
+            SELECT r.MaterialeId, SUM(r.QtaRichiesta) AS Qta
+            FROM ind.MaterialiRichieste r
+            WHERE r.Stato = 'PRELEVATA'
+              AND r.DataPrelievo >= ? AND r.DataPrelievo < DATEADD(day, 1, ?)
+            GROUP BY r.MaterialeId
+        ), scarti AS (
+            SELECT ls.MaterialeId, SUM(ISNULL(ls.Qty, 1)) AS Qta
+            FROM traceability_rs.dbo.labelscrap ls
+            WHERE ls.ScrapDate BETWEEN ? AND ? AND ls.MaterialeId IS NOT NULL
+            GROUP BY ls.MaterialeId
+        )
+        SELECT M.CodiceMateriale, ISNULL(M.DescrizioneMateriale, '') AS Descr,
+               ISNULL(p.Qta, 0) AS Prelevate, ISNULL(s.Qta, 0) AS Scartate
+        FROM ind.Materiali M
+        LEFT JOIN prelievi p ON p.MaterialeId = M.MaterialeId
+        LEFT JOIN scarti   s ON s.MaterialeId = M.MaterialeId
+        WHERE M.FamigliaMaterialiId = ?
+          AND (p.Qta IS NOT NULL OR s.Qta IS NOT NULL)
+        ORDER BY ISNULL(s.Qta, 0) DESC, M.CodiceMateriale
+    """
+    rows = []
+    try:
+        cur = conn.cursor()
+        cur.execute(sql, (date_from, date_to, date_from, date_to, family_id))
+        for r in cur.fetchall():
+            taken = int(r.Prelevate or 0)
+            scrapped = int(r.Scartate or 0)
+            rows.append((r.CodiceMateriale, r.Descr, taken, scrapped,
+                         (scrapped / taken * 100.0) if taken else 0.0))
+        cur.close()
+    except Exception as e:
+        logger.error(f"fetch_labels_vs_withdrawn: {e}", exc_info=True)
+        raise
+    tot_taken = sum(v[2] for v in rows)
+    tot_scrap = sum(v[3] for v in rows)
+    return rows, (tot_taken, tot_scrap,
+                  (tot_scrap / tot_taken * 100.0) if tot_taken else 0.0)
+
+
 def _draw_signatures(c, f, width, operator, warehouse_responsible, y=None):
     """Due riquadri firma (in rumeno): operatore dichiarante e responsabile magazzino."""
     from reportlab.lib.units import cm
@@ -164,6 +229,21 @@ def _table(c, f, x, y, headers, rows, col_w, width, height, row_h=0.62):
     Gestisce il salto pagina."""
     from reportlab.lib.units import cm
 
+    def fit(txt, w_cm, font):
+        """Taglia il testo alla larghezza REALE della colonna.
+
+        Prima si tagliava a 2 caratteri per centimetro: una stima grossolana che
+        riduceva le date a '23/0' e i nomi a 'ARNOL', ma soprattutto troncava i
+        numeri ('117.4' al posto di '117.417'), rendendo il PDF non solo brutto
+        ma sbagliato."""
+        s = str(txt)
+        avail = w_cm * cm - 0.3 * cm
+        if avail <= 0:
+            return ''
+        while s and c.stringWidth(s, font, 9) > avail:
+            s = s[:-1]
+        return s
+
     def head():
         c.setFillColorRGB(0.1, 0.32, 0.55)
         c.rect(x, cy - row_h * cm, sum(col_w) * cm, row_h * cm, fill=1, stroke=0)
@@ -171,7 +251,7 @@ def _table(c, f, x, y, headers, rows, col_w, width, height, row_h=0.62):
         c.setFont(f["b"], 9)
         cx = x
         for h, w in zip(headers, col_w):
-            c.drawString(cx + 0.15 * cm, cy - row_h * cm + 0.18 * cm, str(h))
+            c.drawString(cx + 0.15 * cm, cy - row_h * cm + 0.18 * cm, fit(h, w, f["b"]))
             cx += w * cm
 
     cy = y
@@ -191,7 +271,7 @@ def _table(c, f, x, y, headers, rows, col_w, width, height, row_h=0.62):
         c.setFillColorRGB(0.1, 0.1, 0.1)
         cx = x
         for val, w in zip(r, col_w):
-            c.drawString(cx + 0.15 * cm, cy - row_h * cm + 0.18 * cm, str(val)[:int(w * 2.0)])
+            c.drawString(cx + 0.15 * cm, cy - row_h * cm + 0.18 * cm, fit(val, w, f["n"]))
             cx += w * cm
         cy -= row_h * cm
     return cy
@@ -263,10 +343,13 @@ def generate_declaration_pdf(pdf_path, operator, scrap_date, rows, warehouse_res
 
 
 def generate_report_pdf(pdf_path, date_from, date_to, operator_filter, detail_rows,
-                        by_reason, by_category, by_operator, warehouse_responsible=''):
+                        by_reason, by_category, by_operator, warehouse_responsible='',
+                        vs_rows=None, vs_totals=None):
     """Report scarti etichette con logo, dettaglio + riepiloghi.
-    detail_rows: (date, operator, label, reason, category, shift)
-    by_reason/by_category/by_operator: liste di (label, count).
+    detail_rows: (date, operator, label, reason, category, shift, qty, materiale)
+    by_reason/by_category/by_operator: liste di (label, quantita').
+    vs_rows: (codice, descrizione, prelevate, scartate, perc) — scarti a fronte
+        del prelevato dal magazzino nel periodo; vs_totals: (prelevate, scartate, perc).
     """
     from reportlab.pdfgen import canvas
     from reportlab.lib.pagesizes import A4
@@ -280,10 +363,39 @@ def generate_report_pdf(pdf_path, date_from, date_to, operator_filter, detail_ro
     y = _draw_header(c, f, width, height, "Report rebuturi etichete",
                      f"Scarti etichette — {df} → {dt}")
 
+    total_qty = sum(int(d[6]) for d in detail_rows if len(d) > 6)
     c.setFont(f["n"], 10)
     c.drawString(2 * cm, y, f"Operatore: {operator_filter or 'Tutti'}")
-    c.drawRightString(width - 2 * cm, y, f"Totale: {len(detail_rows)}")
+    c.drawRightString(width - 2 * cm, y,
+                      f"Righe: {len(detail_rows)}   Etichette scartate: {total_qty}")
     y -= 0.7 * cm
+
+    # Scarti a fronte del prelevato dal magazzino: e' il dato che dice se gli
+    # scarti sono tanti o pochi, il totale da solo non lo dice.
+    if vs_rows:
+        c.setFont(f["b"], 10)
+        c.setFillColorRGB(0.1, 0.32, 0.55)
+        c.drawString(2 * cm, y, "Scarti a fronte del prelevato dal magazzino")
+        c.setFillColorRGB(0.1, 0.1, 0.1)
+        y -= 0.45 * cm
+        vdata = [(code, descr, f"{taken:,}".replace(',', '.'),
+                  f"{scrapped:,}".replace(',', '.'), f"{rate:.2f}%" if taken else '-')
+                 for code, descr, taken, scrapped, rate in vs_rows]
+        if vs_totals:
+            t_taken, t_scrap, t_rate = vs_totals
+            vdata.append(("TOTALE", "", f"{t_taken:,}".replace(',', '.'),
+                          f"{t_scrap:,}".replace(',', '.'),
+                          f"{t_rate:.2f}%" if t_taken else '-'))
+        y = _table(c, f, 2 * cm, y,
+                   ["Materiale", "Descrizione", "Prelevate", "Scartate", "% scarto"],
+                   vdata, [3.4, 6.4, 2.6, 2.6, 2.0], width, height)
+        y -= 0.25 * cm
+        c.setFont(f["n"], 7.5)
+        c.setFillColorRGB(0.45, 0.45, 0.45)
+        c.drawString(2 * cm, y, "Prelievi = richieste materiali indiretti in stato "
+                                "PRELEVATA nel periodo (tutti gli operatori).")
+        c.setFillColorRGB(0.1, 0.1, 0.1)
+        y -= 0.6 * cm
 
     # riepiloghi
     def summary(title, items, x):
@@ -299,17 +411,21 @@ def generate_report_pdf(pdf_path, date_from, date_to, operator_filter, detail_ro
             yy -= 0.4 * cm
         return yy
 
-    y1 = summary("Per motivo", by_reason, 2 * cm)
-    y2 = summary("Per categoria", by_category, 8 * cm)
-    y3 = summary("Per operatore", by_operator, 13.5 * cm)
+    # I riepiloghi sono in ETICHETTE (somma delle quantita'), non in righe
+    y1 = summary("Per motivo (etichette)", by_reason, 2 * cm)
+    y2 = summary("Per categoria (etichette)", by_category, 8 * cm)
+    y3 = summary("Per operatore (etichette)", by_operator, 13.5 * cm)
     y = min(y1, y2, y3) - 0.3 * cm
 
     data = [(d[0].strftime('%d/%m/%Y') if hasattr(d[0], 'strftime') else str(d[0]),
-             str(d[1])[:18], str(d[2])[:20], str(d[3])[:22], d[4], d[5] or '')
+             d[1], d[2], str(d[6]) if len(d) > 6 else '',
+             d[7] if len(d) > 7 else '',
+             d[3], d[4], d[5] or '')
             for d in detail_rows]
+    # Le larghezze sommano a 17 cm = A4 meno i margini di 2 cm per lato
     y = _table(c, f, 2 * cm, y,
-               ["Data", "Operatore", "Etichetta", "Motivo", "Cat.", "Turno"],
-               data, [2.2, 3.0, 3.4, 3.8, 2.0, 1.6], width, height)
+               ["Data", "Operatore", "Etichetta", "Q.tà", "Materiale", "Motivo", "Cat.", "Turno"],
+               data, [2.0, 2.8, 2.6, 1.2, 2.4, 3.0, 1.6, 1.4], width, height)
 
     # Riquadri firma (operatore filtrato + responsabile magazzino)
     if y < 5.5 * cm:
