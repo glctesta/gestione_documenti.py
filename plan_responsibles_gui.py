@@ -317,7 +317,9 @@ class PlanResponsiblesWindow(tk.Toplevel):
     # ------------------------------------------------------------------ #
     def _preview(self):
         try:
-            data = pr.gather(self.db.conn)
+            # only_new: l'anteprima deve mostrare cio' che partirebbe davvero,
+            # cioe' senza le righe gia' inviate e rimaste uguali.
+            data = pr.gather(self.db.conn, only_new=True)
             html = pr.build_email_html(data)
             fd, path = tempfile.mkstemp(suffix='.html', prefix='plan_resp_')
             with os.fdopen(fd, 'w', encoding='utf-8') as f:

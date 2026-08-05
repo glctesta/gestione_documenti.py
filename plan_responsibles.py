@@ -587,19 +587,25 @@ def _apply_deposit_status(discrepancies: list, deposit_map: dict) -> None:
             d['deposit_date'] = None
 
 
-def gather(conn) -> dict:
-    """Raccoglie tutti i dati per l'email/anteprima."""
+def gather(conn, only_new: bool = False) -> dict:
+    """Raccoglie tutti i dati per l'email/anteprima.
+
+    Args:
+        only_new: se True esclude le righe gia' inviate e invariate
+                  (vedi split_new_items). E' quello che finisce nell'email.
+    """
     ensure_overrides_table(conn)
     start_date = get_start_date(conn)
     discrepancies = get_open_discrepancies(conn, start_date)
     deposit_map = get_deposit_status_map(conn, start_date, date.today())
     _apply_deposit_status(discrepancies, deposit_map)
-    return {
+    data = {
         'start_date': start_date,
         'phases': get_monitored_phases(conn),
         'discrepancies': discrepancies,
         'shipments': get_pending_urgent_shipments(conn),
     }
+    return split_new_items(conn, data) if only_new else data
 
 
 # ============================================================
@@ -643,6 +649,21 @@ def build_email_html(data: dict, logo_cid: str = 'company_logo') -> str:
     phases_txt = ', '.join(phases)
     today = date.today()
     recent_threshold = today - timedelta(days=RECENT_HIGHLIGHT_DAYS)
+
+    # Quando l'email porta solo le novita' va detto: altrimenti chi legge crede
+    # che le righe sparite siano state chiuse, mentre restano da giustificare.
+    skipped = (data.get('skipped_discrepancies') or 0) + (data.get('skipped_shipments') or 0)
+    only_new = bool(data.get('only_new'))
+    only_new_note = ''
+    if only_new and skipped:
+        only_new_note = (
+            '<p style="background:#EAF0F6;border-left:4px solid #1F3864;padding:8px 12px;'
+            'font-size:13px;margin:12px 0;">Acest raport conține <b>doar elementele noi</b> '
+            'față de trimiterea anterioară. Alte <b>' + str(skipped) + '</b> situații, deja '
+            'semnalate și nemodificate, nu se repetă aici, dar <b>rămân de justificat</b> '
+            'în aplicație.</p>')
+    nothing_new_txt = ('Nu există elemente noi față de trimiterea anterioară.'
+                       if only_new else None)
 
     logo_tag = (f'<img src="cid:{logo_cid}" style="max-height:60px;margin-bottom:10px;" '
                 f'alt="Logo">')
@@ -700,10 +721,12 @@ def build_email_html(data: dict, logo_cid: str = 'company_logo') -> str:
             = produs deja predat în magazie (D365); <b style="color:#B71C1C;">Lipsă</b> = încă nepredat.</p>
         """
     else:
+        disc_none = (nothing_new_txt if nothing_new_txt else
+                     f'Nu există discrepanțe deschise în perioada analizată '
+                     f'(începând cu {_fmt_date(start_date)}).')
         disc_table = ('<h3 style="color:#1F3864;margin:18px 0 6px;">2. Discrepanțe de plan '
                       f'nejustificate — fazele finale {phases_txt}</h3>'
-                      '<p>Nu există discrepanțe deschise în perioada '
-                      f'analizată (începând cu {_fmt_date(start_date)}).</p>')
+                      f'<p>{disc_none}</p>')
 
     # Tabella urgenze spedizione — PRIORITA' 1: vanno giustificate per prime
     if shipments:
@@ -762,8 +785,10 @@ def build_email_html(data: dict, logo_cid: str = 'company_logo') -> str:
         </table>
         """
     else:
+        ship_none = (nothing_new_txt if nothing_new_txt
+                     else 'Nu există cereri urgente de livrare în așteptare.')
         ship_table = ('<h3 style="color:#7A1F1F;margin:18px 0 6px;">1. PRIORITATE — Cereri urgente '
-                      'de livrare</h3><p>Nu există cereri urgente de livrare în așteptare.</p>')
+                      f'de livrare</h3><p>{ship_none}</p>')
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -785,6 +810,8 @@ def build_email_html(data: dict, logo_cid: str = 'company_logo') -> str:
     <p><b>Ordinea justificărilor:</b> mai întâi cererile urgente de livrare nerespectate
     (punctul 1), apoi discrepanțele de plan pe fazele finale <b>{phases_txt}</b> (punctul 2).
     Fazele intermediare nu se raportează în acest document.</p>
+
+    {only_new_note}
 
     <p>Aceste informații trebuie să fie <b>exacte și complete</b>: numai pe baza unor date
     corecte conducerea poate analiza cauzele reale și îmbunătăți gestionarea producției.</p>
@@ -816,6 +843,144 @@ def build_email_html(data: dict, logo_cid: str = 'company_logo') -> str:
 
 
 # ============================================================
+# TRACCIAMENTO DELLE RIGHE GIA' INVIATE
+# ============================================================
+# L'email e' un sollecito, non un archivio: ripetere ogni giorno tutto lo storico
+# dalla data di partenza la rendeva sempre piu' lunga e faceva sparire le novita'
+# in mezzo a righe gia' viste. Qui si registra cosa e' gia' uscito e lo si esclude
+# dagli invii successivi. Una riga TORNA nell'email solo se la sua situazione
+# cambia: nuovi alert sull'ordine, oppure data/quantita' dell'urgenza modificate.
+SENT_ITEMS_TABLE = 'traceability_rs.dbo.PlanResponsiblesSentItems'
+ITEM_DISCREPANCY = 'DISCREPANCY'
+ITEM_SHIPMENT = 'SHIPMENT'
+
+
+def ensure_sent_items_table(conn) -> None:
+    """Crea dbo.PlanResponsiblesSentItems se non esiste (idempotente)."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                IF OBJECT_ID('{SENT_ITEMS_TABLE}', 'U') IS NULL
+                BEGIN
+                    CREATE TABLE {SENT_ITEMS_TABLE} (
+                        SentItemId  INT IDENTITY(1,1) PRIMARY KEY,
+                        ItemType    NVARCHAR(20)  NOT NULL,   -- DISCREPANCY | SHIPMENT
+                        ItemKey     NVARCHAR(200) NOT NULL,   -- numero ordine | id regola urgenza
+                        Signature   NVARCHAR(200) NOT NULL,   -- stato inviato l'ultima volta
+                        FirstSentAt DATETIME NOT NULL DEFAULT GETDATE(),
+                        SentAt      DATETIME NOT NULL DEFAULT GETDATE(),
+                        SendCount   INT      NOT NULL DEFAULT 1
+                    );
+                    CREATE UNIQUE INDEX UX_PlanRespSent_TypeKey
+                        ON {SENT_ITEMS_TABLE} (ItemType, ItemKey);
+                END
+            """)
+        conn.commit()
+    except Exception as e:
+        logger.error(f"ensure_sent_items_table: {e}", exc_info=True)
+
+
+def _discrepancy_signature(d: dict) -> str:
+    """Stato di una discrepanza. Cambia quando arrivano nuovi alert sull'ordine:
+    cosi' un ordine gia' segnalato torna nell'email solo se peggiora."""
+    return f"{d.get('total') or 0}|{_fmt_date(d.get('last_date'))}|{d.get('deficit') or 0}"
+
+
+def _shipment_signature(s: dict) -> str:
+    """Stato di un'urgenza di spedizione: data richiesta e quantita' da spedire."""
+    return f"{_fmt_date(s.get('date_to_ship'))}|{s.get('qty')}"
+
+
+def get_sent_signatures(conn) -> dict:
+    """{(ItemType, ItemKey): Signature} delle righe gia' inviate."""
+    ensure_sent_items_table(conn)
+    out = {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT ItemType, ItemKey, Signature FROM {SENT_ITEMS_TABLE}")
+            for r in cur.fetchall():
+                out[(r.ItemType, r.ItemKey)] = r.Signature
+    except Exception as e:
+        logger.error(f"get_sent_signatures: {e}", exc_info=True)
+    return out
+
+
+def split_new_items(conn, data: dict) -> dict:
+    """Copia di `data` con le sole righe non ancora inviate.
+
+    Aggiunge 'skipped_discrepancies', 'skipped_shipments' (quante sono state
+    escluse perche' gia' inviate e invariate) e 'only_new'=True.
+    """
+    sent = get_sent_signatures(conn)
+    all_d = data.get('discrepancies') or []
+    all_s = data.get('shipments') or []
+    new_d = [d for d in all_d
+             if sent.get((ITEM_DISCREPANCY, str(d.get('order')))) != _discrepancy_signature(d)]
+    new_s = [s for s in all_s
+             if sent.get((ITEM_SHIPMENT, str(s.get('rule_id')))) != _shipment_signature(s)]
+    out = dict(data)
+    out['discrepancies'] = new_d
+    out['shipments'] = new_s
+    out['skipped_discrepancies'] = len(all_d) - len(new_d)
+    out['skipped_shipments'] = len(all_s) - len(new_s)
+    out['only_new'] = True
+    return out
+
+
+def mark_items_sent(conn, data: dict) -> int:
+    """Registra come inviate le righe presenti in `data`. Ritorna quante ne ha
+    registrate. Va chiamata SOLO dopo un invio riuscito."""
+    ensure_sent_items_table(conn)
+    rows = [(ITEM_DISCREPANCY, str(d.get('order')), _discrepancy_signature(d))
+            for d in (data.get('discrepancies') or [])]
+    rows += [(ITEM_SHIPMENT, str(s.get('rule_id')), _shipment_signature(s))
+             for s in (data.get('shipments') or [])]
+    if not rows:
+        return 0
+    n = 0
+    try:
+        with conn.cursor() as cur:
+            for item_type, key, sig in rows:
+                cur.execute(f"""
+                    UPDATE {SENT_ITEMS_TABLE}
+                       SET Signature = ?, SentAt = GETDATE(), SendCount = SendCount + 1
+                     WHERE ItemType = ? AND ItemKey = ?;
+                    IF @@ROWCOUNT = 0
+                        INSERT INTO {SENT_ITEMS_TABLE} (ItemType, ItemKey, Signature)
+                        VALUES (?, ?, ?);
+                """, (sig, item_type, key, item_type, key, sig))
+                n += 1
+        conn.commit()
+    except Exception as e:
+        logger.error(f"mark_items_sent: {e}", exc_info=True)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return 0
+    return n
+
+
+def reset_sent_items(conn, item_type: str = None) -> int:
+    """Azzera il tracciamento: il prossimo invio riparte da tutto lo storico.
+    Serve quando entra un nuovo responsabile che deve vedere il quadro completo."""
+    ensure_sent_items_table(conn)
+    try:
+        with conn.cursor() as cur:
+            if item_type:
+                cur.execute(f"DELETE FROM {SENT_ITEMS_TABLE} WHERE ItemType = ?", (item_type,))
+            else:
+                cur.execute(f"DELETE FROM {SENT_ITEMS_TABLE}")
+            n = cur.rowcount
+        conn.commit()
+        logger.info(f"reset_sent_items: {n} righe azzerate (tipo={item_type or 'tutti'})")
+        return n
+    except Exception as e:
+        logger.error(f"reset_sent_items: {e}", exc_info=True)
+        return 0
+
+
+# ============================================================
 # DEDUP + INVIO
 # ============================================================
 def _claim_send_slot(conn, setting_key: str) -> bool:
@@ -841,7 +1006,8 @@ def _claim_send_slot(conn, setting_key: str) -> bool:
 
 def send_daily_responsibles_email(conn, mode: str = None,
                                   logo_path: str = 'logo.png',
-                                  force: bool = False) -> tuple:
+                                  force: bool = False,
+                                  only_new: bool = True) -> tuple:
     """Invia l'email giornaliera ai responsabili.
 
     Args:
@@ -849,6 +1015,9 @@ def send_daily_responsibles_email(conn, mode: str = None,
                (Sys_plan_responsibles_email_mode, default 'Test'), indipendente
                dall'escalation piano. 'Test' reindirizza a TEST_EMAIL; 'False' non invia.
         force: se True ignora il dedup giornaliero (usato dal pulsante "Invia adesso").
+        only_new: se True (default) l'email contiene SOLO le righe non ancora
+               inviate o cambiate dall'ultimo invio. Con False si rimanda tutto
+               lo storico dalla data di partenza.
 
     Returns:
         (sent: bool, message: str)
@@ -858,8 +1027,12 @@ def send_daily_responsibles_email(conn, mode: str = None,
     if mode == 'False':
         return False, "Email responsabili disabilitata (modalità dedicata = False)"
 
-    data = gather(conn)
+    data = gather(conn, only_new=only_new)
+    n_skipped = (data.get('skipped_discrepancies', 0) + data.get('skipped_shipments', 0))
     if not data['discrepancies'] and not data['shipments'] and not force:
+        if n_skipped:
+            return False, (f"Nessuna novità da segnalare: {n_skipped} righe già inviate "
+                           f"in precedenza e invariate")
         return False, "Nessuna discrepanza aperta né urgenza: email non inviata"
 
     to_emails, cc_emails, _to_people, _cc_people = get_effective_recipients(conn)
@@ -887,10 +1060,24 @@ def send_daily_responsibles_email(conn, mode: str = None,
         from utils import send_email
         send_email(recipients=to_emails, subject=subject, body=body,
                    is_html=True, cc_emails=cc_emails or None, attachments=attachments)
-        logger.info("Email responsabili piano inviata: TO=%s CC=%s (discr=%d, urg=%d)",
-                    to_emails, cc_emails, len(data['discrepancies']), len(data['shipments']))
-        return True, (f"Email inviata a {len(to_emails)} destinatari "
-                      f"({len(data['discrepancies'])} discrepanze, {len(data['shipments'])} urgenze)")
+        logger.info("Email responsabili piano inviata: TO=%s CC=%s (discr=%d, urg=%d, "
+                    "gia' inviate in precedenza=%d)",
+                    to_emails, cc_emails, len(data['discrepancies']),
+                    len(data['shipments']), n_skipped)
     except Exception as e:
         logger.error(f"send_daily_responsibles_email: invio fallito: {e}", exc_info=True)
         return False, f"Errore invio email: {e}"
+
+    # Registrazione DOPO l'invio riuscito: se marcassimo prima e l'invio
+    # fallisse, quelle righe non uscirebbero mai piu'. Un errore qui fa al
+    # massimo ripetere le righe domani, che e' il male minore.
+    if only_new:
+        marked = mark_items_sent(conn, data)
+        if marked == 0 and (data['discrepancies'] or data['shipments']):
+            logger.warning("send_daily_responsibles_email: righe inviate ma non registrate, "
+                           "verranno riproposte al prossimo invio")
+
+    extra = f", {n_skipped} già inviate in precedenza" if n_skipped else ""
+    return True, (f"Email inviata a {len(to_emails)} destinatari "
+                  f"({len(data['discrepancies'])} discrepanze, "
+                  f"{len(data['shipments'])} urgenze{extra})")
