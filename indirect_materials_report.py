@@ -4,7 +4,10 @@ Report mensile richieste e consegne materiali indiretti.
 
 - Tab "Dettaglio":   ogni riga = una singola richiesta, filtrata per anno/mese/tipo/stato
 - Tab "Riepilogo":   aggregato per mese → totale richieste / totale consegnate / qty
-- Export Excel:      salva entrambi i tab in un file .xlsx
+- Tab "Verifica acquisti": per ogni codice sollecitato al riordino, se l'acquisto
+                     e' poi arrivato davvero (confronto fra la giacenza al momento
+                     della richiesta e i carichi Excel/D365 successivi)
+- Export Excel:      salva i tre tab in un file .xlsx
 """
 
 import tkinter as tk
@@ -157,6 +160,59 @@ class IndirectMaterialsReportWindow(tk.Toplevel):
         ttk.Label(summary_frame, textvariable=self.summary_total_var,
                   font=('Segoe UI', 9, 'italic')).pack(anchor='e', padx=6)
 
+        # ── Tab Verifica acquisti ───────────────────────────────────────
+        purch_frame = ttk.Frame(self.notebook)
+        self.notebook.add(purch_frame,
+                          text=self.lang.get('ind_rep_tab_purchases', 'Verifica Acquisti'))
+
+        pur_cols = ('codice', 'descrizione', 'n_rich', 'ultima_rich', 'giac_rich',
+                    'minimo', 'giac_carico', 'data_carico', 'differenza',
+                    'entrata', 'data_entrata', 'esito')
+        self.purch_tree = ttk.Treeview(purch_frame, columns=pur_cols, show='headings')
+        pur_headers = {
+            'codice':       self.lang.get('ind_import_col_code', 'Codice'),
+            'descrizione':  self.lang.get('ind_import_col_desc', 'Descrizione'),
+            'n_rich':       self.lang.get('ind_rep_col_n_reorders', '# Richieste'),
+            'ultima_rich':  self.lang.get('ind_rep_col_last_reorder', 'Ultima richiesta'),
+            'giac_rich':    self.lang.get('ind_rep_col_stock_at_req', 'Giacenza alla richiesta'),
+            'minimo':       self.lang.get('ind_stock_col_min', 'Scorta minima'),
+            'giac_carico':  self.lang.get('ind_rep_col_stock_last_load', 'Giacenza ultimo carico'),
+            'data_carico':  self.lang.get('ind_rep_col_last_load', 'Data ultimo carico'),
+            'differenza':   self.lang.get('ind_rep_col_difference', 'Differenza'),
+            'entrata':      self.lang.get('ind_rep_col_incoming', 'Entrata rilevata'),
+            'data_entrata': self.lang.get('ind_rep_col_incoming_date', 'Data entrata'),
+            'esito':        self.lang.get('ind_rep_col_outcome', 'Esito'),
+        }
+        pur_widths = {'codice': 100, 'descrizione': 220, 'n_rich': 80, 'ultima_rich': 130,
+                      'giac_rich': 130, 'minimo': 100, 'giac_carico': 140, 'data_carico': 130,
+                      'differenza': 90, 'entrata': 110, 'data_entrata': 130, 'esito': 170}
+        num_cols = ('n_rich', 'giac_rich', 'minimo', 'giac_carico', 'differenza', 'entrata')
+        for c in pur_cols:
+            self.purch_tree.heading(c, text=pur_headers[c])
+            self.purch_tree.column(c, width=pur_widths[c],
+                                   anchor='e' if c in num_cols else 'w')
+
+        pur_sb_v = ttk.Scrollbar(purch_frame, orient='vertical', command=self.purch_tree.yview)
+        pur_sb_h = ttk.Scrollbar(purch_frame, orient='horizontal', command=self.purch_tree.xview)
+        self.purch_tree.configure(yscrollcommand=pur_sb_v.set, xscrollcommand=pur_sb_h.set)
+        pur_sb_v.pack(side='right', fill='y')
+        pur_sb_h.pack(side='bottom', fill='x')
+        self.purch_tree.pack(fill='both', expand=True)
+
+        self.purch_tree.tag_configure('ARRIVATO', background='#d4edda')
+        self.purch_tree.tag_configure('MANCANTE', background='#f8d7da')
+        self.purch_tree.tag_configure('ATTESA', background='#fff3cd')
+
+        self.purch_total_var = tk.StringVar()
+        ttk.Label(purch_frame, textvariable=self.purch_total_var,
+                  font=('Segoe UI', 9, 'italic')).pack(anchor='e', padx=6)
+        ttk.Label(purch_frame,
+                  text=self.lang.get(
+                      'ind_rep_purch_note',
+                      "L'entrata e' misurata sugli aumenti di giacenza fra un carico Excel "
+                      "(stock D365) e il successivo, dopo la data della richiesta."),
+                  font=('Segoe UI', 8), foreground='#666').pack(anchor='w', padx=6, pady=(0, 4))
+
     # ------------------------------------------------------------------ #
     #  Helpers                                                             #
     # ------------------------------------------------------------------ #
@@ -264,7 +320,8 @@ class IndirectMaterialsReportWindow(tk.Toplevel):
                    r.QtaRichiesta,
                    r.Stato,
                    r.RichiestoDa,
-                   ISNULL(r.PreparatoDa, '—') AS PreparatoDa
+                   ISNULL(r.PreparatoDa, '—') AS PreparatoDa,
+                   r.DataPrelievo
             FROM ind.MaterialiRichieste r
             JOIN ind.Materiali m ON r.MaterialeId = m.MaterialeId
             LEFT JOIN ind.TipoMateriali t ON m.TipoMaterialeId = t.TipoMaterialeId
@@ -276,15 +333,19 @@ class IndirectMaterialsReportWindow(tk.Toplevel):
         self.detail_tree.delete(*self.detail_tree.get_children())
         self._detail_data = []
 
+        # DataPrelievo mancava del tutto: la colonna "Data Consegna" mostrava '—'
+        # su ogni riga e l'export Excel si aspettava comunque 10 campi, quindi
+        # falliva sempre con "not enough values to unpack".
         for row in detail_rows:
-            rid, data_r, cod, desc, tipo, qty, stato, richiedente, prep = row
+            rid, data_r, cod, desc, tipo, qty, stato, richiedente, prep, data_c = row
             data_str = data_r.strftime('%d/%m/%Y %H:%M') if data_r else ''
             qty_str  = f"{float(qty):.2f}" if qty is not None else '0.00'
 
             tag = stato or ''
             self.detail_tree.insert('', 'end', values=(
                 rid, data_str, cod or '', desc or '', tipo,
-                qty_str, stato or '', richiedente or '', prep or '', '—'
+                qty_str, stato or '', richiedente or '', prep or '',
+                data_c.strftime('%d/%m/%Y %H:%M') if data_c else '—'
             ), tags=(tag,))
             self._detail_data.append(row)
 
@@ -336,6 +397,163 @@ class IndirectMaterialsReportWindow(tk.Toplevel):
                 'ind_rep_total_summary',
                 'Totale: {0} richieste  |  {1} consegnate ({2})  |  Qty: {3:.2f} / {4:.2f}'
             ).format(tot_req, tot_del, overall_pct, tot_qty_req, tot_qty_del)
+        )
+
+        # ── Verifica acquisti ────────────────────────────────────────────
+        self._load_purchases()
+
+    # ------------------------------------------------------------------ #
+    #  Verifica acquisti                                                   #
+    # ------------------------------------------------------------------ #
+    PURCHASES_SQL = """
+        WITH ultima AS (
+            SELECT MaterialeId, MAX(DataInvio) AS UltimaRichiesta
+            FROM ind.RiordineEmailLog
+            GROUP BY MaterialeId
+        ), richiesta AS (
+            SELECT l.MaterialeId, l.DataInvio, l.GiacenzaRilevata, l.LivelloMinimo
+            FROM ind.RiordineEmailLog l
+            JOIN ultima u ON u.MaterialeId = l.MaterialeId AND u.UltimaRichiesta = l.DataInvio
+        ), conteggio AS (
+            SELECT MaterialeId, COUNT(*) AS NRichieste, MIN(DataInvio) AS PrimaRichiesta
+            FROM ind.RiordineEmailLog
+            GROUP BY MaterialeId
+        ), snapshot AS (
+            -- una riga per materiale e per carico: il file Excel puo' contenere
+            -- piu' righe per lo stesso codice, si sommano
+            SELECT MaterialeId, DateIn, SUM(Qty) AS Qty
+            FROM ind.MaterialiStock
+            GROUP BY MaterialeId, DateIn
+        ), serie AS (
+            SELECT s.MaterialeId, s.DateIn, s.Qty,
+                   LAG(s.Qty) OVER (PARTITION BY s.MaterialeId ORDER BY s.DateIn) AS QtyPrec
+            FROM snapshot s
+        ), ultimo_carico AS (
+            SELECT MaterialeId, DateIn, Qty,
+                   ROW_NUMBER() OVER (PARTITION BY MaterialeId ORDER BY DateIn DESC) AS rn
+            FROM snapshot
+        ), carichi_dopo AS (
+            -- Solo gli AUMENTI fra un carico e il precedente: e' la merce entrata.
+            -- La differenza secca fra due istanti mescolerebbe acquisti e consumi
+            -- e darebbe per non arrivato un acquisto poi consumato.
+            SELECT se.MaterialeId,
+                   COUNT(*) AS NCarichiDopo,
+                   SUM(CASE WHEN se.QtyPrec IS NOT NULL AND se.Qty > se.QtyPrec
+                            THEN se.Qty - se.QtyPrec ELSE 0 END) AS QtaEntrata,
+                   MAX(CASE WHEN se.QtyPrec IS NOT NULL AND se.Qty > se.QtyPrec
+                            THEN se.DateIn END) AS DataEntrata
+            FROM serie se
+            JOIN richiesta r ON r.MaterialeId = se.MaterialeId
+            WHERE se.DateIn > r.DataInvio
+            GROUP BY se.MaterialeId
+        )
+        SELECT m.CodiceMateriale, m.DescrizioneMateriale,
+               c.NRichieste, r.DataInvio, r.GiacenzaRilevata, r.LivelloMinimo,
+               uc.Qty AS GiacenzaUltimoCarico, uc.DateIn AS DataUltimoCarico,
+               ISNULL(cd.QtaEntrata, 0) AS QtaEntrata, cd.DataEntrata,
+               ISNULL(cd.NCarichiDopo, 0) AS NCarichiDopo,
+               ISNULL(t.Tipo, 'Generico') AS Tipo, c.PrimaRichiesta
+        FROM richiesta r
+        JOIN ind.Materiali m ON m.MaterialeId = r.MaterialeId
+        JOIN conteggio c ON c.MaterialeId = r.MaterialeId
+        LEFT JOIN ind.TipoMateriali t ON t.TipoMaterialeId = m.TipoMaterialeId
+        LEFT JOIN ultimo_carico uc ON uc.MaterialeId = r.MaterialeId AND uc.rn = 1
+        LEFT JOIN carichi_dopo cd ON cd.MaterialeId = r.MaterialeId
+        WHERE {where}
+        ORDER BY ISNULL(cd.QtaEntrata, 0), r.DataInvio DESC, m.CodiceMateriale
+    """
+
+    def _build_where_reorders(self):
+        """Filtri della toolbar applicati alla DATA DELLA RICHIESTA di riordino.
+        Lo stato (della richiesta di prelievo) qui non ha significato."""
+        parts = ['1=1']
+        params = []
+
+        year_val = self.year_var.get()
+        if year_val and year_val != self.lang.get('ind_rep_all_years', 'Tutti gli anni'):
+            parts.append('YEAR(r.DataInvio) = ?')
+            params.append(int(year_val))
+
+        month_val = self.month_var.get()
+        if month_val and month_val != self.lang.get('ind_rep_all_months', 'Tutti i mesi'):
+            parts.append('MONTH(r.DataInvio) = ?')
+            params.append(int(month_val.split(' - ')[0]))
+
+        type_val = self.type_var.get()
+        if type_val and type_val != self.lang.get('ind_rep_all_types', 'Tutti i tipi'):
+            parts.append("ISNULL(t.Tipo, 'Generico') = ?")
+            params.append(type_val)
+
+        return ' AND '.join(parts), params
+
+    @staticmethod
+    def classify_purchase(qta_entrata, n_carichi_dopo):
+        """Esito della verifica: 'ARRIVATO', 'ATTESA' o 'MANCANTE'.
+
+        'ATTESA' non e' un fallimento: se dopo la richiesta non e' ancora stato
+        caricato nessun file di stock non c'e' proprio nulla da verificare, e
+        marcarlo come mancante darebbe un falso allarme ogni mattina (le email
+        di riordino partono prima del carico giornaliero)."""
+        if (qta_entrata or 0) > 0:
+            return 'ARRIVATO'
+        if not n_carichi_dopo:
+            return 'ATTESA'
+        return 'MANCANTE'
+
+    def _load_purchases(self):
+        where, params = self._build_where_reorders()
+        rows = self._fetch(self.PURCHASES_SQL.format(where=where), params or None)
+
+        self.purch_tree.delete(*self.purch_tree.get_children())
+        self._purchases_data = []
+        n_arr = n_att = n_man = 0
+
+        for row in rows:
+            (cod, desc, n_rich, data_r, giac_r, minimo, giac_c, data_c,
+             entrata, data_e, n_carichi, _tipo, _prima) = row
+            giac_r = float(giac_r or 0)
+            giac_c = float(giac_c or 0) if giac_c is not None else None
+            entrata = float(entrata or 0)
+            # La differenza chiesta: giacenza dell'ultimo carico meno quella
+            # registrata al momento della richiesta. Ha senso solo se l'ultimo
+            # carico e' successivo alla richiesta: altrimenti si confronterebbe
+            # una lettura piu' VECCHIA della richiesta e verrebbe fuori un
+            # aumento inesistente (es. codice fermo da settimane nel file Excel).
+            if giac_c is not None and data_c and data_r and data_c >= data_r:
+                diff = giac_c - giac_r
+            else:
+                diff = None
+
+            esito = self.classify_purchase(entrata, n_carichi)
+            if esito == 'ARRIVATO':
+                n_arr += 1
+                esito_txt = self.lang.get('ind_rep_outcome_ok', 'Acquisto rilevato')
+            elif esito == 'ATTESA':
+                n_att += 1
+                esito_txt = self.lang.get('ind_rep_outcome_wait', 'In attesa di carico')
+            else:
+                n_man += 1
+                esito_txt = self.lang.get('ind_rep_outcome_ko', 'Nessun acquisto')
+
+            self.purch_tree.insert('', 'end', values=(
+                cod or '', desc or '', n_rich,
+                data_r.strftime('%d/%m/%Y %H:%M') if data_r else '',
+                f"{giac_r:.2f}", f"{float(minimo or 0):.2f}",
+                f"{giac_c:.2f}" if giac_c is not None else '—',
+                data_c.strftime('%d/%m/%Y %H:%M') if data_c else '—',
+                f"{diff:+.2f}" if diff is not None else '—',
+                f"{entrata:.2f}" if entrata else '—',
+                data_e.strftime('%d/%m/%Y %H:%M') if data_e else '—',
+                esito_txt,
+            ), tags=(esito,))
+            self._purchases_data.append(tuple(row) + (diff, esito, esito_txt))
+
+        tot = len(rows)
+        self.purch_total_var.set(
+            self.lang.get(
+                'ind_rep_total_purchases',
+                'Codici sollecitati: {0}  |  arrivati: {1}  |  in attesa: {2}  |  senza acquisto: {3}'
+            ).format(tot, n_arr, n_att, n_man)
         )
 
     def _build_where_no_status(self):
@@ -463,6 +681,44 @@ class IndirectMaterialsReportWindow(tk.Toplevel):
             col_widths_sum = [12, 20, 14, 14, 16, 16, 14]
             for i, w in enumerate(col_widths_sum, 1):
                 ws_sum.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+
+            # ── Foglio Verifica acquisti ────────────────────────────────
+            ws_pur = wb.create_sheet('Verifica Acquisti')
+            pur_headers = ['Codice', 'Descrizione', 'Tipo', '# Richieste',
+                           'Prima richiesta', 'Ultima richiesta', 'Giacenza alla richiesta',
+                           'Scorta minima', 'Giacenza ultimo carico', 'Data ultimo carico',
+                           'Differenza', 'Entrata rilevata', 'Data entrata', 'Esito']
+            ws_pur.append(pur_headers)
+            for cell in ws_pur[1]:
+                cell.font = hdr_font
+                cell.fill = hdr_fill
+                cell.alignment = Alignment(horizontal='center')
+
+            yellow_fill = PatternFill('solid', fgColor='FFF3CD')
+            for row in (getattr(self, '_purchases_data', None) or []):
+                (cod, desc, n_rich, data_r, giac_r, minimo, giac_c, data_c,
+                 entrata, data_e, _n_carichi, tipo, prima, diff, esito, esito_txt) = row
+                ws_pur.append([
+                    cod or '', desc or '', tipo or '', n_rich,
+                    prima if prima else '', data_r if data_r else '',
+                    float(giac_r or 0), float(minimo or 0),
+                    float(giac_c) if giac_c is not None else None,
+                    data_c if data_c else '',
+                    float(diff) if diff is not None else None,
+                    float(entrata or 0), data_e if data_e else '',
+                    esito_txt,
+                ])
+                last = ws_pur.max_row
+                fill = {'ARRIVATO': green_fill, 'MANCANTE': red_fill,
+                        'ATTESA': yellow_fill}.get(esito)
+                if fill:
+                    for c in ws_pur[last]:
+                        c.fill = fill
+
+            col_widths_pur = [14, 36, 16, 12, 18, 18, 20, 14, 20, 18, 12, 16, 18, 20]
+            for i, w in enumerate(col_widths_pur, 1):
+                ws_pur.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+            ws_pur.freeze_panes = 'A2'
 
             wb.save(path)
             logger.info(f"[IndReport] Export Excel: {path}")
