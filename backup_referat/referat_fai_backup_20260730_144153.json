@@ -1,0 +1,2203 @@
+{
+  "referats": [
+    {
+      "EmployeeDisciplinaryHistoryId": 1527,
+      "EmployeeHireHistoryId": 2116,
+      "RegistroId": 30346,
+      "DocSavedOn": "2026-07-28",
+      "ExplicationNote": "Rusu Lacrimioara-Petronela nu a completat verificarea FAI obligatorie la începutul turei de la ora 15:30. Acest lucru constituie o abatere disciplinară conform regulamentului intern al companiei.",
+      "ArticoloLegaleId": 33,
+      "SefID": 1306,
+      "DataAvvenimento": "2026-07-28",
+      "OraAvvenimento": "15:30",
+      "DateSys": "2026-07-28 17:28:16.077000"
+    },
+    {
+      "EmployeeDisciplinaryHistoryId": 1528,
+      "EmployeeHireHistoryId": 1896,
+      "RegistroId": 30347,
+      "DocSavedOn": "2026-07-28",
+      "ExplicationNote": "Rotariu Adriana nu a completat verificarea FAI obligatorie la începutul turei de la ora 15:30 per l''ordine PR0000847. Acest lucru constituie o abatere disciplinară conform regulamentului intern al companiei.",
+      "ArticoloLegaleId": 33,
+      "SefID": 1306,
+      "DataAvvenimento": "2026-07-28",
+      "OraAvvenimento": "15:30",
+      "DateSys": "2026-07-28 18:55:43.697000"
+    },
+    {
+      "EmployeeDisciplinaryHistoryId": 1529,
+      "EmployeeHireHistoryId": 1896,
+      "RegistroId": 30351,
+      "DocSavedOn": "2026-07-29",
+      "ExplicationNote": "Rotariu Adriana nu a completat verificarea FAI obligatorie la începutul turei de la ora 15:30 per l''ordine PR0000721. Acest lucru constituie o abatere disciplinară conform regulamentului intern al companiei.",
+      "ArticoloLegaleId": 33,
+      "SefID": 1306,
+      "DataAvvenimento": "2026-07-29",
+      "OraAvvenimento": "15:30",
+      "DateSys": "2026-07-29 09:25:30.170000"
+    },
+    {
+      "EmployeeDisciplinaryHistoryId": 1530,
+      "EmployeeHireHistoryId": 2085,
+      "RegistroId": 30352,
+      "DocSavedOn": "2026-07-29",
+      "ExplicationNote": "MALAU ANDREEA-GABRIELA nu a completat verificarea FAI obligatorie la începutul turei de la ora 07:30. Acest lucru constituie o abatere disciplinară conform regulamentului intern al companiei.",
+      "ArticoloLegaleId": 33,
+      "SefID": 1306,
+      "DataAvvenimento": "2026-07-29",
+      "OraAvvenimento": "07:30",
+      "DateSys": "2026-07-29 09:28:03.647000"
+    },
+    {
+      "EmployeeDisciplinaryHistoryId": 1531,
+      "EmployeeHireHistoryId": 2116,
+      "RegistroId": 30357,
+      "DocSavedOn": "2026-07-29",
+      "ExplicationNote": "Rusu Lacrimioara-Petronela nu a completat verificarea FAI obligatorie la începutul turei de la ora 15:30. Acest lucru constituie o abatere disciplinară conform regulamentului intern al companiei.",
+      "ArticoloLegaleId": 33,
+      "SefID": 1306,
+      "DataAvvenimento": "2026-07-29",
+      "OraAvvenimento": "15:30",
+      "DateSys": "2026-07-29 17:28:02.173000"
+    },
+    {
+      "EmployeeDisciplinaryHistoryId": 1532,
+      "EmployeeHireHistoryId": 2114,
+      "RegistroId": 30358,
+      "DocSavedOn": "2026-07-29",
+      "ExplicationNote": "ALB CECILIA-RAMONA nu a completat verificarea FAI obligatorie la începutul turei de la ora 07:30 per l''ordine PR0000727. Acest lucru constituie o abatere disciplinară conform regulamentului intern al companiei.",
+      "ArticoloLegaleId": 33,
+      "SefID": 1306,
+      "DataAvvenimento": "2026-07-29",
+      "OraAvvenimento": "07:30",
+      "DateSys": "2026-07-29 20:51:37.063000"
+    },
+    {
+      "EmployeeDisciplinaryHistoryId": 1533,
+      "EmployeeHireHistoryId": 1896,
+      "RegistroId": 30359,
+      "DocSavedOn": "2026-07-29",
+      "ExplicationNote": "Rotariu Adriana nu a completat verificarea FAI obligatorie la începutul turei de la ora 15:30 per l''ordine PR0000836. Acest lucru constituie o abatere disciplinară conform regulamentului intern al companiei.",
+      "ArticoloLegaleId": 33,
+      "SefID": 1306,
+      "DataAvvenimento": "2026-07-29",
+      "OraAvvenimento": "15:30",
+      "DateSys": "2026-07-29 21:19:34.853000"
+    },
+    {
+      "EmployeeDisciplinaryHistoryId": 1534,
+      "EmployeeHireHistoryId": 2085,
+      "RegistroId": 30360,
+      "DocSavedOn": "2026-07-30",
+      "ExplicationNote": "MALAU ANDREEA-GABRIELA nu a completat verificarea FAI obligatorie la începutul turei de la ora 07:30. Acest lucru constituie o abatere disciplinară conform regulamentului intern al companiei.",
+      "ArticoloLegaleId": 33,
+      "SefID": 1306,
+      "DataAvvenimento": "2026-07-30",
+      "OraAvvenimento": "07:30",
+      "DateSys": "2026-07-30 09:28:26.280000"
+    }
+  ],
+  "enforcement_events": [
+    {
+      "EnforcementLogId": 15,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-04-15 08:28:08.057000"
+    },
+    {
+      "EnforcementLogId": 53,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-15 16:28:17.920000"
+    },
+    {
+      "EnforcementLogId": 54,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-15 16:28:17.947000"
+    },
+    {
+      "EnforcementLogId": 55,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-15 16:28:17.973000"
+    },
+    {
+      "EnforcementLogId": 93,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-04-16 08:28:23.323000"
+    },
+    {
+      "EnforcementLogId": 166,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-16 16:28:13.703000"
+    },
+    {
+      "EnforcementLogId": 167,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-16 16:28:13.723000"
+    },
+    {
+      "EnforcementLogId": 168,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-16 16:28:13.740000"
+    },
+    {
+      "EnforcementLogId": 252,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-04-17 08:28:14.810000"
+    },
+    {
+      "EnforcementLogId": 344,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-17 16:28:12.780000"
+    },
+    {
+      "EnforcementLogId": 345,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-17 16:28:12.820000"
+    },
+    {
+      "EnforcementLogId": 346,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-17 16:28:12.867000"
+    },
+    {
+      "EnforcementLogId": 495,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-04-20 08:28:06.670000"
+    },
+    {
+      "EnforcementLogId": 496,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-04-20 08:28:06.700000"
+    },
+    {
+      "EnforcementLogId": 578,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-20 16:28:10.160000"
+    },
+    {
+      "EnforcementLogId": 623,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-04-21 08:28:12.460000"
+    },
+    {
+      "EnforcementLogId": 624,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-04-21 08:28:12.497000"
+    },
+    {
+      "EnforcementLogId": 674,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-21 16:28:03.510000"
+    },
+    {
+      "EnforcementLogId": 729,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-04-22 08:28:17.733000"
+    },
+    {
+      "EnforcementLogId": 730,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-04-22 08:28:17.760000"
+    },
+    {
+      "EnforcementLogId": 797,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-22 16:28:18.947000"
+    },
+    {
+      "EnforcementLogId": 808,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-04-23 08:28:12.883000"
+    },
+    {
+      "EnforcementLogId": 809,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-04-23 08:28:12.920000"
+    },
+    {
+      "EnforcementLogId": 842,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-23 16:28:05.180000"
+    },
+    {
+      "EnforcementLogId": 852,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-04-24 08:28:17.610000"
+    },
+    {
+      "EnforcementLogId": 853,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-04-24 08:28:17.647000"
+    },
+    {
+      "EnforcementLogId": 880,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-24 16:28:01"
+    },
+    {
+      "EnforcementLogId": 914,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-04-25 08:28:11.073000"
+    },
+    {
+      "EnforcementLogId": 915,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-04-25 08:28:11.090000"
+    },
+    {
+      "EnforcementLogId": 925,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-27 16:28:11.093000"
+    },
+    {
+      "EnforcementLogId": 926,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-27 16:28:11.147000"
+    },
+    {
+      "EnforcementLogId": 951,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-28 16:28:05.753000"
+    },
+    {
+      "EnforcementLogId": 952,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-28 16:28:05.770000"
+    },
+    {
+      "EnforcementLogId": 978,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-29 16:28:18.700000"
+    },
+    {
+      "EnforcementLogId": 979,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-29 16:28:18.720000"
+    },
+    {
+      "EnforcementLogId": 1006,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-30 16:28:01.343000"
+    },
+    {
+      "EnforcementLogId": 1007,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-04-30 16:28:01.417000"
+    },
+    {
+      "EnforcementLogId": 1020,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-04 08:28:24.490000"
+    },
+    {
+      "EnforcementLogId": 1021,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-04 08:28:24.520000"
+    },
+    {
+      "EnforcementLogId": 1060,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-05 08:28:01.937000"
+    },
+    {
+      "EnforcementLogId": 1061,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-05 08:28:01.970000"
+    },
+    {
+      "EnforcementLogId": 1130,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-05 16:28:11.250000"
+    },
+    {
+      "EnforcementLogId": 1136,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-06 08:28:00.743000"
+    },
+    {
+      "EnforcementLogId": 1137,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-06 08:28:00.813000"
+    },
+    {
+      "EnforcementLogId": 1149,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-06 16:28:06.190000"
+    },
+    {
+      "EnforcementLogId": 1153,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-07 08:28:12.130000"
+    },
+    {
+      "EnforcementLogId": 1154,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-07 08:28:12.167000"
+    },
+    {
+      "EnforcementLogId": 1197,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-08 08:28:15.953000"
+    },
+    {
+      "EnforcementLogId": 1198,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-08 08:28:16"
+    },
+    {
+      "EnforcementLogId": 1210,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-08 16:28:13.830000"
+    },
+    {
+      "EnforcementLogId": 1224,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-09 08:28:05.327000"
+    },
+    {
+      "EnforcementLogId": 1231,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-11 08:28:01.760000"
+    },
+    {
+      "EnforcementLogId": 1257,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-11 16:28:06.657000"
+    },
+    {
+      "EnforcementLogId": 1259,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-11 16:28:06.687000"
+    },
+    {
+      "EnforcementLogId": 1276,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-12 08:28:10.800000"
+    },
+    {
+      "EnforcementLogId": 1295,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-12 16:28:01.060000"
+    },
+    {
+      "EnforcementLogId": 1297,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-12 16:28:01.133000"
+    },
+    {
+      "EnforcementLogId": 1316,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-13 08:28:11.150000"
+    },
+    {
+      "EnforcementLogId": 1330,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-13 16:28:30.487000"
+    },
+    {
+      "EnforcementLogId": 1332,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-13 16:28:30.517000"
+    },
+    {
+      "EnforcementLogId": 1354,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-14 08:28:11.913000"
+    },
+    {
+      "EnforcementLogId": 1365,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-14 16:28:14.330000"
+    },
+    {
+      "EnforcementLogId": 1367,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-14 16:28:14.410000"
+    },
+    {
+      "EnforcementLogId": 1386,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-15 08:28:22.347000"
+    },
+    {
+      "EnforcementLogId": 1400,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-15 16:28:01.380000"
+    },
+    {
+      "EnforcementLogId": 1402,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-15 16:28:01.467000"
+    },
+    {
+      "EnforcementLogId": 1422,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-18 08:28:02.690000"
+    },
+    {
+      "EnforcementLogId": 1423,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-18 08:28:02.710000"
+    },
+    {
+      "EnforcementLogId": 1447,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-18 16:28:22.547000"
+    },
+    {
+      "EnforcementLogId": 1457,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-19 08:28:02.977000"
+    },
+    {
+      "EnforcementLogId": 1458,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-19 08:28:02.997000"
+    },
+    {
+      "EnforcementLogId": 1479,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-19 16:28:02.063000"
+    },
+    {
+      "EnforcementLogId": 1493,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-20 08:28:04.487000"
+    },
+    {
+      "EnforcementLogId": 1494,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-20 08:28:04.560000"
+    },
+    {
+      "EnforcementLogId": 1515,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-20 16:28:17.250000"
+    },
+    {
+      "EnforcementLogId": 1528,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-21 08:28:06.140000"
+    },
+    {
+      "EnforcementLogId": 1529,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-21 08:28:06.183000"
+    },
+    {
+      "EnforcementLogId": 1541,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-21 16:28:02.593000"
+    },
+    {
+      "EnforcementLogId": 1552,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-22 08:28:00.867000"
+    },
+    {
+      "EnforcementLogId": 1553,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-22 08:28:00.910000"
+    },
+    {
+      "EnforcementLogId": 1577,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-22 16:28:17.920000"
+    },
+    {
+      "EnforcementLogId": 1584,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-23 08:28:22.770000"
+    },
+    {
+      "EnforcementLogId": 1585,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-23 08:28:22.820000"
+    },
+    {
+      "EnforcementLogId": 1591,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-25 08:28:15.160000"
+    },
+    {
+      "EnforcementLogId": 1592,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-25 08:28:15.183000"
+    },
+    {
+      "EnforcementLogId": 1610,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-25 16:28:11.207000"
+    },
+    {
+      "EnforcementLogId": 1630,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-26 08:28:22.740000"
+    },
+    {
+      "EnforcementLogId": 1631,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-26 08:28:22.770000"
+    },
+    {
+      "EnforcementLogId": 1649,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-26 16:28:38.833000"
+    },
+    {
+      "EnforcementLogId": 1659,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-27 08:28:01.890000"
+    },
+    {
+      "EnforcementLogId": 1660,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-27 08:28:01.920000"
+    },
+    {
+      "EnforcementLogId": 1669,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-27 16:28:21.430000"
+    },
+    {
+      "EnforcementLogId": 1690,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-28 08:28:08.223000"
+    },
+    {
+      "EnforcementLogId": 1691,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-28 08:28:08.237000"
+    },
+    {
+      "EnforcementLogId": 1709,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-28 16:28:06.933000"
+    },
+    {
+      "EnforcementLogId": 1720,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-29 08:28:05.097000"
+    },
+    {
+      "EnforcementLogId": 1721,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-29 08:28:05.160000"
+    },
+    {
+      "EnforcementLogId": 1740,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-05-29 16:28:03.037000"
+    },
+    {
+      "EnforcementLogId": 1752,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-05-30 08:28:17.870000"
+    },
+    {
+      "EnforcementLogId": 1757,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-02 08:28:01.857000"
+    },
+    {
+      "EnforcementLogId": 1758,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-02 08:28:01.893000"
+    },
+    {
+      "EnforcementLogId": 1781,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-06-02 16:28:07.063000"
+    },
+    {
+      "EnforcementLogId": 1797,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-03 08:27:22.217000"
+    },
+    {
+      "EnforcementLogId": 1798,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-03 08:27:22.230000"
+    },
+    {
+      "EnforcementLogId": 1819,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-06-03 16:28:03.793000"
+    },
+    {
+      "EnforcementLogId": 1825,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-04 08:28:04.057000"
+    },
+    {
+      "EnforcementLogId": 1826,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-04 08:28:04.080000"
+    },
+    {
+      "EnforcementLogId": 1838,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-06-04 16:28:07.693000"
+    },
+    {
+      "EnforcementLogId": 1850,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-05 08:28:05.450000"
+    },
+    {
+      "EnforcementLogId": 1851,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-05 08:28:05.497000"
+    },
+    {
+      "EnforcementLogId": 1872,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-06-05 16:28:09.133000"
+    },
+    {
+      "EnforcementLogId": 1885,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-06 08:28:04.080000"
+    },
+    {
+      "EnforcementLogId": 1886,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-06 08:28:04.120000"
+    },
+    {
+      "EnforcementLogId": 1895,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-08 08:28:00.800000"
+    },
+    {
+      "EnforcementLogId": 1896,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-08 08:28:00.837000"
+    },
+    {
+      "EnforcementLogId": 1907,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-06-08 16:28:05.787000"
+    },
+    {
+      "EnforcementLogId": 1930,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-09 08:28:07.977000"
+    },
+    {
+      "EnforcementLogId": 1931,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-09 08:28:08.020000"
+    },
+    {
+      "EnforcementLogId": 1940,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-06-09 16:28:32.007000"
+    },
+    {
+      "EnforcementLogId": 1954,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-10 08:28:17.893000"
+    },
+    {
+      "EnforcementLogId": 1955,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-10 08:28:17.910000"
+    },
+    {
+      "EnforcementLogId": 1967,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-06-10 16:28:19.407000"
+    },
+    {
+      "EnforcementLogId": 1986,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-11 08:28:21.577000"
+    },
+    {
+      "EnforcementLogId": 1987,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-11 08:28:21.603000"
+    },
+    {
+      "EnforcementLogId": 2007,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-06-11 16:28:28.993000"
+    },
+    {
+      "EnforcementLogId": 2026,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-12 08:28:04.937000"
+    },
+    {
+      "EnforcementLogId": 2027,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-12 08:28:04.980000"
+    },
+    {
+      "EnforcementLogId": 2054,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-06-12 16:28:00.940000"
+    },
+    {
+      "EnforcementLogId": 2070,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-15 08:27:49.013000"
+    },
+    {
+      "EnforcementLogId": 2071,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-15 08:27:49.023000"
+    },
+    {
+      "EnforcementLogId": 2084,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-06-15 16:28:12.077000"
+    },
+    {
+      "EnforcementLogId": 2091,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-16 08:27:27.840000"
+    },
+    {
+      "EnforcementLogId": 2092,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-16 08:27:27.850000"
+    },
+    {
+      "EnforcementLogId": 2101,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-06-16 16:28:09.627000"
+    },
+    {
+      "EnforcementLogId": 2110,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-17 08:27:01.500000"
+    },
+    {
+      "EnforcementLogId": 2117,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-06-17 16:28:02.030000"
+    },
+    {
+      "EnforcementLogId": 2128,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-18 08:28:21.483000"
+    },
+    {
+      "EnforcementLogId": 2140,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-06-18 16:28:00.890000"
+    },
+    {
+      "EnforcementLogId": 2147,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-19 08:28:04.897000"
+    },
+    {
+      "EnforcementLogId": 2153,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-06-19 16:28:20.263000"
+    },
+    {
+      "EnforcementLogId": 2166,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-20 08:28:07.937000"
+    },
+    {
+      "EnforcementLogId": 2172,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-22 08:28:16.653000"
+    },
+    {
+      "EnforcementLogId": 2173,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-22 08:28:16.660000"
+    },
+    {
+      "EnforcementLogId": 2198,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-23 08:28:03.630000"
+    },
+    {
+      "EnforcementLogId": 2199,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-23 08:28:03.647000"
+    },
+    {
+      "EnforcementLogId": 2221,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-24 08:28:38.890000"
+    },
+    {
+      "EnforcementLogId": 2222,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-24 08:28:38.913000"
+    },
+    {
+      "EnforcementLogId": 2240,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-25 08:28:14.510000"
+    },
+    {
+      "EnforcementLogId": 2241,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-25 08:28:14.530000"
+    },
+    {
+      "EnforcementLogId": 2249,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-06-25 16:28:09.917000"
+    },
+    {
+      "EnforcementLogId": 2261,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-26 08:28:17.943000"
+    },
+    {
+      "EnforcementLogId": 2262,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-26 08:28:17.960000"
+    },
+    {
+      "EnforcementLogId": 2287,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-06-26 16:28:15.840000"
+    },
+    {
+      "EnforcementLogId": 2304,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-27 08:28:09.197000"
+    },
+    {
+      "EnforcementLogId": 2310,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-29 08:28:09.107000"
+    },
+    {
+      "EnforcementLogId": 2311,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-29 08:28:09.137000"
+    },
+    {
+      "EnforcementLogId": 2331,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-06-29 16:28:03.300000"
+    },
+    {
+      "EnforcementLogId": 2338,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-30 08:28:25.200000"
+    },
+    {
+      "EnforcementLogId": 2339,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-06-30 08:28:25.230000"
+    },
+    {
+      "EnforcementLogId": 2351,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-06-30 16:28:10.370000"
+    },
+    {
+      "EnforcementLogId": 2360,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-01 08:28:29.083000"
+    },
+    {
+      "EnforcementLogId": 2361,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-01 08:28:29.117000"
+    },
+    {
+      "EnforcementLogId": 2380,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-01 16:28:08.023000"
+    },
+    {
+      "EnforcementLogId": 2391,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-02 08:28:06.283000"
+    },
+    {
+      "EnforcementLogId": 2392,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-02 08:28:06.330000"
+    },
+    {
+      "EnforcementLogId": 2405,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-02 16:28:33.920000"
+    },
+    {
+      "EnforcementLogId": 2416,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-03 08:28:01.937000"
+    },
+    {
+      "EnforcementLogId": 2417,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-03 08:28:01.967000"
+    },
+    {
+      "EnforcementLogId": 2456,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-03 16:28:12.180000"
+    },
+    {
+      "EnforcementLogId": 2475,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-06 08:28:09.913000"
+    },
+    {
+      "EnforcementLogId": 2476,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-06 08:28:09.927000"
+    },
+    {
+      "EnforcementLogId": 2481,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-06 16:28:09.400000"
+    },
+    {
+      "EnforcementLogId": 2492,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-07 08:28:04.887000"
+    },
+    {
+      "EnforcementLogId": 2493,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-07 08:28:05.023000"
+    },
+    {
+      "EnforcementLogId": 2501,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-07 16:28:10.243000"
+    },
+    {
+      "EnforcementLogId": 2507,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-08 08:28:08.663000"
+    },
+    {
+      "EnforcementLogId": 2508,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-08 08:28:08.693000"
+    },
+    {
+      "EnforcementLogId": 2522,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-08 16:28:08.560000"
+    },
+    {
+      "EnforcementLogId": 2537,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-09 08:28:07.960000"
+    },
+    {
+      "EnforcementLogId": 2538,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-09 08:28:07.990000"
+    },
+    {
+      "EnforcementLogId": 2551,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-10 08:28:08.557000"
+    },
+    {
+      "EnforcementLogId": 2552,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-10 08:28:08.593000"
+    },
+    {
+      "EnforcementLogId": 2567,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-10 16:28:13.803000"
+    },
+    {
+      "EnforcementLogId": 2575,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-11 08:28:40.703000"
+    },
+    {
+      "EnforcementLogId": 2581,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-13 08:28:18.747000"
+    },
+    {
+      "EnforcementLogId": 2593,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-13 16:28:22.943000"
+    },
+    {
+      "EnforcementLogId": 2594,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "NECHITELEA CORINA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-13 16:28:22.987000"
+    },
+    {
+      "EnforcementLogId": 2606,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-14 08:28:02.487000"
+    },
+    {
+      "EnforcementLogId": 2615,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-14 16:28:03.160000"
+    },
+    {
+      "EnforcementLogId": 2622,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-15 08:28:08.887000"
+    },
+    {
+      "EnforcementLogId": 2640,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-15 16:28:07.980000"
+    },
+    {
+      "EnforcementLogId": 2646,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-16 08:28:01.453000"
+    },
+    {
+      "EnforcementLogId": 2660,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-16 16:28:01.473000"
+    },
+    {
+      "EnforcementLogId": 2665,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-17 08:28:02.307000"
+    },
+    {
+      "EnforcementLogId": 2671,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-17 16:28:17.780000"
+    },
+    {
+      "EnforcementLogId": 2685,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-18 08:28:08.863000"
+    },
+    {
+      "EnforcementLogId": 2686,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-18 08:28:08.903000"
+    },
+    {
+      "EnforcementLogId": 2692,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-20 08:28:03.727000"
+    },
+    {
+      "EnforcementLogId": 2700,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-20 16:28:12.517000"
+    },
+    {
+      "EnforcementLogId": 2708,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-21 08:28:32.907000"
+    },
+    {
+      "EnforcementLogId": 2721,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 2,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-21 17:00:13.537000"
+    },
+    {
+      "EnforcementLogId": 2722,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-21 17:28:16.473000"
+    },
+    {
+      "EnforcementLogId": 2755,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 2,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-22 09:00:03.410000"
+    },
+    {
+      "EnforcementLogId": 2756,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-22 09:28:05.610000"
+    },
+    {
+      "EnforcementLogId": 2762,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 2,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-23 09:00:03.393000"
+    },
+    {
+      "EnforcementLogId": 2763,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-23 09:28:05.163000"
+    },
+    {
+      "EnforcementLogId": 2770,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 2,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-23 17:00:16.227000"
+    },
+    {
+      "EnforcementLogId": 2771,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-23 17:28:09.270000"
+    },
+    {
+      "EnforcementLogId": 2773,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 2,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-24 09:00:22.920000"
+    },
+    {
+      "EnforcementLogId": 2774,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-24 09:28:23.833000"
+    },
+    {
+      "EnforcementLogId": 2777,
+      "EventType": "PLANNING_CHECK",
+      "EmployeeName": "Rotariu Adriana",
+      "EscalationLevel": 3,
+      "OrderNumber": "PR0000848",
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-24 15:51:10.787000"
+    },
+    {
+      "EnforcementLogId": 2781,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 2,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-24 17:00:11.487000"
+    },
+    {
+      "EnforcementLogId": 2782,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-24 17:28:13.527000"
+    },
+    {
+      "EnforcementLogId": 2784,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 2,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-25 09:00:37.977000"
+    },
+    {
+      "EnforcementLogId": 2785,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-25 09:28:21.303000"
+    },
+    {
+      "EnforcementLogId": 2788,
+      "EventType": "PLANNING_CHECK",
+      "EmployeeName": "ALB CECILIA-RAMONA",
+      "EscalationLevel": 3,
+      "OrderNumber": "PR0000764",
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-27 13:01:10.070000"
+    },
+    {
+      "EnforcementLogId": 2791,
+      "EventType": "PLANNING_CHECK",
+      "EmployeeName": "ALB CECILIA-RAMONA",
+      "EscalationLevel": 3,
+      "OrderNumber": "PR0000715",
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-27 15:47:54.890000"
+    },
+    {
+      "EnforcementLogId": 2793,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 2,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-27 17:00:05.630000"
+    },
+    {
+      "EnforcementLogId": 2794,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-27 17:28:26.910000"
+    },
+    {
+      "EnforcementLogId": 2796,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 2,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-28 09:00:16.680000"
+    },
+    {
+      "EnforcementLogId": 2797,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-28 09:28:18.690000"
+    },
+    {
+      "EnforcementLogId": 2802,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 2,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-28 17:00:20.083000"
+    },
+    {
+      "EnforcementLogId": 2804,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-28 17:28:16.030000"
+    },
+    {
+      "EnforcementLogId": 2806,
+      "EventType": "PLANNING_CHECK",
+      "EmployeeName": "Rotariu Adriana",
+      "EscalationLevel": 3,
+      "OrderNumber": "PR0000847",
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-28 18:55:43.610000"
+    },
+    {
+      "EnforcementLogId": 2810,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 2,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-29 09:00:02.287000"
+    },
+    {
+      "EnforcementLogId": 2811,
+      "EventType": "PLANNING_CHECK",
+      "EmployeeName": "Rotariu Adriana",
+      "EscalationLevel": 3,
+      "OrderNumber": "PR0000721",
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-29 09:25:30.123000"
+    },
+    {
+      "EnforcementLogId": 2812,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-29 09:28:03.620000"
+    },
+    {
+      "EnforcementLogId": 2815,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 2,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-29 17:00:23.897000"
+    },
+    {
+      "EnforcementLogId": 2817,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-29 17:28:02.100000"
+    },
+    {
+      "EnforcementLogId": 2823,
+      "EventType": "PLANNING_CHECK",
+      "EmployeeName": "ALB CECILIA-RAMONA",
+      "EscalationLevel": 3,
+      "OrderNumber": "PR0000727",
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-29 20:51:36.957000"
+    },
+    {
+      "EnforcementLogId": 2824,
+      "EventType": "PLANNING_CHECK",
+      "EmployeeName": "Rotariu Adriana",
+      "EscalationLevel": 3,
+      "OrderNumber": "PR0000836",
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-29 21:19:34.827000"
+    },
+    {
+      "EnforcementLogId": 2827,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 2,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-30 09:00:24.013000"
+    },
+    {
+      "EnforcementLogId": 2828,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-30 09:28:26.080000"
+    }
+  ],
+  "pdfs": [
+    "C:\\Temp\\Referat_FAI_208RFT-2026.pdf",
+    "C:\\Temp\\Referat_FAI_215RFT-2026.pdf"
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "server_host_ip": "192.168.10.72",
+  "server_port": 5015,
+  "token_ttl_minutes": 5,
+  "session_lifetime_minutes": 30,
+  "session_secret": "3c562d986474f8ceb7ee40312d8999e02a8c6eb5b4fb4a68369fd81489723338"
+}

@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="{{ lang }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ ui.title }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <img src="{{ url_for('static', filename='Logo.png') }}" alt="Logo" class="logo">
+      <h1>{{ ui.title }}</h1>
+    </div>
+    <span class="user">{{ ui.user }}: {{ user }}</span>
+  </header>
+
+  <main>
+    <div id="ribbon-warning" class="warning-banner" style="display:none;"></div>
+
+    <section class="panel">
+      <h2>{{ ui.product }}</h2>
+      <input type="text" id="product-filter" placeholder="{{ ui.filter_placeholder }}" autocomplete="off">
+      <select id="product-select" size="6">
+        <option value="">{{ ui.select_product }}</option>
+      </select>
+      <div id="product-info" class="info"></div>
+    </section>
+
+    <section class="panel materials">
+      <div>
+        <h2>{{ ui.labels }}</h2>
+        <select id="labels-list" size="10"></select>
+      </div>
+      <div>
+        <h2>{{ ui.ribbons }}</h2>
+        <select id="ribbons-list" size="10"></select>
+      </div>
+      <div>
+        <h2>{{ ui.printer_label }}</h2>
+        <select id="printers-list" size="10"></select>
+      </div>
+    </section>
+
+    <section class="panel actions">
+      <div id="association-info" class="info"></div>
+      <div id="label-printer-info" class="info"></div>
+      <button id="change-association" disabled>{{ ui.change_association }}</button>
+      <button id="manage-printers" class="secondary">{{ ui.manage_printers }}</button>
+      <div id="message" class="message"></div>
+    </section>
+
+    <section class="panel script">
+      <h2>{{ ui.script_title }}</h2>
+      <div id="printer-status" class="printer-status"></div>
+      <textarea id="script-text" rows="12" disabled></textarea>
+      <div class="actions">
+        <button id="save-script" disabled>{{ ui.save_script }}</button>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const UI = {{ ui|tojson }};
+    let products = [];
+    let labels = [];
+    let ribbons = [];
+    let printers = [];
+    let currentLabelId = null;
+    let currentBomId = null;
+
+    const $ = id => document.getElementById(id);
+    const msg = (text, type = 'info') => {
+      const el = $('message');
+      el.textContent = text;
+      el.className = 'message ' + type;
+    };
+
+    async function safeJson(res) {
+      const text = await res.text();
+      try {
+        return JSON.parse(text);
+      } catch (e) {
+        return { error: 'invalid_response', message: text.substring(0, 200) };
+      }
+    }
+
+    async function apiFetch(url, options = null) {
+      console.log('API call:', url);
+      const res = await fetch(url, options);
+      const data = await safeJson(res);
+      console.log('API response:', url, res.status, data);
+      if (!res.ok) {
+        const err = new Error(data.message || `HTTP ${res.status}`);
+        err.status = res.status;
+        err.data = data;
+        throw err;
+      }
+      return data;
+    }
+
+    function setRibbonWarning() {
+      const banner = $('ribbon-warning');
+      const hasRibbons = ribbons.length > 0;
+      if (hasRibbons) {
+        banner.style.display = 'none';
+        banner.textContent = '';
+      } else {
+        banner.style.display = 'block';
+        banner.textContent = UI.no_ribbons_warning;
+      }
+      // Disabilita i bottoni di esecuzione se non ci sono ribbon
+      $('change-association').disabled = true;
+      $('save-script').disabled = true;
+      $('script-text').disabled = true;
+    }
+
+    function updatePrinterStatus(printer) {
+      const el = $('printer-status');
+      if (printer && printer.PrinterName) {
+        el.textContent = `${UI.printer_label} ${printer.PrinterName}`;
+        el.className = 'printer-status';
+      } else {
+        el.textContent = UI.no_printer_warning;
+        el.className = 'printer-status error-text';
+      }
+    }
+
+    async function loadData() {
+      try {
+        products = await apiFetch('/api/products');
+        labels = await apiFetch('/api/labels');
+        ribbons = await apiFetch('/api/ribbons');
+        printers = await apiFetch('/api/printers/list');
+        console.log('Products:', products.length, products.slice(0, 3));
+        console.log('Labels:', labels.length, labels.slice(0, 3));
+        console.log('Ribbons:', ribbons.length, ribbons.slice(0, 3));
+        console.log('Printers:', printers.length, printers.slice(0, 3));
+        renderProducts('');
+        populateList('labels-list', labels);
+        populateList('ribbons-list', ribbons);
+        populatePrinterList();
+        setRibbonWarning();
+      } catch (e) {
+        msg(UI.msg_error + (e.message || e), 'error');
+        console.error('loadData error:', e);
+      }
+      try {
+        const printer = await apiFetch('/api/printer/default');
+        console.log('Printer:', printer);
+        updatePrinterStatus(printer);
+      } catch (e) {
+        console.error('Printer load error:', e);
+        updatePrinterStatus(null);
+      }
+    }
+
+    function renderProducts(filterText) {
+      const sel = $('product-select');
+      sel.innerHTML = '<option value="">' + UI.select_product + '</option>';
+      const term = (filterText || '').toLowerCase().trim();
+      const filtered = term
+        ? products.filter(p =>
+            (p.ProductCode || '').toLowerCase().includes(term) ||
+            (p.ProductName || '').toLowerCase().includes(term)
+          )
+        : products.slice();
+      filtered.forEach(r => {
+        const opt = document.createElement('option');
+        opt.value = r.idproduct;
+        opt.textContent = `${r.ProductCode} - ${r.ProductName}` + (r.LinkedAtLabel ? ` [${r.LinkedAtLabel}]` : '');
+        sel.appendChild(opt);
+      });
+    }
+
+    function populateList(id, rows) {
+      const list = $(id);
+      list.innerHTML = '';
+      rows.forEach(r => {
+        const opt = document.createElement('option');
+        opt.value = r.materialeid;
+        opt.textContent = `${r.MaterialCode} - ${r.MaterialDescription}`;
+        list.appendChild(opt);
+      });
+    }
+
+    function populatePrinterList() {
+      const list = $('printers-list');
+      list.innerHTML = '';
+      printers.forEach(r => {
+        const opt = document.createElement('option');
+        opt.value = r.LabelPrinterId;
+        opt.textContent = `${r.PrinterName}` + (r.ConnectionString ? ` (${r.ConnectionString})` : '');
+        list.appendChild(opt);
+      });
+    }
+
+    function selectListByValue(id, value) {
+      const list = $(id);
+      for (const opt of list.options) {
+        if (opt.value == value) {
+          opt.selected = true;
+          list.dispatchEvent(new Event('change'));
+          return true;
+        }
+      }
+      list.selectedIndex = -1;
+      return false;
+    }
+
+    async function loadCurrentAssociation(labelId) {
+      if (!labelId) {
+        $('association-info').textContent = '';
+        $('label-printer-info').textContent = '';
+        $('change-association').disabled = true;
+        return;
+      }
+      try {
+        const [ribbonData, printerData] = await Promise.all([
+          apiFetch('/api/linked_materials/current?label_id=' + labelId),
+          apiFetch('/api/label_printer_association/current?label_id=' + labelId)
+        ]);
+
+        let ribbonText = UI.no_association;
+        if (ribbonData.RibbonId) {
+          const ribbon = ribbons.find(r => r.materialeid == ribbonData.RibbonId);
+          ribbonText = ribbon ? ribbon.MaterialDescription : ribbonData.RibbonId;
+          selectListByValue('ribbons-list', ribbonData.RibbonId);
+        }
+        $('association-info').textContent = `${UI.current_association}: ${ribbonText}`;
+
+        if (printerData.LabelPrinterId) {
+          const printer = printers.find(p => p.LabelPrinterId == printerData.LabelPrinterId);
+          const printerName = printer ? printer.PrinterName : printerData.LabelPrinterId;
+          const model = printerData.PrinterModel || '-';
+          const ip = printerData.PrinterIP || '-';
+          const port = printerData.PrinterPort || '-';
+          const location = printerData.PrinterLocation || '-';
+          $('label-printer-info').innerHTML =
+            `<strong>${UI.associated_printer}:</strong> ${printerName}<br>` +
+            UI.printer_details.replace('{model}', model).replace('{ip}', ip).replace('{port}', port).replace('{location}', location);
+          selectListByValue('printers-list', printerData.LabelPrinterId);
+        } else {
+          $('label-printer-info').textContent = UI.no_printer_for_label;
+        }
+
+        $('change-association').disabled = !($('labels-list').value && $('ribbons-list').value && $('printers-list').value);
+      } catch (e) {
+        msg(UI.msg_error + (e.message || e), 'error');
+        console.error(e);
+      }
+    }
+
+    async function updateBomId(labelId) {
+      if (!labelId) {
+        currentBomId = null;
+        updateScriptEditor();
+        return;
+      }
+      const productId = parseInt($('product-select').value, 10);
+      const product = products.find(p => p.idproduct === productId);
+      if (product && product.LabelId === labelId && product.BomIndirectMaterialId) {
+        currentBomId = product.BomIndirectMaterialId;
+        updateScriptEditor();
+        return;
+      }
+      try {
+        const data = await apiFetch('/api/label_bom?label_id=' + labelId);
+        currentBomId = data.bom_id || null;
+      } catch (e) {
+        currentBomId = null;
+      }
+      updateScriptEditor();
+    }
+
+    function updateScriptEditor() {
+      const hasBom = !!currentBomId && ribbons.length > 0;
+      $('script-text').disabled = !hasBom;
+      $('save-script').disabled = !hasBom;
+      if (!hasBom) {
+        $('script-text').value = '';
+      }
+    }
+
+    $('product-filter').addEventListener('input', () => {
+      renderProducts($('product-filter').value);
+    });
+
+    $('product-select').addEventListener('change', async () => {
+      const pid = parseInt($('product-select').value, 10);
+      const prod = products.find(p => p.idproduct === pid);
+      $('product-info').textContent = prod ? `${UI.product}: ${prod.ProductName} | ${prod.LinkedAtLabel || ''}` : '';
+      if (prod && prod.LabelId) {
+        selectListByValue('labels-list', prod.LabelId);
+      } else {
+        $('labels-list').selectedIndex = -1;
+        $('labels-list').dispatchEvent(new Event('change'));
+      }
+    });
+
+    $('labels-list').addEventListener('change', async () => {
+      currentLabelId = parseInt($('labels-list').value, 10) || null;
+      $('change-association').disabled = !(currentLabelId && $('ribbons-list').value && $('printers-list').value && ribbons.length > 0);
+      await loadCurrentAssociation(currentLabelId);
+      if (currentBomId && ribbons.length > 0) {
+        $('script-text').disabled = false;
+        $('save-script').disabled = false;
+      }
+      await updateBomId(currentLabelId);
+      if (currentBomId) {
+        try {
+          const data = await apiFetch('/api/bom/script?bom_id=' + currentBomId);
+          $('script-text').value = data.script || '';
+        } catch (e) {
+          $('script-text').value = '';
+        }
+      }
+    });
+
+    $('ribbons-list').addEventListener('change', () => {
+      $('change-association').disabled = !(currentLabelId && $('ribbons-list').value && $('printers-list').value);
+    });
+
+    $('printers-list').addEventListener('change', () => {
+      $('change-association').disabled = !(currentLabelId && $('ribbons-list').value && $('printers-list').value);
+    });
+
+    $('change-association').addEventListener('click', async () => {
+      const labelId = currentLabelId;
+      const ribbonId = parseInt($('ribbons-list').value, 10);
+      const printerId = parseInt($('printers-list').value, 10) || null;
+      if (!labelId || !ribbonId || !printerId) {
+        msg(UI.msg_select_label_ribbon, 'error');
+        return;
+      }
+      try {
+        const [ribbonData, printerData] = await Promise.all([
+          apiFetch('/api/linked_materials', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ label_id: labelId, ribbon_id: ribbonId })
+          }),
+          apiFetch('/api/label_printer_association', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ label_id: labelId, printer_id: printerId })
+          })
+        ]);
+        if (ribbonData.error || printerData.error) {
+          msg((ribbonData.message || printerData.message || 'Errore salvataggio'), 'error');
+          return;
+        }
+        msg(UI.msg_association_saved, 'success');
+        await loadCurrentAssociation(labelId);
+        await updateBomId(labelId);
+        if (currentBomId) {
+          const sData = await apiFetch('/api/bom/script?bom_id=' + currentBomId);
+          $('script-text').value = sData.script || '';
+        }
+      } catch (e) {
+        msg(UI.msg_error + (e.message || e), 'error');
+        console.error(e);
+      }
+    });
+
+    $('save-script').addEventListener('click', async () => {
+      if (!currentBomId) {
+        msg(UI.msg_save_first, 'error');
+        return;
+      }
+      try {
+        const data = await apiFetch('/api/bom/script', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bom_id: currentBomId, script: $('script-text').value })
+        });
+        if (data.error) {
+          msg(data.message || 'Errore salvataggio script', 'error');
+          return;
+        }
+        msg(UI.msg_saved_script, 'success');
+      } catch (e) {
+        msg(UI.msg_error + (e.message || e), 'error');
+        console.error(e);
+      }
+    });
+
+    $('manage-printers').addEventListener('click', () => {
+      window.open('/printers', '_blank');
+    });
+
+    loadData();
+  </script>
+</body>
+</html>

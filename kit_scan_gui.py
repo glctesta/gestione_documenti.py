@@ -13,6 +13,7 @@ Interfaccia di scansione del Prelievo Magazzino (Fase 1) — Sprint 2
 import logging
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
+import winsound
 
 import kit_wh_logic as whl
 
@@ -65,6 +66,9 @@ class KitScanWindow(tk.Toplevel):
         self.list_id = list_id
         self.session_id = None
         self.closed = False
+        self._sort_col = None
+        self._sort_reverse = False
+        self._current_items = []
 
         cursor = self.db.conn.cursor()
         self.info = whl.get_list_info(cursor, list_id)
@@ -153,10 +157,19 @@ class KitScanWindow(tk.Toplevel):
         ttk.Button(scan_frame, text=lang.get('kit_btn_confirm', 'Conferma'),
                    command=self._on_confirm).grid(row=0, column=4, padx=8)
 
+        self.filter_positive_var = tk.BooleanVar(value=True)
+        self.filter_positive_cb = ttk.Checkbutton(
+            scan_frame,
+            text=lang.get('kit_filter_positive', 'Mostra solo quantità necessarie > 0'),
+            variable=self.filter_positive_var,
+            command=self._refresh_items
+        )
+        self.filter_positive_cb.grid(row=0, column=5, padx=(16, 0), sticky='w')
+
         self.alert_var = tk.StringVar()
         self.alert_lbl = ttk.Label(scan_frame, textvariable=self.alert_var,
                                    foreground='red', font=("Segoe UI", 10, "bold"))
-        self.alert_lbl.grid(row=1, column=0, columnspan=5, sticky='w', pady=(6, 0))
+        self.alert_lbl.grid(row=1, column=0, columnspan=6, sticky='w', pady=(6, 0))
 
         cols = ('status', 'material', 'unique', 'req', 'picked')
         self.tree = ttk.Treeview(self, columns=cols, show='headings', selectmode='browse')
@@ -169,7 +182,7 @@ class KitScanWindow(tk.Toplevel):
         }
         widths = {'status': 60, 'material': 280, 'unique': 160, 'req': 100, 'picked': 100}
         for c in cols:
-            self.tree.heading(c, text=headings[c])
+            self.tree.heading(c, text=headings[c], command=lambda c=c: self._sort_items(c))
             self.tree.column(c, width=widths[c],
                              anchor='w' if c == 'material' else 'center')
         vsb = ttk.Scrollbar(self, orient='vertical', command=self.tree.yview)
@@ -322,8 +335,11 @@ class KitScanWindow(tk.Toplevel):
         item = whl.find_item_by_unique(cursor, self.list_id, unique)
         cursor.close()
         if item is None:
+            self._play_error_sound()
+            self._show_big_red_x(unique)
             self._register_unknown(unique)
             return
+        self._play_success_sound()
         if item['pick_status'] == whl.ST_COMPLETE:
             if not messagebox.askyesno(
                     self.lang.get('warning_title', 'Attenzione'),
@@ -352,6 +368,7 @@ class KitScanWindow(tk.Toplevel):
                 raise ValueError
         except ValueError:
             self.alert_var.set(self.lang.get('kit_err_qty', 'Quantità non valida'))
+            self._play_error_sound()
             self.qty_entry.focus_set()
             return
 
@@ -370,6 +387,8 @@ class KitScanWindow(tk.Toplevel):
 
         if outcome == 'not_found':
             self._alert_unknown(unique)
+        else:
+            self._play_success_sound()
         self._reset_scan()
         self._refresh_items(keep_alert=True)
 
@@ -386,16 +405,63 @@ class KitScanWindow(tk.Toplevel):
             self.db.conn.rollback()
         finally:
             cursor.close()
-        self._alert_unknown(unique)
         self._reset_scan()
         self._refresh_items(keep_alert=True)
 
     def _alert_unknown(self, unique):
-        self.bell()
+        self._play_error_sound()
+        self._show_big_red_x(unique)
         self.alert_var.set(
             self.lang.get('kit_msg_unknown_unique',
                           '⚠ Unique number NON presente nella lista: {un} (registrato)')
             .replace('{un}', unique))
+
+    def _play_success_sound(self):
+        try:
+            winsound.MessageBeep(winsound.MB_OK)
+        except Exception:
+            pass
+
+    def _play_error_sound(self):
+        try:
+            winsound.MessageBeep(winsound.MB_ICONHAND)
+        except Exception:
+            pass
+
+    def _show_big_red_x(self, unique):
+        popup = tk.Toplevel(self)
+        popup.overrideredirect(True)
+        popup.configure(bg='white', highlightbackground='red', highlightthickness=10)
+        popup.geometry("300x300")
+        popup.transient(self)
+        popup.grab_set()
+        lbl_x = tk.Label(popup, text='X', font=('Arial', 140, 'bold'),
+                         fg='red', bg='white')
+        lbl_x.pack(expand=True, fill='both')
+        lbl_msg = tk.Label(
+            popup,
+            text=self.lang.get('kit_msg_big_x', '{un}\nNON IN LISTA')
+                .replace('{un}', unique),
+            font=('Arial', 14, 'bold'),
+            fg='red',
+            bg='white',
+            wraplength=260,
+            justify='center'
+        )
+        lbl_msg.pack(side='bottom', pady=10)
+        popup.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() // 2) - 150
+        y = self.winfo_y() + (self.winfo_height() // 2) - 150
+        popup.geometry(f"+{x}+{y}")
+
+        def _release_and_destroy(popup):
+            try:
+                popup.grab_release()
+            except Exception:
+                pass
+            popup.destroy()
+
+        self.after(2000, lambda: _release_and_destroy(popup))
 
     def _reset_scan(self):
         self.scan_var.set('')
@@ -419,14 +485,12 @@ class KitScanWindow(tk.Toplevel):
         state = whl.closure_state(cursor, self.list_id)
         cursor.close()
 
-        self.tree.delete(*self.tree.get_children())
-        for it in items:
-            emoji = STATUS_EMOJI.get(it['pick_status'], '❔')
-            tag = STATUS_TAG.get(it['pick_status'], '')
-            self.tree.insert('', 'end', values=(
-                emoji, it['material_code'], it['unique_number'] or '',
-                _fmt_qty(it['qty_required']), _fmt_qty(it['qty_picked']),
-            ), tags=(tag,))
+        # Applica filtro "solo quantità necessarie > 0" se checkbox selezionato
+        if self.filter_positive_var.get():
+            items = [it for it in items if float(it.get('qty_required') or 0) > 0]
+
+        self._current_items = items
+        self._render_items()
 
         c = state['counts']
         summary = (f"🟢 {c.get(whl.ST_COMPLETE, 0)}   "
@@ -441,6 +505,41 @@ class KitScanWindow(tk.Toplevel):
 
         self.btn_close.configure(state='normal' if state['can_close'] else 'disabled')
         self.btn_derog.configure(state='disabled' if state['can_close'] else 'normal')
+
+    def _render_items(self):
+        """Disegna la treeview usando self._current_items rispettando l'ordinamento corrente."""
+        self.tree.delete(*self.tree.get_children())
+        for it in self._current_items:
+            emoji = STATUS_EMOJI.get(it['pick_status'], '❔')
+            tag = STATUS_TAG.get(it['pick_status'], '')
+            self.tree.insert('', 'end', values=(
+                emoji, it['material_code'], it['unique_number'] or '',
+                _fmt_qty(it['qty_required']), _fmt_qty(it['qty_picked']),
+            ), tags=(tag,))
+
+    def _sort_items(self, col):
+        """Ordina self._current_items per la colonna cliccata e ridisegna la griglia."""
+        if self._sort_col == col:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_col = col
+            self._sort_reverse = False
+
+        reverse = self._sort_reverse
+
+        def sort_key(it):
+            if col == 'status':
+                return int(it.get('pick_status', 0))
+            if col == 'material':
+                return str(it.get('material_code') or '').lower()
+            if col == 'unique':
+                return str(it.get('unique_number') or '').lower()
+            if col in ('req', 'picked'):
+                return float(it.get('qty_required' if col == 'req' else 'qty_picked') or 0)
+            return ''
+
+        self._current_items.sort(key=sort_key, reverse=reverse)
+        self._render_items()
 
     # ───────────────────────── Chiusure (§5.1.4) ─────────────────────── #
 

@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="{{ lang }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ ui.title }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <h1>{{ ui.title }}</h1>
+    <span class="user">{{ ui.user }}: {{ user }}</span>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2>{{ ui.configured_printers }}</h2>
+      <table id="printers-table">
+        <thead>
+          <tr>
+            <th>{{ ui.name }}</th>
+            <th>{{ ui.type }}</th>
+            <th>{{ ui.connection }}</th>
+            <th>{{ ui.printer_ip }}</th>
+            <th>{{ ui.printer_port }}</th>
+            <th>{{ ui.printer_location }}</th>
+            <th>{{ ui.model }}</th>
+            <th>{{ ui.last_revision_date }}</th>
+            <th>{{ ui.default }}</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>{{ ui.new_printer }}</h2>
+      <form id="printer-form">
+        <label>{{ ui.printer_name }}
+          <input type="text" id="p-name" required>
+        </label>
+        <label>{{ ui.printer_type }}
+          <select id="p-type">
+            <option value="USB">USB</option>
+            <option value="NETWORK">Network</option>
+            <option value="DEFAULT">Windows Default</option>
+          </select>
+        </label>
+        <label>{{ ui.connection_string }}
+          <input type="text" id="p-conn">
+        </label>
+        <label>{{ ui.printer_ip }}
+          <input type="text" id="p-ip">
+        </label>
+        <label>{{ ui.printer_port }}
+          <input type="number" id="p-port">
+        </label>
+        <label>{{ ui.printer_location }}
+          <input type="text" id="p-location">
+        </label>
+        <label>{{ ui.printer_model }}
+          <input type="text" id="p-model">
+        </label>
+        <label>{{ ui.last_revision_date }}
+          <input type="date" id="p-revision">
+        </label>
+        <label>
+          <input type="checkbox" id="p-default"> {{ ui.is_default }}
+        </label>
+        <div class="actions">
+          <button type="submit">{{ ui.save }}</button>
+        </div>
+      </form>
+      <div id="message" class="message"></div>
+    </section>
+  </main>
+
+  <script>
+    const UI = {{ ui|tojson }};
+    const YES = UI.yes;
+    const NO = UI.no;
+
+    const $ = id => document.getElementById(id);
+    const msg = (text, type = 'info') => {
+      const el = $('message');
+      el.textContent = text;
+      el.className = 'message ' + type;
+    };
+
+    async function loadPrinters() {
+      try {
+        const res = await fetch('/api/printers');
+        const rows = await res.json();
+        if (rows.error) {
+          msg(rows.message || 'Errore caricamento', 'error');
+          return;
+        }
+        const tbody = $('printers-table').querySelector('tbody');
+        tbody.innerHTML = '';
+        rows.forEach(r => {
+          const tr = document.createElement('tr');
+          const revisionDate = r.LastRevisionDate ? new Date(r.LastRevisionDate).toLocaleDateString() : '';
+          tr.innerHTML = `<td>${r.PrinterName}</td>` +
+            `<td>${r.PrinterType}</td>` +
+            `<td>${r.ConnectionString || ''}</td>` +
+            `<td>${r.PrinterIP || ''}</td>` +
+            `<td>${r.PrinterPort || ''}</td>` +
+            `<td>${r.PrinterLocation || ''}</td>` +
+            `<td>${r.PrinterModel || ''}</td>` +
+            `<td>${revisionDate}</td>` +
+            `<td>${r.IsDefault ? YES : NO}</td>`;
+          tbody.appendChild(tr);
+        });
+      } catch (e) {
+        msg(UI.msg_error + e.message, 'error');
+      }
+    }
+
+    $('printer-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const body = {
+        printer_name: $('p-name').value.trim(),
+        printer_type: $('p-type').value,
+        connection_string: $('p-conn').value.trim(),
+        printer_ip: $('p-ip').value.trim(),
+        printer_port: $('p-port').value,
+        printer_location: $('p-location').value.trim(),
+        printer_model: $('p-model').value.trim(),
+        last_revision_date: $('p-revision').value || null,
+        is_default: $('p-default').checked
+      };
+      try {
+        const res = await fetch('/api/printers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          msg(data.message || 'Errore salvataggio', 'error');
+          return;
+        }
+        msg(UI.msg_saved, 'success');
+        $('printer-form').reset();
+        loadPrinters();
+      } catch (err) {
+        msg(UI.msg_error + err.message, 'error');
+      }
+    });
+
+    loadPrinters();
+  </script>
+</body>
+</html>

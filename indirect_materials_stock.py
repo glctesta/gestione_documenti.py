@@ -379,14 +379,26 @@ class MinStockConfigWindow(tk.Toplevel):
         ttk.Label(main, text=self.lang.get('ind_min_header', 'Scorte minime materiali indiretti'),
                   font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(0, 8))
 
-        # Filtro
+        # Filtri: codice e descrizione separati, come nella form Verifica Giacenze.
+        # Prima c'era una casella sola, etichettata "Codice" ma che cercava anche
+        # nella descrizione: non si poteva restringere per descrizione senza
+        # trascinarsi dentro i codici che contenevano le stesse cifre.
         filt = ttk.Frame(main)
         filt.pack(fill="x", pady=(0, 6))
         ttk.Label(filt, text=self.lang.get('ind_req_filter_code', 'Codice:')).pack(side="left")
         self.filter_var = tk.StringVar()
-        e = ttk.Entry(filt, textvariable=self.filter_var, width=24)
-        e.pack(side="left", padx=(2, 0))
+        e = ttk.Entry(filt, textvariable=self.filter_var, width=18)
+        e.pack(side="left", padx=(2, 12))
         e.bind('<KeyRelease>', lambda ev: self._apply_filter())
+
+        ttk.Label(filt, text=self.lang.get('ind_req_filter_desc', 'Descrizione:')).pack(side="left")
+        self.filter_desc_var = tk.StringVar()
+        e_desc = ttk.Entry(filt, textvariable=self.filter_desc_var, width=30)
+        e_desc.pack(side="left", padx=(2, 12))
+        e_desc.bind('<KeyRelease>', lambda ev: self._apply_filter())
+
+        ttk.Button(filt, text=self.lang.get('btn_clear_filters', 'Azzera filtri'),
+                   command=self._clear_filters).pack(side="left")
 
         # Tabella
         tree_frame = ttk.Frame(main)
@@ -454,12 +466,20 @@ class MinStockConfigWindow(tk.Toplevel):
             self._rows = []
         self._apply_filter()
 
+    def _clear_filters(self):
+        self.filter_var.set('')
+        self.filter_desc_var.set('')
+        self._apply_filter()
+
     def _apply_filter(self):
-        f = self.filter_var.get().strip().lower()
+        code_f = self.filter_var.get().strip().lower()
+        desc_f = self.filter_desc_var.get().strip().lower()
         self.tree.delete(*self.tree.get_children())
         self._visible = []
         for r in self._rows:
-            if f and f not in r['codice'].lower() and f not in r['descrizione'].lower():
+            if code_f and code_f not in (r['codice'] or '').lower():
+                continue
+            if desc_f and desc_f not in (r['descrizione'] or '').lower():
                 continue
             idx = len(self._visible)
             min_str = f"{r['livello_minimo']:.2f}" if r['livello_minimo'] is not None else '-'

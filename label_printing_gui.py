@@ -57,14 +57,17 @@ class LabelPrintWindow(tk.Toplevel):
         self._print_counter = 0
         
         self._create_widgets()
+        self._ensure_printer_config()
     
     def _create_widgets(self):
         """Crea i widget della finestra."""
-        # Header con nome utente
+        # Header con nome utente e stampante configurata
         header = ttk.Frame(self)
         header.pack(fill='x', padx=10, pady=5)
         ttk.Label(header, text=f"{self.lang.get('logged_user', 'Utente')}: {self.user_name}",
                   font=('Arial', 10, 'bold')).pack(side='left')
+        self.printer_config_label = ttk.Label(header, text='Stampante: ...', font=('Arial', 9), foreground='blue')
+        self.printer_config_label.pack(side='right')
         
         # PanedWindow per dividere form (sinistra) e log (destra)
         paned = ttk.PanedWindow(self, orient='horizontal')
@@ -565,6 +568,56 @@ class LabelPrintWindow(tk.Toplevel):
             logger.error(f"🖱️ GUI: Errore stampa etichetta: {error_msg}")
 
     
+    def _ensure_printer_config(self):
+        """Verifica che esista una configurazione stampante valida; altrimenti apre le impostazioni."""
+        from printer_config import PrinterConfigManager
+        cfg = PrinterConfigManager().get_config()
+        summary = self._format_printer_config_summary(cfg)
+        self.printer_config_label.config(text=f"Stampante: {summary}")
+
+        valid = self._is_printer_config_valid(cfg)
+        if valid:
+            return
+
+        logger.warning("LabelPrintWindow: configurazione stampante assente o incompleta, apro impostazioni")
+        messagebox.showwarning(
+            self.lang.get('warning_title', 'Attenzione'),
+            self.lang.get('printer_config_required', 'Configurazione stampante assente o incompleta. Inserire il nome della stampante.'),
+            parent=self
+        )
+        self._open_printer_settings_forced()
+
+    def _is_printer_config_valid(self, cfg):
+        """Ritorna True se la configurazione permette di identificare una stampante."""
+        conn_type = cfg.get('connection_type', 'DEFAULT')
+        if conn_type == 'DEFAULT':
+            return True
+        if conn_type == 'USB':
+            return bool(cfg.get('usb_printer_name', '').strip())
+        if conn_type == 'IP':
+            return bool(cfg.get('ip', '').strip()) and cfg.get('port')
+        return False
+
+    def _format_printer_config_summary(self, cfg):
+        """Restituisce una stringa riassuntiva della configurazione."""
+        conn_type = cfg.get('connection_type', 'DEFAULT')
+        if conn_type == 'DEFAULT':
+            return 'Default Windows'
+        if conn_type == 'USB':
+            name = cfg.get('usb_printer_name', '').strip() or 'non configurata'
+            return f"USB: {name}"
+        if conn_type == 'IP':
+            return f"IP: {cfg.get('ip', '')}:{cfg.get('port', 9100)}"
+        return 'non configurata'
+
+    def _open_printer_settings_forced(self):
+        """Apre la finestra impostazioni stampante in modalità modale e aggiorna il riepilogo."""
+        settings = PrinterSettingsWindow(self, self.db, self.lang, self.user_name)
+        self.wait_window(settings)
+        from printer_config import PrinterConfigManager
+        cfg = PrinterConfigManager().get_config()
+        self.printer_config_label.config(text=f"Stampante: {self._format_printer_config_summary(cfg)}")
+
     def _on_cancel(self):
         """Chiude la finestra."""
         logger.info("LabelPrintWindow: Chiusura finestra")
@@ -616,6 +669,7 @@ class PrinterSettingsWindow(tk.Toplevel):
         
         # Radio buttons per tipo connessione
         self.connection_type_var = tk.StringVar(value='DEFAULT')
+        self.usb_printer_manual_var = tk.StringVar()
         
         radio_frame = ttk.Frame(main_frame)
         radio_frame.pack(fill='x', pady=10)
@@ -666,16 +720,23 @@ class PrinterSettingsWindow(tk.Toplevel):
         
         self.usb_printer_combo = ttk.Combobox(self.usb_frame, state='readonly', width=40)
         self.usb_printer_combo.grid(row=0, column=1, padx=5, pady=5, sticky='ew')
+        self.usb_printer_combo.bind('<<ComboboxSelected>>', self._on_usb_printer_selected)
         
         ttk.Button(self.usb_frame, text='🔍 ' + self.lang.get('detect_printers', 'Rileva Stampanti'),
                   command=self._detect_usb_printers).grid(row=0, column=2, padx=5)
         
-        ttk.Label(self.usb_frame, text=self.lang.get('printer_model', 'Modello:') + ' *').grid(
+        ttk.Label(self.usb_frame, text=self.lang.get('manual_usb_printer', 'Oppure scrivi nome stampante:') + ' *').grid(
             row=1, column=0, sticky='w', pady=5)
+        
+        ttk.Entry(self.usb_frame, textvariable=self.usb_printer_manual_var, width=40).grid(
+            row=1, column=1, padx=5, pady=5, sticky='ew')
+        
+        ttk.Label(self.usb_frame, text=self.lang.get('printer_model', 'Modello:') + ' *').grid(
+            row=2, column=0, sticky='w', pady=5)
         
         self.printer_model_var = tk.StringVar(value='ZEBRA')
         model_frame = ttk.Frame(self.usb_frame)
-        model_frame.grid(row=1, column=1, sticky='w', pady=5)
+        model_frame.grid(row=2, column=1, sticky='w', pady=5)
         ttk.Radiobutton(model_frame, text='Zebra', variable=self.printer_model_var, 
                        value='ZEBRA').pack(side='left', padx=5)
         ttk.Radiobutton(model_frame, text='Brother', variable=self.printer_model_var, 
@@ -763,6 +824,12 @@ class PrinterSettingsWindow(tk.Toplevel):
                 parent=self
             )
     
+    def _on_usb_printer_selected(self, event=None):
+        """Quando si seleziona una stampante dal combo, la sincronizza nel campo manuale."""
+        selected = self.usb_printer_combo.get()
+        if selected:
+            self.usb_printer_manual_var.set(selected)
+    
     def _load_current_config(self):
         """Carica la configurazione corrente"""
         config = self.config_manager.get_config()
@@ -771,7 +838,9 @@ class PrinterSettingsWindow(tk.Toplevel):
         self.connection_type_var.set(conn_type)
         
         if conn_type == 'USB':
-            self.usb_printer_combo.set(config.get('usb_printer_name', ''))
+            saved_name = config.get('usb_printer_name', '')
+            self.usb_printer_combo.set(saved_name)
+            self.usb_printer_manual_var.set(saved_name)
             self.printer_model_var.set(config.get('printer_model', 'ZEBRA'))
         elif conn_type == 'IP':
             self.ip_var.set(config.get('ip', ''))
@@ -791,11 +860,11 @@ class PrinterSettingsWindow(tk.Toplevel):
             if conn_type == 'DEFAULT':
                 config = {'connection_type': 'DEFAULT'}
             elif conn_type == 'USB':
-                usb_printer = self.usb_printer_combo.get()
+                usb_printer = self.usb_printer_manual_var.get().strip() or self.usb_printer_combo.get()
                 if not usb_printer:
                     messagebox.showwarning(
                         self.lang.get('warning_title', 'Attenzione'),
-                        self.lang.get('select_usb_printer', 'Seleziona una stampante USB'),
+                        self.lang.get('enter_usb_printer_name', 'Seleziona o scrivi il nome della stampante USB'),
                         parent=self
                     )
                     return
@@ -865,11 +934,11 @@ class PrinterSettingsWindow(tk.Toplevel):
             if conn_type == 'DEFAULT':
                 self.config_manager.update_default_config()
             elif conn_type == 'USB':
-                usb_printer = self.usb_printer_combo.get()
+                usb_printer = self.usb_printer_manual_var.get().strip() or self.usb_printer_combo.get()
                 if not usb_printer:
                     messagebox.showwarning(
                         self.lang.get('warning_title', 'Attenzione'),
-                        self.lang.get('select_usb_printer', 'Seleziona una stampante USB'),
+                        self.lang.get('enter_usb_printer_name', 'Seleziona o scrivi il nome della stampante USB'),
                         parent=self
                     )
                     return

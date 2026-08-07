@@ -1,4 +1,4 @@
-﻿#import configparser
+#import configparser
 # --- StdIO safeguard + Faulthandler sicuro per exe windowed ---
 import shutil
 import sys, os, atexit
@@ -308,7 +308,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.2.9.2'  # Versione aggiornata 
+APP_VERSION = '2.4.3.0.0'  # Versione aggiornata
 # Nome programma usato come chiave in SwVersions / VersionDMLogs.
 # In produzione = nome dell'exe; in sviluppo usa il nome canonico.
 APP_PROGRAM_NAME = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else 'DocumentManagement.exe'
@@ -15185,6 +15185,54 @@ class App(tk.Tk):
             )
         )
 
+    def _open_production_labels_bom_with_auth(self):
+        """Apre Gestione BOM sul web server (autorizzato)."""
+        def _open():
+            try:
+                from print_label_for_production import launcher
+                lang = getattr(self, 'lang', None)
+                lang_code = getattr(lang, 'current_language', None) or 'it'
+                launcher.open_bom_page(
+                    self.db,
+                    self.last_authorized_user_id,
+                    self.last_authenticated_user_name,
+                    lang_code
+                )
+            except Exception as e:
+                logger.error(f"Errore apertura Gestione BOM etichette produzione: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire Gestione BOM:\n{e}",
+                    parent=self
+                )
+        self._execute_authorized_action('gestione_stampa_etichette_produzione', _open)
+
+    def _open_production_labels_printers_with_auth(self):
+        """Apre Gestione stampanti sul web server (autorizzato)."""
+        def _open():
+            try:
+                from print_label_for_production import launcher
+                lang = getattr(self, 'lang', None)
+                lang_code = getattr(lang, 'current_language', None) or 'it'
+                launcher.open_printers_page(
+                    self.db,
+                    self.last_authorized_user_id,
+                    self.last_authenticated_user_name,
+                    lang_code
+                )
+            except Exception as e:
+                logger.error(f"Errore apertura Gestione stampanti etichette produzione: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire Gestione stampanti:\n{e}",
+                    parent=self
+                )
+        self._execute_authorized_action('gestione_stampa_etichette_produzione', _open)
+
+    def _open_production_labels_print_with_simple_login(self):
+        """Apre le impostazioni stampante dal sotto-menu Etichette Produzione."""
+        self.open_printer_settings_with_login()
+
     def open_ei_aros_label_with_login(self):
         """Etichette EI → Aros: login semplice per registrare l'operatore che
         stampa (il nome finisce sull'etichetta)."""
@@ -17838,6 +17886,26 @@ class App(tk.Tk):
         materials_menu.add_command(
             label=self.lang.get('submenu_labels', 'Etichette'),
             command=self.open_label_print_with_login
+        )
+
+        # Sottomenu Etichette Produzione
+        production_labels_menu = tk.Menu(materials_menu, tearoff=0)
+        materials_menu.add_cascade(
+            label=self.lang.get('submenu_production_labels', 'Etichette Produzione'),
+            menu=production_labels_menu
+        )
+
+        production_labels_menu.add_command(
+            label=self.lang.get('submenu_production_labels_bom', '1. Gestione BOM'),
+            command=self._open_production_labels_bom_with_auth
+        )
+        production_labels_menu.add_command(
+            label=self.lang.get('submenu_production_labels_printers', '2. Gestione stampanti'),
+            command=self._open_production_labels_printers_with_auth
+        )
+        production_labels_menu.add_command(
+            label=self.lang.get('submenu_production_labels_print', '3. Stampa'),
+            command=self._open_production_labels_print_with_simple_login
         )
         # Etichette EI -> Aros (conversione EutronCode -> ArosCode/Descrizione)
         materials_menu.add_command(

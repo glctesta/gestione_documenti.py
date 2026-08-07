@@ -1,0 +1,67 @@
+{
+  "referats": [
+    {
+      "EmployeeDisciplinaryHistoryId": 1535,
+      "EmployeeHireHistoryId": 2116,
+      "RegistroId": 30365,
+      "DocSavedOn": "2026-07-30",
+      "ExplicationNote": "Rusu Lacrimioara-Petronela nu a completat verificarea FAI obligatorie la începutul turei de la ora 15:30. Acest lucru constituie o abatere disciplinară conform regulamentului intern al companiei.",
+      "ArticoloLegaleId": 33,
+      "SefID": 1306,
+      "DataAvvenimento": "2026-07-30",
+      "OraAvvenimento": "15:30",
+      "DateSys": "2026-07-30 17:28:21.587000"
+    },
+    {
+      "EmployeeDisciplinaryHistoryId": 1536,
+      "EmployeeHireHistoryId": 2085,
+      "RegistroId": 30366,
+      "DocSavedOn": "2026-07-31",
+      "ExplicationNote": "MALAU ANDREEA-GABRIELA nu a completat verificarea FAI obligatorie la începutul turei de la ora 07:30. Acest lucru constituie o abatere disciplinară conform regulamentului intern al companiei.",
+      "ArticoloLegaleId": 33,
+      "SefID": 1306,
+      "DataAvvenimento": "2026-07-31",
+      "OraAvvenimento": "07:30",
+      "DateSys": "2026-07-31 09:28:05.957000"
+    }
+  ],
+  "enforcement_events": [
+    {
+      "EnforcementLogId": 2834,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 2,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-30 17:00:08.550000"
+    },
+    {
+      "EnforcementLogId": 2836,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "Rusu Lacrimioara-Petronela",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "15:30",
+      "DateIn": "2026-07-30 17:28:21.540000"
+    },
+    {
+      "EnforcementLogId": 2840,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 2,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-31 09:00:44.553000"
+    },
+    {
+      "EnforcementLogId": 2841,
+      "EventType": "SHIFT_CHECK",
+      "EmployeeName": "MALAU ANDREEA-GABRIELA",
+      "EscalationLevel": 3,
+      "OrderNumber": null,
+      "ShiftTime": "07:30",
+      "DateIn": "2026-07-31 09:28:05.883000"
+    }
+  ],
+  "pdfs": []
+}
