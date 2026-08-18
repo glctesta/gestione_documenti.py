@@ -1488,7 +1488,8 @@ class ProjectWindow(tk.Toplevel):
              self.fields['IsPostFinalMilestone'].var.set(task.IsPostFinalMilestone or False)
 
     def _on_owner_keyrelease(self, event=None):
-        """Filtra la lista dei partecipanti mentre si digita nel campo OwnerID."""
+        """Filtra la lista dei partecipanti mentre si digita nel campo OwnerID
+        e apre il dropdown per mostrare subito il risultato del filtro."""
         widget = self.fields.get('OwnerID')
         if not widget:
             return
@@ -1498,6 +1499,8 @@ class ProjectWindow(tk.Toplevel):
             return
         filtered = [v for v in self._all_owner_values if text in v.lower()]
         widget['values'] = filtered
+        if filtered:
+            widget.event_generate('<Down>')
 
     def _on_owner_focusout(self, event=None):
         """Quando il campo perde il focus, ripristina l'elenco completo.
