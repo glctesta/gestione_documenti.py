@@ -69,6 +69,18 @@ _BASE = """
   .empty{opacity:.6;font-style:italic;padding:10px 2px;}
   .ico{font-weight:700;}
   .ico.yes{color:var(--ok);} .ico.no{color:var(--err);}
+  tr.postponed{background:#3d2f12;}
+  .alert{border-radius:6px;padding:10px 14px;margin:12px 0;font-size:.9rem;}
+  .alert.ok{background:#143d2a;color:#5fe0a0;}
+  .alert.err{background:#3d1717;color:#ff8080;}
+  .postpone-bar{background:#1d2c40;border:1px solid #2c3e57;border-radius:8px;padding:12px 16px;margin:14px 0;display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;}
+  .postpone-bar label{display:flex;flex-direction:row;align-items:center;font-size:.8rem;color:#cfe0f5;gap:6px;white-space:nowrap;}
+  .postpone-bar input,.postpone-bar select,.postpone-bar textarea{background:#16202e;color:#e8eef6;border:1px solid #2c3e57;border-radius:6px;padding:5px 8px;font-size:.9rem;}
+  .postpone-bar textarea{min-width:180px;min-height:32px;height:32px;resize:vertical;}
+  .postpone-bar button{align-self:flex-end;}
+  .postpone-bar-hidden{display:none;}
+  .postpone-bar-visible{display:block;}
+  .order-check{transform:scale(1.2);}
   footer{opacity:.5;font-size:.75rem;padding:14px 24px;}
 </style>
 </head>
@@ -133,6 +145,17 @@ _PRODUZIONE = """
 {% block head %}<meta http-equiv="refresh" content="60">{% endblock %}
 {% block content %}
 
+{% if error %}
+<div class="alert err">
+  {% if error == 'missing' %}Completați toate câmpurile și selectați cel puțin o comandă.{% endif %}
+  {% if error == 'reason' %}Motiv amânare invalid.{% endif %}
+  {% if error == 'auth' %}Autentificare eșuată sau permisiune insuficientă.{% endif %}
+</div>
+{% endif %}
+{% if saved %}
+<div class="alert ok">{{ saved }} comandă/comenzi amânată/e cu succes.</div>
+{% endif %}
+
 <h2>✅ Kituri gata de preluare ({{ ready|length }})</h2>
 {% if not ready %}<div class="empty">Niciun kit gata în acest moment.</div>{% endif %}
 {% if ready %}
@@ -157,25 +180,69 @@ _PRODUZIONE = """
     <option value="late">Doar întârziate</option>
     <option value="incomplete">Doar incomplete</option>
   </select>
+  <a class="btn" href="/posticipi" style="margin-left:auto;">Kituri amânate</a>
 </div>
+<form method="post" action="/posponi" id="postpone-form" class="postpone-bar-hidden" onsubmit="return collectOrders()">
+  <input type="hidden" name="orders" id="orders-hidden">
+  <div class="postpone-bar">
+    <label>Motiv amânare
+      <select name="reason_code" required>
+        <option value="">— alege —</option>
+        <option value="MISSING_COMPONENTS">Lipsă componente</option>
+        <option value="DOCUMENTATION_PROBLEMS">Probleme documentație</option>
+        <option value="TECHNICAL_PROBLEMS">Probleme tehnice</option>
+        <option value="OTHER_URGENT">Amânat pentru alte urgențe</option>
+      </select>
+    </label>
+    <label>Explicație extinsă
+      <textarea name="reason_text" required placeholder="Descriere detaliată…"></textarea>
+    </label>
+    <label>Zile
+      <input type="number" name="days" min="1" required>
+    </label>
+    <label>Utilizator
+      <input type="text" name="user_id" required placeholder="User">
+    </label>
+    <label>Parolă
+      <input type="password" name="password" required placeholder="Parolă">
+    </label>
+    <button class="btn" type="submit">OK</button>
+  </div>
+</form>
 {% if not next_rows %}<div class="empty">Niciun kit în pregătire.</div>{% endif %}
 {% if next_rows %}
 <table id="tbl-next">
-  <tr><th>Comandă</th><th>Produs</th><th>Stare</th><th>Avansare</th>
+  <tr><th><input type="checkbox" id="check-all" title="Selectează toate"></th><th>Comandă</th><th>Produs</th><th>Stare</th><th>Avansare</th>
       <th>Coduri lipsă</th><th>ETA</th><th>Planificat PTHM</th></tr>
   {% for r in next_rows %}
-  <tr class="{{ 'late blink' if r.is_late else '' }}"
+  <tr class="{% if r.postponed_days %}postponed{% elif r.is_late %}late blink{% endif %}"
       data-search="{{ (r.order_number ~ ' ' ~ (r.product_code or ''))|lower }}"
       data-late="{{ 1 if r.is_late else 0 }}" data-incomplete="{{ 1 if r.is_incomplete else 0 }}">
+    <td><input type="checkbox" value="{{ r.order_number }}" class="order-check"></td>
     <td>{% if r.priority and r.priority>0 %}<span class="badge b-p0">P{{ r.priority }}</span> {% endif %}
         <a class="order" href="/ordine/{{ r.order_number }}">{{ r.order_number }}</a></td>
     <td>{{ r.product_code or '—' }}</td>
-    <td>{{ r.kit_status|status }}</td>
+    <td>{% if r.postponed_days %}Amânat {{ r.postponed_days }} zile{% else %}{{ r.kit_status|status }}{% endif %}</td>
     <td><span class="prog"><span style="width:{{ r.pct_complete }}%"></span></span>
         <span class="pct">{{ r.pct_complete }}%</span></td>
     <td>{% if r.missing_codes>0 %}<a class="miss-badge" href="/ordine/{{ r.order_number }}">{{ r.missing_codes }}</a>{% else %}—{% endif %}</td>
     <td>{{ ('~%d min'|format(r.eta_minutes)) if r.eta_minutes else '—' }}</td>
     <td>{{ r.planned_start|dt }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h2>✅ Kituri primite în producție ({{ received|length }})</h2>
+{% if not received %}<div class="empty">Niciun kit încă recepționat.</div>{% endif %}
+{% if received %}
+<table>
+  <tr><th>Comandă</th><th>Primit la</th><th>Recepționat de</th></tr>
+  {% for r in received %}
+  <tr>
+    <td><a class="order" href="/ordine/{{ r.order_number }}">{{ r.order_number }}</a></td>
+    <td>{{ r.received_date|dt }}</td>
+    <td>Recepționat de {{ r.user_name or '—' }}</td>
   </tr>
   {% endfor %}
 </table>
@@ -218,6 +285,120 @@ function filterRows(){
     if(mode==='incomplete' && tr.getAttribute('data-incomplete')!=='1') ok=false;
     tr.style.display = ok ? '' : 'none';
   });
+}
+function updatePostponeBar(){
+  var any=document.querySelectorAll('.order-check:checked').length>0;
+  var bar=document.getElementById('postpone-form');
+  if(bar){
+    bar.classList.remove('postpone-bar-hidden','postpone-bar-visible');
+    bar.classList.add(any?'postpone-bar-visible':'postpone-bar-hidden');
+  }
+}
+var checkAll=document.getElementById('check-all');
+if(checkAll){
+  checkAll.addEventListener('change',function(){
+    document.querySelectorAll('.order-check').forEach(function(cb){cb.checked=checkAll.checked;});
+    updatePostponeBar();
+  });
+}
+document.querySelectorAll('.order-check').forEach(function(cb){
+  cb.addEventListener('change',updatePostponeBar);
+});
+function collectOrders(){
+  var checked=document.querySelectorAll('.order-check:checked');
+  if(checked.length===0){
+    alert('Selectați cel puțin o comandă.');
+    return false;
+  }
+  document.getElementById('orders-hidden').value=Array.from(checked).map(function(cb){return cb.value;}).join(',');
+  return true;
+}
+</script>
+{% endblock %}
+"""
+
+_POSTICIPATI = """
+{% extends "base" %}
+{% block title %}Kituri amânate{% endblock %}
+{% block htitle %}Kituri amânate{% endblock %}
+{% block content %}
+<p style="margin-bottom:14px;"><a class="order" href="/produzione">&larr; Înapoi la Producție</a></p>
+
+{% if error %}
+<div class="alert err">
+  {% if error == 'missing' %}Completați toate câmpurile și selectați cel puțin o comandă.{% endif %}
+  {% if error == 'auth' %}Autentificare eșuată sau permisiune insuficientă.{% endif %}
+  {% if error == 'notfound' %}Comanda nu a fost găsită.{% endif %}
+</div>
+{% endif %}
+{% if saved %}
+<div class="alert ok">{{ saved }} comandă/comenzi actualizată/e.</div>
+{% endif %}
+
+<h2>⏸ Kituri amânate ({{ rows|length }})</h2>
+{% if not rows %}<div class="empty">Niciun kit amânat în acest moment.</div>{% endif %}
+{% if rows %}
+<form method="post" action="/gestione_posticipi" id="posticipi-form" onsubmit="return collectPosticipi()">
+  <input type="hidden" name="orders" id="orders-hidden">
+  <input type="hidden" name="azione" id="azione-hidden">
+  <div class="postpone-bar">
+    <label>Zile noi
+      <input type="number" name="days" id="days-input" min="1">
+    </label>
+    <label>Utilizator
+      <input type="text" name="user_id" required placeholder="User">
+    </label>
+    <label>Parolă
+      <input type="password" name="password" required placeholder="Parolă">
+    </label>
+    <button class="btn" type="button" onclick="setAzione('riattiva')">Riattiva</button>
+    <button class="btn" type="button" onclick="setAzione('modifica')">Modifică zile</button>
+  </div>
+
+  <table id="tbl-posticipi">
+    <tr><th><input type="checkbox" id="check-all" title="Selectează toate"></th><th>Comandă</th><th>Produs</th>
+        <th>Motiv</th><th>Zile</th><th>Amânat de</th><th>Amânat la</th><th>Expiră la</th></tr>
+    {% for r in rows %}
+    <tr>
+      <td><input type="checkbox" value="{{ r.order_number }}" class="order-check"></td>
+      <td><a class="order" href="/ordine/{{ r.order_number }}">{{ r.order_number }}</a></td>
+      <td>{{ r.product_code or '—' }}</td>
+      <td>{{ r.reason_label }}</td>
+      <td>{{ r.days }}</td>
+      <td>{{ r.postponed_by or '—' }}</td>
+      <td>{{ r.postponed_at|dt }}</td>
+      <td>{{ r.expires_at|dt }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</form>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>
+var checkAll=document.getElementById('check-all');
+if(checkAll){
+  checkAll.addEventListener('change',function(){
+    document.querySelectorAll('.order-check').forEach(function(cb){cb.checked=checkAll.checked;});
+  });
+}
+function collectPosticipi(){
+  var checked=document.querySelectorAll('.order-check:checked');
+  if(checked.length===0){
+    alert('Selectați cel puțin o comandă.');
+    return false;
+  }
+  document.getElementById('orders-hidden').value=Array.from(checked).map(function(cb){return cb.value;}).join(',');
+  return true;
+}
+function setAzione(azione){
+  document.getElementById('azione-hidden').value=azione;
+  var days=document.getElementById('days-input').value;
+  if(azione==='modifica' && (!days || parseInt(days)<1)){
+    alert('Introduceți un număr valid de zile.');
+    return;
+  }
+  document.getElementById('posticipi-form').submit();
 }
 </script>
 {% endblock %}
@@ -288,5 +469,6 @@ TEMPLATES = {
     'base': _BASE,
     'magazzino': _MAGAZZINO,
     'produzione': _PRODUZIONE,
+    'posticipi': _POSTICIPATI,
     'ordine': _ORDINE,
 }

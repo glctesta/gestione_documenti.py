@@ -107,6 +107,35 @@ DDL = [
         created_date DATETIME     NOT NULL DEFAULT GETDATE()
     );
     """,
+    # ── storico posticipi ordini di produzione ────────────────────────────
+    """
+    IF OBJECT_ID('Traceability_RS.dbo.kit_order_postponements','U') IS NULL
+    CREATE TABLE Traceability_RS.dbo.kit_order_postponements (
+        id            INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        order_number  NVARCHAR(30)      NOT NULL,
+        idorder       INT               NULL,
+        reason_code   NVARCHAR(50)      NOT NULL,
+        reason_label  NVARCHAR(200)     NOT NULL,
+        reason_text   NVARCHAR(MAX)     NOT NULL,
+        days          INT               NOT NULL,
+        postponed_by  NVARCHAR(100)     NOT NULL,
+        postponed_at  DATETIME          NOT NULL DEFAULT GETDATE(),
+        expires_at    DATETIME          NOT NULL,
+        CONSTRAINT CHK_kit_postpone_days CHECK (days > 0)
+    );
+    """,
+    """
+    IF NOT EXISTS (SELECT 1 FROM Traceability_RS.sys.indexes
+                   WHERE name = 'IX_kit_order_postponements_order_number')
+        CREATE NONCLUSTERED INDEX IX_kit_order_postponements_order_number
+        ON Traceability_RS.dbo.kit_order_postponements (order_number);
+    """,
+    """
+    IF NOT EXISTS (SELECT 1 FROM Traceability_RS.sys.indexes
+                   WHERE name = 'IX_kit_order_postponements_expires')
+        CREATE NONCLUSTERED INDEX IX_kit_order_postponements_expires
+        ON Traceability_RS.dbo.kit_order_postponements (expires_at) INCLUDE (order_number);
+    """,
 ]
 
 

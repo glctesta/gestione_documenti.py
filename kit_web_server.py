@@ -13,7 +13,7 @@ Configurazione: kit_server_config.json (dir dell'eseguibile).
 Spec: docs/KitDashboard_WebServer_Spec_v1.0.md
 """
 import sys, io, os, logging, socket, threading, time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -85,6 +85,28 @@ def _conn_str():
 
 def get_conn():
     return pyodbc.connect(_conn_str(), autocommit=True)
+
+
+def _authenticate_and_authorize(cur, user_id: str, password: str, key: str):
+    """Replica la logica di main.py authenticate_and_authorize per il web server."""
+    cur.execute("""
+        SELECT u.NomeUser,
+               ISNULL(e.EmployeeName + ' ' + e.EmployeeSurname, '#ND') AS EmployeeName,
+               h.EmployeeHireHistoryId AS AuthorizedEmployeeHireHistoryId,
+               a.AuthorizedUsedId
+        FROM resetservices.dbo.tbuserkey AS U
+        INNER JOIN employee.dbo.employees AS e ON e.EmployeeId = u.idanga
+        INNER JOIN employee.dbo.EmployeeHireHistory AS h ON e.EmployeeId = h.EmployeeId
+        LEFT JOIN dbo.AutorizedUsers AS a
+               ON a.Employeehirehistoryid = h.EmployeeHireHistoryId
+              AND a.TranslationKey = ?
+        WHERE h.EndWorkDate IS NULL
+          AND h.employeerid = 2
+          AND u.Nomeuser = ?
+          AND u.Pass = ?
+          AND a.DateOut IS NULL
+    """, (key, user_id, password))
+    return cur.fetchone()
 
 
 # ── Sync autonomo + heartbeat (server indipendente dall'app) ────────────
@@ -178,17 +200,83 @@ def magazzino():
 def produzione():
     search = (request.args.get("q") or "").strip()
     days = int(CFG.get("history_default_days", 3))
+    error = request.args.get("error")
+    saved = request.args.get("saved")
     conn = get_conn()
     try:
         cur = conn.cursor()
         ctx = _common(cur)
         ready = web_data.production_ready(cur)
         next_rows = web_data.production_next(cur)
+        received = web_data.production_received(cur)
         history = web_data.history_rows(cur, days=days, search=search)
     finally:
         conn.close()
     return _render("produzione", page="prod", ready=ready, next_rows=next_rows,
-                   history=history, search=search, days=days, **ctx)
+                   received=received, history=history, search=search, days=days,
+                   error=error, saved=saved, **ctx)
+
+
+@app.route("/posticipi")
+def posticipi():
+    """Pagina con l'elenco degli ordini attualmente posticipati."""
+    error = request.args.get("error")
+    saved = request.args.get("saved")
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        ctx = _common(cur)
+        rows = web_data.postponed_orders(cur)
+    finally:
+        conn.close()
+    return _render("posticipi", page="prod", rows=rows, error=error, saved=saved, **ctx)
+
+
+@app.route("/gestione_posticipi", methods=["POST"])
+def gestione_posticipi():
+    """Riattiva o modifica i giorni di posticipo per gli ordini selezionati."""
+    orders_raw = (request.form.get("orders") or "").strip()
+    orders = [o.strip() for o in orders_raw.split(",") if o.strip()]
+    azione = (request.form.get("azione") or "").strip()
+    days = request.form.get("days", type=int)
+    user_id = (request.form.get("user_id") or "").strip()
+    password = (request.form.get("password") or "").strip()
+
+    if not orders or azione not in ('riattiva', 'modifica') or not user_id or not password:
+        return redirect("/posticipi?error=missing")
+    if azione == 'modifica' and (not days or days < 1):
+        return redirect("/posticipi?error=missing")
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        auth = _authenticate_and_authorize(cur, user_id, password, 'posponi_produzione')
+        if not auth or auth.AuthorizedUsedId is None:
+            return redirect("/posticipi?error=auth")
+
+        placeholders = ','.join('?' * len(orders))
+        if azione == 'riattiva':
+            cur.execute(f"""
+                UPDATE Traceability_RS.dbo.kit_order_postponements
+                SET expires_at = DATEADD(SECOND, -1, GETDATE())
+                WHERE order_number IN ({placeholders})
+                  AND expires_at > GETDATE()
+            """, orders)
+        else:
+            cur.execute(f"""
+                UPDATE Traceability_RS.dbo.kit_order_postponements
+                SET days = ?,
+                    expires_at = DATEADD(DAY, ?, postponed_at)
+                WHERE order_number IN ({placeholders})
+                  AND expires_at > GETDATE()
+            """, (days, days) + tuple(orders))
+        conn.commit()
+        affected = cur.rowcount
+    finally:
+        conn.close()
+
+    sync_now()
+    return redirect(f"/posticipi?saved={affected}")
 
 
 @app.route("/ordine/<order_number>")
@@ -201,6 +289,58 @@ def ordine(order_number):
     finally:
         conn.close()
     return _render("ordine", page="prod", order_number=order_number, d=d, **ctx)
+
+
+@app.route("/posponi", methods=["POST"])
+def posponi():
+    """Registra un posticipo per gli ordini selezionati dopo login autorizzato."""
+    orders_raw = (request.form.get("orders") or "").strip()
+    orders = [o.strip() for o in orders_raw.split(",") if o.strip()]
+    reason_code = (request.form.get("reason_code") or "").strip()
+    reason_text = (request.form.get("reason_text") or "").strip()
+    days = request.form.get("days", type=int)
+    user_id = (request.form.get("user_id") or "").strip()
+    password = (request.form.get("password") or "").strip()
+
+    if not orders or not reason_code or not reason_text or not days or days < 1 or not user_id or not password:
+        return redirect("/produzione?error=missing")
+
+    reason_labels = {
+        'MISSING_COMPONENTS': 'Lipsă componente',
+        'DOCUMENTATION_PROBLEMS': 'Probleme documentație',
+        'TECHNICAL_PROBLEMS': 'Probleme tehnice',
+        'OTHER_URGENT': 'Amânat pentru alte urgențe',
+    }
+    if reason_code not in reason_labels:
+        return redirect("/produzione?error=reason")
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        auth = _authenticate_and_authorize(cur, user_id, password, 'posponi_produzione')
+        if not auth or auth.AuthorizedUsedId is None:
+            return redirect("/produzione?error=auth")
+
+        user_name = auth.EmployeeName or user_id
+        expires = datetime.now() + timedelta(days=days)
+
+        for order in orders:
+            cur.execute("SELECT IDOrder FROM Traceability_RS.dbo.Orders WHERE OrderNumber = ?", (order,))
+            row = cur.fetchone()
+            idorder = row[0] if row else None
+            cur.execute("""
+                INSERT INTO Traceability_RS.dbo.kit_order_postponements
+                    (order_number, idorder, reason_code, reason_label, reason_text,
+                     days, postponed_by, postponed_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, GETDATE(), ?)
+            """, (order, idorder, reason_code, reason_labels[reason_code],
+                  reason_text, days, user_name, expires))
+        conn.commit()
+    finally:
+        conn.close()
+
+    sync_now()
+    return redirect(f"/produzione?saved={len(orders)}")
 
 
 @app.route("/refresh", methods=["POST"])

@@ -21,6 +21,40 @@ def _rows(cur):
     return [dict(zip(_SNAP_COLS, r)) for r in cur.fetchall()]
 
 
+def _active_postponements(cur):
+    """Restituisce dict order_number -> info posticipo attivo (expires_at > GETDATE()).
+    Se la tabella non esiste ancora, logga un warning e continua senza posticipi."""
+    out = {}
+    try:
+        cur.execute("""
+            SELECT order_number, reason_code, reason_label, reason_text,
+                   days, postponed_by, postponed_at, expires_at
+            FROM Traceability_RS.dbo.kit_order_postponements
+            WHERE expires_at > GETDATE()
+        """)
+        for r in cur.fetchall():
+            out[str(r[0]).strip()] = {
+                'postponed_days': int(r[4] or 0),
+                'postponed_until': r[7],
+                'postponed_by': r[5],
+                'postponed_reason_label': r[2],
+                'postponed_reason_text': r[3],
+            }
+    except Exception as e:
+        logger.warning("kit_order_postponements non leggibile (%s); proseguo senza posticipi.", e)
+    return out
+
+
+def _apply_postponements(rows, postponements):
+    """Applica i posticipi attivi: non lampeggia; aggiunge campi postponed_*"""
+    for r in rows:
+        p = postponements.get(r['order_number'])
+        if p:
+            r.update(p)
+            r['is_late'] = 0
+    return rows
+
+
 def snapshot_date(cur):
     cur.execute("SELECT MAX(snapshot_date) FROM Traceability_RS.dbo.kit_dashboard_snapshot")
     r = cur.fetchone()
@@ -40,20 +74,72 @@ def warehouse_rows(cur):
 def production_ready(cur):
     cur.execute(_SNAP_SELECT + """
         WHERE is_ready_for_prod = 1
+          AND kit_status <> 'RECEIVED_IN_PRODUCTION'
         ORDER BY CASE WHEN priority = 0 THEN 4 ELSE priority END ASC, order_number
     """)
-    return _rows(cur)
+    rows = _rows(cur)
+    post = _active_postponements(cur)
+    return _apply_postponements(rows, post)
 
 
 def production_next(cur):
-    """Ordini non ancora pronti, ordinati per data pianificata / ETA."""
+    """Ordini non ancora pronti (esclusi quelli già ricevuti in produzione), ordinati per data pianificata / ETA."""
     cur.execute(_SNAP_SELECT + """
-        WHERE is_ready_for_prod = 0 AND phase <> 'DONE'
+        WHERE is_ready_for_prod = 0
+          AND phase <> 'DONE'
+          AND kit_status <> 'RECEIVED_IN_PRODUCTION'
         ORDER BY is_late DESC,
                  CASE WHEN planned_start IS NULL THEN 1 ELSE 0 END,
                  planned_start ASC, eta_minutes ASC, order_number
     """)
-    return _rows(cur)
+    rows = _rows(cur)
+    post = _active_postponements(cur)
+    return _apply_postponements(rows, post)
+
+
+def production_received(cur):
+    """Ordini già confermati (ricevuti) in produzione, con nome dell'operatore."""
+    cur.execute("""
+        SELECT ks.order_number,
+               ks.updated_date AS received_date,
+               e.EmployeeName + ' ' + e.EmployeeSurname AS user_name
+        FROM Traceability_RS.dbo.kit_status ks
+        LEFT JOIN Employee.dbo.EmployeeHireHistory h
+               ON h.EmployeeHireHistoryId = ks.updated_by
+        LEFT JOIN Employee.dbo.employees e
+               ON e.EmployeeId = h.EmployeeId
+        WHERE ks.status = 'RECEIVED_IN_PRODUCTION'
+        ORDER BY ks.updated_date DESC
+    """)
+    cols = ('order_number', 'received_date', 'user_name')
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def postponed_orders(cur):
+    """Ordini con posticipo attivo (expires_at > GETDATE())."""
+    try:
+        cur.execute("""
+            SELECT p.order_number,
+                   prod.ProductCode AS product_code,
+                   p.reason_code,
+                   p.reason_label,
+                   p.reason_text,
+                   p.days,
+                   p.postponed_by,
+                   p.postponed_at,
+                   p.expires_at
+            FROM Traceability_RS.dbo.kit_order_postponements p
+            LEFT JOIN Traceability_RS.dbo.Orders o ON o.OrderNumber = p.order_number
+            LEFT JOIN Traceability_RS.dbo.Products prod ON prod.IDProduct = o.IDProduct
+            WHERE p.expires_at > GETDATE()
+            ORDER BY p.expires_at ASC
+        """)
+        cols = ('order_number', 'product_code', 'reason_code', 'reason_label',
+                'reason_text', 'days', 'postponed_by', 'postponed_at', 'expires_at')
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+    except Exception as e:
+        logger.warning("kit_order_postponements non leggibile (%s); proseguo senza posticipi.", e)
+        return []
 
 
 _HIST_COLS = ('order_number', 'product_code', 'planned_start', 'ready_date',

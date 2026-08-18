@@ -127,16 +127,18 @@ class KitDashboardSync:
                 eta_min = eta_mod.estimate_minutes(remaining, avg_item, open_requests, avg_req)
             eta_ready_at = now + timedelta(minutes=eta_min)
 
+            # ── escludi ordini con produzione PTHM già avviata dalla dashboard ──
+            pthm_started = fa.check_production_started(conn, order, self.pthm_phase_id) > 0
+
             planned_start = planned.get(order)
             is_late = False
             if status in ALERT_STATUSES:
                 is_late = True
-            elif planned_start and not is_ready:
-                pthm_started = fa.check_production_started(conn, order, self.pthm_phase_id) > 0
-                if not pthm_started and (now > planned_start or eta_ready_at > planned_start):
+            elif planned_start and not is_ready and not pthm_started:
+                if now > planned_start or eta_ready_at > planned_start:
                     is_late = True
 
-            if status != 'RECEIVED_IN_PRODUCTION':
+            if status != 'RECEIVED_IN_PRODUCTION' and not pthm_started:
                 snapshot_rows.append({
                     'order_number': order, 'product_code': o.get('ProductCode'),
                     'order_qty': o.get('OrderQuantity'), 'priority': int(o['priority'] or 0),

@@ -403,7 +403,8 @@ class ProjectWindow(tk.Toplevel):
         for field_name, label_text, widget_type in labels_config:
             ttk.Label(grid_frame, text=label_text).grid(row=r, column=0, sticky=tk.W, pady=2)
             if widget_type == 'combo':
-                w = ttk.Combobox(grid_frame, state='readonly')
+                # OwnerID è editabile per permettere la ricerca/filtro tra i partecipanti
+                w = ttk.Combobox(grid_frame, state='normal' if field_name == 'OwnerID' else 'readonly')
                 # Aggiungi binding per il campo Stato per gestire DataCompletamento
                 if field_name == 'Stato':
                     w.bind('<<ComboboxSelected>>', self._on_status_change)
@@ -539,7 +540,10 @@ class ProjectWindow(tk.Toplevel):
             soggetti = self.npi_manager.get_soggetti()
             self.soggetti_map = {s.Nome: s.SoggettoId for s in soggetti}
             self.soggetti_map_rev = {v: k for k, v in self.soggetti_map.items()}
-            self.fields['OwnerID']['values'] = [''] + list(self.soggetti_map.keys())
+            self._all_owner_values = [''] + list(self.soggetti_map.keys())
+            self.fields['OwnerID']['values'] = self._all_owner_values
+            self.fields['OwnerID'].bind('<KeyRelease>', self._on_owner_keyrelease)
+            self.fields['OwnerID'].bind('<FocusOut>', self._on_owner_focusout)
             self.fields['Stato']['values'] = list(self.status_map_display.values())
 
             # Carica le categorie per il filtro
@@ -1483,6 +1487,29 @@ class ProjectWindow(tk.Toplevel):
         if 'IsPostFinalMilestone' in self.fields:
              self.fields['IsPostFinalMilestone'].var.set(task.IsPostFinalMilestone or False)
 
+    def _on_owner_keyrelease(self, event=None):
+        """Filtra la lista dei partecipanti mentre si digita nel campo OwnerID."""
+        widget = self.fields.get('OwnerID')
+        if not widget:
+            return
+        text = widget.get().lower()
+        if not text:
+            widget['values'] = self._all_owner_values
+            return
+        filtered = [v for v in self._all_owner_values if text in v.lower()]
+        widget['values'] = filtered
+
+    def _on_owner_focusout(self, event=None):
+        """Quando il campo perde il focus, ripristina l'elenco completo.
+        Se il testo digitato non corrisponde a un nome valido, lo resetta."""
+        widget = self.fields.get('OwnerID')
+        if not widget:
+            return
+        text = widget.get()
+        if text and text not in self.soggetti_map:
+            widget.set('')
+        widget['values'] = self._all_owner_values
+
     def _on_status_change(self, event=None):
         """Gestisce il cambio di stato per abilitare/disabilitare il campo DataCompletamento."""
         from datetime import datetime
@@ -1519,8 +1546,8 @@ class ProjectWindow(tk.Toplevel):
             # 🆕 CONTROLLO PERMESSI: Solo project owner può modificare OwnerID
             if name == 'OwnerID':
                 if self.is_project_owner:
-                    # Project owner: può modificare il responsabile
-                    child.config(state='readonly')
+                    # Project owner: può modificare il responsabile (normal per consentire ricerca/filtro)
+                    child.config(state='normal')
                     logger.debug(f"Campo OwnerID abilitato per project owner '{self.logged_in_user}'")
                 else:
                     # Task owner: NON può modificare il responsabile
