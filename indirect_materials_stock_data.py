@@ -417,12 +417,13 @@ def _claim_materials_today(db, items, recipients):
             try:
                 cur.execute(
                     "INSERT INTO ind.RiordineEmailLog "
-                    "(MaterialeId, GiacenzaRilevata, LivelloMinimo, InviatoA) "
-                    "SELECT ?, ?, ?, ? "
+                    "(MaterialeId, GiacenzaRilevata, LivelloMinimo, QtaSuggerita, Stato, InviatoA) "
+                    "SELECT ?, ?, ?, ?, 'INVIATO', ? "
                     "WHERE NOT EXISTS (SELECT 1 FROM ind.RiordineEmailLog WITH (UPDLOCK, HOLDLOCK) "
-                    "  WHERE MaterialeId = ? AND CAST(DataInvio AS DATE) = CAST(GETDATE() AS DATE))",
+                    "  WHERE MaterialeId = ? AND Stato = 'INVIATO' "
+                    "    AND CAST(DataInvio AS DATE) = CAST(GETDATE() AS DATE))",
                     (it['materiale_id'], it['giacenza'], it['livello_minimo'],
-                     inviato_a, it['materiale_id'])
+                     it.get('qta_da_riordinare'), inviato_a, it['materiale_id'])
                 )
                 if cur.rowcount and cur.rowcount > 0:
                     claimed.append(it)
@@ -454,7 +455,7 @@ def _unclaim_materials_today(db, items):
 
 
 def _log_reorder_sent(db, items, recipients):
-    """Registra l'invio email riordino per dedup futuro."""
+    """Registra l'invio email riordino per dedup futuro (modalità force/on-demand)."""
     inviato_a = '; '.join(recipients)[:255]
     db._ensure_connection()
     with db._lock:
@@ -463,9 +464,13 @@ def _log_reorder_sent(db, items, recipients):
             for it in items:
                 cur.execute(
                     "INSERT INTO ind.RiordineEmailLog "
-                    "(MaterialeId, GiacenzaRilevata, LivelloMinimo, InviatoA) "
-                    "VALUES (?, ?, ?, ?)",
-                    (it['materiale_id'], it['giacenza'], it['livello_minimo'], inviato_a)
+                    "(MaterialeId, GiacenzaRilevata, LivelloMinimo, QtaSuggerita, Stato, InviatoA) "
+                    "SELECT ?, ?, ?, ?, 'INVIATO', ? "
+                    "WHERE NOT EXISTS (SELECT 1 FROM ind.RiordineEmailLog "
+                    "  WHERE MaterialeId = ? AND Stato = 'INVIATO' "
+                    "    AND CAST(DataInvio AS DATE) = CAST(GETDATE() AS DATE))",
+                    (it['materiale_id'], it['giacenza'], it['livello_minimo'],
+                     it.get('qta_da_riordinare'), inviato_a, it['materiale_id'])
                 )
             db.conn.commit()
         except Exception as e:
@@ -529,8 +534,177 @@ def _build_reorder_email(lang, items):
     return subject, body
 
 
+def _build_purchasing_reminder_email(items):
+    """Costruisce il corpo HTML dell'email di reminder acquisti in inglese."""
+    headers = [
+        'Material Code', 'Description', 'Requested Qty', 'Reiterations',
+        'Business Days Pending', 'Days Since First Request'
+    ]
+    rows_html = []
+    for it in items:
+        qta_str = f"{it['qta']:.2f}" if it['qta'] is not None else '-'
+        rows_html.append(
+            "<tr>"
+            f"<td style='border:1px solid #ccc;padding:6px;'>{it['codice']}</td>"
+            f"<td style='border:1px solid #ccc;padding:6px;'>{it['descrizione']}</td>"
+            f"<td style='border:1px solid #ccc;padding:6px;text-align:right;'>{qta_str}</td>"
+            f"<td style='border:1px solid #ccc;padding:6px;text-align:center;'>{it['reminder_count']}</td>"
+            f"<td style='border:1px solid #ccc;padding:6px;text-align:center;'>{it['business_days']}</td>"
+            f"<td style='border:1px solid #ccc;padding:6px;text-align:center;'>{it['calendar_days']}</td>"
+            "</tr>"
+        )
+
+    body = (
+        "<p>Dear Purchasing Team,</p>"
+        "<p>The following indirect materials are still pending purchase order confirmation. "
+        "Please review and update the order status via the <strong>Conferma ordini</strong> form.</p>"
+        "<table style='border-collapse:collapse;font-family:Segoe UI,Arial;font-size:13px;'>"
+        "<thead><tr style='background:#f0f0f0;'>"
+        + ''.join(f"<th style='border:1px solid #ccc;padding:6px;'>{h}</th>" for h in headers) +
+        "</tr></thead><tbody>"
+        + ''.join(rows_html) +
+        "</tbody></table>"
+        "<p style='color:#888;font-size:11px;margin-top:16px;'>"
+        "This is an automatic reminder sent by the Document Management system.</p>"
+    )
+    return body
+
+
+def check_and_send_purchasing_reminder(db, lang, country_code='RO'):
+    """Verifica i solleciti di acquisto non confermati e, ogni 2 giorni lavorativi,
+    invia un reminder email in inglese agli acquisti.
+    Ritorna dict: {sent, count, recipients, reason}.
+    """
+    from business_days import count_business_days_between, is_business_day
+
+    if not is_business_day(country_code=country_code):
+        return {'sent': False, 'count': 0, 'reason': 'not_business_day'}
+
+    recipients = _get_reorder_recipients(db)
+    if not recipients:
+        return {'sent': False, 'count': 0, 'reason': 'no_recipients'}
+
+    rows = db.fetch_all(
+        """
+        SELECT l.RiordineLogId, m.CodiceMateriale, m.DescrizioneMateriale,
+               l.QtaSuggerita, l.DataInvio, l.ReminderCount
+        FROM Traceability_RS.ind.RiordineEmailLog l
+        JOIN Traceability_RS.ind.Materiali m ON m.MaterialeId = l.MaterialeId
+        WHERE l.Stato = 'INVIATO'
+          AND l.DataInvio >= DATEADD(DAY, -60, GETDATE())
+        ORDER BY l.DataInvio ASC
+        """
+    )
+
+    today = datetime.now().date()
+    items = []
+    for row in (rows or []):
+        log_id, codice, descrizione, qta, data_invio, reminder_count = row
+        business_days = count_business_days_between(data_invio, today, country_code=country_code)
+        calendar_days = (today - data_invio.date()).days if data_invio else 0
+        # Reminder ogni 2 giorni lavorativi rispetto alla prima richiesta.
+        if business_days >= 2 * ((reminder_count or 0) + 1):
+            items.append({
+                'log_id': log_id,
+                'codice': codice or '',
+                'descrizione': descrizione or '',
+                'qta': float(qta) if qta is not None else None,
+                'business_days': business_days,
+                'calendar_days': calendar_days,
+                'reminder_count': reminder_count or 0,
+            })
+
+    if not items:
+        return {'sent': False, 'count': 0, 'reason': 'no_reminders_due'}
+
+    subject = "Indirect Materials Purchase Orders - Pending Confirmation Reminder"
+    body = _build_purchasing_reminder_email(items)
+
+    try:
+        from email_connector import EmailSender
+        sender = EmailSender()
+        sender.send_email(to_email='; '.join(recipients), subject=subject,
+                          body=body, is_html=True)
+    except Exception as e:
+        logger.error(f"Errore invio reminder acquisti: {e}", exc_info=True)
+        return {'sent': False, 'count': len(items), 'reason': f'error: {e}'}
+
+    db._ensure_connection()
+    with db._lock:
+        cur = db.cursor
+        try:
+            for it in items:
+                cur.execute(
+                    "UPDATE ind.RiordineEmailLog "
+                    "SET ReminderCount = ReminderCount + 1, DataUltimoReminder = GETDATE() "
+                    "WHERE RiordineLogId = ?",
+                    (it['log_id'],)
+                )
+            db.conn.commit()
+        except Exception as e:
+            db.conn.rollback()
+            logger.error(f"Errore aggiornamento reminder count: {e}", exc_info=True)
+
+    logger.info(f"Reminder acquisti inviato per {len(items)} materiali.")
+    return {'sent': True, 'count': len(items), 'recipients': recipients, 'reason': 'ok'}
+
+
+_daily_email_table_ensured = False
+
+
+def _ensure_daily_email_table(db):
+    """Crea la tabella ind.RiordineEmailDaily se non esiste (lock giornaliero per l'email aggregata)."""
+    global _daily_email_table_ensured
+    if _daily_email_table_ensured:
+        return
+    db._ensure_connection()
+    with db._lock:
+        cur = db.cursor
+        cur.execute("""
+            IF OBJECT_ID('ind.RiordineEmailDaily','U') IS NULL
+            CREATE TABLE ind.RiordineEmailDaily (
+                EmailDate DATE NOT NULL PRIMARY KEY,
+                CreatedAt DATETIME NOT NULL DEFAULT GETDATE()
+            )
+        """)
+        db.conn.commit()
+    _daily_email_table_ensured = True
+
+
+def _claim_daily_email_lock(db):
+    """Prenota ATOMICAMENTE l'invio dell'email di riordino aggregata odierna.
+    Ritorna True solo se questo processo vince il lock."""
+    _ensure_daily_email_table(db)
+    db._ensure_connection()
+    with db._lock:
+        cur = db.cursor
+        cur.execute("""
+            INSERT INTO ind.RiordineEmailDaily (EmailDate)
+            SELECT CAST(GETDATE() AS DATE)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM ind.RiordineEmailDaily WITH (UPDLOCK, HOLDLOCK)
+                WHERE EmailDate = CAST(GETDATE() AS DATE)
+            )
+        """)
+        db.conn.commit()
+        return cur.rowcount > 0
+
+
+def _release_daily_email_lock(db):
+    """Rilascia il lock giornaliero (usato in caso di errore di invio)."""
+    db._ensure_connection()
+    with db._lock:
+        cur = db.cursor
+        try:
+            cur.execute("DELETE FROM ind.RiordineEmailDaily WHERE EmailDate = CAST(GETDATE() AS DATE)")
+            db.conn.commit()
+        except Exception as e:
+            db.conn.rollback()
+            logger.error(f"_release_daily_email_lock errore: {e}", exc_info=True)
+
+
 def check_and_send_reorder(db, lang, force=False):
-    """Verifica i materiali sotto scorta minima e invia l'email di riordino.
+    """Verifica i materiali sotto scorta minima e invia UN'UNICA email di riordino al giorno.
 
     Args:
         force: se True ignora il dedup giornaliero (invio manuale on-demand).
@@ -548,13 +722,20 @@ def check_and_send_reorder(db, lang, force=False):
         logger.warning(f"Riordino: nessun destinatario configurato in Settings.{REORDER_EMAIL_ATTRIBUTE}")
         return {'sent': False, 'count': len(below), 'recipients': [], 'reason': 'no_recipients'}
 
-    # Prenotazione atomica giornaliera (dedup cross-PC). In modalità force
-    # (invio manuale) si invia comunque per tutti i materiali sotto soglia.
+    # Lock atomico a livello di email aggregata: garantisce UN'UNICA email al giorno
+    # in caso di esecuzioni concorrenti (più PC / processi).
+    if not force and not _claim_daily_email_lock(db):
+        logger.info("Riordino: email giornaliera gia' inviata da un altro processo.")
+        return {'sent': False, 'count': 0, 'recipients': recipients, 'reason': 'daily_email_already_sent'}
+
+    # Prenotazione atomica giornaliera per singolo materiale (dedup cross-PC).
+    # In modalità force (invio manuale) si invia comunque per tutti i materiali sotto soglia.
     if force:
         to_send = below
     else:
         to_send = _claim_materials_today(db, below, recipients)
         if not to_send:
+            _release_daily_email_lock(db)  # nessun materiale da inviare: rilascia il lock
             return {'sent': False, 'count': 0, 'recipients': recipients, 'reason': 'already_sent_today'}
 
     subject, body = _build_reorder_email(lang, to_send)
@@ -580,4 +761,5 @@ def check_and_send_reorder(db, lang, force=False):
         logger.error(f"Riordino: errore invio email: {e}", exc_info=True)
         if not force:
             _unclaim_materials_today(db, to_send)   # rilascia le prenotazioni: si ritenta al prossimo giro
+            _release_daily_email_lock(db)          # permette il ritentativo dell'email aggregata
         return {'sent': False, 'count': len(to_send), 'recipients': recipients, 'reason': f'error: {e}'}
