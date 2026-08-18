@@ -1499,16 +1499,9 @@ class ProjectWindow(tk.Toplevel):
             return
         filtered = [v for v in self._all_owner_values if text in v.lower()]
         widget['values'] = filtered
+        # Alt+Down apre il dropdown senza selezionare il primo elemento, evitando di cancellare il testo digitato.
         if filtered and event and event.keysym not in ('BackSpace', 'Delete', 'Return', 'Tab', 'Escape'):
-            current = widget.get()
-            widget.event_generate('<Down>')
-            widget.after(0, lambda w=widget, t=current: self._restore_owner_text(w, t))
-
-    def _restore_owner_text(self, widget, text):
-        """Ripristina il testo digitato dopo l'apertura automatica del dropdown."""
-        widget.delete(0, tk.END)
-        widget.insert(0, text)
-        widget.icursor(tk.END)
+            widget.event_generate('<Alt-Down>')
 
     def _on_owner_focusout(self, event=None):
         """Quando il campo perde il focus, ripristina l'elenco completo.
