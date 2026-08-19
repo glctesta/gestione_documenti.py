@@ -22,6 +22,8 @@ from tkinter import ttk, messagebox, simpledialog
 
 import kit_essegi_parser as kep
 import kit_notifications as notif
+import kit_wh_logic
+from print_label_for_production import label_needs
 
 logger = logging.getLogger("PlanMonitor")
 
@@ -234,6 +236,25 @@ class KitPreparationWindow(tk.Toplevel):
         ttk.Button(top, text=self.lang.get('kit_btn_refresh', 'Aggiorna'),
                    command=self._refresh_picking_lists).pack(side='left')
 
+        filter_frame = ttk.Frame(f)
+        filter_frame.pack(fill='x', pady=(0, 8))
+        self.only_open_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            filter_frame,
+            text=self.lang.get('kit_show_only_open', 'Solo non completati'),
+            variable=self.only_open_var,
+            command=self._refresh_picking_lists
+        ).pack(side='left', padx=(0, 12))
+        ttk.Label(filter_frame,
+                  text=self.lang.get('kit_search_order_product', 'Cerca ordine/prodotto:')
+                  ).pack(side='left')
+        self.search_list_var = tk.StringVar()
+        entry = ttk.Entry(filter_frame, textvariable=self.search_list_var, width=28)
+        entry.pack(side='left', padx=6)
+        entry.bind('<Return>', lambda e: self._refresh_picking_lists())
+        ttk.Button(filter_frame, text=self.lang.get('kit_btn_search', 'Cerca'),
+                   command=self._refresh_picking_lists).pack(side='left')
+
         cols = ('id', 'priority', 'orders', 'file', 'rows', 'status', 'upload')
         self.lists_tree = ttk.Treeview(f, columns=cols, show='headings', selectmode='browse')
         headings = {
@@ -286,7 +307,12 @@ class KitPreparationWindow(tk.Toplevel):
             self.user_name, self.operator_id, int(list_id))
 
     def _refresh_picking_lists(self):
-        """Lista WH: picking list ordinate per priorita' (P1>P2>P3>P0) poi data."""
+        """Lista WH con filtro 'solo non completati' e ricerca ordine/prodotto."""
+        only_open = 1 if getattr(self, 'only_open_var', None) and self.only_open_var.get() else 0
+        search = self.search_list_var.get().strip() if hasattr(self, 'search_list_var') else ''
+        search_active = 'Y' if search else ''
+        like = f'%{search}%' if search else '%'
+
         try:
             cursor = self.db.conn.cursor()
             cursor.execute("""
@@ -303,10 +329,19 @@ class KitPreparationWindow(tk.Toplevel):
                        ON plo2.picking_list_id = pl.id
                 LEFT JOIN Traceability_RS.dbo.order_priority op
                        ON op.order_number = plo2.order_number
+                WHERE (? = 0 OR pl.status IN ('OPEN', 'PARTIAL', 'REOPENED'))
+                  AND (? = '' OR EXISTS (
+                      SELECT 1
+                      FROM Traceability_RS.dbo.picking_list_orders plo3
+                      INNER JOIN Traceability_RS.dbo.Orders o ON o.OrderNumber = plo3.order_number
+                      INNER JOIN Traceability_RS.dbo.Products p ON p.IDProduct = o.IDProduct
+                      WHERE plo3.picking_list_id = pl.id
+                        AND (o.OrderNumber LIKE ? OR p.ProductCode LIKE ? OR p.ProductName LIKE ?)
+                  ))
                 GROUP BY pl.id, pl.source_file_name, pl.status, pl.upload_date
                 ORDER BY MIN(CASE WHEN ISNULL(op.priority,0) = 0 THEN 4 ELSE op.priority END) ASC,
                          pl.upload_date ASC
-            """)
+            """, (only_open, search_active, like, like, like))
             rows = cursor.fetchall()
             cursor.close()
         except Exception as e:
@@ -635,6 +670,12 @@ class KitPreparationWindow(tk.Toplevel):
             logger.info("Lista prelievo #%d importata da %s: file=%s ordini=%s righe=%d",
                         list_id, self.user_name, parsed.file_name,
                         parsed.orders, len(parsed.rows))
+
+            # --- righe etichetta automatiche (non bloccanti) ---
+            try:
+                self._add_label_rows_to_list(list_id, parsed.orders)
+            except Exception as e:
+                logger.error("Errore righe etichetta per lista %s: %s", list_id, e)
         except Exception as e:
             self.db.conn.rollback()
             logger.error("Errore import lista prelievo: %s", e)
@@ -647,6 +688,61 @@ class KitPreparationWindow(tk.Toplevel):
             .replace('{id}', str(list_id)),
             parent=self)
         self._refresh_picking_lists()
+
+    def _add_label_rows_to_list(self, list_id, order_numbers):
+        """Calcola e inserisce righe etichetta automatiche per gli ordini della lista."""
+        if not order_numbers:
+            return
+        import json
+        cursor = self.db.conn.cursor()
+        try:
+            kit_wh_logic.ensure_label_columns(self.db.conn)
+            placeholders = ','.join('?' * len(order_numbers))
+            cursor.execute(f"""
+                SELECT o.OrderNumber, o.IDOrder, o.OrderQuantity, p.IDProduct, p.ProductCode, p.ProductName
+                FROM Traceability_RS.dbo.Orders o
+                JOIN Traceability_RS.dbo.Products p ON p.IDProduct = o.IDProduct
+                WHERE o.OrderNumber IN ({placeholders})
+            """, list(order_numbers))
+            orders = []
+            for r in cursor.fetchall():
+                orders.append({
+                    'IDOrder': r[1],
+                    'OrderNumber': r[0],
+                    'OrderQuantity': r[2],
+                    'IDProduct': r[3],
+                    'ProductCode': r[4],
+                    'ProductName': r[5],
+                })
+            product_ids = [o['IDProduct'] for o in orders if o['IDProduct']]
+            if not product_ids:
+                return
+            product_labels = label_needs.fetch_product_labels(cursor, product_ids)
+            if not product_labels:
+                return
+            label_ids = [pl['LabelId'] for pl in product_labels]
+            params = label_needs.fetch_label_parameters(cursor, label_ids)
+            needs = label_needs.calculate_label_needs(orders, product_labels, params)
+            aggregated = label_needs.aggregate_by_label(needs)
+            for agg in aggregated:
+                request_data = {
+                    'orders': agg['Orders'],
+                    'qty_net': agg['QtyNet'],
+                    'qty_scarto': agg['QtyScarto'],
+                    'qty_total': agg['QtyTotal'],
+                }
+                notes = f"Etichetta automatica per {len(agg['Orders'])} ordini"
+                cursor.execute("""
+                    INSERT INTO Traceability_RS.dbo.picking_list_items
+                        (picking_list_id, material_code, qty_required, pick_status, notes, Source, LabelRequestData)
+                    VALUES (?, ?, ?, 'PENDING', ?, 'LABEL', ?)
+                """, (list_id, agg['MaterialCode'], agg['QtyTotal'], notes, json.dumps(request_data, default=str)))
+            self.db.conn.commit()
+        except Exception:
+            self.db.conn.rollback()
+            raise
+        finally:
+            cursor.close()
 
     # ────────────────────── TAB RICHIESTE MATERIALE ────────────────────── #
 

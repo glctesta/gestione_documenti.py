@@ -25,10 +25,37 @@ CHECK_MISMATCH = 'MISMATCH'
 
 # ───────────────────────── Liste eleggibili ───────────────────────────── #
 
-def eligible_lists(cursor) -> List[dict]:
-    """Kit presi in carico dalla preformatura (o bloccati, per ri-verifica),
-    ordinati per priorita' poi data."""
-    cursor.execute("""
+def eligible_lists(cursor, date_from=None, date_to=None) -> List[dict]:
+    """Kit chiusi dal WH (completamente o con deroga) e pronti per il ricevimento
+    in produzione. Include anche kit gia' verificati in preformatura (IN_PREFORMING)
+    e bloccati in produzione per ri-verifica. Esclude kit gia' ricevuti
+    (RECEIVED_IN_PRODUCTION, COMPLETED) o ancora aperti WH.
+    Filtrabili per closed_date della picking list.
+    """
+    # Diagnostica: conteggio stato kit_status per supporto troubleshooting
+    try:
+        cursor.execute("""
+            SELECT status, COUNT(*) AS cnt
+            FROM Traceability_RS.dbo.kit_status
+            GROUP BY status
+            ORDER BY cnt DESC
+        """)
+        status_counts = cursor.fetchall()
+        logger.info("[KitProd] kit_status counts: %s",
+                    [(r[0], r[1]) for r in status_counts])
+    except Exception as e:
+        logger.warning("[KitProd] diagnostic count failed: %s", e)
+
+    params = []
+    date_filter = ""
+    if date_from:
+        date_filter += " AND pl.closed_date >= ?"
+        params.append(date_from)
+    if date_to:
+        date_filter += " AND pl.closed_date <= ?"
+        params.append(date_to)
+
+    cursor.execute(f"""
         SELECT pl.id, pl.source_file_name, pl.status, pl.closed_date,
                STUFF((SELECT '/' + plo.order_number
                       FROM Traceability_RS.dbo.picking_list_orders plo
@@ -43,39 +70,65 @@ def eligible_lists(cursor) -> List[dict]:
                 ON ks.order_number = plo2.order_number
         LEFT JOIN Traceability_RS.dbo.order_priority op
                ON op.order_number = plo2.order_number
-        WHERE ks.status IN ('IN_PREFORMING', 'BLOCKED_MISSING_MATERIAL')
+        WHERE ks.status IN ('WH_CLOSED', 'WH_PARTIAL', 'IN_PREFORMING', 'BLOCKED_MISSING_MATERIAL')
+          {date_filter}
         GROUP BY pl.id, pl.source_file_name, pl.status, pl.closed_date
-        ORDER BY MIN(CASE WHEN ISNULL(op.priority,0) = 0 THEN 4 ELSE op.priority END) ASC,
-                 pl.closed_date ASC
-    """)
+        ORDER BY pl.closed_date DESC
+    """, tuple(params))
     cols = ('id', 'file_name', 'status', 'closed_date', 'orders', 'prio_rank', 'blocked')
-    return [dict(zip(cols, r)) for r in cursor.fetchall()]
+    rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+    logger.info("[KitProd] eligible_lists returned %d rows", len(rows))
+    return rows
 
 
 # ───────────────────── Righe da verificare in linea ───────────────────── #
 
 def get_prod_items(cursor, list_id: int) -> List[dict]:
-    """Righe del kit con quantita' attesa (= presa in carico preformatura)
-    ed esito verifica produzione."""
+    """Righe del kit aggregate per codice materiale.
+
+    La quantita' attesa e' la somma di quanto prelevato WH / preso in carico
+    PF per quel materiale. La quantita' ricevuta e' la somma dei check PROD
+    gia' registrati. Si mostrano accettati e mancanti per consentire ricezioni
+    parziali.
+    """
     cursor.execute("""
-        SELECT i.id, i.material_code, i.unique_number,
-               ISNULL(cpf.qty_actual, i.qty_picked) AS qty_expected,
-               cp.qty_actual, cp.check_status
-        FROM Traceability_RS.dbo.picking_list_items i
-        LEFT JOIN Traceability_RS.dbo.kit_item_checks cpf
-               ON cpf.item_id = i.id AND cpf.phase = 'PREFORMING'
+        WITH ig AS (
+            SELECT material_code,
+                   SUM(ISNULL(cpf.qty_actual, qty_picked)) AS qty_expected,
+                   MIN(id) AS representative_item_id
+            FROM Traceability_RS.dbo.picking_list_items
+            WHERE picking_list_id = ? AND qty_picked > 0
+              AND pick_status NOT IN (?, ?)
+            GROUP BY material_code
+        )
+        SELECT ig.representative_item_id,
+               ig.material_code,
+               ig.qty_expected,
+               ISNULL(SUM(cp.qty_actual), 0) AS qty_received,
+               CASE
+                   WHEN ISNULL(SUM(cp.qty_actual), 0) >= ig.qty_expected THEN 'OK'
+                   WHEN ISNULL(SUM(cp.qty_actual), 0) > 0 THEN 'MISMATCH'
+                   ELSE NULL
+               END AS check_status
+        FROM ig
+        LEFT JOIN Traceability_RS.dbo.picking_list_items i2
+               ON i2.picking_list_id = ? AND i2.material_code = ig.material_code
         LEFT JOIN Traceability_RS.dbo.kit_item_checks cp
-               ON cp.item_id = i.id AND cp.phase = ?
-        WHERE i.picking_list_id = ?
-          AND i.qty_picked > 0
-          AND i.pick_status NOT IN (?, ?)
-        ORDER BY CASE WHEN cp.check_status IS NULL THEN 0
-                      WHEN cp.check_status = 'MISMATCH' THEN 1 ELSE 2 END,
-                 i.material_code
-    """, (PHASE_PROD, list_id, whl.ST_MISSING_FROM_LIST, whl.ST_REMOVED))
-    cols = ('item_id', 'material_code', 'unique_number', 'qty_expected',
+               ON cp.item_id = i2.id AND cp.phase = ?
+        WHERE i2.qty_picked > 0 AND i2.pick_status NOT IN (?, ?)
+        GROUP BY ig.representative_item_id, ig.material_code, ig.qty_expected
+        ORDER BY CASE WHEN ISNULL(SUM(cp.qty_actual), 0) >= ig.qty_expected THEN 2
+                      WHEN ISNULL(SUM(cp.qty_actual), 0) > 0 THEN 1 ELSE 0 END,
+                 ig.material_code
+    """, (list_id, whl.ST_MISSING_FROM_LIST, whl.ST_REMOVED,
+          list_id, PHASE_PROD, whl.ST_MISSING_FROM_LIST, whl.ST_REMOVED))
+    cols = ('item_id', 'material_code', 'qty_expected',
             'qty_received', 'check_status')
-    return [dict(zip(cols, r)) for r in cursor.fetchall()]
+    rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+    for r in rows:
+        r['qty_missing'] = max(
+            float(r['qty_expected'] or 0) - float(r['qty_received'] or 0), 0)
+    return rows
 
 
 def prod_state(cursor, list_id: int) -> dict:
@@ -91,58 +144,79 @@ def prod_state(cursor, list_id: int) -> dict:
 
 # ───────────────────────── Scansione ricevimento ──────────────────────── #
 
-def apply_prod_check(cursor, list_id: int, unique_number: str, qty_received: float,
+def apply_prod_check(cursor, list_id: int, material_code: str, qty_received: float,
                      operator_id: int, session_id: int) -> Tuple[str, Optional[dict]]:
-    """Verifica una scatola al ricevimento in linea ('ok'/'mismatch'/'not_found')."""
+    """Verifica un materiale al ricevimento in linea ('ok'/'mismatch'/'not_found').
+
+    La verifica avviene per codice materiale (non per HU), accumulando le
+    quantita' ricevute anche parzialmente. Tutti i check PROD del materiale
+    vengono consolidati su una sola riga rappresentativa.
+    """
     info = whl.get_list_info(cursor, list_id)
     lbl = whl.orders_label(info['orders'])
 
     cursor.execute("""
-        SELECT i.id, i.material_code,
-               ISNULL(cpf.qty_actual, i.qty_picked) AS qty_expected,
-               i.order_number
-        FROM Traceability_RS.dbo.picking_list_items i
-        LEFT JOIN Traceability_RS.dbo.kit_item_checks cpf
-               ON cpf.item_id = i.id AND cpf.phase = 'PREFORMING'
-        WHERE i.picking_list_id = ? AND i.unique_number = ?
-          AND i.qty_picked > 0 AND i.pick_status NOT IN (?, ?)
-    """, (list_id, unique_number, whl.ST_MISSING_FROM_LIST, whl.ST_REMOVED))
+        WITH ig AS (
+            SELECT material_code,
+                   SUM(ISNULL(cpf.qty_actual, qty_picked)) AS qty_expected,
+                   MIN(id) AS representative_item_id,
+                   MAX(i.order_number) AS order_number
+            FROM Traceability_RS.dbo.picking_list_items i
+            LEFT JOIN Traceability_RS.dbo.kit_item_checks cpf
+                   ON cpf.item_id = i.id AND cpf.phase = 'PREFORMING'
+            WHERE i.picking_list_id = ? AND i.material_code = ?
+              AND i.qty_picked > 0 AND i.pick_status NOT IN (?, ?)
+            GROUP BY i.material_code
+        )
+        SELECT representative_item_id, qty_expected, order_number FROM ig
+    """, (list_id, material_code, whl.ST_MISSING_FROM_LIST, whl.ST_REMOVED))
     r = cursor.fetchone()
     if r is None:
-        whl.log_event(cursor, lbl, 'UNKNOWN_UNIQUE_NUMBER', phase=PHASE_PROD,
-                      unique_number=unique_number, qty_actual=qty_received,
+        whl.log_event(cursor, lbl, 'UNKNOWN_MATERIAL', phase=PHASE_PROD,
+                      material_code=material_code, qty_actual=qty_received,
                       operator_id=operator_id, notes=f"list={list_id}")
         whl.touch_session(cursor, session_id)
         return 'not_found', None
 
-    item_id, material_code, qty_expected, order_number = r
-    qty_received = float(qty_received)
+    item_id, qty_expected, order_number = r
     qty_expected = float(qty_expected)
-    status = CHECK_OK if qty_received == qty_expected else CHECK_MISMATCH
 
     cursor.execute("""
-        MERGE Traceability_RS.dbo.kit_item_checks AS t
-        USING (SELECT ? AS item_id, ? AS phase) AS s
-            ON t.item_id = s.item_id AND t.phase = s.phase
-        WHEN MATCHED THEN
-            UPDATE SET qty_expected=?, qty_actual=?, check_status=?,
-                       checked_by=?, checked_date=GETDATE()
-        WHEN NOT MATCHED THEN
-            INSERT (item_id, phase, qty_expected, qty_actual, check_status, checked_by)
-            VALUES (s.item_id, s.phase, ?, ?, ?, ?);
-    """, (item_id, PHASE_PROD,
-          qty_expected, qty_received, status, operator_id,
-          qty_expected, qty_received, status, operator_id))
+        SELECT ISNULL(SUM(cp.qty_actual), 0)
+        FROM Traceability_RS.dbo.picking_list_items i
+        LEFT JOIN Traceability_RS.dbo.kit_item_checks cp
+               ON cp.item_id = i.id AND cp.phase = ?
+        WHERE i.picking_list_id = ? AND i.material_code = ?
+          AND i.qty_picked > 0 AND i.pick_status NOT IN (?, ?)
+    """, (PHASE_PROD, list_id, material_code,
+          whl.ST_MISSING_FROM_LIST, whl.ST_REMOVED))
+    qty_received_total = float(cursor.fetchone()[0]) + float(qty_received)
+    status = CHECK_OK if qty_received_total >= qty_expected else CHECK_MISMATCH
+
+    # Consolidamento: un unico check per materiale sulla riga rappresentativa.
+    cursor.execute("""
+        DELETE FROM Traceability_RS.dbo.kit_item_checks
+        WHERE phase = ? AND item_id IN (
+            SELECT id FROM Traceability_RS.dbo.picking_list_items
+            WHERE picking_list_id = ? AND material_code = ?
+        )
+    """, (PHASE_PROD, list_id, material_code))
+
+    cursor.execute("""
+        INSERT INTO Traceability_RS.dbo.kit_item_checks
+            (item_id, phase, qty_expected, qty_actual, check_status, checked_by)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (item_id, PHASE_PROD, qty_expected, qty_received_total,
+          status, operator_id))
 
     whl.log_event(cursor, order_number or lbl, 'SCAN', phase=PHASE_PROD,
-                  material_code=material_code, unique_number=unique_number,
-                  qty_expected=qty_expected, qty_actual=qty_received,
-                  operator_id=operator_id,
-                  notes=f"list={list_id}; check={status}")
+                  material_code=material_code, qty_expected=qty_expected,
+                  qty_actual=qty_received_total, operator_id=operator_id,
+                  notes=f"list={list_id}; check={status}; added={qty_received}")
     whl.touch_session(cursor, session_id)
     return ('ok' if status == CHECK_OK else 'mismatch'), {
         'item_id': item_id, 'material_code': material_code,
-        'qty_expected': qty_expected, 'qty_received': qty_received,
+        'qty_expected': qty_expected, 'qty_received': qty_received_total,
         'check_status': status}
 
 

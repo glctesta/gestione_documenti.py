@@ -43,6 +43,14 @@ for _d in ('tcl8.6', 'tk8.6'):
 if os.path.exists('npi'):
     datas_list.append(('npi', 'npi'))
 
+# Aggiungi la directory assets se esiste
+if os.path.exists('assets'):
+    datas_list.append(('assets', 'assets'))
+
+# Aggiungi la directory services (script batch per il servizio di notifiche)
+if os.path.exists('services'):
+    datas_list.append(('services', 'services'))
+
 # Aggiungi la directory manuals (manuali PDF multilingua)
 if os.path.exists('manuals'):
     datas_list.append(('manuals', 'manuals'))
@@ -50,6 +58,10 @@ if os.path.exists('manuals'):
 # Aggiungi la directory docs (manuale NPI HTML)
 if os.path.exists('docs'):
     datas_list.append(('docs', 'docs'))
+
+# Aggiungi la directory sounds (effetti audio per la scansione kit)
+if os.path.exists('sounds'):
+    datas_list.append(('sounds', 'sounds'))
 
 # Aggiungi updater come onedir (NO onefile — evita estrazione in %TEMP% che fallisce dal parent frozen)
 _updater_src = os.path.join('dist', 'updater')

@@ -49,17 +49,51 @@ class KitProdWindow(tk.Toplevel):
         self.user_name = user_name or '?'
         self.operator_id = operator_id
 
+        from datetime import date, timedelta
+        from tkcalendar import DateEntry
+
         self.title(lang.get('kit_prod_title', 'Produzione — Ricevimento Kit'))
-        self.geometry("950x520")
+        self.geometry("950x560")
         self.transient(parent)
 
         header = ttk.Frame(self, padding=(10, 6))
         header.pack(fill='x')
         ttk.Label(header, text=lang.get('kit_prod_header',
-                                        'Kit dalla preformatura in attesa di ricevimento in linea'),
+                                        'Kit chiusi WH / verificati in attesa di ricevimento in linea'),
                   font=("Segoe UI", 11, "bold")).pack(side='left')
         ttk.Label(header, text=f"{lang.get('kit_operator', 'Operatore')}: {self.user_name}",
                   font=("Segoe UI", 9, "italic")).pack(side='right')
+
+        # Filtro date
+        filter_frame = ttk.LabelFrame(self, text=lang.get('kit_prod_filter', 'Filtro data chiusura lista'),
+                                      padding=(10, 6))
+        filter_frame.pack(fill='x', padx=10, pady=(0, 6))
+        today = date.today()
+        self.date_from = DateEntry(filter_frame, width=12, background='darkblue',
+                                   foreground='white', borderwidth=2,
+                                   date_pattern='dd/MM/yyyy')
+        self.date_from.set_date(today - timedelta(days=5))
+        self.date_from.grid(row=0, column=1, padx=5, pady=2)
+        ttk.Label(filter_frame, text=lang.get('from_date_label', 'Da:')
+                  ).grid(row=0, column=0, sticky='e', padx=5, pady=2)
+        self.date_to = DateEntry(filter_frame, width=12, background='darkblue',
+                                 foreground='white', borderwidth=2,
+                                 date_pattern='dd/MM/yyyy')
+        self.date_to.set_date(today)
+        self.date_to.grid(row=0, column=3, padx=5, pady=2)
+        ttk.Label(filter_frame, text=lang.get('to_date_label', 'A:')
+                  ).grid(row=0, column=2, sticky='e', padx=5, pady=2)
+        ttk.Button(filter_frame, text=lang.get('kit_btn_refresh', 'Aggiorna'),
+                   command=self._refresh).grid(row=0, column=4, padx=(12, 0), pady=2)
+        ttk.Button(filter_frame, text=lang.get('kit_prod_reset_filter', 'Reset'),
+                   command=self._reset_filter).grid(row=0, column=5, padx=6, pady=2)
+
+        ttk.Label(filter_frame, text=lang.get('kit_prod_order_filter', 'Ordine:')
+                  ).grid(row=0, column=6, sticky='e', padx=(16, 5), pady=2)
+        self.order_filter_var = tk.StringVar()
+        self.order_filter_entry = ttk.Entry(filter_frame, textvariable=self.order_filter_var, width=20)
+        self.order_filter_entry.grid(row=0, column=7, padx=(0, 5), pady=2)
+        self.order_filter_entry.bind('<Return>', lambda e: self._refresh())
 
         cols = ('id', 'priority', 'orders', 'file', 'state', 'closed')
         self.tree = ttk.Treeview(self, columns=cols, show='headings', selectmode='browse')
@@ -88,23 +122,60 @@ class KitProdWindow(tk.Toplevel):
         footer.pack(fill='x')
         ttk.Button(footer, text=lang.get('kit_prod_btn_open', 'Apri ricevimento'),
                    command=self._open_selected).pack(side='left')
-        ttk.Button(footer, text=lang.get('kit_btn_refresh', 'Aggiorna'),
-                   command=self._refresh).pack(side='left', padx=6)
 
         self._refresh()
         logger.info("KitProdWindow aperta da %s", self.user_name)
 
-    def _refresh(self):
+    def _reset_filter(self):
+        from datetime import date, timedelta
+        today = date.today()
+        self.date_from.set_date(today - timedelta(days=5))
+        self.date_to.set_date(today)
+        self.order_filter_var.set('')
+        self._refresh()
+
+    def _load_rows(self):
         cursor = self.db.conn.cursor()
         try:
-            rows = prl.eligible_lists(cursor)
+            date_from = self.date_from.get_date()
+            date_to = self.date_to.get_date()
+            from datetime import datetime, timedelta
+            if date_to:
+                date_to = datetime.combine(date_to, datetime.max.time())
+            return prl.eligible_lists(cursor, date_from=date_from, date_to=date_to)
         except Exception as e:
             messagebox.showerror(self.lang.get('error_title', 'Errore'), str(e), parent=self)
-            return
+            return None
         finally:
             cursor.close()
-        self.tree.delete(*self.tree.get_children())
+
+    def _apply_order_filter(self, rows):
+        text = self.order_filter_var.get().strip().upper()
+        if not text:
+            return rows
+        norm_text = text.lstrip('PR').lstrip('0')
+        out = []
         for r in rows:
+            orders = (r.get('orders') or '').upper()
+            if text in orders:
+                out.append(r)
+                continue
+            parts = [p.lstrip('PR').lstrip('0') for p in orders.replace('/', ' ').split()]
+            if any(norm_text == p for p in parts):
+                out.append(r)
+        return out
+
+    def _refresh(self):
+        rows = self._load_rows()
+        if rows is None:
+            return
+        self._last_rows = rows
+        self._apply_filter_and_populate(rows)
+
+    def _apply_filter_and_populate(self, rows):
+        filtered = self._apply_order_filter(rows)
+        self.tree.delete(*self.tree.get_children())
+        for r in filtered:
             prio = int(r['prio_rank'] or 4)
             blocked = bool(r['blocked'])
             tag = 'blocked' if blocked else (f'p{prio}' if prio in (1, 2, 3) else '')
@@ -180,7 +251,7 @@ class KitProdVerifyWindow(tk.Toplevel):
         scan_frame = ttk.LabelFrame(self, text=lang.get('kit_prod_scan_frame',
                                                         'Scansione ricevimento'), padding=10)
         scan_frame.pack(fill='x', padx=10, pady=(0, 6))
-        ttk.Label(scan_frame, text=lang.get('kit_scan_unique', 'Unique Number (Reel Code):')
+        ttk.Label(scan_frame, text=lang.get('kit_prod_scan_material', 'Codice Materiale:')
                   ).grid(row=0, column=0, sticky='w')
         self.scan_var = tk.StringVar()
         self.scan_entry = ttk.Entry(scan_frame, textvariable=self.scan_var,
@@ -203,17 +274,17 @@ class KitProdVerifyWindow(tk.Toplevel):
                   font=("Segoe UI", 10, "bold")).grid(row=1, column=0, columnspan=5,
                                                       sticky='w', pady=(6, 0))
 
-        cols = ('status', 'material', 'unique', 'expected', 'received')
+        cols = ('status', 'material', 'expected', 'received', 'missing')
         self.tree = ttk.Treeview(self, columns=cols, show='headings', selectmode='browse')
         headings = {
             'status': lang.get('kit_col_state', 'Stato'),
             'material': lang.get('kit_col_material', 'Codice Materiale'),
-            'unique': 'Unique Nr',
             'expected': lang.get('kit_prod_col_expected', 'Da preformatura'),
             'received': lang.get('kit_pf_col_received', 'Ricevuta'),
+            'missing': lang.get('kit_prod_col_missing', 'Mancanti'),
         }
-        widths = {'status': 60, 'material': 280, 'unique': 160,
-                  'expected': 120, 'received': 110}
+        widths = {'status': 60, 'material': 300, 'expected': 120,
+                  'received': 110, 'missing': 110}
         for c in cols:
             self.tree.heading(c, text=headings[c])
             self.tree.column(c, width=widths[c],
@@ -275,37 +346,31 @@ class KitProdVerifyWindow(tk.Toplevel):
     # ─────────────────────── Scansione ricevimento ───────────────────── #
 
     def _on_scan(self, event=None):
-        unique = self.scan_var.get().strip()
+        material = self.scan_var.get().strip()
         self.alert_var.set('')
-        if not unique:
+        if not material:
             return
         cursor = self.db.conn.cursor()
-        cursor.execute("""
-            SELECT ISNULL(cpf.qty_actual, i.qty_picked)
-            FROM Traceability_RS.dbo.picking_list_items i
-            LEFT JOIN Traceability_RS.dbo.kit_item_checks cpf
-                   ON cpf.item_id = i.id AND cpf.phase = 'PREFORMING'
-            WHERE i.picking_list_id=? AND i.unique_number=? AND i.qty_picked > 0
-        """, (self.list_id, unique))
-        r = cursor.fetchone()
+        items = prl.get_prod_items(cursor, self.list_id)
         cursor.close()
-        if r is None:
-            self._register_unknown(unique)
-            return
-        self.qty_var.set(_fmt_qty(r[0]))
-        self.qty_entry.focus_set()
-        self.qty_entry.selection_range(0, 'end')
+        for it in items:
+            if it['material_code'].strip().upper() == material.upper():
+                self.qty_var.set(_fmt_qty(it['qty_missing']))
+                self.qty_entry.focus_set()
+                self.qty_entry.selection_range(0, 'end')
+                return
+        self._register_unknown(material)
 
     def _on_confirm(self, event=None):
-        unique = self.scan_var.get().strip()
+        material = self.scan_var.get().strip()
         qty_txt = self.qty_var.get().strip().replace(',', '.')
         self.alert_var.set('')
-        if not unique:
+        if not material:
             self.scan_entry.focus_set()
             return
         try:
             qty = float(qty_txt)
-            if qty < 0:
+            if qty <= 0:
                 raise ValueError
         except ValueError:
             self.alert_var.set(self.lang.get('kit_err_qty', 'Quantità non valida'))
@@ -313,7 +378,7 @@ class KitProdVerifyWindow(tk.Toplevel):
 
         cursor = self.db.conn.cursor()
         try:
-            outcome, item = prl.apply_prod_check(cursor, self.list_id, unique, qty,
+            outcome, item = prl.apply_prod_check(cursor, self.list_id, material, qty,
                                                  self.operator_id, self.session_id)
             self.db.conn.commit()
         except Exception as e:
@@ -324,12 +389,12 @@ class KitProdVerifyWindow(tk.Toplevel):
             cursor.close()
 
         if outcome == 'not_found':
-            self._alert_unknown(unique)
+            self._alert_unknown(material)
         elif outcome == 'mismatch':
             self.bell()
             self.alert_var.set(
-                self.lang.get('kit_pf_msg_mismatch',
-                              '❌ Discrepanza: {code} — consegnata {exp}, ricevuta {got}')
+                self.lang.get('kit_prod_msg_partial',
+                              '⚠ Parziale: {code} — ricevuti {got} / {exp}')
                 .replace('{code}', item['material_code'])
                 .replace('{exp}', _fmt_qty(item['qty_expected']))
                 .replace('{got}', _fmt_qty(item['qty_received'])))
@@ -338,12 +403,12 @@ class KitProdVerifyWindow(tk.Toplevel):
         self.scan_entry.focus_set()
         self._refresh(keep_alert=True)
 
-    def _register_unknown(self, unique):
+    def _register_unknown(self, material):
         cursor = self.db.conn.cursor()
         try:
             whl.log_event(cursor, whl.orders_label(self.info['orders']),
-                          'UNKNOWN_UNIQUE_NUMBER', phase=prl.PHASE_PROD,
-                          unique_number=unique, operator_id=self.operator_id,
+                          'UNKNOWN_MATERIAL', phase=prl.PHASE_PROD,
+                          material_code=material, operator_id=self.operator_id,
                           notes=f"list={self.list_id}")
             whl.touch_session(cursor, self.session_id)
             self.db.conn.commit()
@@ -351,17 +416,17 @@ class KitProdVerifyWindow(tk.Toplevel):
             self.db.conn.rollback()
         finally:
             cursor.close()
-        self._alert_unknown(unique)
+        self._alert_unknown(material)
         self.scan_var.set('')
         self.qty_var.set('')
         self.scan_entry.focus_set()
 
-    def _alert_unknown(self, unique):
+    def _alert_unknown(self, material):
         self.bell()
         self.alert_var.set(
-            self.lang.get('kit_msg_unknown_unique',
-                          '⚠ Unique number NON presente nella lista: {un} (registrato)')
-            .replace('{un}', unique))
+            self.lang.get('kit_msg_unknown_material',
+                          '⚠ Codice materiale NON presente nella lista: {mat} (registrato)')
+            .replace('{mat}', material))
 
     # ─────────────────────────── Refresh ─────────────────────────────── #
 
@@ -378,9 +443,10 @@ class KitProdVerifyWindow(tk.Toplevel):
             emoji = CHECK_EMOJI.get(it['check_status'], '⬜')
             tag = CHECK_TAG.get(it['check_status'], '')
             self.tree.insert('', 'end', values=(
-                emoji, it['material_code'], it['unique_number'] or '',
+                emoji, it['material_code'],
                 _fmt_qty(it['qty_expected']),
                 _fmt_qty(it['qty_received']) if it['qty_received'] is not None else '',
+                _fmt_qty(it['qty_missing']),
             ), tags=(tag,))
 
         self.summary_var.set(

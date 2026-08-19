@@ -10,7 +10,11 @@ Interfaccia di scansione del Prelievo Magazzino (Fase 1) — Sprint 2
   del responsabile WH via _execute_authorized_action)
 - Ogni scansione confermata e' una transazione autonoma (commit immediato)
 """
+import ctypes
 import logging
+import os
+import sys
+import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 import winsound
@@ -190,11 +194,18 @@ class KitScanWindow(tk.Toplevel):
         self.tree.pack(side='top', expand=True, fill='both', padx=(10, 0))
         vsb.place(relx=1.0, rely=0.5, relheight=0.6, anchor='e')
 
+        self.context_menu = tk.Menu(self, tearoff=0)
+        self.context_menu.add_command(
+            label=lang.get('kit_pick_label', 'Preleva etichetta'),
+            command=self._pick_label_prompt)
+        self.tree.bind('<Button-3>', self._on_tree_right_click)
+
         self.tree.tag_configure('ok', background='#d8f5d8')
         self.tree.tag_configure('partial', background='#ffe8cc')
         self.tree.tag_configure('missing', background='#ffd6d6')
         self.tree.tag_configure('info', background='#f0f0f0')
         self.tree.tag_configure('removed', background='#e0e0e0', foreground='#888888')
+        self.tree.tag_configure('label', background='#e6e6fa')
 
         footer = ttk.Frame(self, padding=10)
         footer.pack(fill='x')
@@ -417,12 +428,42 @@ class KitScanWindow(tk.Toplevel):
             .replace('{un}', unique))
 
     def _play_success_sound(self):
+        """Suono di sistema Windows per scansione HU valida."""
         try:
             winsound.MessageBeep(winsound.MB_OK)
         except Exception:
             pass
 
+    def _error_sound_path(self):
+        """Percorso del file MP3 di errore (risolve sia in sviluppo che in exe PyInstaller)."""
+        base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(base_dir, 'sounds', 'universfield-error-notification-352286.mp3')
+
     def _play_error_sound(self):
+        """Suono di errore dedicato: file MP3 incluso nel build; fallback su MessageBeep."""
+        path = self._error_sound_path()
+        if os.path.exists(path):
+            try:
+                def _play():
+                    alias = f"errsnd_{threading.current_thread().ident or 0}"
+                    mci = ctypes.windll.winmm.mciSendStringW
+                    mci.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_void_p]
+                    mci(f'open "{path}" type mpegvideo alias {alias}', None, 0, None)
+                    mci(f'play {alias}', None, 0, None)
+
+                    def _close():
+                        try:
+                            mci(f'stop {alias}', None, 0, None)
+                            mci(f'close {alias}', None, 0, None)
+                        except Exception:
+                            pass
+
+                    threading.Timer(3.0, _close).start()
+
+                threading.Thread(target=_play, daemon=True).start()
+                return
+            except Exception:
+                logger.exception("Errore riproduzione MP3 di errore")
         try:
             winsound.MessageBeep(winsound.MB_ICONHAND)
         except Exception:
@@ -509,13 +550,94 @@ class KitScanWindow(tk.Toplevel):
     def _render_items(self):
         """Disegna la treeview usando self._current_items rispettando l'ordinamento corrente."""
         self.tree.delete(*self.tree.get_children())
-        for it in self._current_items:
+        for idx, it in enumerate(self._current_items):
             emoji = STATUS_EMOJI.get(it['pick_status'], '❔')
             tag = STATUS_TAG.get(it['pick_status'], '')
-            self.tree.insert('', 'end', values=(
-                emoji, it['material_code'], it['unique_number'] or '',
+            material = it['material_code']
+            if it.get('Source') == 'LABEL':
+                material = '🏷️ ' + material
+                tag = 'label'
+            self.tree.insert('', 'end', iid=str(idx), values=(
+                emoji, material, it['unique_number'] or '',
                 _fmt_qty(it['qty_required']), _fmt_qty(it['qty_picked']),
             ), tags=(tag,))
+
+    def _on_tree_right_click(self, event):
+        """Mostra il menu contestuale solo sulle righe etichetta prelevabili."""
+        region = self.tree.identify('region', event.x, event.y)
+        if region != 'cell':
+            return
+        row_id = self.tree.identify_row(event.y)
+        if not row_id:
+            return
+        try:
+            item = self._current_items[int(row_id)]
+        except (ValueError, IndexError):
+            return
+        if item.get('Source') != 'LABEL' or item.get('pick_status') == whl.ST_COMPLETE:
+            return
+        self.tree.selection_set(row_id)
+        self.context_menu.post(event.x_root, event.y_root)
+
+    def _pick_label_prompt(self):
+        """Chiede la quantità prelevata per la riga etichetta selezionata."""
+        sel = self.tree.selection()
+        if not sel:
+            return
+        try:
+            item = self._current_items[int(sel[0])]
+        except (ValueError, IndexError):
+            return
+        if item.get('Source') != 'LABEL' or item.get('pick_status') == whl.ST_COMPLETE:
+            return
+        qty_txt = simpledialog.askstring(
+            self.lang.get('kit_pick_label', 'Preleva etichetta'),
+            self.lang.get('kit_prompt_label_qty',
+                          'Quantità prelevata per {material}:')
+            .replace('{material}', str(item.get('material_code', ''))),
+            parent=self)
+        if qty_txt is None:
+            return
+        qty_txt = qty_txt.strip().replace(',', '.')
+        try:
+            qty = float(qty_txt)
+        except ValueError:
+            self.alert_var.set(self.lang.get('kit_err_qty', 'Quantità non valida'))
+            self._play_error_sound()
+            return
+        self._pick_label_item(item['id'], qty)
+
+    def _pick_label_item(self, item_id, qty):
+        """Aggiorna la riga picking_list_items per un prelievo etichetta manuale."""
+        cursor = self.db.conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT qty_required FROM Traceability_RS.dbo.picking_list_items WHERE id = ?",
+                (item_id,))
+            row = cursor.fetchone()
+            if not row:
+                raise ValueError(f"Riga picking_list_items id={item_id} non trovata")
+            qty_required = float(row[0] or 0)
+            if qty <= 0:
+                pick_status = whl.ST_PENDING
+            elif qty >= qty_required:
+                pick_status = whl.ST_COMPLETE
+            else:
+                pick_status = whl.ST_PARTIAL
+            cursor.execute("""
+                UPDATE Traceability_RS.dbo.picking_list_items
+                SET qty_picked = ?, pick_status = ?, picked_by = ?, picked_date = GETDATE()
+                WHERE id = ?
+            """, (qty, pick_status, self.operator_id, item_id))
+            self.db.conn.commit()
+        except Exception as e:
+            self.db.conn.rollback()
+            logger.error("Prelievo etichetta fallito: %s", e)
+            messagebox.showerror(self.lang.get('error_title', 'Errore'), str(e), parent=self)
+            return
+        finally:
+            cursor.close()
+        self._refresh_items()
 
     def _sort_items(self, col):
         """Ordina self._current_items per la colonna cliccata e ridisegna la griglia."""
@@ -556,6 +678,22 @@ class KitScanWindow(tk.Toplevel):
                                   'Sono registrate {n} scansioni con unique number sconosciuto. '
                                   'Confermare comunque la chiusura?')
                     .replace('{n}', str(state['unknown_scans'])),
+                    parent=self):
+                cursor.close()
+                return
+        label_pending = [it for it in self._current_items
+                         if it.get('Source') == 'LABEL'
+                         and it.get('pick_status') not in (whl.ST_COMPLETE, whl.ST_REMOVED)]
+        if label_pending:
+            msg = '\n'.join(
+                f"{it['material_code']} (richiesti {_fmt_qty(it['qty_required'])}, prelevati {_fmt_qty(it['qty_picked'])}"
+                for it in label_pending
+            )
+            if not messagebox.askyesno(
+                    self.lang.get('warning_title', 'Attenzione'),
+                    self.lang.get('kit_msg_labels_pending',
+                                  'Attenzione: le seguenti righe etichetta non sono ancora prelevate:\n{labels}\n\nChiudere comunque la lista?')
+                    .replace('{labels}', msg),
                     parent=self):
                 cursor.close()
                 return
