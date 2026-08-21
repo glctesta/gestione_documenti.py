@@ -1,7 +1,9 @@
 """
 wh_workstation_config.py
-Finestra per configurare il computer come WH WorkStation (ricevente ordini).
-Crea o elimina il file wh_host.json in C:\\Users\\Default\\AppData\\Local\\
+Finestra per configurare il computer come WorkStation (WH o Acquisti materiali).
+Crea o elimina il file corrispondente in %LOCALAPPDATA%:
+  - wh_host.json        -> postazione ricevente ordini (WH)
+  - purchasing_host.json -> postazione ufficio acquisti materiali indiretti
 """
 
 import tkinter as tk
@@ -14,20 +16,21 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-WH_HOST_DIR = os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
-WH_HOST_FILE = os.path.join(WH_HOST_DIR, "wh_host.json")
+HOST_DIR = os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
+WH_HOST_FILE = os.path.join(HOST_DIR, "wh_host.json")
+PURCHASING_HOST_FILE = os.path.join(HOST_DIR, "purchasing_host.json")
 
 
 class WHWorkstationConfigWindow(tk.Toplevel):
-    """Finestra per creare o eliminare la configurazione WH WorkStation."""
+    """Finestra per creare o eliminare la configurazione di una WorkStation."""
 
     def __init__(self, master, lang, user_name="Unknown"):
         super().__init__(master)
         self.lang = lang
         self.user_name = user_name
 
-        self.title(lang.get('wh_workstation_title', 'Conferma WH WorkStation'))
-        self.geometry("480x320")
+        self.title(lang.get('workstation_config_title', 'Configura WorkStation'))
+        self.geometry("520x420")
         self.resizable(False, False)
         self.transient(master)
         self.grab_set()
@@ -36,36 +39,45 @@ class WHWorkstationConfigWindow(tk.Toplevel):
         self._refresh_status()
 
         self.protocol("WM_DELETE_WINDOW", self.destroy)
-        logger.info("WH WorkStation Config Window aperta")
+        logger.info("Workstation Config Window aperta")
 
-    # ------------------------------------------------------------------ #
-    #  UI                                                                  #
-    # ------------------------------------------------------------------ #
     def _build_ui(self):
         main = ttk.Frame(self, padding=20)
         main.pack(expand=True, fill="both")
 
-        # Titolo
         ttk.Label(
             main,
-            text=self.lang.get('wh_workstation_header',
-                               'Configurazione WH WorkStation'),
+            text=self.lang.get('workstation_config_header', 'Configurazione WorkStation'),
             font=("Segoe UI", 13, "bold")
         ).pack(pady=(0, 10))
 
-        # Descrizione
         ttk.Label(
             main,
-            text=self.lang.get('wh_workstation_desc',
-                               'Questa funzione identifica il computer corrente\n'
-                               'come postazione ricevente ordini (WH Host).'),
+            text=self.lang.get('workstation_config_desc',
+                               'Identifica questo computer come postazione ricevente ordini (WH) '
+                               'o come postazione acquisti materiali indiretti.'),
             justify="center"
         ).pack(pady=(0, 15))
+
+        # Selettore tipo workstation
+        type_frame = ttk.Frame(main)
+        type_frame.pack(fill="x", pady=(0, 15))
+        ttk.Label(type_frame, text=self.lang.get('workstation_type', 'Tipo WorkStation:')).pack(side="left", padx=(0, 8))
+        self.type_var = tk.StringVar(value="WH")
+        self.type_combo = ttk.Combobox(
+            type_frame,
+            textvariable=self.type_var,
+            values=["WH", "Acquisti materiali"],
+            state="readonly",
+            width=30
+        )
+        self.type_combo.pack(side="left")
+        self.type_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_status())
 
         # Frame stato
         status_frame = ttk.LabelFrame(
             main,
-            text=self.lang.get('wh_workstation_status_label', 'Stato'),
+            text=self.lang.get('workstation_status_label', 'Stato'),
             padding=10
         )
         status_frame.pack(fill="x", pady=(0, 15))
@@ -84,124 +96,130 @@ class WHWorkstationConfigWindow(tk.Toplevel):
 
         self.btn_create = ttk.Button(
             btn_frame,
-            text=self.lang.get('wh_workstation_create', 'Attiva WH WorkStation'),
+            text=self.lang.get('workstation_create', 'Attiva WorkStation'),
             command=self._create_config
         )
         self.btn_create.pack(side="left", expand=True, fill="x", padx=(0, 5))
 
         self.btn_delete = ttk.Button(
             btn_frame,
-            text=self.lang.get('wh_workstation_delete', 'Disattiva WH WorkStation'),
+            text=self.lang.get('workstation_delete', 'Disattiva WorkStation'),
             command=self._delete_config
         )
         self.btn_delete.pack(side="left", expand=True, fill="x", padx=(5, 0))
 
-    # ------------------------------------------------------------------ #
-    #  Logica                                                              #
-    # ------------------------------------------------------------------ #
+    def _get_file_for_type(self, wstype):
+        return PURCHASING_HOST_FILE if wstype == "Acquisti materiali" else WH_HOST_FILE
+
     def _refresh_status(self):
-        """Aggiorna lo stato mostrato nella UI."""
-        if os.path.isfile(WH_HOST_FILE):
+        wstype = self.type_var.get()
+        cfg_file = self._get_file_for_type(wstype)
+        label_active = self.lang.get('workstation_active', '✅ WorkStation ATTIVA\nHost: {0}\nAttivata: {1}')
+        label_inactive = self.lang.get('workstation_inactive', '❌ WorkStation NON attiva')
+        label_file_error = self.lang.get('workstation_file_error', '⚠️ File presente ma non leggibile')
+
+        if os.path.isfile(cfg_file):
             try:
-                with open(WH_HOST_FILE, "r", encoding="utf-8") as f:
+                with open(cfg_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 host = data.get("hostname", "?")
                 activated = data.get("activated_at", "?")
-                self.status_var.set(
-                    self.lang.get('wh_workstation_active',
-                                  '✅ WH WorkStation ATTIVA\nHost: {0}\nAttivata: {1}').format(host, activated)
-                )
+                self.status_var.set(label_active.format(host, activated))
             except Exception:
-                self.status_var.set(
-                    self.lang.get('wh_workstation_file_error',
-                                  '⚠️ File presente ma non leggibile')
-                )
+                self.status_var.set(label_file_error)
             self.btn_create.state(["disabled"])
             self.btn_delete.state(["!disabled"])
         else:
-            self.status_var.set(
-                self.lang.get('wh_workstation_inactive',
-                              '❌ WH WorkStation NON attiva')
-            )
+            self.status_var.set(label_inactive)
             self.btn_create.state(["!disabled"])
             self.btn_delete.state(["disabled"])
 
     def _create_config(self):
-        """Crea il file wh_host.json."""
+        wstype = self.type_var.get()
+        cfg_file = self._get_file_for_type(wstype)
         try:
-            os.makedirs(WH_HOST_DIR, exist_ok=True)
+            os.makedirs(HOST_DIR, exist_ok=True)
 
             data = {
-                "wh_host": True,
+                "workstation_type": wstype,
                 "hostname": socket.gethostname(),
                 "activated_by": self.user_name,
                 "activated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
 
-            with open(WH_HOST_FILE, "w", encoding="utf-8") as f:
+            with open(cfg_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4, ensure_ascii=False)
 
-            logger.info(f"WH WorkStation config creata: {WH_HOST_FILE}")
+            logger.info(f"Workstation config creata: {cfg_file}")
             messagebox.showinfo(
                 self.lang.get('info', 'Info'),
-                self.lang.get('wh_workstation_created',
-                              'WH WorkStation attivata con successo.'),
+                self.lang.get('workstation_created', 'WorkStation attivata con successo.'),
                 parent=self
             )
             self._refresh_status()
 
         except PermissionError:
-            logger.error(f"Permessi insufficienti per creare {WH_HOST_FILE}")
+            logger.error(f"Permessi insufficienti per creare {cfg_file}")
             messagebox.showerror(
                 self.lang.get('error', 'Errore'),
-                self.lang.get('wh_workstation_permission_error',
+                self.lang.get('workstation_permission_error',
                               'Permessi insufficienti.\nEseguire il programma come Amministratore.'),
                 parent=self
             )
         except Exception as e:
-            logger.error(f"Errore creazione WH config: {e}", exc_info=True)
+            logger.error(f"Errore creazione workstation config: {e}", exc_info=True)
             messagebox.showerror(
                 self.lang.get('error', 'Errore'),
-                f"{self.lang.get('wh_workstation_generic_error', 'Errore')}: {e}",
+                f"{self.lang.get('workstation_generic_error', 'Errore')}: {e}",
                 parent=self
             )
 
     def _delete_config(self):
-        """Elimina il file wh_host.json."""
+        wstype = self.type_var.get()
+        cfg_file = self._get_file_for_type(wstype)
         if not messagebox.askyesno(
             self.lang.get('confirm', 'Conferma'),
-            self.lang.get('wh_workstation_confirm_delete',
-                          'Sei sicuro di voler disattivare la WH WorkStation?'),
+            self.lang.get('workstation_confirm_delete',
+                          'Sei sicuro di voler disattivare la WorkStation?'),
             parent=self
         ):
             return
 
         try:
-            os.remove(WH_HOST_FILE)
-            logger.info(f"WH WorkStation config eliminata: {WH_HOST_FILE}")
+            os.remove(cfg_file)
+            logger.info(f"Workstation config eliminata: {cfg_file}")
             messagebox.showinfo(
                 self.lang.get('info', 'Info'),
-                self.lang.get('wh_workstation_deleted',
-                              'WH WorkStation disattivata con successo.'),
+                self.lang.get('workstation_deleted', 'WorkStation disattivata con successo.'),
                 parent=self
             )
             self._refresh_status()
 
         except PermissionError:
-            logger.error(f"Permessi insufficienti per eliminare {WH_HOST_FILE}")
+            logger.error(f"Permessi insufficienti per eliminare {cfg_file}")
             messagebox.showerror(
                 self.lang.get('error', 'Errore'),
-                self.lang.get('wh_workstation_permission_error',
+                self.lang.get('workstation_permission_error',
                               'Permessi insufficienti.\nEseguire il programma come Amministratore.'),
                 parent=self
             )
         except Exception as e:
-            logger.error(f"Errore eliminazione WH config: {e}", exc_info=True)
+            logger.error(f"Errore eliminazione workstation config: {e}", exc_info=True)
             messagebox.showerror(
                 self.lang.get('error', 'Errore'),
-                f"{self.lang.get('wh_workstation_generic_error', 'Errore')}: {e}",
+                f"{self.lang.get('workstation_generic_error', 'Errore')}: {e}",
                 parent=self
             )
+
+
+def is_wh_workstation():
+    """Controlla se questo PC è un WH WorkStation."""
+    return os.path.isfile(WH_HOST_FILE)
+
+
+def is_purchasing_workstation():
+    """Controlla se questo PC è una WorkStation acquisti materiali."""
+    return os.path.isfile(PURCHASING_HOST_FILE)
 
 
 def open_wh_workstation_config(master, lang, user_name="Unknown"):

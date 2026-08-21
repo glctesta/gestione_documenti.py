@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="{{ lang }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ ui.title_orders }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <img src="{{ url_for('static', filename='Logo.png') }}" alt="Logo" class="logo">
+      <h1>{{ ui.title_orders }}</h1>
+    </div>
+    <span class="user">{{ ui.user }}: {{ user }}</span>
+  </header>
+
+  <main>
+    <div id="message" class="message" style="display:none;"></div>
+
+    <section class="panel">
+      <h2>Ordine</h2>
+      <input type="text" id="order-search" placeholder="Cerca ordine / prodotto..." autocomplete="off">
+      <select id="order-select" size="6">
+        <option value="">-- Seleziona un ordine --</option>
+      </select>
+      <div id="order-info" class="info" style="margin-top:0.5rem;"></div>
+    </section>
+
+    <section class="panel" id="labels-section" style="display:none;">
+      <h2>Etichette</h2>
+      <table id="labels-table">
+        <thead>
+          <tr>
+            <th>Codice</th>
+            <th>Descrizione</th>
+            <th>Ribbon</th>
+            <th>Qty</th>
+            <th>Stampante</th>
+            <th>Script</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div class="actions" style="margin-top:1rem;">
+        <label style="display:inline-flex;align-items:center;gap:0.5rem;margin-right:1rem;">
+          <input type="checkbox" id="print-all-together"> {{ ui.print_all_together }}
+        </label>
+        <button id="print-btn">{{ ui.print }}</button>
+        <button id="back-btn" class="secondary">{{ ui.back_to_management }}</button>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const UI = {{ ui|tojson }};
+    const LANG = "{{ lang }}";
+    const TOKEN = new URLSearchParams(window.location.search).get('token') || '';
+    let orderLabels = [];
+    let orderData = null;
+    let printers = [];
+
+    const $ = id => document.getElementById(id);
+    const msg = (text, type = 'info') => {
+      const el = $('message');
+      el.textContent = text;
+      el.className = 'message ' + type;
+      el.style.display = 'block';
+    };
+    const clearMsg = () => { $('message').style.display = 'none'; $('message').textContent = ''; };
+
+    async function safeJson(res) {
+      const text = await res.text();
+      try { return JSON.parse(text); } catch (e) { return { error: 'invalid_response', message: text.substring(0, 200) }; }
+    }
+    async function apiFetch(url, options = null) {
+      const tokenParam = TOKEN ? (url.includes('?') ? '&token=' + TOKEN : '?token=' + TOKEN) : '';
+      const res = await fetch(url + tokenParam, options);
+      const data = await safeJson(res);
+      if (!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
+      return data;
+    }
+
+    let searchTimeout = null;
+    $('order-search').addEventListener('input', () => {
+      clearTimeout(searchTimeout);
+      searchTimeout = setTimeout(searchOrders, 300);
+    });
+
+    async function searchOrders() {
+      const q = $('order-search').value.trim();
+      if (!q) { $('order-select').innerHTML = '<option value="">-- Seleziona un ordine --</option>'; return; }
+      try {
+        const rows = await apiFetch('/print/api/orders/search?q=' + encodeURIComponent(q));
+        const sel = $('order-select');
+        sel.innerHTML = '<option value="">-- Seleziona un ordine --</option>';
+        rows.forEach(o => {
+          const opt = document.createElement('option');
+          opt.value = o.OrderID;
+          opt.textContent = `${o.OrderCode} - ${o.ProductCode} (${o.ProductName})`;
+          sel.appendChild(opt);
+        });
+      } catch (e) {
+        msg(UI.msg_error + (e.message || e), 'error');
+      }
+    }
+
+    $('order-select').addEventListener('change', async () => {
+      clearMsg();
+      const orderId = parseInt($('order-select').value, 10) || null;
+      if (!orderId) { $('labels-section').style.display = 'none'; $('order-info').textContent = ''; return; }
+      try {
+        const data = await apiFetch('/print/api/orders/labels?order_id=' + orderId);
+        orderData = data.order;
+        orderLabels = data.labels || [];
+        printers = data.printers || [];
+        $('order-info').textContent = `${orderData.ProductCode} - ${orderData.ProductName} (qta: ${orderData.Quantity})`;
+        renderLabelsTable();
+        $('labels-section').style.display = 'block';
+      } catch (e) {
+        msg(UI.msg_error + (e.message || e), 'error');
+      }
+    });
+
+    function printerOptions(selectedId) {
+      let html = '<option value="">' + UI.select_printer + '</option>';
+      printers.forEach(p => {
+        html += `<option value="${p.LabelPrinterId}" ${p.LabelPrinterId == selectedId ? 'selected' : ''}>${p.PrinterName}</option>`;
+      });
+      return html;
+    }
+
+    function renderLabelsTable() {
+      const tbody = $('labels-table').querySelector('tbody');
+      tbody.innerHTML = '';
+      orderLabels.forEach(l => {
+        const ribbon = l.ribbon || {};
+        const tr = document.createElement('tr');
+        tr.innerHTML =
+          `<td>${l.MaterialCode || ''}</td>` +
+          `<td>${l.MaterialDescription || ''}</td>` +
+          `<td>${ribbon.RibbonDescription || ribbon.RibbonId || '-'}</td>` +
+          `<td><input type="number" class="qty-input" data-label-id="${l.LabelId}" value="${l.suggested_qty || 1}" min="0" step="1"></td>` +
+          `<td><select class="printer-select" data-label-id="${l.LabelId}">${printerOptions((l.printer || {}).LabelPrinterId)}</select></td>` +
+          `<td><textarea class="script-input" data-label-id="${l.LabelId}" rows="3">${l.script || ''}</textarea></td>`;
+        tbody.appendChild(tr);
+      });
+    }
+
+    $('back-btn').addEventListener('click', () => {
+      window.location.href = '/bom?token=' + TOKEN + '&lang=' + LANG;
+    });
+
+    $('print-btn').addEventListener('click', async () => {
+      clearMsg();
+      if (!orderData) { msg('Seleziona un ordine', 'error'); return; }
+      const rows = [];
+      document.querySelectorAll('#labels-table tbody tr').forEach(tr => {
+        const labelId = tr.querySelector('.qty-input').dataset.labelId;
+        const qty = parseInt(tr.querySelector('.qty-input').value, 10) || 0;
+        const printerId = parseInt(tr.querySelector('.printer-select').value, 10) || null;
+        const script = tr.querySelector('.script-input').value || '';
+        if (qty > 0 && printerId && script) rows.push({ label_id: labelId, printer_id: printerId, quantity: qty, script_data: script });
+      });
+      if (!rows.length) { msg('Nessuna etichetta da stampare', 'error'); return; }
+      const printAllTogether = $('print-all-together').checked;
+      try {
+        const res = await apiFetch('/print/api/orders/print', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ order_id: orderData.IDOrder, print_all_together: printAllTogether, rows: rows })
+        });
+        msg(res.message || 'Stampa in ordine completata', 'success');
+      } catch (e) {
+        msg(UI.msg_error + (e.message || e), 'error');
+      }
+    });
+  </script>
+</body>
+</html>

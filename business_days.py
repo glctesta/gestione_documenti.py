@@ -284,6 +284,67 @@ def should_send_notification(check_date=None, country_code='IT', additional_holi
     return is_business_day(check_date, country_code, additional_holidays)
 
 
+def count_business_days_between(start_date, end_date, country_code='IT', additional_holidays=None):
+    """
+    Conta i giorni lavorativi tra due date (estremi esclusi).
+    Utile per calcolare quanti giorni lavorativi sono trascorsi da una data.
+
+    Args:
+        start_date: Data di inizio (date, datetime o str 'YYYY-MM-DD')
+        end_date: Data di fine (date, datetime o str 'YYYY-MM-DD', default: oggi)
+        country_code: Codice paese
+        additional_holidays: Lista di festività aggiuntive
+
+    Returns:
+        int: Numero di giorni lavorativi tra start_date ed end_date (esclusi).
+
+    Example:
+        >>> from datetime import date
+        >>> count_business_days_between(date(2025, 11, 7), date(2025, 11, 12))  # ven->mer
+        3
+    """
+    from datetime import timedelta
+
+    if isinstance(start_date, str):
+        start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+    elif isinstance(start_date, datetime):
+        start_date = start_date.date()
+
+    if end_date is None:
+        end_date = date.today()
+    elif isinstance(end_date, str):
+        end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+    elif isinstance(end_date, datetime):
+        end_date = end_date.date()
+
+    checker = BusinessDayChecker(additional_holidays=additional_holidays, country_code=country_code)
+
+    count = 0
+    current = start_date + timedelta(days=1)
+    max_iterations = 365
+    while current < end_date and max_iterations > 0:
+        if checker.is_business_day(current):
+            count += 1
+        current += timedelta(days=1)
+        max_iterations -= 1
+    return count
+
+
+def get_business_days_since(start_date, country_code='IT', additional_holidays=None):
+    """
+    Conta i giorni lavorativi trascorsi da start_date fino a oggi.
+
+    Args:
+        start_date: Data di inizio
+        country_code: Codice paese
+        additional_holidays: Lista di festività aggiuntive
+
+    Returns:
+        int: Giorni lavorativi trascorsi.
+    """
+    return count_business_days_between(start_date, date.today(), country_code, additional_holidays)
+
+
 def get_next_business_day(start_date=None, country_code='IT', additional_holidays=None):
     """
     Trova il prossimo giorno lavorativo.

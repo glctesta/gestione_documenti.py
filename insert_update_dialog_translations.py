@@ -28,15 +28,15 @@ TRANSLATIONS = [
      'Neuigkeiten dieser Version:',
      'Nyheter i den här versionen:'),
     ('update_countdown_msg',
-     "L'aggiornamento partirà automaticamente tra {0:02d}:{1:02d}.\n"
+     "L'aggiornamento partirà automaticamente tra {0}.\n"
      'Salvare il lavoro nelle finestre aperte.',
-     'The update will start automatically in {0:02d}:{1:02d}.\n'
+     'The update will start automatically in {0}.\n'
      'Please save your work in any open windows.',
-     'Actualizarea va porni automat în {0:02d}:{1:02d}.\n'
+     'Actualizarea va porni automat în {0}.\n'
      'Salvați lucrul din fereastrele deschise.',
-     'Das Update startet automatisch in {0:02d}:{1:02d}.\n'
+     'Das Update startet automatisch in {0}.\n'
      'Bitte speichern Sie Ihre Arbeit in offenen Fenstern.',
-     'Uppdateringen startar automatiskt om {0:02d}:{1:02d}.\n'
+     'Uppdateringen startar automatiskt om {0}.\n'
      'Spara ditt arbete i öppna fönster.'),
     ('update_postpone_btn',
      '⏱ Posticipa {0} min ({1} rimasti)',
@@ -44,6 +44,59 @@ TRANSLATIONS = [
      '⏱ Amână {0} min ({1} rămase)',
      '⏱ {0} Min. verschieben ({1} übrig)',
      '⏱ Skjut upp {0} min ({1} kvar)'),
+    # Nuove chiavi dialogo moderno
+    ('update_ready_title',
+     'Nuova versione pronta!',
+     'New version ready!',
+     'Versiune nouă pregătită!',
+     'Neue Version bereit!',
+     'Ny version redo!'),
+    ('update_install_now_btn',
+     'Installa ora',
+     'Install now',
+     'Instalează acum',
+     'Jetzt installieren',
+     'Installera nu'),
+    ('update_ready_msg',
+     'Tutto pronto: premi "Installa ora" per aggiornare.',
+     'Everything is ready: click "Install now" to update.',
+     'Totul este pregătit: apăsați "Instalează acum" pentru a actualiza.',
+     'Alles bereit: Klicken Sie auf "Jetzt installieren", um zu aktualisieren.',
+     'Allt är klart: klicka på "Installera nu" för att uppdatera.'),
+    ('update_new_version_title',
+     'È disponibile una nuova versione!',
+     'New version is available!',
+     'O nouă versiune este disponibilă!',
+     'Neue Version verfügbar!',
+     'Ny version är tillgänglig!'),
+    ('update_current_version',
+     'Versione corrente:',
+     'Current version:',
+     'Versiunea curentă:',
+     'Aktuelle Version:',
+     'Aktuell version:'),
+    ('update_new_version',
+     'Nuova versione:',
+     'New version:',
+     'Versiune nouă:',
+     'Neue Version:',
+     'Ny version:'),
+    ('update_whatsnew_link',
+     "Cosa c'è di nuovo?",
+     "What's New?",
+     'Ce este nou?',
+     'Was ist neu?',
+     'Vad är nytt?'),
+    ('update_whatsnew_title',
+     'Novità della versione',
+     'Version Release Notes',
+     'Noutăți ale versiunii',
+     'Neuigkeiten der Version',
+     'Versionsnyheter'),
+    ('update_download_btn',
+     'Download', 'Download', 'Descărcare', 'Herunterladen', 'Ladda ner'),
+    ('update_skip_later_btn',
+     'Skip Later', 'Skip Later', 'Amână', 'Später überspringen', 'Hoppa över'),
 ]
 LANGS = ('it', 'en', 'ro', 'de', 'sv')
 

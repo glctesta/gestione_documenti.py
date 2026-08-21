@@ -391,20 +391,27 @@ class ProjectWindow(tk.Toplevel):
         self.fields['task_category'].grid(row=1, column=1, sticky=tk.W)
 
         # Editable Fields
+        # OwnerID con entry filtro + combobox per selezione
+        ttk.Label(grid_frame, text=self.lang.get('label_owner', 'Assegnato a:')).grid(row=2, column=0, sticky=tk.W, pady=2)
+        owner_frame = ttk.Frame(grid_frame)
+        owner_frame.grid(row=2, column=1, sticky=tk.EW, pady=2)
+        self.fields['OwnerID_filter'] = ttk.Entry(owner_frame)
+        self.fields['OwnerID_filter'].pack(fill=tk.X)
+        self.fields['OwnerID'] = ttk.Combobox(owner_frame, state='readonly')
+        self.fields['OwnerID'].pack(fill=tk.X)
+
         labels_config = [
-            ('OwnerID', self.lang.get('label_owner', 'Assegnato a'), 'combo'),
             ('Stato', self.lang.get('label_status', 'Stato'), 'combo'),
             ('DataInizio', self.lang.get('label_start_date', 'Data Inizio'), 'date'),
             ('DataScadenza', self.lang.get('label_due_date', 'Data Scadenza'), 'date'),
             ('DataCompletamento', self.lang.get('label_completion_date', 'Data Completamento'), 'date'),
         ]
 
-        r = 2
+        r = 3
         for field_name, label_text, widget_type in labels_config:
             ttk.Label(grid_frame, text=label_text).grid(row=r, column=0, sticky=tk.W, pady=2)
             if widget_type == 'combo':
-                # OwnerID è editabile per permettere la ricerca/filtro tra i partecipanti
-                w = ttk.Combobox(grid_frame, state='normal' if field_name == 'OwnerID' else 'readonly')
+                w = ttk.Combobox(grid_frame, state='readonly')
                 # Aggiungi binding per il campo Stato per gestire DataCompletamento
                 if field_name == 'Stato':
                     w.bind('<<ComboboxSelected>>', self._on_status_change)
@@ -542,8 +549,7 @@ class ProjectWindow(tk.Toplevel):
             self.soggetti_map_rev = {v: k for k, v in self.soggetti_map.items()}
             self._all_owner_values = [''] + list(self.soggetti_map.keys())
             self.fields['OwnerID']['values'] = self._all_owner_values
-            self.fields['OwnerID'].bind('<KeyRelease>', self._on_owner_keyrelease)
-            self.fields['OwnerID'].bind('<FocusOut>', self._on_owner_focusout)
+            self.fields['OwnerID_filter'].bind('<KeyRelease>', self._on_owner_filter_keyrelease)
             self.fields['Stato']['values'] = list(self.status_map_display.values())
 
             # Carica le categorie per il filtro
@@ -1455,6 +1461,9 @@ class ProjectWindow(tk.Toplevel):
         # Mostra il nome dell'owner, non l'ID
         owner_name = task.owner.Nome if task.owner else ""
         self.fields['OwnerID'].set(owner_name)
+        filter_entry = self.fields.get('OwnerID_filter')
+        if filter_entry:
+            filter_entry.delete(0, tk.END)
         # Imposta lo stato - assicurati che sia nella lista dei valori
         stato_display = self.status_map_display.get(task.Stato, task.Stato)
         if stato_display not in self.fields['Stato']['values']:
@@ -1487,21 +1496,19 @@ class ProjectWindow(tk.Toplevel):
         if 'IsPostFinalMilestone' in self.fields:
              self.fields['IsPostFinalMilestone'].var.set(task.IsPostFinalMilestone or False)
 
-    def _on_owner_keyrelease(self, event=None):
-        """Filtra la lista dei partecipanti mentre si digita nel campo OwnerID
-        e apre il dropdown per mostrare subito il risultato del filtro."""
-        widget = self.fields.get('OwnerID')
-        if not widget:
+    def _on_owner_filter_keyrelease(self, event=None):
+        """Filtra i valori del combobox OwnerID in base al testo digitato
+        nell'apposita casella di ricerca."""
+        combo = self.fields.get('OwnerID')
+        entry = self.fields.get('OwnerID_filter')
+        if not combo or not entry:
             return
-        text = widget.get().lower()
+        text = entry.get().lower()
         if not text:
-            widget['values'] = self._all_owner_values
+            combo['values'] = self._all_owner_values
             return
         filtered = [v for v in self._all_owner_values if text in v.lower()]
-        widget['values'] = filtered
-        # Alt+Down apre il dropdown senza selezionare il primo elemento, evitando di cancellare il testo digitato.
-        if filtered and event and event.keysym not in ('BackSpace', 'Delete', 'Return', 'Tab', 'Escape'):
-            widget.event_generate('<Alt-Down>')
+        combo['values'] = filtered
 
     def _on_owner_focusout(self, event=None):
         """Quando il campo perde il focus, ripristina l'elenco completo.
@@ -1550,13 +1557,22 @@ class ProjectWindow(tk.Toplevel):
             # 🆕 CONTROLLO PERMESSI: Solo project owner può modificare OwnerID
             if name == 'OwnerID':
                 if self.is_project_owner:
-                    # Project owner: può modificare il responsabile (normal per consentire ricerca/filtro)
-                    child.config(state='normal')
+                    # Project owner: combobox readonly + entry filtro abilitata
+                    child.config(state='readonly')
+                    filter_entry = self.fields.get('OwnerID_filter')
+                    if filter_entry:
+                        filter_entry.config(state='normal')
                     logger.debug(f"Campo OwnerID abilitato per project owner '{self.logged_in_user}'")
                 else:
                     # Task owner: NON può modificare il responsabile
                     child.config(state='disabled')
+                    filter_entry = self.fields.get('OwnerID_filter')
+                    if filter_entry:
+                        filter_entry.config(state='disabled')
                     logger.info(f"Campo OwnerID disabilitato per utente '{self.logged_in_user}' (non è project owner)")
+                continue
+            # Il campo filtro per OwnerID viene gestito insieme al combobox OwnerID
+            if name == 'OwnerID_filter':
                 continue
             
             # DataCompletamento viene gestito separatamente in base allo stato

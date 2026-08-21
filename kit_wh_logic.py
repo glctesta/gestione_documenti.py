@@ -29,6 +29,71 @@ ST_REMOVED = 'REMOVED'
 # Stati che bloccano la chiusura normale
 BLOCKING_STATUSES = (ST_PENDING, ST_PARTIAL, ST_MISSING_FROM_LIST, ST_PENDING_COMPLETION)
 
+# Flag per evitare controlli ripetuti nella stessa sessione
+_LABEL_COLUMNS_ENSURED = False
+
+
+def ensure_label_columns(conn):
+    """Verifica che esistano le colonne Source e LabelRequestData su
+    Traceability_RS.dbo.picking_list_items; se mancano, le aggiunge e logga.
+
+    L'operazione viene eseguita automaticamente la prima volta che il
+    programma tenta di leggere o scrivere righe che richiedono queste colonne.
+    """
+    global _LABEL_COLUMNS_ENSURED
+    if _LABEL_COLUMNS_ENSURED:
+        return
+
+    cur = None
+    try:
+        cur = conn.cursor()
+        # Verifica colonna Source
+        cur.execute("""
+            SELECT COUNT(*) FROM sys.columns
+            WHERE object_id = OBJECT_ID('Traceability_RS.dbo.picking_list_items')
+              AND name = 'Source'
+        """)
+        has_source = cur.fetchone()[0] > 0
+
+        # Verifica colonna LabelRequestData
+        cur.execute("""
+            SELECT COUNT(*) FROM sys.columns
+            WHERE object_id = OBJECT_ID('Traceability_RS.dbo.picking_list_items')
+              AND name = 'LabelRequestData'
+        """)
+        has_label = cur.fetchone()[0] > 0
+
+        if not has_source:
+            cur.execute("""
+                ALTER TABLE [Traceability_RS].[dbo].[picking_list_items]
+                ADD Source NVARCHAR(20) NULL DEFAULT 'FILE'
+            """)
+            logger.info("Colonna Source aggiunta a Traceability_RS.dbo.picking_list_items")
+
+        if not has_label:
+            cur.execute("""
+                ALTER TABLE [Traceability_RS].[dbo].[picking_list_items]
+                ADD LabelRequestData NVARCHAR(MAX) NULL
+            """)
+            logger.info("Colonna LabelRequestData aggiunta a Traceability_RS.dbo.picking_list_items")
+
+        if not has_source or not has_label:
+            conn.commit()
+            logger.info("Aggiornamento colonne Source/LabelRequestData completato")
+        else:
+            logger.info("Colonne Source/LabelRequestData gia' presenti")
+
+        _LABEL_COLUMNS_ENSURED = True
+    except Exception as e:
+        logger.error("Impossibile aggiungere colonne Source/LabelRequestData: %s", e, exc_info=True)
+        raise
+    finally:
+        if cur:
+            try:
+                cur.close()
+            except Exception:
+                pass
+
 
 def base_code(code: str) -> str:
     """Codice senza suffisso variante '|n' (rilevazione Sprint 0)."""
@@ -65,9 +130,11 @@ def orders_label(orders: List[str], max_len: int = 30) -> str:
 
 
 def get_items(cursor, list_id: int) -> List[dict]:
+    ensure_label_columns(cursor.connection)
     cursor.execute("""
         SELECT id, order_number, material_code, unique_number,
-               qty_required, qty_picked, pick_status, picked_by, picked_date, notes
+               qty_required, qty_picked, pick_status, picked_by, picked_date, notes,
+               Source, LabelRequestData
         FROM Traceability_RS.dbo.picking_list_items
         WHERE picking_list_id = ?
         ORDER BY CASE pick_status
@@ -79,7 +146,7 @@ def get_items(cursor, list_id: int) -> List[dict]:
     """, (list_id,))
     cols = ('id', 'order_number', 'material_code', 'unique_number',
             'qty_required', 'qty_picked', 'pick_status', 'picked_by',
-            'picked_date', 'notes')
+            'picked_date', 'notes', 'Source', 'LabelRequestData')
     return [dict(zip(cols, row)) for row in cursor.fetchall()]
 
 
@@ -148,12 +215,14 @@ def classify_items(cursor, list_id: int, operator_id: int) -> dict:
 
     items = get_items(cursor, list_id)
     file_codes = {i['material_code'] for i in items
-                  if i['pick_status'] != ST_MISSING_FROM_LIST}
+                  if i['pick_status'] != ST_MISSING_FROM_LIST
+                  and i.get('Source') != 'LABEL'}
 
-    # 1. NOT_IN_BOM (solo su righe ancora PENDING senza prelievi)
+    # 1. NOT_IN_BOM (solo su righe ancora PENDING senza prelievi, escluse etichette automatiche)
     not_in_bom = sorted({i['material_code'] for i in items
                          if i['pick_status'] == ST_PENDING
                          and not (i['qty_picked'] or 0)
+                         and i.get('Source') != 'LABEL'
                          and i['material_code'] not in union_bom
                          and i['material_code'] not in union_base
                          and base_code(i['material_code']) not in union_base})

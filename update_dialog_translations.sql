@@ -154,4 +154,97 @@ IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [La
     VALUES ('de', 'update_now_btn', '⚡ Jetzt Aktualisieren');
 GO
 
-PRINT '✅ Traduzioni dialogo aggiornamento inserite con successo.';
+GO
+
+-- update_countdown_msg (nuovo formato con un solo segnaposto {0} per timedelta)
+UPDATE [Traceability_RS].[dbo].[AppTranslations] SET [TranslationValue] = N"L'aggiornamento partirà automaticamente tra {0}. Salvare il lavoro nelle finestre aperte."
+WHERE [TranslationKey] = 'update_countdown_msg' AND [LanguageCode] = 'it';
+UPDATE [Traceability_RS].[dbo].[AppTranslations] SET [TranslationValue] = N'The update will start automatically in {0}. Please save your work in open windows.'
+WHERE [TranslationKey] = 'update_countdown_msg' AND [LanguageCode] = 'en';
+UPDATE [Traceability_RS].[dbo].[AppTranslations] SET [TranslationValue] = N'Actualizarea va porni automat în {0}. Salvați lucrul din ferestrele deschise.'
+WHERE [TranslationKey] = 'update_countdown_msg' AND [LanguageCode] = 'ro';
+UPDATE [Traceability_RS].[dbo].[AppTranslations] SET [TranslationValue] = N'Das Update startet automatisch in {0}. Bitte speichern Sie Ihre Arbeit in offenen Fenstern.'
+WHERE [TranslationKey] = 'update_countdown_msg' AND [LanguageCode] = 'de';
+UPDATE [Traceability_RS].[dbo].[AppTranslations] SET [TranslationValue] = N'Uppdateringen startar automatiskt om {0}. Spara ditt arbete i öppna fönster.'
+WHERE [TranslationKey] = 'update_countdown_msg' AND [LanguageCode] = 'sv';
+
+-- Nuove chiavi dialogo aggiornamento moderno
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'it' AND [TranslationKey] = 'update_new_version_title')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('it', 'update_new_version_title', 'È disponibile una nuova versione!');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'ro' AND [TranslationKey] = 'update_new_version_title')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('ro', 'update_new_version_title', N'O nouă versiune este disponibilă!');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'en' AND [TranslationKey] = 'update_new_version_title')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('en', 'update_new_version_title', 'New version is available!');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'sv' AND [TranslationKey] = 'update_new_version_title')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('sv', 'update_new_version_title', 'Ny version är tillgänglig!');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'de' AND [TranslationKey] = 'update_new_version_title')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('de', 'update_new_version_title', 'Neue Version verfügbar!');
+
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'it' AND [TranslationKey] = 'update_current_version')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('it', 'update_current_version', 'Versione corrente:');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'ro' AND [TranslationKey] = 'update_current_version')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('ro', 'update_current_version', 'Versiunea curentă:');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'en' AND [TranslationKey] = 'update_current_version')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('en', 'update_current_version', 'Current version:');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'sv' AND [TranslationKey] = 'update_current_version')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('sv', 'update_current_version', 'Aktuell version:');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'de' AND [TranslationKey] = 'update_current_version')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('de', 'update_current_version', 'Aktuelle Version:');
+
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'it' AND [TranslationKey] = 'update_new_version')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('it', 'update_new_version', 'Nuova versione:');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'ro' AND [TranslationKey] = 'update_new_version')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('ro', 'update_new_version', 'Versiune nouă:');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'en' AND [TranslationKey] = 'update_new_version')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('en', 'update_new_version', 'New version:');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'sv' AND [TranslationKey] = 'update_new_version')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('sv', 'update_new_version', 'Ny version:');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'de' AND [TranslationKey] = 'update_new_version')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('de', 'update_new_version', 'Neue Version:');
+
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'it' AND [TranslationKey] = 'update_whatsnew_link')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('it', 'update_whatsnew_link', 'Cosa c''è di nuovo?');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'ro' AND [TranslationKey] = 'update_whatsnew_link')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('ro', 'update_whatsnew_link', N'Ce este nou?');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'en' AND [TranslationKey] = 'update_whatsnew_link')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('en', 'update_whatsnew_link', 'What''s New?');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'sv' AND [TranslationKey] = 'update_whatsnew_link')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('sv', 'update_whatsnew_link', 'Vad är nytt?');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'de' AND [TranslationKey] = 'update_whatsnew_link')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('de', 'update_whatsnew_link', 'Was ist neu?');
+
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'it' AND [TranslationKey] = 'update_whatsnew_title')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('it', 'update_whatsnew_title', 'Novità della versione');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'ro' AND [TranslationKey] = 'update_whatsnew_title')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('ro', 'update_whatsnew_title', N'Noutăți ale versiunii');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'en' AND [TranslationKey] = 'update_whatsnew_title')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('en', 'update_whatsnew_title', 'Version Release Notes');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'sv' AND [TranslationKey] = 'update_whatsnew_title')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('sv', 'update_whatsnew_title', 'Versionsnyheter');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'de' AND [TranslationKey] = 'update_whatsnew_title')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('de', 'update_whatsnew_title', 'Neuigkeiten der Version');
+
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'it' AND [TranslationKey] = 'update_download_btn')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('it', 'update_download_btn', 'Download');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'ro' AND [TranslationKey] = 'update_download_btn')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('ro', 'update_download_btn', 'Descărcare');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'en' AND [TranslationKey] = 'update_download_btn')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('en', 'update_download_btn', 'Download');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'sv' AND [TranslationKey] = 'update_download_btn')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('sv', 'update_download_btn', 'Ladda ner');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'de' AND [TranslationKey] = 'update_download_btn')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('de', 'update_download_btn', 'Herunterladen');
+
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'it' AND [TranslationKey] = 'update_skip_later_btn')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('it', 'update_skip_later_btn', 'Skip Later');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'ro' AND [TranslationKey] = 'update_skip_later_btn')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('ro', 'update_skip_later_btn', 'Amână');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'en' AND [TranslationKey] = 'update_skip_later_btn')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('en', 'update_skip_later_btn', 'Skip Later');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'sv' AND [TranslationKey] = 'update_skip_later_btn')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('sv', 'update_skip_later_btn', 'Hoppa över');
+IF NOT EXISTS (SELECT 1 FROM [Traceability_RS].[dbo].[AppTranslations] WHERE [LanguageCode] = 'de' AND [TranslationKey] = 'update_skip_later_btn')
+    INSERT INTO [Traceability_RS].[dbo].[AppTranslations] ([LanguageCode], [TranslationKey], [TranslationValue]) VALUES ('de', 'update_skip_later_btn', 'Später überspringen');
+
+PRINT '✅ Traduzioni dialogo aggiornamento moderno inserite/aggiornate con successo.';
+GO

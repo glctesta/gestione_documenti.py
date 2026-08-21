@@ -31,26 +31,26 @@ MENU_TRANSLATIONS = {
         "de": "Produktionsetiketten",
         "sv": "Produktionsetiketter",
     },
+    "submenu_production_labels_generic_print": {
+        "it": "1. Stampa generica",
+        "en": "1. Generic print",
+        "ro": "1. Tipărire generică",
+        "de": "1. Allgemeiner Druck",
+        "sv": "1. Generisk utskrift",
+    },
+    "submenu_production_labels_order_print": {
+        "it": "2. Stampa per ordini",
+        "en": "2. Print by order",
+        "ro": "2. Tipărire după comenzi",
+        "de": "2. Druck nach Aufträgen",
+        "sv": "2. Utskrift efter order",
+    },
     "submenu_production_labels_bom": {
-        "it": "1. Gestione BOM",
-        "en": "1. BOM Management",
-        "ro": "1. Gestionare BOM",
-        "de": "1. BOM-Verwaltung",
-        "sv": "1. BOM-hantering",
-    },
-    "submenu_production_labels_printers": {
-        "it": "2. Gestione stampanti",
-        "en": "2. Printer Management",
-        "ro": "2. Gestionare imprimante",
-        "de": "2. Druckerverwaltung",
-        "sv": "2. Skrivarhantering",
-    },
-    "submenu_production_labels_print": {
-        "it": "3. Stampa",
-        "en": "3. Print",
-        "ro": "3. Tipărire",
-        "de": "3. Drucken",
-        "sv": "3. Skriv ut",
+        "it": "3. Gestione etichette",
+        "en": "3. Label management",
+        "ro": "3. Gestionare etichete",
+        "de": "3. Etikettenverwaltung",
+        "sv": "3. Etiketthantering",
     },
 }
 
@@ -198,6 +198,25 @@ def create_tables(cursor, dry_run):
             """,
         ),
         (
+            "LabelTypeParameters",
+            "ind",
+            """
+            CREATE TABLE Traceability_RS.ind.LabelTypeParameters (
+                LabelTypeParameterId INT IDENTITY(1,1) PRIMARY KEY,
+                MaterialeId INT NOT NULL,
+                ScartoType NVARCHAR(10) NOT NULL DEFAULT 'FIXED',
+                ScartoValue DECIMAL(10,4) NOT NULL DEFAULT 0,
+                ScartoMinimo DECIMAL(10,4) NOT NULL DEFAULT 0,
+                Arrotondamento DECIMAL(10,4) NOT NULL DEFAULT 1,
+                DateIn DATETIME NOT NULL DEFAULT GETDATE(),
+                DateOut DATETIME NULL,
+                [User] NVARCHAR(255) NULL,
+                CONSTRAINT FK_LabelTypeParameters_Materiali FOREIGN KEY (MaterialeId)
+                    REFERENCES Traceability_RS.ind.Materiali(MaterialeId)
+            );
+            """,
+        ),
+        (
             "LabelScripts",
             "ind",
             """
@@ -252,6 +271,18 @@ def insert_translation(cursor, key, lang, value, menu_value=None, dry_run=False)
         (lang, key),
     )
     if cursor.fetchone()[0] > 0:
+        cursor.execute(
+            "SELECT TranslationValue FROM Traceability_RS.dbo.AppTranslations WHERE LanguageCode = ? AND TranslationKey = ?",
+            (lang, key),
+        )
+        current = cursor.fetchone()[0]
+        if (current or "") != value:
+            print(f"  [{key}] Traduzione aggiornata per {lang}")
+            if not dry_run:
+                cursor.execute(
+                    "UPDATE Traceability_RS.dbo.AppTranslations SET TranslationValue = ? WHERE LanguageCode = ? AND TranslationKey = ?",
+                    (value, lang, key),
+                )
         if menu_value is not None:
             cursor.execute(
                 "UPDATE Traceability_RS.dbo.AppTranslations SET MenuValue = ? WHERE LanguageCode = ? AND TranslationKey = ? AND (MenuValue IS NULL OR MenuValue = '')",
@@ -349,6 +380,50 @@ def alter_linked_materials(cursor, dry_run):
         )
 
 
+def alter_bom_indirect_materials(cursor, dry_run):
+    """Aggiunge QuantityPerPiece a BomIndirectMaterials se mancante."""
+    print("\nVerifica colonne su BomIndirectMaterials...")
+    cursor.execute(
+        """SELECT COUNT(*) FROM sys.columns c
+           JOIN sys.tables t ON c.object_id = t.object_id
+           JOIN sys.schemas s ON t.schema_id = s.schema_id
+           WHERE s.name = 'ind' AND t.name = 'BomIndirectMaterials' AND c.name = 'QuantityPerPiece'"""
+    )
+    exists = cursor.fetchone()[0] > 0
+    if exists:
+        print("  Colonna QuantityPerPiece già presente.")
+        return
+    print("  Aggiunta colonna QuantityPerPiece...")
+    if not dry_run:
+        cursor.execute(
+            "ALTER TABLE Traceability_RS.ind.BomIndirectMaterials "
+            "ADD QuantityPerPiece DECIMAL(10,4) NOT NULL DEFAULT 1"
+        )
+
+
+def alter_materiali_richieste(cursor, dry_run):
+    """Aggiunge Origin e ReferenceOrderIds a MaterialiRichieste se mancanti."""
+    print("\nVerifica colonne su MaterialiRichieste...")
+    for col, sql in (
+        ("Origin", "ALTER TABLE Traceability_RS.ind.MaterialiRichieste ADD Origin NVARCHAR(10) NULL"),
+        ("ReferenceOrderIds", "ALTER TABLE Traceability_RS.ind.MaterialiRichieste ADD ReferenceOrderIds NVARCHAR(MAX) NULL"),
+    ):
+        cursor.execute(
+            """SELECT COUNT(*) FROM sys.columns c
+               JOIN sys.tables t ON c.object_id = t.object_id
+               JOIN sys.schemas s ON t.schema_id = s.schema_id
+               WHERE s.name = 'ind' AND t.name = 'MaterialiRichieste' AND c.name = ?""",
+            (col,),
+        )
+        exists = cursor.fetchone()[0] > 0
+        if exists:
+            print(f"  Colonna {col} già presente.")
+            continue
+        print(f"  Aggiunta colonna {col}...")
+        if not dry_run:
+            cursor.execute(sql)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="Simula senza modificare il DB")
@@ -363,6 +438,8 @@ def main():
 
     alter_label_printers(cursor, args.dry_run)
     alter_linked_materials(cursor, args.dry_run)
+    alter_bom_indirect_materials(cursor, args.dry_run)
+    alter_materiali_richieste(cursor, args.dry_run)
 
     setup_menu_translations(cursor, args.dry_run)
     setup_auth_translations(cursor, args.dry_run)

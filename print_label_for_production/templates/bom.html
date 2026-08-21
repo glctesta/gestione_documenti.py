@@ -25,11 +25,64 @@
         <option value="">{{ ui.select_product }}</option>
       </select>
       <div id="product-info" class="info"></div>
+      <div id="product-labels-section" style="display:none; margin-top:1rem;">
+        <h3>{{ ui.product_labels }}</h3>
+        <table id="product-labels-table">
+          <thead>
+            <tr>
+              <th>Codice</th>
+              <th>Descrizione</th>
+              <th>{{ ui.quantity_per_piece }}</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <div id="product-labels-add" style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.5rem; align-items:center;">
+          <select id="add-product-label-select" style="flex:1; min-width:12rem;"></select>
+          <input type="number" id="add-product-label-qty" placeholder="{{ ui.quantity_per_piece }}" min="0" step="any" style="width:8rem;">
+          <button id="add-product-label-btn">{{ ui.add_label }}</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="label-type-params-section">
+      <h2>{{ ui.label_type_parameters }}</h2>
+      <table id="label-type-params-table">
+        <thead>
+          <tr>
+            <th>Codice etichetta</th>
+            <th>Descrizione</th>
+            <th>{{ ui.scarto_type }}</th>
+            <th>{{ ui.scarto_value }}</th>
+            <th>{{ ui.scarto_minimo }}</th>
+            <th>{{ ui.arrotondamento }}</th>
+            <th>{{ ui.is_traceability_label }}</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div id="label-type-params-add" style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.5rem; align-items:center;">
+        <select id="add-label-type-select" style="flex:1; min-width:12rem;"></select>
+        <select id="add-label-type-scarto" style="width:8rem;">
+          <option value="FIXED">{{ ui.fixed }}</option>
+          <option value="PERC">{{ ui.percentage }}</option>
+        </select>
+        <input type="number" id="add-label-type-value" placeholder="{{ ui.scarto_value }}" min="0" step="any" style="width:7rem;">
+        <input type="number" id="add-label-type-min" placeholder="{{ ui.scarto_minimo }}" min="0" step="any" style="width:7rem;">
+        <input type="number" id="add-label-type-round" placeholder="{{ ui.arrotondamento }}" min="0" step="any" style="width:7rem;">
+        <label style="display:flex;align-items:center;gap:0.3rem;">
+          <input type="checkbox" id="add-label-type-traceability"> {{ ui.is_traceability_label }}
+        </label>
+        <button id="add-label-type-save">{{ ui.save }}</button>
+      </div>
     </section>
 
     <section class="panel materials">
       <div>
         <h2>{{ ui.labels }}</h2>
+        <input type="text" id="labels-filter" placeholder="{{ ui.labels_filter_placeholder }}" autocomplete="off">
         <select id="labels-list" size="10"></select>
       </div>
       <div>
@@ -137,9 +190,12 @@
         console.log('Ribbons:', ribbons.length, ribbons.slice(0, 3));
         console.log('Printers:', printers.length, printers.slice(0, 3));
         renderProducts('');
-        populateList('labels-list', labels);
+        renderLabels('');
+        renderAddProductLabelSelect();
+        renderAddLabelTypeSelect();
         populateList('ribbons-list', ribbons);
         populatePrinterList();
+        loadLabelTypeParameters();
         setRibbonWarning();
       } catch (e) {
         msg(UI.msg_error + (e.message || e), 'error');
@@ -171,6 +227,28 @@
         opt.textContent = `${r.ProductCode} - ${r.ProductName}` + (r.LinkedAtLabel ? ` [${r.LinkedAtLabel}]` : '');
         sel.appendChild(opt);
       });
+    }
+
+    function renderLabels(filterText) {
+      const list = $('labels-list');
+      const term = (filterText || '').toLowerCase().trim();
+      const filtered = term
+        ? labels.filter(r =>
+            (r.MaterialCode || '').toLowerCase().includes(term) ||
+            (r.MaterialDescription || '').toLowerCase().includes(term)
+          )
+        : labels.slice();
+      list.innerHTML = '';
+      filtered.forEach(r => {
+        const opt = document.createElement('option');
+        opt.value = r.materialeid;
+        opt.textContent = `${r.MaterialCode} - ${r.MaterialDescription}`;
+        list.appendChild(opt);
+      });
+      // Ripristina la selezione se la label corrente è ancora nel filtro
+      if (currentLabelId) {
+        selectListByValue('labels-list', currentLabelId);
+      }
     }
 
     function populateList(id, rows) {
@@ -265,7 +343,7 @@
         return;
       }
       try {
-        const data = await apiFetch('/api/label_bom?label_id=' + labelId);
+        const data = await apiFetch('/api/label_bom?label_id=' + labelId + '&product_id=' + (productId || ''));
         currentBomId = data.bom_id || null;
       } catch (e) {
         currentBomId = null;
@@ -286,11 +364,18 @@
       renderProducts($('product-filter').value);
     });
 
+    $('labels-filter').addEventListener('input', () => {
+      renderLabels($('labels-filter').value);
+    });
+
     $('product-select').addEventListener('change', async () => {
       const pid = parseInt($('product-select').value, 10);
       const prod = products.find(p => p.idproduct === pid);
       $('product-info').textContent = prod ? `${UI.product}: ${prod.ProductName} | ${prod.LinkedAtLabel || ''}` : '';
+      await loadProductLabels(pid);
       if (prod && prod.LabelId) {
+        $('labels-filter').value = '';
+        renderLabels('');
         selectListByValue('labels-list', prod.LabelId);
       } else {
         $('labels-list').selectedIndex = -1;
@@ -387,6 +472,213 @@
 
     $('manage-printers').addEventListener('click', () => {
       window.open('/printers', '_blank');
+    });
+
+    function renderAddProductLabelSelect() {
+      const sel = $('add-product-label-select');
+      sel.innerHTML = '<option value="">--</option>';
+      const associatedIds = new Set(
+        Array.from($('product-labels-table').querySelectorAll('tbody .qty-input')).map(el => parseInt(el.dataset.materialeId, 10)).filter(Boolean)
+      );
+      labels.filter(l => !associatedIds.has(l.materialeid)).forEach(l => {
+        const opt = document.createElement('option');
+        opt.value = l.materialeid;
+        opt.textContent = `${l.MaterialCode} - ${l.MaterialDescription}`;
+        sel.appendChild(opt);
+      });
+    }
+
+    function renderAddLabelTypeSelect() {
+      const sel = $('add-label-type-select');
+      sel.innerHTML = '<option value="">--</option>';
+      const associatedIds = new Set(
+        Array.from($('label-type-params-table').querySelectorAll('tbody .save-label-type-btn')).map(el => parseInt(el.dataset.materialeId, 10)).filter(Boolean)
+      );
+      labels.filter(l => !associatedIds.has(l.materialeid)).forEach(l => {
+        const opt = document.createElement('option');
+        opt.value = l.materialeid;
+        opt.textContent = `${l.MaterialCode} - ${l.MaterialDescription}`;
+        sel.appendChild(opt);
+      });
+    }
+
+    async function loadProductLabels(productId) {
+      const section = $('product-labels-section');
+      if (!productId) {
+        section.style.display = 'none';
+        return;
+      }
+      try {
+        const rows = await apiFetch('/api/product_labels?product_id=' + productId);
+        const tbody = $('product-labels-table').querySelector('tbody');
+        tbody.innerHTML = '';
+        rows.forEach(r => {
+          const tr = document.createElement('tr');
+          tr.innerHTML =
+            '<td>' + (r.MaterialCode || '') + '</td>' +
+            '<td>' + (r.MaterialDescription || '') + '</td>' +
+            '<td><input type="number" class="qty-input" data-materiale-id="' + r.MaterialeId + '" value="' + (r.QuantityPerPiece || 0) + '" min="0" step="any"></td>' +
+            '<td><button class="remove-product-label-btn" data-materiale-id="' + r.MaterialeId + '">' + UI.remove_label + '</button></td>';
+          tbody.appendChild(tr);
+        });
+        tbody.querySelectorAll('.qty-input').forEach(input => {
+          input.addEventListener('change', async () => {
+            const pid = parseInt($('product-select').value, 10);
+            const labelId = parseInt(input.dataset.materialeId, 10);
+            const qty = parseFloat(input.value) || 0;
+            try {
+              await apiFetch('/api/product_labels', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ product_id: pid, label_id: labelId, quantity_per_piece: qty })
+              });
+              await loadProductLabels(pid);
+            } catch (e) {
+              msg(UI.msg_error + (e.message || e), 'error');
+              console.error(e);
+            }
+          });
+        });
+        tbody.querySelectorAll('.remove-product-label-btn').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            const pid = parseInt($('product-select').value, 10);
+            const labelId = parseInt(btn.dataset.materialeId, 10);
+            try {
+              await apiFetch('/api/product_labels', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ product_id: pid, label_id: labelId, remove: true })
+              });
+              await loadProductLabels(pid);
+            } catch (e) {
+              msg(UI.msg_error + (e.message || e), 'error');
+              console.error(e);
+            }
+          });
+        });
+        renderAddProductLabelSelect();
+        section.style.display = 'block';
+      } catch (e) {
+        console.error('loadProductLabels error:', e);
+        $('product-labels-table').querySelector('tbody').innerHTML = '';
+        section.style.display = 'none';
+      }
+    }
+
+    $('add-product-label-btn').addEventListener('click', async () => {
+      const pid = parseInt($('product-select').value, 10);
+      const labelId = parseInt($('add-product-label-select').value, 10);
+      const qty = parseFloat($('add-product-label-qty').value) || 0;
+      if (!pid || !labelId) return;
+      try {
+        await apiFetch('/api/product_labels', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ product_id: pid, label_id: labelId, quantity_per_piece: qty })
+        });
+        $('add-product-label-select').value = '';
+        $('add-product-label-qty').value = '';
+        await loadProductLabels(pid);
+      } catch (e) {
+        msg(UI.msg_error + (e.message || e), 'error');
+        console.error(e);
+      }
+    });
+
+    function renderLabelTypeParameters(rows) {
+      const tbody = $('label-type-params-table').querySelector('tbody');
+      tbody.innerHTML = '';
+      rows.forEach(r => {
+        const tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td>' + (r.MaterialCode || '') + '</td>' +
+          '<td>' + (r.MaterialDescription || '') + '</td>' +
+          '<td>' +
+            '<select class="scarto-type-select" data-materiale-id="' + r.MaterialeId + '">' +
+              '<option value="FIXED"' + (r.ScartoType === 'FIXED' ? ' selected' : '') + '>' + UI.fixed + '</option>' +
+              '<option value="PERC"' + (r.ScartoType === 'PERC' ? ' selected' : '') + '>' + UI.percentage + '</option>' +
+            '</select>' +
+          '</td>' +
+          '<td><input type="number" class="scarto-value" data-materiale-id="' + r.MaterialeId + '" value="' + (r.ScartoValue || 0) + '" min="0" step="any"></td>' +
+          '<td><input type="number" class="scarto-minimo" data-materiale-id="' + r.MaterialeId + '" value="' + (r.ScartoMinimo || 0) + '" min="0" step="any"></td>' +
+          '<td><input type="number" class="arrotondamento" data-materiale-id="' + r.MaterialeId + '" value="' + (r.Arrotondamento || 1) + '" min="0" step="any"></td>' +
+          '<td><input type="checkbox" class="is-traceability" data-materiale-id="' + r.MaterialeId + '" ' + (r.IsTraceabilityLabel ? 'checked' : '') + '></td>' +
+          '<td><button class="save-label-type-btn" data-materiale-id="' + r.MaterialeId + '">' + UI.save + '</button></td>';
+        tbody.appendChild(tr);
+      });
+      tbody.querySelectorAll('.save-label-type-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const mid = parseInt(btn.dataset.materialeId, 10);
+          const row = btn.closest('tr');
+          const scartoType = row.querySelector('.scarto-type-select').value;
+          const scartoValue = parseFloat(row.querySelector('.scarto-value').value) || 0;
+          const scartoMinimo = parseFloat(row.querySelector('.scarto-minimo').value) || 0;
+          const arrotondamento = parseFloat(row.querySelector('.arrotondamento').value) || 1;
+          const isTraceability = row.querySelector('.is-traceability').checked;
+          try {
+            await apiFetch('/api/label_type_parameters', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                materiale_id: mid,
+                scarto_type: scartoType,
+                scarto_value: scartoValue,
+                scarto_minimo: scartoMinimo,
+                arrotondamento: arrotondamento,
+                is_traceability_label: isTraceability
+              })
+            });
+            await loadLabelTypeParameters();
+          } catch (e) {
+            msg(UI.msg_error + (e.message || e), 'error');
+            console.error(e);
+          }
+        });
+      });
+    }
+
+    async function loadLabelTypeParameters() {
+      try {
+        const rows = await apiFetch('/api/label_type_parameters');
+        renderLabelTypeParameters(rows);
+        renderAddLabelTypeSelect();
+      } catch (e) {
+        console.error('loadLabelTypeParameters error:', e);
+        $('label-type-params-table').querySelector('tbody').innerHTML = '';
+      }
+    }
+
+    $('add-label-type-save').addEventListener('click', async () => {
+      const mid = parseInt($('add-label-type-select').value, 10);
+      if (!mid) return;
+      const scartoType = $('add-label-type-scarto').value;
+      const scartoValue = parseFloat($('add-label-type-value').value) || 0;
+      const scartoMinimo = parseFloat($('add-label-type-min').value) || 0;
+      const arrotondamento = parseFloat($('add-label-type-round').value) || 1;
+      const isTraceability = $('add-label-type-traceability').checked;
+      try {
+        await apiFetch('/api/label_type_parameters', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            materiale_id: mid,
+            scarto_type: scartoType,
+            scarto_value: scartoValue,
+            scarto_minimo: scartoMinimo,
+            arrotondamento: arrotondamento,
+            is_traceability_label: isTraceability
+          })
+        });
+        $('add-label-type-select').value = '';
+        $('add-label-type-value').value = '';
+        $('add-label-type-min').value = '';
+        $('add-label-type-round').value = '1';
+        $('add-label-type-traceability').checked = false;
+        await loadLabelTypeParameters();
+      } catch (e) {
+        msg(UI.msg_error + (e.message || e), 'error');
+        console.error(e);
+      }
     });
 
     loadData();

@@ -36,13 +36,47 @@ def _open_browser(page_path):
     webbrowser.open(url)
 
 
+def _resolve_user_id(db, user_id):
+    """Restituisce un user_id numerico.
+
+    Il login semplice passa lo username (es. 'sa'), mentre la tabella
+    PrintLabelWebSessions richiede UserId INT. Se user_id non è numerico,
+    cerca l'EmployeeHireHistoryId corrispondente tramite il metodo del DB.
+    """
+    if isinstance(user_id, int):
+        return user_id
+    if isinstance(user_id, str) and user_id.isdigit():
+        return int(user_id)
+    if hasattr(db, "get_employee_hire_history_id"):
+        numeric_id = db.get_employee_hire_history_id(user_id)
+        if numeric_id:
+            return numeric_id
+    raise ValueError(f"Impossibile risolvere l'ID numerico per l'utente {user_id!r}")
+
+
 def open_bom_page(db, user_id, user_name, lang='it'):
     """Apre la pagina Gestione BOM nel browser di default."""
-    token = _issue_token(db, user_id, user_name, "bom")
+    numeric_id = _resolve_user_id(db, user_id)
+    token = _issue_token(db, numeric_id, user_name, "bom")
     _open_browser(f"bom?token={token}&lang={lang}")
 
 
 def open_printers_page(db, user_id, user_name, lang='it'):
     """Apre la pagina Gestione stampanti nel browser di default."""
-    token = _issue_token(db, user_id, user_name, "printers")
+    numeric_id = _resolve_user_id(db, user_id)
+    token = _issue_token(db, numeric_id, user_name, "printers")
     _open_browser(f"printers?token={token}&lang={lang}")
+
+
+def open_generic_print_page(db, user_id, user_name, lang='it'):
+    """Apre la pagina Stampa generica etichette nel browser di default."""
+    numeric_id = _resolve_user_id(db, user_id)
+    token = _issue_token(db, numeric_id, user_name, "print_generic")
+    _open_browser(f"print/generic?token={token}&lang={lang}")
+
+
+def open_orders_print_page(db, user_id, user_name, lang='it'):
+    """Apre la pagina Stampa etichette per ordini nel browser di default."""
+    numeric_id = _resolve_user_id(db, user_id)
+    token = _issue_token(db, numeric_id, user_name, "print_orders")
+    _open_browser(f"print/orders?token={token}&lang={lang}")

@@ -1,5 +1,7 @@
 # Etichette Produzione — Specifica di progettazione v1.0
 
+> **⚠️ Documento obsoleto:** vedere `PrintLabelForProduction_Spec_v2.0.md` per la documentazione aggiornata del modulo Etichette Produzione.
+
 > **Stato:** bozza di progetto / pre-implementazione.  
 > **Scopo:** definire dove e come aggiungere in `main.py` il sotto-menu *Etichette Produzione*, le pagine web intranet sul server `192.168.10.72:5015` e il codice sorgente in `print_label_for_production/`.
 

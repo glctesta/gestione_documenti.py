@@ -5,7 +5,7 @@ routes_bom.py — Route per la pagina Gestione BOM.
 import logging
 from flask import Blueprint, render_template, request, jsonify
 
-from . import db, auth, i18n
+from . import db, auth, i18n, label_needs
 
 logger = logging.getLogger("PrintLabelProduction")
 
@@ -312,19 +312,22 @@ def api_save_label_printer_association():
 @auth.require_page_token_or_session("bom")
 def api_label_bom():
     label_id = request.args.get("label_id", type=int)
+    product_id = request.args.get("product_id", type=int)
     if not label_id:
         return jsonify({"error": "missing_label_id"}), 400
     try:
         conn = db.get_conn()
         try:
             cur = conn.cursor()
-            cur.execute(
-                """SELECT TOP 1 BomIndirectMaterialId
-                   FROM Traceability_RS.ind.BomIndirectMaterials
-                   WHERE MaterialeID = ? AND DateOut IS NULL
-                   ORDER BY DateIn DESC""",
-                (label_id,),
-            )
+            sql = """SELECT TOP 1 BomIndirectMaterialId
+                     FROM Traceability_RS.ind.BomIndirectMaterials
+                     WHERE MaterialeID = ? AND DateOut IS NULL"""
+            params = [label_id]
+            if product_id:
+                sql += " AND IDProduct = ?"
+                params.append(product_id)
+            sql += " ORDER BY DateIn DESC"
+            cur.execute(sql, params)
             row = cur.fetchone()
             return jsonify({"bom_id": row[0] if row else None})
         finally:
@@ -399,3 +402,178 @@ def api_bom_script():
         return jsonify({"error": "db_error", "message": str(e)}), 500
     finally:
         conn.close()
+
+
+PRODUCT_LABELS_QUERY = """
+SELECT
+    bm.BomIndirectMaterialId,
+    bm.IDProduct,
+    bm.MaterialeID AS LabelId,
+    bm.MaterialeID AS MaterialeId,
+    bm.QuantityPerPiece,
+    m.CodiceMateriale AS MaterialCode,
+    m.DescrizioneMateriale AS MaterialDescription
+FROM Traceability_RS.ind.BomIndirectMaterials bm
+JOIN Traceability_RS.ind.Materiali m ON m.MaterialeId = bm.MaterialeID
+JOIN Traceability_RS.ind.FamigliaMateriali fm ON fm.FamigliaMaterialiId = m.FamigliaMaterialiId
+WHERE bm.IDProduct = ?
+  AND bm.DateOut IS NULL
+  AND fm.Famiglia = 'Labels'
+ORDER BY m.CodiceMateriale;
+"""
+
+
+@bom_bp.route("/api/product_labels")
+@auth.require_page_token_or_session("bom")
+def api_product_labels():
+    product_id = request.args.get("product_id", type=int)
+    if not product_id:
+        return jsonify({"error": "missing_product_id"}), 400
+    try:
+        conn = db.get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(PRODUCT_LABELS_QUERY, (product_id,))
+            rows = db.fetch_all_dict(cur)
+            return jsonify(rows)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.exception("Errore /api/product_labels product_id=%s: %s", product_id, e)
+        return jsonify({"error": "db_error", "message": str(e)}), 500
+
+
+@bom_bp.route("/api/product_labels", methods=["POST"])
+@auth.require_page_token_or_session("bom")
+def api_save_product_label():
+    data = request.get_json(silent=True) or {}
+    product_id = data.get("product_id")
+    label_id = data.get("label_id")
+    quantity_per_piece = data.get("quantity_per_piece", 1)
+    remove = data.get("remove", False)
+    if not product_id or not label_id:
+        return jsonify({"error": "missing_parameters"}), 400
+
+    user = auth.get_session_user()["user_name"]
+    conn = db.get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """UPDATE Traceability_RS.ind.BomIndirectMaterials
+               SET DateOut = GETDATE()
+               WHERE IDProduct = ? AND MaterialeID = ? AND DateOut IS NULL""",
+            (product_id, label_id),
+        )
+        if not remove:
+            cur.execute(
+                """INSERT INTO Traceability_RS.ind.BomIndirectMaterials
+                   (IDProduct, MaterialeID, QuantityPerPiece, DateIn, [User])
+                   VALUES (?, ?, ?, GETDATE(), ?)""",
+                (product_id, label_id, quantity_per_piece, user),
+            )
+        conn.commit()
+        return jsonify({"ok": True})
+    except Exception as e:
+        logger.exception("Errore salvataggio associazione prodotto-etichetta: %s", e)
+        conn.rollback()
+        return jsonify({"error": "db_error", "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@bom_bp.route("/api/label_type_parameters")
+@auth.require_page_token_or_session("bom")
+def api_label_type_parameters():
+    try:
+        conn = db.get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """SELECT ltp.LabelTypeParameterId, ltp.MaterialeId,
+                          m.CodiceMateriale AS MaterialCode,
+                          m.DescrizioneMateriale AS MaterialDescription,
+                          ltp.ScartoType, ltp.ScartoValue, ltp.ScartoMinimo, ltp.Arrotondamento,
+                          ltp.IsTraceabilityLabel
+                   FROM Traceability_RS.ind.LabelTypeParameters ltp
+                   JOIN Traceability_RS.ind.Materiali m ON m.MaterialeId = ltp.MaterialeId
+                   WHERE ltp.DateOut IS NULL
+                   ORDER BY m.CodiceMateriale"""
+            )
+            rows = db.fetch_all_dict(cur)
+            return jsonify(rows)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.exception("Errore /api/label_type_parameters: %s", e)
+        return jsonify({"error": "db_error", "message": str(e)}), 500
+
+
+@bom_bp.route("/api/label_type_parameters", methods=["POST"])
+@auth.require_page_token_or_session("bom")
+def api_save_label_type_parameters():
+    data = request.get_json(silent=True) or {}
+    materiale_id = data.get("materiale_id")
+    scarto_type = data.get("scarto_type", "FIXED")
+    scarto_value = data.get("scarto_value", 0)
+    scarto_minimo = data.get("scarto_minimo", 0)
+    arrotondamento = data.get("arrotondamento", 1)
+    is_traceability_label = bool(data.get("is_traceability_label", False))
+    if not materiale_id:
+        return jsonify({"error": "missing_parameters"}), 400
+    if scarto_type not in ("FIXED", "PERC"):
+        return jsonify({"error": "invalid_scarto_type"}), 400
+
+    user = auth.get_session_user()["user_name"]
+    conn = db.get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """UPDATE Traceability_RS.ind.LabelTypeParameters
+               SET DateOut = GETDATE()
+               WHERE MaterialeId = ? AND DateOut IS NULL""",
+            (materiale_id,),
+        )
+        cur.execute(
+            """INSERT INTO Traceability_RS.ind.LabelTypeParameters
+               (MaterialeId, ScartoType, ScartoValue, ScartoMinimo, Arrotondamento, IsTraceabilityLabel, DateIn, [User])
+               VALUES (?, ?, ?, ?, ?, ?, GETDATE(), ?)""",
+            (materiale_id, scarto_type, scarto_value, scarto_minimo, arrotondamento, int(is_traceability_label), user),
+        )
+        conn.commit()
+        return jsonify({"ok": True})
+    except Exception as e:
+        logger.exception("Errore salvataggio parametri etichetta: %s", e)
+        conn.rollback()
+        return jsonify({"error": "db_error", "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@bom_bp.route("/api/label_needs")
+@auth.require_page_token_or_session("bom")
+def api_label_needs():
+    lookback = request.args.get("lookback_days", type=int)
+    try:
+        conn = db.get_conn()
+        try:
+            cur = conn.cursor()
+            orders = label_needs.fetch_orders_for_label_needs(
+                cur, label_needs.PHASE_AOI, lookback
+            )
+            product_ids = [o['IDProduct'] for o in orders]
+            product_labels = label_needs.fetch_product_labels(cur, product_ids)
+            label_ids = [pl['LabelId'] for pl in product_labels]
+            params = label_needs.fetch_label_parameters(cur, label_ids)
+            needs = label_needs.calculate_label_needs(orders, product_labels, params)
+            aggregated = label_needs.aggregate_by_label(needs)
+            return jsonify({
+                "orders": needs,
+                "aggregated": aggregated,
+                "orders_count": len(orders),
+                "products_count": len(set(product_ids)),
+            })
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.exception("Errore /api/label_needs: %s", e)
+        return jsonify({"error": "db_error", "message": str(e)}), 500

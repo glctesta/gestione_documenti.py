@@ -396,6 +396,13 @@ class ShiftHandoverMonitor:
     # ── Apertura finestra handover ────────────────────────────────────────────
     def _open_handover_window(self, preselect_shift=None):
         try:
+            # Se il master espone un launcher (es. background_notification_service),
+            # usalo per aprire il programma principale anziche' una sotto-finestra isolata.
+            launcher = getattr(self.master, '_open_shift_handover', None)
+            if callable(launcher):
+                launcher()
+                return
+
             from shift_handover_gui import open_shift_handover
             # Prende l'utente corrente dall'app
             current_user = getattr(self.master, 'last_authenticated_user_name', '') or ''

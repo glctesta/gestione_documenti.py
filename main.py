@@ -308,7 +308,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.3.0.0'  # Versione aggiornata
+APP_VERSION = '2.4.3.1.7'  # Versione aggiornata
 # Nome programma usato come chiave in SwVersions / VersionDMLogs.
 # In produzione = nome dell'exe; in sviluppo usa il nome canonico.
 APP_PROGRAM_NAME = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else 'DocumentManagement.exe'
@@ -14096,410 +14096,159 @@ class App(tk.Tk):
             logger.warning(f"_show_update_handoff_splash: {e}")
             return None
 
-    def _trigger_update(self, version_info, mandatory=True):
-        """
-        Mostra un dialogo con conto alla rovescia (60s) e lancia l'updater.
-
-        Non c'è più il pulsante "Salva e Aggiorna": allo scadere del countdown
-        l'update parte automaticamente. L'utente può "Aggiorna ora" oppure
-        "Posticipa" (max 3 volte, 30 min ciascuno, totale max 60 min) per chiudere
-        il lavoro nelle finestre aperte. Mostra anche la sintesi novità se presente.
-
-        Returns:
-            (non ritorna)  → update avviato (os._exit)
-            'postponed'    → utente ha posticipato; ritrigger già schedulato → l'app continua
-            'failed'       → updater non trovato / sorgente non pronta → riprovare più tardi
-        """
+    def _update_prep_worker(self, version_info):
+        """Preparazione in background: copia updater e verifica integrita'."""
         source = version_info.MainPath
         destination = os.path.dirname(sys.executable)
         exe_name = os.path.basename(sys.executable)
-
-        # --- Percorsi updater (onedir consigliata, onefile legacy) ---
-        dest_updater_onedir   = os.path.join(destination, "_internal", "updater", "updater.exe")
-        dest_updater_legacy   = os.path.join(destination, "_internal", "updater.exe")
-        source_updater_dir    = os.path.join(source, "_internal", "updater")
+        dest_updater_onedir = os.path.join(destination, "_internal", "updater", "updater.exe")
+        dest_updater_legacy = os.path.join(destination, "_internal", "updater.exe")
+        source_updater_dir = os.path.join(source, "_internal", "updater")
         source_updater_onedir = os.path.join(source_updater_dir, "updater.exe")
         source_updater_legacy = os.path.join(source, "_internal", "updater.exe")
-
-        # IMPORTANTE: rinfresca SEMPRE l'updater dal sorgente prima di lanciarlo.
-        # In questo momento l'updater NON e' in esecuzione, quindi possiamo
-        # sovrascriverlo (su Windows un .exe in esecuzione non puo' sovrascrivere se
-        # stesso: per questo l'updater si auto-preserva durante la copia). Cosi' le
-        # modifiche all'updater (es. nuova UI di copia) raggiungono gli utenti.
-        # ── Prep pesante in background (copia updater dal sorgente di rete +
-        #    verifica integrità file sorgente) con splash animato. Queste fasi
-        #    possono durare secondi su rete: senza feedback l'app sembra bloccata
-        #    e l'utente rilancia il programma. ──────────────────────────────────
-        prep = self._show_update_prep_splash()
-        prep_result = {'updater_path': None, 'ready': None, 'reason': '', 'done': False,
-                       'phase': 'start'}
-
-        def _prep_worker():
+        result = self._update_prep_result
+        result['phase'] = 'updater'
+        try:
+            up = None
             try:
-                up = None
-                try:
-                    prep_result['phase'] = 'updater'
-                    if os.path.isdir(source_updater_dir) and os.path.exists(source_updater_onedir):
-                        shutil.copytree(
-                            source_updater_dir,
-                            os.path.join(destination, "_internal", "updater"),
-                            dirs_exist_ok=True)
-                        up = dest_updater_onedir
-                        logger.info("_trigger_update: updater onedir aggiornato dal sorgente")
-                    elif os.path.exists(source_updater_legacy):
-                        os.makedirs(os.path.dirname(dest_updater_legacy), exist_ok=True)
-                        shutil.copy2(source_updater_legacy, dest_updater_legacy)
-                        up = dest_updater_legacy
-                        logger.info("_trigger_update: updater.exe (legacy) aggiornato dal sorgente")
-                except Exception as refresh_err:
-                    logger.warning(f"_trigger_update: refresh updater dal sorgente fallito: {refresh_err}")
+                if os.path.isdir(source_updater_dir) and os.path.exists(source_updater_onedir):
+                    shutil.copytree(source_updater_dir,
+                                    os.path.join(destination, "_internal", "updater"),
+                                    dirs_exist_ok=True)
+                    up = dest_updater_onedir
+                    logger.info("_update_prep_worker: updater onedir aggiornato")
+                elif os.path.exists(source_updater_legacy):
+                    os.makedirs(os.path.dirname(dest_updater_legacy), exist_ok=True)
+                    shutil.copy2(source_updater_legacy, dest_updater_legacy)
+                    up = dest_updater_legacy
+                    logger.info("_update_prep_worker: updater legacy aggiornato")
+            except Exception as refresh_err:
+                logger.warning(f"_update_prep_worker: refresh updater fallito: {refresh_err}")
+            if not up or not os.path.exists(up):
+                if os.path.exists(dest_updater_onedir):
+                    up = dest_updater_onedir
+                elif os.path.exists(dest_updater_legacy):
+                    up = dest_updater_legacy
+            result['updater_path'] = up
+            if up and os.path.exists(up):
+                result['phase'] = 'verify'
+                ready, reason = self._is_source_file_ready(source, exe_name)
+                result['ready'] = ready
+                result['reason'] = reason
+        except Exception as e:
+            logger.error(f"_update_prep_worker: errore: {e}", exc_info=True)
+        finally:
+            result['phase'] = 'done'
+            result['done'] = True
 
-                # Se il refresh non e' riuscito, usa l'updater locale esistente
-                if not up or not os.path.exists(up):
-                    if os.path.exists(dest_updater_onedir):
-                        up = dest_updater_onedir
-                    elif os.path.exists(dest_updater_legacy):
-                        up = dest_updater_legacy
-                prep_result['updater_path'] = up
+    def _schedule_update_prep_check(self, version_info, mandatory):
+        """Controlla periodicamente se la preparazione e' terminata; poi apre il dialogo."""
+        def check():
+            if getattr(self, '_update_prep_version', None) != version_info.Version:
+                return
+            if self._update_prep_result.get('done'):
+                self._update_prep_ready = True
+                self._show_update_ready_dialog(version_info, mandatory)
+            else:
+                self.after(1000, check)
+        self.after(1000, check)
 
-                # Verifica integrità file sorgente (solo se abbiamo un updater valido).
-                # Qui SI la verifica integrale (full=True, default): e' l'ultimo
-                # istante prima di copiare, ed e' l'unico punto in cui vale la pena
-                # pagare i ~6000 controlli sulla share.
-                if up and os.path.exists(up):
-                    prep_result['phase'] = 'verify'
-                    ready, reason = self._is_source_file_ready(source, exe_name)
-                    prep_result['ready'] = ready
-                    prep_result['reason'] = reason
-            except Exception as e:
-                logger.error(f"_trigger_update: errore prep updater: {e}", exc_info=True)
-            finally:
-                prep_result['phase'] = 'done'
-                prep_result['done'] = True
+    def _show_update_ready_dialog(self, version_info, mandatory):
+        """Mostra il dialogo di aggiornamento quando tutto e' pronto."""
+        if getattr(self, '_update_dialog_open', False):
+            opened_at = getattr(self, '_update_dialog_opened_at', None)
+            stale = (opened_at is None
+                     or (datetime.now() - opened_at).total_seconds() > UPDATE_DIALOG_STALE_SECONDS)
+            if stale:
+                self._update_dialog_open = False
+            else:
+                logger.info("_show_update_ready_dialog: dialogo gia' aperto")
+                return
+        if getattr(self, '_update_postpone_version', None) != version_info.Version:
+            self._update_postpone_count = 0
+            self._update_postpone_total = 0
+            self._update_postpone_version = version_info.Version
+        try:
+            whatsnew = self.db.fetch_version_dm_log_summary(APP_PROGRAM_NAME, version_info.Version)
+        except Exception:
+            whatsnew = None
+        can_postpone = (self._update_postpone_count < UPDATE_MAX_POSTPONES
+                        and self._update_postpone_total < UPDATE_MAX_TOTAL_POSTPONE_SECONDS)
+        postpone_secs = min(UPDATE_MAX_SINGLE_POSTPONE_SECONDS,
+                            UPDATE_MAX_TOTAL_POSTPONE_SECONDS - self._update_postpone_total)
+        self._update_dialog_open = True
+        self._update_dialog_opened_at = datetime.now()
+        import update_dialog
+        result = update_dialog.show_update_dialog(
+            self, self.lang,
+            current_version=APP_VERSION,
+            new_version=version_info.Version,
+            whatsnew=whatsnew,
+            mandatory=(mandatory or not can_postpone),
+            countdown_seconds=UPDATE_COUNTDOWN_SECONDS,
+            logo_path="assets/logo_gtmc_green.png",
+            ready=True
+        )
+        self._update_dialog_open = False
+        action = 'update' if result == 'download' else 'postpone'
+        logger.info(f"_show_update_ready_dialog: esito = '{action}' (mandatory={mandatory})")
+        if action == 'postpone':
+            if can_postpone:
+                self._update_postpone_count += 1
+                self._update_postpone_total += postpone_secs
+                logger.info(f"_show_update_ready_dialog: posticipo #{self._update_postpone_count} di {postpone_secs}s")
+                prev = getattr(self, '_update_retrigger_job', None)
+                if prev is not None:
+                    try:
+                        self.after_cancel(prev)
+                    except Exception:
+                        pass
+                self._update_retrigger_job = self.after(
+                    postpone_secs * 1000, lambda: self._trigger_update(version_info, mandatory))
+            return
+        self._launch_updater(version_info)
 
-        _prep_thread = threading.Thread(target=_prep_worker, daemon=True)
-        _prep_thread.start()
-        # Pump dell'event loop per mantenere animato lo splash finché il prep
-        # finisce, raccontando la fase in corso e i secondi trascorsi: sono i
-        # minuti in cui l'app sembrava sparita dallo schermo.
-        _phase_texts = {
-            'start':   self.lang.get('update_prep_step_start',
-                                     'Avvio della preparazione...'),
-            'updater': self.lang.get('update_prep_step_updater',
-                                     'Copia del programma di aggiornamento dal server...'),
-            'verify':  self.lang.get('update_prep_step_verify',
-                                     'Verifica dei file della nuova versione sul server...'),
-            'done':    self.lang.get('update_prep_step_done',
-                                     'Preparazione completata.'),
-        }
-        _waited = 0.0
-        _last_sec = -1
-        while not prep_result['done'] and _waited < 180:
-            try:
-                if prep is not None and int(_waited) != _last_sec:
-                    _last_sec = int(_waited)
-                    prep.set_status(_phase_texts.get(prep_result['phase'], ''), _last_sec)
-                self.update()
-            except Exception:
-                pass
-            time.sleep(0.05)
-            _waited += 0.05
-        if prep is not None:
-            try:
-                prep.destroy()
-            except Exception:
-                pass
-
-        updater_path = prep_result['updater_path']
+    def _launch_updater(self, version_info):
+        """Lancia l'updater e chiude l'applicazione corrente."""
+        updater_path = self._update_prep_result.get('updater_path')
         if not updater_path or not os.path.exists(updater_path):
-            logger.error(f"_trigger_update: updater non trovato (ne' locale ne' sorgente {source})")
+            logger.error("_launch_updater: updater non trovato")
             messagebox.showerror(
                 self.lang.get('error', 'Errore'),
                 "File updater non trovato!\n\nImpossibile aggiornare.",
                 parent=self
             )
             return 'failed'
-
-        if prep_result['ready'] is False:
-            reason = prep_result['reason']
-            logger.warning(f"_trigger_update: file sorgente non pronto - {reason}")
+        if self._update_prep_result.get('ready') is False:
+            reason = self._update_prep_result.get('reason', '')
+            logger.warning(f"_launch_updater: file sorgente non pronto - {reason}")
             messagebox.showwarning(
                 self.lang.get('update_postponed_title', 'Aggiornamento Posticipato'),
                 self.lang.get('update_postponed_message', reason),
                 parent=self
             )
             return 'failed'
-
-        # ── Dialogo countdown + posticipo ────────────────────────────────────
-        # Non c'è più il pulsante "Salva e Aggiorna": l'update parte da solo allo
-        # scadere del countdown. L'utente può posticipare (max 3 volte, 30 min
-        # ciascuno, totale max 60 min) per chiudere il lavoro nelle finestre aperte.
-        logger.info("_trigger_update: preparazione dialogo countdown...")
-        try:
-            self.update_idletasks()
-            self.update()
-        except Exception as e:
-            logger.warning(f"_trigger_update: errore update main window (potrebbe non essere ancora realizzata): {e}")
-        try:
-            self.lift()
-            self.focus_force()
-        except Exception as e:
-            logger.warning(f"_trigger_update: errore lift/focus: {e}")
-
-        # Re-entrancy guard: se un dialogo di update è già aperto, non stackare.
-        # Il guard va pero' rilasciato se il dialogo e' MORTO senza chiudersi
-        # (es. eccezione durante la costruzione): altrimenti resta chiuso per
-        # sempre e ogni tentativo successivo ritorna 'postponed' — l'app non
-        # si aggiorna piu' fino al riavvio. E' successo il 30/07/2026.
-        if getattr(self, '_update_dialog_open', False):
-            opened_at = getattr(self, '_update_dialog_opened_at', None)
-            stale = (opened_at is None
-                     or (datetime.now() - opened_at).total_seconds() > UPDATE_DIALOG_STALE_SECONDS)
-            if stale:
-                logger.warning(
-                    "_trigger_update: guard dialogo rimasto chiuso da troppo tempo "
-                    "(dialogo non piu' vivo): lo rilascio e riprovo")
-                self._update_dialog_open = False
-            else:
-                logger.info("_trigger_update: dialogo già aperto, ritorno postponed")
-                return 'postponed'
-
-        # Stato posticipi (reset se la versione target è cambiata)
-        if getattr(self, '_update_postpone_version', None) != version_info.Version:
-            self._update_postpone_count = 0
-            self._update_postpone_total = 0
-            self._update_postpone_version = version_info.Version
-
-        # Sintesi novità della versione (se già inserita in VersionDMLogs)
-        try:
-            whatsnew = self.db.fetch_version_dm_log_summary(APP_PROGRAM_NAME, version_info.Version)
-        except Exception:
-            whatsnew = None
-
-        dialog = tk.Toplevel(self)
-        self._update_dialog_open = True
-        # Istante di apertura: serve a riconoscere un guard rimasto chiuso per
-        # un dialogo morto (vedi il controllo di re-entrancy piu' sopra).
-        self._update_dialog_opened_at = datetime.now()
-        dialog.title(self.lang.get('update_ready_title', 'Aggiornamento Pronto'))
-
-        parent_is_ready = False
-        try:
-            parent_is_ready = self.winfo_ismapped()
-        except Exception:
-            pass
-        if parent_is_ready:
-            dialog.transient(self)
-            # NIENTE grab_set(): il dialogo dice "salvate il lavoro nelle
-            # finestre aperte", ma con il grab l'operatore non poteva toccare
-            # nulla del programma. Resta sempre in primo piano (vedi il job
-            # _keep_dialog_on_top piu' sotto) senza bloccare l'applicazione.
-        else:
-            logger.info("_trigger_update: parent non ancora mappato, dialogo standalone")
-        # Verticalmente ridimensionabile: valvola di sfogo se una traduzione lunga
-        # o note di versione voluminose richiedono piu' spazio dei bottoni
-        dialog.resizable(False, True)
-
-        frame = ttk.Frame(dialog, padding=20)
-        frame.pack(fill=tk.BOTH, expand=True)
-
-        ttk.Label(
-            frame,
-            text=self._t_fmt('update_ready_head',
-                             "Aggiornamento alla versione {0} pronto.", version_info.Version),
-            justify=tk.LEFT, wraplength=460, font=('Segoe UI', 10, 'bold')
-        ).pack(anchor='w')
-
-        if whatsnew:
-            ttk.Label(frame, text=self.lang.get('update_whatsnew', 'Novità di questa versione:'),
-                      font=('Segoe UI', 9, 'bold')).pack(anchor='w', pady=(10, 2))
-            nt = tk.Text(frame, wrap='word', height=7, width=58, font=('Segoe UI', 9))
-            nt.insert('1.0', whatsnew)
-            nt.config(state='disabled')
-            nt.pack(fill=tk.BOTH, expand=True)
-
-        info_lbl = ttk.Label(frame, justify=tk.LEFT, wraplength=460, foreground='#B71C1C')
-        info_lbl.pack(anchor='w', pady=(12, 10))
-
-        btn_frame = ttk.Frame(frame)
-        btn_frame.pack(fill=tk.X)
-
-        chosen = {'action': None}
-        remaining = {'sec': UPDATE_COUNTDOWN_SECONDS}
-        tick = {'job': None}
-
-        can_postpone = (self._update_postpone_count < UPDATE_MAX_POSTPONES
-                        and self._update_postpone_total < UPDATE_MAX_TOTAL_POSTPONE_SECONDS)
-        postpone_secs = min(UPDATE_MAX_SINGLE_POSTPONE_SECONDS,
-                            UPDATE_MAX_TOTAL_POSTPONE_SECONDS - self._update_postpone_total)
-
-        def _cancel_tick():
-            if tick['job'] is not None:
-                try:
-                    self.after_cancel(tick['job'])
-                except Exception:
-                    pass
-                tick['job'] = None
-
-        def _proceed():
-            _cancel_tick()
-            chosen['action'] = 'update'
-            self._update_dialog_open = False
-            try:
-                dialog.destroy()
-            except Exception:
-                pass
-
-        def _postpone():
-            if not can_postpone:
-                return
-            _cancel_tick()
-            self._update_postpone_count += 1
-            self._update_postpone_total += postpone_secs
-            chosen['action'] = 'postpone'
-            self._update_dialog_open = False
-            logger.info(f"_trigger_update: posticipo #{self._update_postpone_count} di {postpone_secs}s "
-                        f"(totale posticipato {self._update_postpone_total}s)")
-            try:
-                dialog.destroy()
-            except Exception:
-                pass
-            # Ripianifica il ritrigger dopo la durata di posticipo (job dedicato)
-            prev = getattr(self, '_update_retrigger_job', None)
-            if prev is not None:
-                try:
-                    self.after_cancel(prev)
-                except Exception:
-                    pass
-            self._update_retrigger_job = self.after(
-                postpone_secs * 1000, lambda: self._trigger_update(version_info, mandatory))
-
-        def _countdown_text(seconds):
-            """Testo del countdown: il tempo lo compone il codice, la frase
-            tradotta NON contiene segnaposto.
-
-            I segnaposto tipizzati ("{0:02d}") nelle traduzioni sono una mina:
-            se la chiave esiste a DB, LanguageManager.get() ci infila il testo
-            di default e format() solleva ValueError. E' esattamente cio' che
-            ha impedito l'avvio dell'updater il 30/07/2026.
-            """
-            m, s = divmod(max(0, seconds), 60)
-            msg = self.lang.get(
-                'update_countdown_msg',
-                "L'aggiornamento partirà automaticamente allo scadere del tempo.\n"
-                "Salvare il lavoro nelle finestre aperte.")
-            return f"⏱ {m:02d}:{s:02d}\n{msg}"
-
-        def _update_label():
-            if not dialog.winfo_exists():
-                return
-            info_lbl.config(text=_countdown_text(remaining['sec']))
-            if remaining['sec'] <= 0:
-                _proceed()
-                return
-            remaining['sec'] -= 1
-            tick['job'] = self.after(1000, _update_label)
-
-        ttk.Button(btn_frame, text=self.lang.get('update_now_btn', '⚡ Aggiorna ora'),
-                   command=_proceed).pack(side=tk.LEFT, padx=6)
-        if can_postpone:
-            pm = max(1, postpone_secs // 60)
-            left = UPDATE_MAX_POSTPONES - self._update_postpone_count
-            ttk.Button(
-                btn_frame,
-                text=self._t_fmt('update_postpone_btn',
-                                 '⏱ Posticipa {0} min ({1} rimasti)', pm, left),
-                command=_postpone
-            ).pack(side=tk.LEFT, padx=6)
-
-        # X: posticipa se possibile, altrimenti resta (non si può sfuggire all'update)
-        dialog.protocol("WM_DELETE_WINDOW", _postpone if can_postpone else (lambda: None))
-
-        # L'etichetta del countdown va riempita PRIMA di misurare la finestra:
-        # occupa 2 righe e, misurando a etichetta vuota, l'altezza calcolata
-        # tagliava i bottoni in basso. Qui si imposta solo il testo iniziale;
-        # il countdown vero parte con _update_label() piu' sotto (una sola volta,
-        # altrimenti si pianificherebbero due tick e scorrerebbe a doppia velocita').
-        info_lbl.config(text=_countdown_text(remaining['sec']))
-
-        dialog.update_idletasks()
-        dw = dialog.winfo_reqwidth()
-        dh = dialog.winfo_reqheight()
-        sw = dialog.winfo_screenwidth()
-        sh = dialog.winfo_screenheight()
-        # Margine di sicurezza: traduzioni piu' lunghe possono aggiungere una riga
-        dw = max(dw, 520)
-        dh = max(dh + 24, 340)
-        dh = min(dh, sh - 80)
-        x = (sw - dw) // 2
-        y = (sh - dh) // 2
-        dialog.geometry(f"{dw}x{dh}+{x}+{y}")
-        dialog.minsize(dw, dh)
-
-        # ── Resta SEMPRE in primo piano finché esiste ────────────────────────
-        # Prima il topmost veniva rilasciato dopo 200 ms: bastava che la
-        # finestra principale (o un altro popup) si alzasse perché il dialogo
-        # con le novità della versione finisse DIETRO al programma, invisibile
-        # mentre il countdown continuava a scorrere. Ora il topmost resta
-        # attivo e un job periodico rialza la finestra.
-        dialog.lift()
-        dialog.attributes('-topmost', True)
-        try:
-            dialog.focus_force()
-        except Exception:
-            pass
-
-        def _keep_dialog_on_top():
-            if not dialog.winfo_exists():
-                return
-            try:
-                dialog.lift()
-                dialog.attributes('-topmost', True)
-            except Exception:
-                return
-            dialog.after(1500, _keep_dialog_on_top)
-
-        dialog.after(1500, _keep_dialog_on_top)
-
-        _update_label()  # avvia il countdown
-        dialog.update()
-        logger.info("_trigger_update: countdown avviato, in attesa...")
-        dialog.wait_window()
-        # ────────────────────────────────────────────────────────────────────
-
-        action = chosen['action']
-        self._update_dialog_open = False
-        logger.info(f"_trigger_update: esito = '{action}' (mandatory={mandatory})")
-
-        if action == 'postpone':
-            return 'postponed'
-
-        # action == 'update' → prosegue con il lancio updater
-        # ── Overlay di passaggio di consegne ─────────────────────────────────
-        # Resta visibile in modo CONTINUO dal click fino all'os._exit: elimina il
-        # "buco nero" tra la chiusura del dialogo e la comparsa della finestra
-        # dell'updater (che l'operatore leggerebbe come un crash).
+        source = version_info.MainPath
+        destination = os.path.dirname(sys.executable)
+        exe_name = os.path.basename(sys.executable)
         handoff = self._show_update_handoff_splash(version_info.Version)
         try:
             self.update()
         except Exception:
             pass
-
-        # Avvia updater
-        logger.info(f"_trigger_update: lancio updater: {updater_path}")
+        logger.info(f"_launch_updater: lancio updater: {updater_path}")
         logger.info(f"  source={source}")
         logger.info(f"  destination={destination}")
         logger.info(f"  exe_name={exe_name}")
-
         try:
-            # Updater onedir: nessuna estrazione in %TEMP% — si avvia direttamente.
-            # Popen semplice: eredita il desktop context del padre (necessario per tkinter).
+            creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
             proc = subprocess.Popen(
-                [updater_path, source, destination, exe_name]
+                [updater_path, source, destination, exe_name],
+                creationflags=creationflags
             )
-            logger.info(f"_trigger_update: updater avviato con PID={proc.pid}")
+            logger.info(f"_launch_updater: updater avviato con PID={proc.pid}")
         except Exception as e:
-            logger.error(f"_trigger_update: ERRORE lancio updater: {e}", exc_info=True)
+            logger.error(f"_launch_updater: ERRORE lancio updater: {e}", exc_info=True)
             if handoff is not None:
                 try:
                     handoff.destroy()
@@ -14511,10 +14260,6 @@ class App(tk.Tk):
                 parent=self
             )
             return 'failed'
-
-        # Mantieni l'overlay ANIMATO e visibile mentre l'updater si avvia e mostra
-        # la sua finestra di copia (~1.5s), invece di un time.sleep() che congela
-        # tutto. Così il passaggio di consegne è senza interruzioni visive.
         _t = 0.0
         while _t < 1.5:
             try:
@@ -14523,36 +14268,57 @@ class App(tk.Tk):
                 pass
             time.sleep(0.05)
             _t += 0.05
-
-        # Chiude l'app per liberare i file bloccati dall'EXE padre
-        logger.info("_trigger_update: chiusura app per aggiornamento...")
+        logger.info("_launch_updater: chiusura app per aggiornamento...")
         try:
             self.db.disconnect()
         except Exception:
             pass
-        # NB: NON chiamiamo self.destroy(): distruggerebbe anche l'overlay. Lasciamo
-        # che os._exit termini il processo (e con esso l'overlay) all'ultimo istante,
-        # quando l'updater ha già preso il controllo dello schermo. Nascondiamo solo
-        # l'eventuale main window per non mostrare finestre a metà.
         try:
             if self.winfo_ismapped():
                 self.withdraw()
         except Exception:
             pass
-
-        # Force-exit per garantire che il processo termini e l'updater possa copiare
-        logger.info("_trigger_update: force exit (os._exit)")
+        logger.info("_launch_updater: force exit (os._exit)")
         os._exit(0)
+        return True
 
-        return True  # non raggiunto, ma per coerenza
+    def _trigger_update(self, version_info, mandatory=True):
+        """
+        Avvia la preparazione dell'aggiornamento in background.
+
+        Il processo (copia updater + verifica integrità file sorgente) gira in
+        un thread separato senza bloccare l'utente. Quando tutto e' pronto,
+        appare il dialogo con il pulsante "Installa ora". Solo alla conferma
+        viene lanciato l'updater e l'applicazione corrente si chiude.
+        """
+        # Se il prep per questa versione e' gia' pronto, mostra subito il dialogo.
+        if (getattr(self, '_update_prep_version', None) == version_info.Version
+                and getattr(self, '_update_prep_ready', False)):
+            return self._show_update_ready_dialog(version_info, mandatory)
+
+        # Se c'e' gia' un prep in corso per questa versione, non riavviarlo.
+        if getattr(self, '_update_prep_version', None) == version_info.Version:
+            logger.info("_trigger_update: preparazione gia' in corso per questa versione")
+            return 'preparing'
+
+        # Avvia la preparazione in background senza bloccare l'utente.
+        logger.info(f"_trigger_update: avvio preparazione in background per {version_info.Version}")
+        self._update_prep_version = version_info.Version
+        self._update_prep_ready = False
+        self._update_prep_result = {'updater_path': None, 'ready': None, 'reason': '', 'done': False,
+                                    'phase': 'start'}
+        threading.Thread(target=self._update_prep_worker, args=(version_info,), daemon=True).start()
+        self._schedule_update_prep_check(version_info, mandatory)
+        return 'preparing'
 
     def _periodic_version_check(self):
         """
         Controlla periodicamente la presenza di nuove versioni.
 
         Stessa logica di check_version():
-        - Se mandatory (Must=True) o skip_count >= 3: update obbligatorio → chiude app se rifiutato
-        - Se non mandatory e skip_count < 3: chiede all'utente (max 3 volte), poi ripianifica
+        - Se mandatory (Must=True) o skip_count >= 3: update obbligatorio → mostra il dialogo
+        - Se non mandatory: avvia la preparazione silenziosa e mostra il dialogo "Installa ora"
+          non appena updater e file sorgente sono pronti
         - Nessun aggiornamento: ripianifica tra 120 minuti
         """
         logger.info("Controllo periodico versione in corso...")
@@ -14634,35 +14400,14 @@ class App(tk.Tk):
                     self.periodic_check_job_id = self.after(int(remaining * 1000), self._periodic_version_check)
                     return
 
-            # Update opzionale: chiedi all'utente
-            # Porta la finestra principale in primo piano prima del messagebox
-            self.lift()
-            self.focus_force()
-
-            remaining_skips = 3 - skip_count
-            message = self.lang.get(
-                "optional_upgrade_message",
-                version_info.Version, APP_VERSION, remaining_skips
-            )
-            response = messagebox.askyesno(
-                self.lang.get("upgrade_available_title", "Aggiornamento Disponibile"),
-                message, parent=self
-            )
-
-            if response:
-                # L'utente ha scelto di aggiornare ora (volontario)
-                reset_update_skip_count()
-                self._trigger_update(version_info, mandatory=False)
-                # Se ritorna (posticipo/updater non pronto), mantieni vivo il ciclo periodico
-                self.periodic_check_job_id = self.after(30 * 60 * 1000, self._periodic_version_check)
-                return
-            else:
-                # Rinvia
-                skip_count += 1
-                save_update_skip_count(skip_count, version_info.Version)
-                logger.info(f"Controllo versione periodico: update rinviato ({skip_count}/3)")
-                # Update NON obbligatorio: ripianifica il promemoria tra 4 ore (non pochi minuti)
-                self.periodic_check_job_id = self.after(OPTIONAL_UPDATE_REMINDER_SECONDS * 1000, self._periodic_version_check)
+            # Update opzionale: avvia la preparazione silenziosa in background.
+            # Il dialogo con "Installa ora" apparira' automaticamente solo quando
+            # file updater e verifica integrita' saranno completati.
+            logger.info("_periodic_version_check: update opzionale, avvio preparazione silenziosa")
+            status = self._trigger_update(version_info, mandatory=False)
+            delay = 15 * 60 * 1000 if status == 'failed' else 30 * 60 * 1000
+            self.periodic_check_job_id = self.after(delay, self._periodic_version_check)
+            return
 
         except Exception as e:
             logger.error(f"Errore in _periodic_version_check: {e}", exc_info=True)
@@ -15229,9 +14974,49 @@ class App(tk.Tk):
                 )
         self._execute_authorized_action('gestione_stampa_etichette_produzione', _open)
 
-    def _open_production_labels_print_with_simple_login(self):
-        """Apre le impostazioni stampante dal sotto-menu Etichette Produzione."""
-        self.open_printer_settings_with_login()
+    def _open_production_labels_generic_print_with_simple_login(self):
+        """Apre la pagina di stampa generica etichette nel browser."""
+        def _open(user_id):
+            try:
+                from print_label_for_production import launcher
+                lang = getattr(self, 'lang', None)
+                lang_code = getattr(lang, 'current_language', None) or 'it'
+                launcher.open_generic_print_page(
+                    self.db,
+                    user_id,
+                    self.last_authenticated_user_name,
+                    lang_code
+                )
+            except Exception as e:
+                logger.error(f"Errore apertura Stampa generica etichette: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire Stampa generica etichette:\n{e}",
+                    parent=self
+                )
+        self._execute_simple_login(action_callback=_open)
+
+    def _open_production_labels_order_print_with_simple_login(self):
+        """Apre la pagina di stampa etichette per ordini nel browser."""
+        def _open(user_id):
+            try:
+                from print_label_for_production import launcher
+                lang = getattr(self, 'lang', None)
+                lang_code = getattr(lang, 'current_language', None) or 'it'
+                launcher.open_orders_print_page(
+                    self.db,
+                    user_id,
+                    self.last_authenticated_user_name,
+                    lang_code
+                )
+            except Exception as e:
+                logger.error(f"Errore apertura Stampa per ordini etichette: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire Stampa per ordini etichette:\n{e}",
+                    parent=self
+                )
+        self._execute_simple_login(action_callback=_open)
 
     def open_ei_aros_label_with_login(self):
         """Etichette EI → Aros: login semplice per registrare l'operatore che
@@ -15716,6 +15501,9 @@ class App(tk.Tk):
         # Ritardo 55 secondi: Controllo giornaliero riordino materiali indiretti (07:30)
         self.after(55000, self._start_indirect_reorder_scheduler)
 
+        # Ritardo 65 secondi: Reminder acquisti materiali indiretti non confermati (10:00)
+        self.after(65000, self._start_purchasing_reminder_scheduler)
+
     def _start_fqc_email_scheduler(self):
         """Daemon thread che invia l'email FQC alle 15:30 e alle 23:30 (Lun-Sab)."""
         import threading
@@ -15839,6 +15627,50 @@ class App(tk.Tk):
 
         threading.Thread(target=_worker, daemon=True,
                          name='indirect_reorder_scheduler').start()
+
+    def _start_purchasing_reminder_scheduler(self):
+        """Daemon thread che ogni giorno lavorativo alle 10:00 controlla i
+        solleciti di acquisto materiali indiretti non confermati e, ogni 2 giorni
+        lavorativi, invia un reminder in inglese agli acquisti."""
+        import threading
+
+        def _worker():
+            import time as _time
+            from datetime import datetime as _dt, timedelta as _td
+
+            TRIGGER_H, TRIGGER_M = 10, 0
+
+            while True:
+                now = _dt.now()
+                next_run = now.replace(hour=TRIGGER_H, minute=TRIGGER_M,
+                                       second=0, microsecond=0)
+                if next_run <= now:
+                    next_run += _td(days=1)
+                # Skip Sunday (weekday 6)
+                if next_run.weekday() == 6:
+                    next_run += _td(days=1)
+
+                wait_s = (next_run - now).total_seconds()
+                logger.info(
+                    f"purchasing_reminder_scheduler: next run "
+                    f"{next_run.strftime('%Y-%m-%d %H:%M')}"
+                )
+
+                elapsed = 0.0
+                while elapsed < wait_s:
+                    _time.sleep(min(60, wait_s - elapsed))
+                    elapsed += 60
+
+                try:
+                    import indirect_materials_stock_data as stock_data
+                    res = stock_data.check_and_send_purchasing_reminder(self.db, self.lang)
+                    logger.info(f"purchasing_reminder_scheduler: {res}")
+                except Exception as exc:
+                    logger.error(
+                        f"purchasing_reminder_scheduler: {exc}", exc_info=True)
+
+        threading.Thread(target=_worker, daemon=True,
+                         name='purchasing_reminder_scheduler').start()
 
     def _check_weekly_visitor_email(self):
         """Invia email settimanale con lista visitatori programmati (solo lunedì, una volta).
@@ -17896,16 +17728,16 @@ class App(tk.Tk):
         )
 
         production_labels_menu.add_command(
-            label=self.lang.get('submenu_production_labels_bom', '1. Gestione BOM'),
+            label=self.lang.get('submenu_production_labels_generic_print', '1. Stampa generica'),
+            command=self._open_production_labels_generic_print_with_simple_login
+        )
+        production_labels_menu.add_command(
+            label=self.lang.get('submenu_production_labels_order_print', '2. Stampa per ordini'),
+            command=self._open_production_labels_order_print_with_simple_login
+        )
+        production_labels_menu.add_command(
+            label=self.lang.get('submenu_production_labels_bom', '3. Gestione etichette'),
             command=self._open_production_labels_bom_with_auth
-        )
-        production_labels_menu.add_command(
-            label=self.lang.get('submenu_production_labels_printers', '2. Gestione stampanti'),
-            command=self._open_production_labels_printers_with_auth
-        )
-        production_labels_menu.add_command(
-            label=self.lang.get('submenu_production_labels_print', '3. Stampa'),
-            command=self._open_production_labels_print_with_simple_login
         )
         # Etichette EI -> Aros (conversione EutronCode -> ArosCode/Descrizione)
         materials_menu.add_command(
@@ -17989,6 +17821,10 @@ class App(tk.Tk):
             command=self._open_confirm_indirect_materials
         )
         indirect_materials_menu.add_command(
+            label=self.lang.get('submenu_purchasing_order_confirmation', 'Conferma ordini'),
+            command=self._open_indirect_materials_order_confirmation
+        )
+        indirect_materials_menu.add_command(
             label=self.lang.get('submenu_manage_scrap_returns', 'Gestione Scorie / Rientri'),
             command=self.open_scrap_returns_with_login
         )
@@ -18039,10 +17875,22 @@ class App(tk.Tk):
         
         materials_config_menu.add_separator()
         
-        # Conferma WH WorkStation sotto Configurazioni
+        # Configura WorkStation (WH o Acquisti materiali) sotto Configurazioni
         materials_config_menu.add_command(
-            label=self.lang.get('submenu_confirm_wh_workstation', 'Conferma WH WorkStation'),
-            command=self._open_confirm_wh_workstation
+            label=self.lang.get('submenu_workstation_config', 'Configura WorkStation'),
+            command=self._open_confirm_wh_workstation_with_login
+        )
+
+        materials_config_menu.add_command(
+            label=self.lang.get('submenu_install_background_service',
+                               'Installa servizio notifiche in background'),
+            command=self._install_background_service
+        )
+
+        materials_config_menu.add_command(
+            label=self.lang.get('submenu_uninstall_background_service',
+                               'Disinstalla servizio notifiche in background'),
+            command=self._uninstall_background_service
         )
 
         # Allinea Codici sotto Configurazioni
@@ -21626,6 +21474,25 @@ class App(tk.Tk):
                 )
         self._execute_authorized_action('rilascia_materiali', authorized_action)
 
+    def _open_indirect_materials_order_confirmation(self):
+        """Apre il form di conferma ordini acquisti materiali indiretti."""
+        def authorized_action():
+            logger.info("Apertura Conferma ordini materiali indiretti")
+            try:
+                import indirect_materials_order_confirmation
+                user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
+                indirect_materials_order_confirmation.open_indirect_materials_order_confirmation(
+                    self, self.db, self.lang, user_name
+                )
+            except Exception as e:
+                logger.error(f"Errore apertura Conferma ordini: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire Conferma ordini:\n{e}",
+                    parent=self
+                )
+        self._execute_authorized_action('acquisto_materiali_indiretti_conferma', authorized_action)
+
     def _open_indirect_materials_consumption(self):
         logger.info("Apertura Analisi Consumi & Budget Materiali Indiretti")
         """Apre l'analisi consumi & budget materiali indiretti."""
@@ -21693,18 +21560,160 @@ class App(tk.Tk):
                 parent=self
             )
 
+    def _open_confirm_wh_workstation_with_login(self):
+        """Apre la configurazione WorkStation (WH o Acquisti materiali) con login semplice."""
+        self._execute_simple_login(
+            action_callback=lambda user_id: self._open_confirm_wh_workstation()
+        )
+
     def _open_confirm_wh_workstation(self):
-        """Apre la finestra Conferma WH WorkStation."""
-        logger.info("Apertura Conferma WH WorkStation")
+        """Apre la finestra Configura WorkStation."""
+        logger.info("Apertura Configura WorkStation")
         try:
             import wh_workstation_config
             user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
             wh_workstation_config.open_wh_workstation_config(self, self.lang, user_name)
         except Exception as e:
-            logger.error(f"Errore apertura WH WorkStation config: {e}", exc_info=True)
+            logger.error(f"Errore apertura WorkStation config: {e}", exc_info=True)
             messagebox.showerror(
                 self.lang.get('error', 'Errore'),
-                f"Impossibile aprire la configurazione WH WorkStation:\n{e}",
+                f"Impossibile aprire la configurazione WorkStation:\n{e}",
+                parent=self
+            )
+
+    def _find_service_script(self, script_name: str):
+        """Cerca uno script batch del servizio notifiche in services/ o in root.
+
+        Preferisce la sottodirectory services/ e mantiene la compatibilita' con
+        eventuali file ancora presenti nella cartella principale.
+        """
+        try:
+            from pathlib import Path
+        except Exception:
+            return None
+
+        base_candidates = [Path(__file__).parent, Path.cwd()]
+        if getattr(sys, 'frozen', False):
+            base_candidates.append(Path(sys.executable).parent)
+            meipass = getattr(sys, '_MEIPASS', None)
+            if meipass:
+                base_candidates.append(Path(meipass))
+
+        for c in base_candidates:
+            p = c / "services" / script_name
+            if p.exists():
+                return p
+            p = c / script_name
+            if p.exists():
+                return p
+        return None
+
+    def _install_background_service(self):
+        """Installa il servizio di notifiche popup in background (richiede UAC).
+
+        Il servizio si avvia automaticamente all'accesso dell'utente e gestisce
+        i popup delle workstation configurate su questo PC.
+        """
+        try:
+            import ctypes
+
+            bat_path = self._find_service_script("install_background_service.bat")
+            if bat_path is None:
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    self.lang.get('install_bg_service_missing',
+                                  'File install_background_service.bat non trovato.\n'
+                                  'Controlla che lo script sia nella cartella del programma.'),
+                    parent=self
+                )
+                return
+
+            script_dir = bat_path.parent
+            logger.info("Richiesta installazione servizio notifiche in background: %s", bat_path)
+            # ShellExecuteW con verb "runas" per richiedere l'elevazione UAC.
+            ret = ctypes.windll.shell32.ShellExecuteW(
+                None,
+                "runas",
+                "cmd.exe",
+                f'/c "{bat_path}"',
+                str(script_dir),
+                1
+            )
+            if ret <= 32:
+                # Errori ShellExecute hanno valori <= 32
+                logger.error("ShellExecuteW fallita con codice %s", ret)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    self.lang.get('install_bg_service_failed',
+                                  'Impossibile avviare l\'installazione del servizio.\n'
+                                  'Verifica di aver confermato l\'elevazione UAC.'),
+                    parent=self
+                )
+            else:
+                messagebox.showinfo(
+                    self.lang.get('info', 'Info'),
+                    self.lang.get('install_bg_service_started',
+                                  'Installazione avviata.\n'
+                                  'Conferma l\'elevazione UAC e attendi il completamento.\n'
+                                  'Il servizio si avviera automaticamente al prossimo login.'),
+                    parent=self
+                )
+        except Exception as e:
+            logger.error(f"Errore installazione servizio notifiche: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"{self.lang.get('install_bg_service_error', 'Errore installazione servizio')}:\n{e}",
+                parent=self
+            )
+
+    def _uninstall_background_service(self):
+        """Disinstalla il servizio di notifiche popup in background (richiede UAC)."""
+        try:
+            import ctypes
+
+            bat_path = self._find_service_script("uninstall_background_service.bat")
+            if bat_path is None:
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    self.lang.get('uninstall_bg_service_missing',
+                                  'File uninstall_background_service.bat non trovato.\n'
+                                  'Controlla che lo script sia nella cartella del programma.'),
+                    parent=self
+                )
+                return
+
+            script_dir = bat_path.parent
+            logger.info("Richiesta disinstallazione servizio notifiche in background: %s", bat_path)
+            ret = ctypes.windll.shell32.ShellExecuteW(
+                None,
+                "runas",
+                "cmd.exe",
+                f'/c "{bat_path}"',
+                str(script_dir),
+                1
+            )
+            if ret <= 32:
+                logger.error("ShellExecuteW fallita con codice %s", ret)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    self.lang.get('uninstall_bg_service_failed',
+                                  'Impossibile avviare la disinstallazione del servizio.\n'
+                                  'Verifica di aver confermato l\'elevazione UAC.'),
+                    parent=self
+                )
+            else:
+                messagebox.showinfo(
+                    self.lang.get('info', 'Info'),
+                    self.lang.get('uninstall_bg_service_started',
+                                  'Disinstallazione avviata.\n'
+                                  'Conferma l\'elevazione UAC e attendi il completamento.'),
+                    parent=self
+                )
+        except Exception as e:
+            logger.error(f"Errore disinstallazione servizio notifiche: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"{self.lang.get('uninstall_bg_service_error', 'Errore disinstallazione servizio')}:\n{e}",
                 parent=self
             )
 
@@ -21866,7 +21875,7 @@ class App(tk.Tk):
     #  Monitor Materiali Indiretti                                          #
     # ------------------------------------------------------------------ #
     def _start_indirect_materials_monitors(self):
-        """Avvia i monitor per materiali indiretti (WH e richiedente)."""
+        """Avvia i monitor per materiali indiretti (WH, richiedente e acquisti)."""
         try:
             from indirect_materials_wh_monitor import WHMonitor, RequesterMonitor, is_wh_workstation
 
@@ -21881,6 +21890,15 @@ class App(tk.Tk):
 
         except Exception as e:
             logger.error(f"Errore avvio monitor materiali indiretti: {e}", exc_info=True)
+
+        # Monitor popup Acquisti materiali indiretti: solo se questo PC è una WorkStation acquisti
+        try:
+            from indirect_materials_purchasing_monitor import PurchasingMonitor, is_purchasing_workstation
+            if is_purchasing_workstation():
+                self._purchasing_monitor = PurchasingMonitor(self, self.db, self.lang)
+                logger.info("PurchasingMonitor avviato (questo PC è postazione acquisti materiali)")
+        except Exception as e:
+            logger.error(f"Errore avvio PurchasingMonitor: {e}", exc_info=True)
 
         # Monitor popup Kit Preparation (categoria DIRECT_MATERIAL, spec §7.2)
         try:

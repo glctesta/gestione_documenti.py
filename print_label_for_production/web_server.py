@@ -25,6 +25,7 @@ from flask import Flask, jsonify, request
 from print_label_for_production import server_config
 from print_label_for_production.routes_bom import bom_bp
 from print_label_for_production.routes_printers import printers_bp
+from print_label_for_production.routes_print import print_bp
 
 logger = logging.getLogger("PrintLabelProduction")
 
@@ -51,6 +52,7 @@ def create_app():
 
     app.register_blueprint(bom_bp)
     app.register_blueprint(printers_bp)
+    app.register_blueprint(print_bp)
 
     @app.before_request
     def log_request():
