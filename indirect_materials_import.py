@@ -7,9 +7,12 @@ nella tabella ind.Materiali con logica soft-delete.
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import logging
+import os
 import socket
 import openpyxl
 from datetime import datetime
+
+import indirect_materials_stock_data as stock_data
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +117,9 @@ class ImportIndirectMaterialsWindow(tk.Toplevel):
         )
         if not file_path:
             return
+
+        self.file_path = file_path
+        self.file_name = os.path.basename(file_path)
 
         try:
             self.import_data = []
@@ -396,6 +402,13 @@ class ImportIndirectMaterialsWindow(tk.Toplevel):
                         )
                         self.update_idletasks()
 
+                    # 4. Azzera giacenze per materiali attivi presenti in DB ma non nel file Excel
+                    imported_codes = {
+                        str(item.get('codice') or '').strip().upper()
+                        for item in self.import_data
+                    }
+                    zeroed_items = self._zero_missing_materials(cursor, imported_codes, hostname)
+
                     # ── COMMIT unico a fine transazione ──────────────────
                     self.db.conn.commit()
                     logger.info("Transazione import materiali committata con successo")
@@ -406,11 +419,17 @@ class ImportIndirectMaterialsWindow(tk.Toplevel):
                     raise
             # ── Fine transazione atomica ─────────────────────────────────
 
+            # Invia notifica email per i materiali azzerati (dopo commit)
+            if zeroed_items:
+                self._send_missing_materials_email(zeroed_items)
+
             # Risultato
             msg = self.lang.get('ind_import_completed', 'Importazione completata') + ":\n\n"
             msg += f"🆕 {self.lang.get('ind_import_new_codes', 'Nuovi codici')}: {new_codes}\n"
             msg += f"🔄 {self.lang.get('ind_import_updated_codes', 'Codici aggiornati')}: {updated_codes}\n"
             msg += f"📦 {self.lang.get('ind_import_stock_loaded', 'Giacenze caricate')}: {stock_inserted}\n"
+            if zeroed_items:
+                msg += f"🅾️  {self.lang.get('ind_import_zeroed', 'Stock azzerati')}: {len(zeroed_items)}\n"
             if errors > 0:
                 msg += f"❌ {self.lang.get('ind_import_errors', 'Errori')}: {errors}"
 
@@ -421,15 +440,20 @@ class ImportIndirectMaterialsWindow(tk.Toplevel):
             )
 
             self.progress['value'] = total_steps  # completa al 100%
-            self.status_var.set(
+            status_parts = [
                 f"✅ {new_codes} nuovi, {updated_codes} aggiornati, "
-                f"{stock_inserted} giacenze, {errors} errori"
-            )
+                f"{stock_inserted} giacenze"
+            ]
+            if zeroed_items:
+                status_parts.append(f"{len(zeroed_items)} azzerati")
+            if errors > 0:
+                status_parts.append(f"{errors} errori")
+            self.status_var.set(", ".join(status_parts))
             self.btn_import.state(["disabled"])
 
             logger.info(
                 f"Import completato: {new_codes} nuovi, {updated_codes} aggiornati, "
-                f"{stock_inserted} stock, {errors} errori"
+                f"{stock_inserted} stock, {len(zeroed_items or [])} azzerati, {errors} errori"
             )
 
         except Exception as e:
@@ -440,6 +464,160 @@ class ImportIndirectMaterialsWindow(tk.Toplevel):
                 f"{err_msg}:\n{e}",
                 parent=self
             )
+
+    # ------------------------------------------------------------------ #
+    #  Azzeramento stock per codici assenti dall'Excel                     #
+    # ------------------------------------------------------------------ #
+    def _get_missing_active_materials(self, cursor):
+        """Ritorna i materiali attivi del DB non presenti nel file Excel appena caricato.
+
+        Ogni elemento e' un dict con: materiale_id, codice, descrizione, giacenza.
+        """
+        try:
+            cursor.execute(
+                """
+                SELECT m.MaterialeId, m.CodiceMateriale, m.DescrizioneMateriale,
+                       ISNULL(g.Giacenza, 0) AS Giacenza
+                FROM ind.Materiali m
+                LEFT JOIN ind.vw_GiacenzaCorrente g ON g.MaterialeId = m.MaterialeId
+                WHERE m.IsActive = 1
+                ORDER BY m.CodiceMateriale
+                """
+            )
+            rows = cursor.fetchall()
+        except Exception as e:
+            logger.error(f"Errore lettura materiali attivi per azzeramento: {e}", exc_info=True)
+            return []
+
+        imported_codes = {
+            str(item.get('codice') or '').strip().upper()
+            for item in self.import_data
+        }
+        missing = []
+        for row in rows:
+            code = str(row[1] or '').strip().upper()
+            if code in imported_codes:
+                continue
+            giacenza = float(row[3] or 0)
+            if giacenza == 0:
+                continue
+            missing.append({
+                'materiale_id': row[0],
+                'codice': row[1] or '',
+                'descrizione': row[2] or '',
+                'giacenza': giacenza,
+            })
+        return missing
+
+    def _zero_missing_materials(self, cursor, imported_codes, hostname):
+        """Porta a zero le giacenze dei materiali attivi non presenti nel file Excel.
+
+        Ritorna la lista dei materiali effettivamente azzerati.
+        """
+        missing = self._get_missing_active_materials(cursor)
+        if not missing:
+            return []
+
+        zeroed = []
+        file_name = getattr(self, 'file_name', 'D365 export')
+        note = f"Azzeramento stock: codice assente nel file Excel {file_name}"
+
+        for it in missing:
+            current = it['giacenza']
+            try:
+                # Movimento INVENTARIO che porta la giacenza a zero
+                cursor.execute(
+                    """INSERT INTO ind.MaterialiMovimenti
+                       (MaterialeId, Qty, TipoMovimento, EseguitoDa, ComputerSrc, Note)
+                       VALUES (?, ?, 'INVENTARIO', ?, ?, ?)""",
+                    (it['materiale_id'], round(-current, 4), self.user_name, hostname, note)
+                )
+                # Soft-close eventuale riga di stock aperta
+                cursor.execute(
+                    """UPDATE ind.MaterialiStock
+                       SET DateOut = GETDATE()
+                       WHERE DateOut IS NULL AND MaterialeId = ?""",
+                    (it['materiale_id'],)
+                )
+                zeroed.append(it)
+                logger.info(
+                    f"Stock azzerato per {it['codice']} (giacenza precedente {current})"
+                )
+            except Exception as e:
+                logger.error(f"Errore azzeramento stock per {it['codice']}: {e}", exc_info=True)
+
+        return zeroed
+
+    def _build_missing_materials_email(self, zeroed_items):
+        """Costruisce (subject, html_body) per l'email di notifica azzeramento stock."""
+        file_name = getattr(self, 'file_name', 'D365 export') or 'D365 export'
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+
+        subject = "Indirect Materials Stock Reset Notification"
+
+        rows_html = []
+        for it in zeroed_items:
+            rows_html.append(
+                "<tr>"
+                f"<td style='border:1px solid #ccc;padding:6px;'>{it['codice']}</td>"
+                f"<td style='border:1px solid #ccc;padding:6px;'>{it['descrizione']}</td>"
+                f"<td style='border:1px solid #ccc;padding:6px;text-align:right;'>"
+                f"{it['giacenza']:.2f}</td>"
+                "</tr>"
+            )
+
+        body = (
+            "<p>Dear Purchasing Team,</p>"
+            "<p>Following the import of the D365 export file "
+            f"<strong>{file_name}</strong> on {timestamp}, the stock levels for the "
+            "materials listed below have been reset to <strong>zero</strong>.</p>"
+            "<p>These codes were not included in the downloaded file; therefore, "
+            "their quantities have been cleared to ensure the system reflects the "
+            "current inventory accurately.</p>"
+            "<table style='border-collapse:collapse;font-family:Segoe UI,Arial;font-size:13px;'>"
+            "<thead><tr style='background:#f0f0f0;'>"
+            "<th style='border:1px solid #ccc;padding:6px;'>Material Code</th>"
+            "<th style='border:1px solid #ccc;padding:6px;'>Description</th>"
+            "<th style='border:1px solid #ccc;padding:6px;'>Previous Stock</th>"
+            "</tr></thead><tbody>"
+            + ''.join(rows_html) +
+            "</tbody></table>"
+            "<p style='color:#888;font-size:11px;margin-top:16px;'>"
+            "This is an automatic notification sent by the Document Management system.</p>"
+        )
+        return subject, body
+
+    def _send_missing_materials_email(self, zeroed_items):
+        """Invia l'email di notifica azzeramento agli stessi destinatari del riordino."""
+        try:
+            recipients = stock_data._get_reorder_recipients(self.db)
+            if not recipients:
+                logger.warning(
+                    "Nessun destinatario configurato per l'email di azzeramento stock"
+                )
+                return False
+
+            subject, body = self._build_missing_materials_email(zeroed_items)
+            try:
+                from email_connector import EmailSender
+                sender = EmailSender()
+            except Exception as e:
+                logger.error(f"EmailSender non inizializzato: {e}", exc_info=True)
+                return False
+            sender.send_email(
+                to_email='; '.join(recipients),
+                subject=subject,
+                body=body,
+                is_html=True
+            )
+            logger.info(
+                f"Email azzeramento stock inviata a {len(recipients)} destinatari "
+                f"per {len(zeroed_items)} codici"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Errore invio email azzeramento stock: {e}", exc_info=True)
+            return False
 
     # ------------------------------------------------------------------ #
     #  Utility                                                             #

@@ -1,4 +1,4 @@
-#import configparser
+﻿#import configparser
 # --- StdIO safeguard + Faulthandler sicuro per exe windowed ---
 import shutil
 import sys, os, atexit
@@ -308,7 +308,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.3.1.7'  # Versione aggiornata
+APP_VERSION = '2.4.3.2.1'  # Versione aggiornata
 # Nome programma usato come chiave in SwVersions / VersionDMLogs.
 # In produzione = nome dell'exe; in sviluppo usa il nome canonico.
 APP_PROGRAM_NAME = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else 'DocumentManagement.exe'
@@ -14197,6 +14197,14 @@ class App(tk.Tk):
                 self._update_postpone_count += 1
                 self._update_postpone_total += postpone_secs
                 logger.info(f"_show_update_ready_dialog: posticipo #{self._update_postpone_count} di {postpone_secs}s")
+                # Annulla il controllo periodico programmato in precedenza per evitare
+                # che scada nello stesso momento del posticipo e riapra subito il dialogo.
+                prev_periodic = getattr(self, 'periodic_check_job_id', None)
+                if prev_periodic is not None:
+                    try:
+                        self.after_cancel(prev_periodic)
+                    except Exception:
+                        pass
                 prev = getattr(self, '_update_retrigger_job', None)
                 if prev is not None:
                     try:
@@ -14205,14 +14213,18 @@ class App(tk.Tk):
                         pass
                 self._update_retrigger_job = self.after(
                     postpone_secs * 1000, lambda: self._trigger_update(version_info, mandatory))
+                self.periodic_check_job_id = self.after(
+                    (postpone_secs + 60) * 1000, self._periodic_version_check)
             return
         self._launch_updater(version_info)
 
     def _launch_updater(self, version_info):
         """Lancia l'updater e chiude l'applicazione corrente."""
+        self._update_accepted_version = version_info.Version
         updater_path = self._update_prep_result.get('updater_path')
         if not updater_path or not os.path.exists(updater_path):
             logger.error("_launch_updater: updater non trovato")
+            self._update_accepted_version = None
             messagebox.showerror(
                 self.lang.get('error', 'Errore'),
                 "File updater non trovato!\n\nImpossibile aggiornare.",
@@ -14222,6 +14234,8 @@ class App(tk.Tk):
         if self._update_prep_result.get('ready') is False:
             reason = self._update_prep_result.get('reason', '')
             logger.warning(f"_launch_updater: file sorgente non pronto - {reason}")
+            self._update_accepted_version = None
+            self._update_prep_ready = False
             messagebox.showwarning(
                 self.lang.get('update_postponed_title', 'Aggiornamento Posticipato'),
                 self.lang.get('update_postponed_message', reason),
@@ -14254,6 +14268,7 @@ class App(tk.Tk):
                     handoff.destroy()
                 except Exception:
                     pass
+            self._update_accepted_version = None
             messagebox.showerror(
                 self.lang.get('error', 'Errore'),
                 f"Impossibile avviare l'updater:\n{e}",
@@ -14291,6 +14306,16 @@ class App(tk.Tk):
         appare il dialogo con il pulsante "Installa ora". Solo alla conferma
         viene lanciato l'updater e l'applicazione corrente si chiude.
         """
+        # Se l'utente ha gia' accettato l'update per questa versione, non riaprire nulla.
+        if getattr(self, '_update_accepted_version', None) == version_info.Version:
+            logger.info("_trigger_update: update gia' accettato, non riapro")
+            return 'accepted'
+
+        # Se c'e' gia' un dialogo aperto, non aprirne un altro.
+        if getattr(self, '_update_dialog_open', False):
+            logger.info("_trigger_update: dialogo aggiornamento gia' aperto")
+            return 'open'
+
         # Se il prep per questa versione e' gia' pronto, mostra subito il dialogo.
         if (getattr(self, '_update_prep_version', None) == version_info.Version
                 and getattr(self, '_update_prep_ready', False)):
@@ -14375,10 +14400,23 @@ class App(tk.Tk):
                 self.periodic_check_job_id = self.after(15 * 60 * 1000, self._periodic_version_check)
                 return
 
+            # Guard: se l'utente ha gia' accettato l'update per questa versione,
+            # non riproporlo (dovrebbe gia' essere in chiusura).
+            if getattr(self, '_update_accepted_version', None) == version_info.Version:
+                logger.info("_periodic_version_check: update gia' accettato, salto")
+                self.periodic_check_job_id = self.after(30 * 60 * 1000, self._periodic_version_check)
+                return
+
+            # Guard: nessun altro giro se c'e' gia' un dialogo aperto.
+            if getattr(self, '_update_dialog_open', False):
+                logger.info("_periodic_version_check: dialogo aggiornamento gia' aperto, salto")
+                self.periodic_check_job_id = self.after(15 * 60 * 1000, self._periodic_version_check)
+                return
+
             force_update = is_mandatory or skip_count >= 3
 
             if force_update:
-                # Update obbligatorio: _trigger_update mostra il countdown. Se l'utente
+                # Update obbligatorio: _trigger_update mostra il dialogo ready. Se l'utente
                 # aggiorna, l'app esce (os._exit). Se posticipa/updater non pronto, ritorna
                 # e il ciclo periodico viene comunque ripianificato per non fermarsi.
                 logger.info(f"_periodic_version_check: update obbligatorio (mandatory={is_mandatory}, skip={skip_count})")
@@ -14399,6 +14437,23 @@ class App(tk.Tk):
                         f"prossimo promemoria tra {int(remaining)}s")
                     self.periodic_check_job_id = self.after(int(remaining * 1000), self._periodic_version_check)
                     return
+
+            # Guard: se l'utente ha gia' accettato l'update, non riproporlo.
+            if getattr(self, '_update_accepted_version', None) == version_info.Version:
+                logger.info("_periodic_version_check: update gia' accettato, salto")
+                self.periodic_check_job_id = self.after(30 * 60 * 1000, self._periodic_version_check)
+                return
+
+            # Guard: se c'e' gia' un dialogo aperto o un posticipo schedulato,
+            # non avviare un altro giro.
+            if getattr(self, '_update_dialog_open', False):
+                logger.info("_periodic_version_check: dialogo aggiornamento gia' aperto, salto")
+                self.periodic_check_job_id = self.after(15 * 60 * 1000, self._periodic_version_check)
+                return
+            if getattr(self, '_update_retrigger_job', None) is not None:
+                logger.info("_periodic_version_check: posticipo aggiornamento gia' schedulato, salto")
+                self.periodic_check_job_id = self.after(15 * 60 * 1000, self._periodic_version_check)
+                return
 
             # Update opzionale: avvia la preparazione silenziosa in background.
             # Il dialogo con "Installa ora" apparira' automaticamente solo quando
