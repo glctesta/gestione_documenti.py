@@ -159,6 +159,14 @@ class PersonnelBulkInfoWindow(tk.Toplevel):
         self.body_text = tk.Text(email_frame, height=8, wrap="word", font=("Segoe UI", 9))
         self.body_text.grid(row=1, column=1, sticky="ew", padx=(5, 0), pady=(5, 0))
 
+        self.include_credentials_var = tk.BooleanVar(value=False)
+        self.chk_credentials = ttk.Checkbutton(
+            email_frame,
+            text=self.lang.get('personnel_bulk_info_include_credentials', 'Invia anche credenziali'),
+            variable=self.include_credentials_var
+        )
+        self.chk_credentials.grid(row=2, column=1, sticky="w", padx=(5, 0), pady=(5, 0))
+
         # Bottoni e stato
         btn_frame = ttk.Frame(main)
         btn_frame.grid(row=4, column=0, sticky="ew")
@@ -307,12 +315,11 @@ class PersonnelBulkInfoWindow(tk.Toplevel):
             )
             return
 
-        recipients = [
-            self.employees[i]['email']
-            for i in self.selected
+        selected_with_email = [
+            i for i in self.selected
             if self.employees[i].get('email')
         ]
-        if not recipients:
+        if not selected_with_email:
             messagebox.showwarning(
                 self.lang.get('warning', 'Attenzione'),
                 self.lang.get('personnel_bulk_info_no_emails',
@@ -337,22 +344,30 @@ class PersonnelBulkInfoWindow(tk.Toplevel):
             self.status_var.set("")
             return
 
+        include_credentials = self.include_credentials_var.get()
         successes = 0
         failures = []
-        total = len(recipients)
-        for idx, recipient in enumerate(recipients, start=1):
+        total = len(selected_with_email)
+        for idx, emp_idx in enumerate(selected_with_email, start=1):
+            emp = self.employees[emp_idx]
+            email_body = body
+            if include_credentials:
+                email_body += (
+                    f"\n\nUser ID: {emp.get('userid', '')}\n"
+                    f"Password ERP: {emp.get('password', '')}"
+                )
             try:
                 sender.send_email(
-                    to_email=recipient,
+                    to_email=emp['email'],
                     subject=subject,
-                    body=body,
+                    body=email_body,
                     is_html=False
                 )
                 successes += 1
-                logger.info(f"Email bulk inviata a {recipient}")
+                logger.info(f"Email bulk inviata a {emp['email']}")
             except Exception as e:
-                failures.append((recipient, str(e)))
-                logger.error(f"Errore invio email a {recipient}: {e}", exc_info=True)
+                failures.append((emp['email'], str(e)))
+                logger.error(f"Errore invio email a {emp['email']}: {e}", exc_info=True)
 
             self.status_var.set(
                 self.lang.get('personnel_bulk_info_sending_progress',
