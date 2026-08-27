@@ -327,30 +327,64 @@ class PersonnelBulkInfoWindow(tk.Toplevel):
         try:
             from email_connector import EmailSender
             sender = EmailSender()
-            sender.send_email(
-                to_email='; '.join(recipients),
-                subject=subject,
-                body=body,
-                is_html=False
-            )
-            logger.info(
-                f"Email bulk inviata da {self.user_name} a {len(recipients)} destinatari"
-            )
-            messagebox.showinfo(
-                self.lang.get('info', 'Info'),
-                self.lang.get('personnel_bulk_info_sent',
-                              'Email inviata a {0} destinatari.').format(len(recipients)),
-                parent=self
-            )
-            self.status_var.set("")
         except Exception as e:
-            logger.error(f"Errore invio email bulk: {e}", exc_info=True)
+            logger.error(f"EmailSender non inizializzato: {e}", exc_info=True)
             messagebox.showerror(
                 self.lang.get('error', 'Errore'),
                 f"{self.lang.get('personnel_bulk_info_send_error', 'Errore invio email')}:\n{e}",
                 parent=self
             )
             self.status_var.set("")
+            return
+
+        successes = 0
+        failures = []
+        total = len(recipients)
+        for idx, recipient in enumerate(recipients, start=1):
+            try:
+                sender.send_email(
+                    to_email=recipient,
+                    subject=subject,
+                    body=body,
+                    is_html=False
+                )
+                successes += 1
+                logger.info(f"Email bulk inviata a {recipient}")
+            except Exception as e:
+                failures.append((recipient, str(e)))
+                logger.error(f"Errore invio email a {recipient}: {e}", exc_info=True)
+
+            self.status_var.set(
+                self.lang.get('personnel_bulk_info_sending_progress',
+                              'Invio {0} di {1}...').format(idx, total)
+            )
+            self.update_idletasks()
+
+        if failures:
+            failed_list = "\n".join(f"  {r}: {err}" for r, err in failures[:10])
+            if len(failures) > 10:
+                failed_list += f"\n  ... e altri {len(failures) - 10} errori"
+            messagebox.showwarning(
+                self.lang.get('warning', 'Attenzione'),
+                self.lang.get(
+                    'personnel_bulk_info_partial_sent',
+                    'Inviate {0} email su {1}.\n\nErrori:\n{2}'
+                ).format(successes, total, failed_list),
+                parent=self
+            )
+        else:
+            messagebox.showinfo(
+                self.lang.get('info', 'Info'),
+                self.lang.get('personnel_bulk_info_sent',
+                              'Inviate {0} email su {0} destinatari.').format(total),
+                parent=self
+            )
+
+        self.status_var.set(
+            self.lang.get('personnel_bulk_info_done',
+                          'Completato: {0} inviate, {1} fallite.')
+            .format(successes, len(failures))
+        )
 
 
 def open_personnel_bulk_info(master, db, lang, user_name):
