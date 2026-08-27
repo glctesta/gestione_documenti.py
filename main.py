@@ -1,4 +1,4 @@
-﻿#import configparser
+#import configparser
 # --- StdIO safeguard + Faulthandler sicuro per exe windowed ---
 import shutil
 import sys, os, atexit
@@ -308,7 +308,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.3.2.1'  # Versione aggiornata
+APP_VERSION = '2.4.3.2.2'  # Versione aggiornata
 # Nome programma usato come chiave in SwVersions / VersionDMLogs.
 # In produzione = nome dell'exe; in sviluppo usa il nome canonico.
 APP_PROGRAM_NAME = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else 'DocumentManagement.exe'
@@ -17610,6 +17610,13 @@ class App(tk.Tk):
             command=self.open_news_management_with_login
         )
 
+        # Informazioni BULK
+        self.personnel_menu.add_separator()
+        self.personnel_menu.add_command(
+            label=self.lang.get('submenu_personnel_bulk_info', 'Informazioni BULK'),
+            command=self._open_personnel_bulk_info
+        )
+
         # FAQ
         self.personnel_menu.add_separator()
         faq_submenu = tk.Menu(self.personnel_menu, tearoff=0)
@@ -21528,6 +21535,21 @@ class App(tk.Tk):
                     parent=self
                 )
         self._execute_authorized_action('rilascia_materiali', authorized_action)
+
+    def _open_personnel_bulk_info(self):
+        """Apre il form di invio informazioni bulk al personale."""
+        logger.info("Apertura Informazioni BULK personale")
+        try:
+            import personnel_bulk_info
+            user_name = self.last_authenticated_user_name if hasattr(self, 'last_authenticated_user_name') else 'Unknown'
+            personnel_bulk_info.open_personnel_bulk_info(self, self.db, self.lang, user_name)
+        except Exception as e:
+            logger.error(f"Errore apertura Informazioni BULK: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire Informazioni BULK:\n{e}",
+                parent=self
+            )
 
     def _open_indirect_materials_order_confirmation(self):
         """Apre il form di conferma ordini acquisti materiali indiretti."""
