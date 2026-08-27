@@ -19,27 +19,27 @@ SELECT
     k.Pass AS PasswordERP,
     IIF(LEN(ISNULL(a.workemail, '')) = 0, a.email, a.workemail) AS Email,
     co.CdcDescription AS CdcDescription
-FROM employees e
-INNER JOIN employeehirehistory h
+FROM Employee.dbo.employees e
+INNER JOIN Employee.dbo.employeehirehistory h
     ON e.employeeid = h.employeeid
     AND h.employeerid = 2
     AND h.EndWorkDate IS NULL
-INNER JOIN EmployeeCdcStories ec
+INNER JOIN Employee.dbo.EmployeeCdcStories ec
     ON h.EmployeeHireHistoryId = ec.EmployeeHireHistoryId
     AND ec.dateout IS NULL
-INNER JOIN functions f
+INNER JOIN Employee.dbo.functions f
     ON ec.FunctionId = f.FunctionId
-INNER JOIN CodeCores AS cc
+INNER JOIN Employee.dbo.CodeCores AS cc
     ON cc.CodeCoresId = h.CodeCoresId
-INNER JOIN employeers er
+INNER JOIN Employee.dbo.employeers er
     ON er.EmployeerId = h.EmployeerId
-INNER JOIN CdcSub sc
+INNER JOIN Employee.dbo.CdcSub sc
     ON ec.SubCdcId = sc.SubCdcId
-INNER JOIN CostCenters co
+INNER JOIN Employee.dbo.CostCenters co
     ON co.CdcId = sc.CdcId
 LEFT JOIN ResetServices.dbo.tbuserkey k
     ON h.EmployeeId = k.IdAnga
-LEFT JOIN employeeaddress A
+LEFT JOIN Employee.dbo.employeeaddress A
     ON a.EmployeeId = e.EmployeeId
     AND a.dateout IS NULL
 WHERE NOT k.NomeUser IS NULL
