@@ -308,7 +308,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.3.2.2'  # Versione aggiornata
+APP_VERSION = '2.4.3.2.3'  # Versione aggiornata
 # Nome programma usato come chiave in SwVersions / VersionDMLogs.
 # In produzione = nome dell'exe; in sviluppo usa il nome canonico.
 APP_PROGRAM_NAME = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else 'DocumentManagement.exe'
@@ -17614,7 +17614,7 @@ class App(tk.Tk):
         self.personnel_menu.add_separator()
         self.personnel_menu.add_command(
             label=self.lang.get('submenu_personnel_bulk_info', 'Informazioni BULK'),
-            command=self._open_personnel_bulk_info
+            command=self._open_personnel_bulk_info_with_login
         )
 
         # FAQ
@@ -21550,6 +21550,12 @@ class App(tk.Tk):
                 f"Impossibile aprire Informazioni BULK:\n{e}",
                 parent=self
             )
+
+    def _open_personnel_bulk_info_with_login(self):
+        """Apre il form Informazioni BULK previo login autorizzato."""
+        def authorized_action():
+            self._open_personnel_bulk_info()
+        self._execute_authorized_action('messaggi_bulk', authorized_action)
 
     def _open_indirect_materials_order_confirmation(self):
         """Apre il form di conferma ordini acquisti materiali indiretti."""
