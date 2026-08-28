@@ -183,8 +183,6 @@ class LabelScrapDeclarationWindow(tk.Toplevel):
                    command=self._undo_last).pack(side=tk.LEFT, padx=4)
         ttk.Button(bar, text=L('lsc_manage_reasons', '⚙ Motivi'),
                    command=self._open_reasons_manager).pack(side=tk.LEFT, padx=4)
-        ttk.Button(bar, text=L('lsc_manage_families', '🔗 Famiglie materiali'),
-                   command=self._open_material_family_manager).pack(side=tk.LEFT, padx=4)
         ttk.Button(bar, text=L('lsc_close_print', '🖨 Chiudi e stampa'),
                    command=lambda: self._close(print_it=True)).pack(side=tk.RIGHT, padx=4)
         ttk.Button(bar, text=L('btn_close', 'Chiudi'),

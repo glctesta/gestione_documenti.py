@@ -17961,6 +17961,12 @@ class App(tk.Tk):
             command=self._open_align_codes
         )
 
+        # Assegna Famiglia materiali (scarti etichette)
+        materials_config_menu.add_command(
+            label=self.lang.get('submenu_assign_material_families', 'Assegna Famiglia'),
+            command=self._open_label_scrap_material_families
+        )
+
         # Configurazione codici sotto Configurazioni
         materials_config_menu.add_command(
             label=self.lang.get('submenu_material_configurations', 'Configurazione Codici'),
@@ -21870,6 +21876,31 @@ class App(tk.Tk):
                 )
         self._execute_authorized_action(
             'carica_lista_codici_indiretti',
+            authorized_action
+        )
+
+    def _open_label_scrap_material_families(self):
+        """Apre la finestra Assegna Famiglia materiali (scarti etichette).
+
+        Richiede l'autorizzazione 'aggiungi_motivo_label_scrap', la stessa usata
+        dal pulsante che in precedenza era sulla maschera Dichiarazione Scarti."""
+        def authorized_action():
+            logger.info("Apertura Assegna Famiglia materiali")
+            try:
+                import label_scrap_gui
+                w = label_scrap_gui.LabelScrapMaterialFamilyManager(
+                    self, self.db, self.lang, on_done=None
+                )
+                self.wait_window(w)
+            except Exception as e:
+                logger.error(f"Errore apertura Assegna Famiglia: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire Assegna Famiglia:\n{e}",
+                    parent=self
+                )
+        self._execute_authorized_action(
+            'aggiungi_motivo_label_scrap',
             authorized_action
         )
 
