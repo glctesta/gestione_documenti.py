@@ -308,7 +308,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.3.2.3'  # Versione aggiornata
+APP_VERSION = '2.4.3.2.4'  # Versione aggiornata
 # Nome programma usato come chiave in SwVersions / VersionDMLogs.
 # In produzione = nome dell'exe; in sviluppo usa il nome canonico.
 APP_PROGRAM_NAME = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else 'DocumentManagement.exe'
@@ -17967,6 +17967,12 @@ class App(tk.Tk):
             command=self._open_label_scrap_material_families
         )
 
+        # Regole scorie/rientri materiali
+        materials_config_menu.add_command(
+            label=self.lang.get('submenu_material_rules', 'Regole Scorie/Rientri'),
+            command=self._open_material_rules_manager
+        )
+
         # Configurazione codici sotto Configurazioni
         materials_config_menu.add_command(
             label=self.lang.get('submenu_material_configurations', 'Configurazione Codici'),
@@ -21897,6 +21903,28 @@ class App(tk.Tk):
                 messagebox.showerror(
                     self.lang.get('error', 'Errore'),
                     f"Impossibile aprire Assegna Famiglia:\n{e}",
+                    parent=self
+                )
+        self._execute_authorized_action(
+            'aggiungi_motivo_label_scrap',
+            authorized_action
+        )
+
+    def _open_material_rules_manager(self):
+        """Apre la finestra di gestione regole scorie/rientri materiali.
+
+        Richiede l'autorizzazione 'aggiungi_motivo_label_scrap', la stessa usata
+        per Assegna Famiglia e per il vecchio pulsante Famiglie materiali."""
+        def authorized_action():
+            logger.info("Apertura Gestione Regole Materiali")
+            try:
+                import material_rules_gui
+                material_rules_gui.open_material_rules_manager(self, self.db, self.lang)
+            except Exception as e:
+                logger.error(f"Errore apertura Gestione Regole Materiali: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire Gestione Regole Materiali:\n{e}",
                     parent=self
                 )
         self._execute_authorized_action(
