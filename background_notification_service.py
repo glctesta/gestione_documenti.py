@@ -471,7 +471,6 @@ def main():
 
     # Metodi usati dai monitor per aprire il programma principale dal popup,
     # quando TraceabilityRS non e' gia' in esecuzione.
-    root._open_shipment_confirmation = _launch_main_application
     root._open_touchup_response = _launch_main_application
     root._open_shift_handover = _launch_main_application
 

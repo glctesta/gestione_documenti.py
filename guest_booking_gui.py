@@ -1316,7 +1316,8 @@ class GuestBookingWindow(tk.Toplevel):
         # Determina destinazione: dopo le 16:00 → Hotel, altrimenti → Fabbrica
         # Se force_factory è attivo, destinazione sempre Fabbrica
         factory_name = self._company_info['name'] if self._company_info else 'Fabbrica'
-        hotel_name = self.hotel_var.get().strip() or 'Hotel'
+        hotel_selected = self.hotel_var.get().strip()
+        hotel_name = hotel_selected or 'Hotel'
         if self.force_factory_var.get():
             destination = factory_name
         else:
@@ -1328,6 +1329,16 @@ class GuestBookingWindow(tk.Toplevel):
                         destination = factory_name
             except (ValueError, IndexError):
                 pass
+
+        # Hotel in cui saranno alloggiati gli ospiti: indicato SEMPRE nella email
+        # shuttle, perche' il conducente deve conoscerlo anche quando la destinazione
+        # e' la fabbrica (rientro in hotel / transfer successivi).
+        hotel_accommodation_html = ''
+        if hotel_selected:
+            hotel_accommodation_html = (
+                '<p><strong>Hotel cazare / Accommodation hotel:</strong> '
+                f'<span style="color: #1565C0; font-weight: bold;">{hotel_selected}</span></p>'
+            )
 
         # Costruisci lista ospiti con date di partenza individuali
         guests_html = ''
@@ -1371,6 +1382,7 @@ class GuestBookingWindow(tk.Toplevel):
             <p><strong>Data sosire:</strong> {arrival_date.strftime('%d/%m/%Y')}</p>
             <p><strong>Ora sosire:</strong> {arrival_time if arrival_time else 'De confirmat'}</p>
             <p><strong>Destinația:</strong> <span style="color: #B22222; font-weight: bold;">{destination}</span></p>
+            {hotel_accommodation_html}
 
             <p><strong>Data plecare:</strong> {departure_date.strftime('%d/%m/%Y')}
             {' <em>(⚠ date di partenza diverse per alcuni ospiti — vedere lista sopra)</em>' if has_different_departures else ''}</p>

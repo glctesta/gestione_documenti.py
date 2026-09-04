@@ -227,7 +227,7 @@ class ShipmentMonitor:
             header_frame,
             text=self.lang.get(
                 "shipment_popup_subheader",
-                "Aprire la finestra 'Conferma Shipping' per registrare la conferma.",
+                "Contattare il responsabile spedizioni per la conferma.",
             ),
             bg="#c0392b",
             fg="white",
@@ -238,12 +238,6 @@ class ShipmentMonitor:
         #    restano sempre visibili anche se la finestra si rimpicciolisce) ──
         btn_frame = tk.Frame(popup, bg="#c0392b")
         btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=10)
-
-        ttk.Button(
-            btn_frame,
-            text=self.lang.get("shipment_popup_btn_open", "📋 Apri Conferma Shipping"),
-            command=lambda: [_on_close(), self._open_confirmation()],
-        ).pack(side=tk.LEFT, padx=20)
 
         ttk.Button(
             btn_frame,
@@ -296,18 +290,3 @@ class ShipmentMonitor:
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-    def _open_confirmation(self):
-        """Apre la finestra di conferma passando per il login previsto dal menu."""
-        try:
-            # Usa lo stesso flusso del menu: login semplice + apertura finestra
-            menu_handler = getattr(self.master, "_open_shipment_confirmation", None)
-            if callable(menu_handler):
-                menu_handler()
-                return
-
-            # Fallback: apertura diretta se il metodo del menu non è disponibile
-            from orders.shipment_confirmation_window import open_shipment_confirmation_window
-            user_name = getattr(self.master, "last_authenticated_user_name", "Unknown")
-            open_shipment_confirmation_window(self.master, self.db, self.lang, user_name)
-        except Exception as e:
-            logger.error(f"Errore apertura conferma da popup: {e}", exc_info=True)

@@ -85,14 +85,18 @@ class MaterialRulesManager(tk.Toplevel):
         ttk.Label(editor, text=self.L('material_rules_requested', 'Materiale richiesto:')).grid(
             row=0, column=0, sticky="w", padx=(0, 6), pady=4)
         self.requested_var = tk.StringVar()
-        self.requested_combo = ttk.Combobox(editor, textvariable=self.requested_var, state="readonly", width=45)
+        self.requested_combo = ttk.Combobox(editor, textvariable=self.requested_var, state="normal", width=45)
         self.requested_combo.grid(row=0, column=1, sticky="ew", padx=(0, 12), pady=4)
+        self.requested_combo.bind('<KeyRelease>', self._on_requested_key)
+        self.requested_combo.bind('<<ComboboxSelected>>', self._on_requested_select)
 
         ttk.Label(editor, text=self.L('material_rules_scrap', 'Materiale scoria richiesto:')).grid(
             row=0, column=2, sticky="w", padx=(0, 6), pady=4)
         self.scrap_var = tk.StringVar()
-        self.scrap_combo = ttk.Combobox(editor, textvariable=self.scrap_var, state="readonly", width=45)
+        self.scrap_combo = ttk.Combobox(editor, textvariable=self.scrap_var, state="normal", width=45)
         self.scrap_combo.grid(row=0, column=3, sticky="ew", pady=4)
+        self.scrap_combo.bind('<KeyRelease>', self._on_scrap_key)
+        self.scrap_combo.bind('<<ComboboxSelected>>', self._on_scrap_select)
 
         ttk.Button(editor, text=self.L('material_rules_add', 'Aggiungi regola'),
                    command=self._add_rule).grid(row=1, column=0, columnspan=4, pady=(10, 0))
@@ -160,6 +164,30 @@ class MaterialRulesManager(tk.Toplevel):
         self.requested_combo['values'] = display
         self.scrap_combo['values'] = display
 
+    def _on_requested_key(self, event=None):
+        self._filter_combo(self.requested_combo, self.requested_var)
+
+    def _on_scrap_key(self, event=None):
+        self._filter_combo(self.scrap_combo, self.scrap_var)
+
+    def _filter_combo(self, combo, var):
+        """Filtra i materiali del combobox per codice o descrizione parziali."""
+        text = var.get().strip().lower()
+        if not text:
+            combo['values'] = [m[3] for m in self._materials]
+            return
+        filtered = [
+            m[3] for m in self._materials
+            if text in m[1].lower() or text in m[2].lower()
+        ]
+        combo['values'] = filtered
+
+    def _on_requested_select(self, event=None):
+        self.requested_var.set(self.requested_combo.get())
+
+    def _on_scrap_select(self, event=None):
+        self.scrap_var.set(self.scrap_combo.get())
+
     def _load_rules(self):
         self.status_var.set(self.L('loading', 'Caricamento in corso...'))
         self.update_idletasks()
@@ -222,13 +250,6 @@ class MaterialRulesManager(tk.Toplevel):
                                     self.L('material_rules_select_scrap', 'Seleziona il materiale scoria richiesto.'),
                                     parent=self)
             return
-        if requested_id == scrap_id:
-            messagebox.showwarning(self.L('warning', 'Attenzione'),
-                                    self.L('material_rules_same_material',
-                                              'Il materiale richiesto e quello scoria devono essere diversi.'),
-                                    parent=self)
-            return
-
         # Verifica regola già attiva per lo stesso MaterialeId
         try:
             self.db._ensure_connection()

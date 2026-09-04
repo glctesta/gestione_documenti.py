@@ -117,6 +117,18 @@ TRANSLATIONS = [
         'Valoare (gr):',
         'Wert (gr):',
         'V\u00e4rde (gr):'),
+    ('mat_cons_material',
+        'Materiale:',
+        'Material:',
+        'Material:',
+        'Material:',
+        'Material:'),
+    ('mat_cons_no_material',
+        'Selezionare un materiale dalla lista.',
+        'Please select a material from the list.',
+        'V\u0103 rug\u0103m s\u0103 selecta\u021bi un material din list\u0103.',
+        'Bitte ein Material aus der Liste ausw\u00e4hlen.',
+        'V\u00e4lj ett material fr\u00e5n listan.'),
 
     # ── Status / feedback ─────────────────────────────────────────────────────
     ('mat_cons_lc_not_found',

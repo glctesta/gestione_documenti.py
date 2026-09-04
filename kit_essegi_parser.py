@@ -89,16 +89,19 @@ def file_sha256(path: str) -> str:
     return h.hexdigest()
 
 
-def list_kitting_files(directory: str = KITTING_DIR) -> List[dict]:
+def list_kitting_files(directory: str = KITTING_DIR, include_loaded: bool = False) -> List[dict]:
     """
     Elenca i file .xlsx in T:\\KITTING con anteprima ordini, ordinati per
     data modifica decrescente. Ogni voce: {path, name, date, orders_compact}.
+    Se include_loaded e' False, esclude i file gia' marcati con _gia_caricato_ nel nome.
     """
     if not os.path.isdir(directory):
         raise EssegiParseError(f"Directory non raggiungibile: {directory}")
     out = []
     for f in os.listdir(directory):
         if not f.lower().endswith('.xlsx') or f.startswith('~$'):
+            continue
+        if not include_loaded and '_gia_caricato_' in f:
             continue
         path = os.path.join(directory, f)
         try:

@@ -1,7 +1,10 @@
 # permissions_gui.py
+import logging
 import tkinter as tk
 from tkinter import ttk, messagebox
 from utils import get_employee_work_email, send_email
+
+logger = logging.getLogger('TraceabilityRS')
 
 
 class ViewPermissionsWindow(tk.Toplevel):
@@ -34,16 +37,40 @@ class ViewPermissionsWindow(tk.Toplevel):
         filter_frame.columnconfigure(1, weight=1)
         ttk.Label(filter_frame, text=self.lang.get('select_employee_label', "Seleziona Dipendente:")).grid(row=0,
                                                                                                            column=0,
-                                                                                                           padx=(0, 5))
+                                                                                                           padx=(0, 5),
+                                                                                                           sticky='w')
         self.employee_combo = ttk.Combobox(filter_frame, textvariable=self.employee_var, state="readonly", height=10)
         self.employee_combo.grid(row=0, column=1, sticky="ew")
         self.employee_combo.bind("<<ComboboxSelected>>", self._load_permissions)
 
+        # Filtro testuale su chiave/traduzione/def
+        ttk.Label(filter_frame, text=self.lang.get('filter_permission_label', "Filtra:")).grid(
+            row=1, column=0, padx=(0, 5), pady=(6, 0), sticky='w')
+        self.filter_var = tk.StringVar()
+        self.filter_entry = ttk.Entry(filter_frame, textvariable=self.filter_var, width=40)
+        self.filter_entry.grid(row=1, column=1, sticky="ew", pady=(6, 0))
+        self.filter_var.trace_add('write', lambda *_a: self._load_permissions())
+
         # Lista permessi
-        cols = ('permission',)
+        cols = ('permission', 'translation_key', 'function', 'menu_def')
         self.tree = ttk.Treeview(main_frame, columns=cols, show="headings")
         self.tree.heading('permission', text=self.lang.get('permission_header', "Menu Autorizzato"))
+        self.tree.heading('translation_key', text=self.lang.get('permission_key_header', "Chiave (Attributo)"))
+        self.tree.heading('function', text=self.lang.get('permission_function_header', "Def chiamata dal menu"))
+        self.tree.heading('menu_def', text=self.lang.get('permission_menu_def_header', "Menu (def)"))
+        self.tree.column('permission', width=280, anchor='w')
+        self.tree.column('translation_key', width=180, anchor='w')
+        self.tree.column('function', width=220, anchor='w')
+        self.tree.column('menu_def', width=220, anchor='w')
         self.tree.grid(row=1, column=0, sticky="nsew")
+
+        vsb = ttk.Scrollbar(main_frame, orient="vertical", command=self.tree.yview)
+        hsb = ttk.Scrollbar(main_frame, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.grid(row=1, column=1, sticky="ns")
+        hsb.grid(row=2, column=0, sticky="ew")
+        main_frame.rowconfigure(1, weight=1)
+        main_frame.columnconfigure(0, weight=1)
 
     def _load_employees(self):
         # Riusiamo la funzione esistente per caricare i dipendenti
@@ -52,18 +79,123 @@ class ViewPermissionsWindow(tk.Toplevel):
             self.employees_data = {e.Employ: e.EmployeeHireHistoryId for e in employees}
             self.employee_combo['values'] = sorted(list(self.employees_data.keys()))
 
+    @staticmethod
+    def _build_key_mapping():
+        """Analizza main.py per trovare, per ogni TranslationKey, la def che apre
+        la form e la def del menu builder che la richiama."""
+        import ast
+        import os
+
+        main_path = os.path.join(os.path.dirname(__file__), 'main.py')
+        try:
+            with open(main_path, 'r', encoding='utf-8-sig') as f:
+                source = f.read()
+        except Exception as e:
+            logger.warning('Permessi: impossibile leggere main.py per il mapping: %s', e)
+            return {}
+
+        try:
+            tree = ast.parse(source)
+        except Exception as e:
+            logger.warning('Permessi: parsing main.py fallito: %s', e)
+            return {}
+
+        key_to_def = {}
+
+        def _attr_name(expr):
+            if isinstance(expr, ast.Attribute) and isinstance(expr.value, ast.Name) and expr.value.id == 'self':
+                return expr.attr
+            return None
+
+        # Fase 1: trova le def che aprono form autorizzate
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            for child in ast.walk(node):
+                if not isinstance(child, ast.Call):
+                    continue
+                func = child.func
+                is_auth_call = (
+                    (isinstance(func, ast.Name) and func.id == '_execute_authorized_action') or
+                    (isinstance(func, ast.Attribute) and func.attr == '_execute_authorized_action' and
+                     isinstance(func.value, ast.Name) and func.value.id == 'self')
+                )
+                if not is_auth_call:
+                    continue
+                key = None
+                # cerca keyword menu_translation_key=...
+                for kw in child.keywords:
+                    if kw.arg == 'menu_translation_key':
+                        if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                            key = kw.value.value
+                        break
+                # fallback: primo argomento posizionale stringa
+                if key is None and child.args:
+                    first = child.args[0]
+                    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                        key = first.value
+                if key and key not in key_to_def:
+                    key_to_def[key] = {'def_name': node.name, 'menu_def': ''}
+
+        # Fase 2: trova i menu builder che invocano le def sopra
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            is_menu_builder = False
+            for child in ast.walk(node):
+                if not isinstance(child, ast.Call):
+                    continue
+                func = child.func
+                if isinstance(func, ast.Attribute) and func.attr in ('add_command', 'add_checkbutton', 'add_radiobutton'):
+                    is_menu_builder = True
+                    break
+                if isinstance(func, ast.Name) and func.id in ('Menu', 'ToplevelMenu'):
+                    is_menu_builder = True
+                    break
+            if not is_menu_builder:
+                continue
+            for child in ast.walk(node):
+                if not isinstance(child, ast.Call):
+                    continue
+                func = child.func
+                if not (isinstance(func, ast.Attribute) and func.attr in ('add_command', 'add_checkbutton', 'add_radiobutton')):
+                    continue
+                for kw in child.keywords:
+                    if kw.arg == 'command':
+                        cmd_name = _attr_name(kw.value)
+                        if not cmd_name:
+                            continue
+                        for info in key_to_def.values():
+                            if info['def_name'] == cmd_name and not info['menu_def']:
+                                info['menu_def'] = node.name
+
+        return key_to_def
+
     def _load_permissions(self, event=None):
         self.tree.delete(*self.tree.get_children())
         employee_name = self.employee_var.get()
-        if not employee_name: return
+        if not employee_name:
+            return
 
         employee_id = self.employees_data.get(employee_name)
         permissions = self.db.fetch_user_permissions(employee_id)
+        key_mapping = self._build_key_mapping()
+        filter_text = self.filter_var.get().strip().lower() if hasattr(self, 'filter_var') else ''
 
         if permissions:
             for perm in permissions:
-                if perm.MenuKey:  # Mostra solo se esiste una chiave menu
-                    self.tree.insert("", "end", values=(perm.MenuKey,))
+                if not perm.MenuKey:
+                    continue
+                info = key_mapping.get(perm.TranslationKey, {})
+                values = (
+                    perm.MenuKey,
+                    perm.TranslationKey or '',
+                    info.get('def_name', ''),
+                    info.get('menu_def', ''),
+                )
+                if filter_text and not any(filter_text in str(v).lower() for v in values):
+                    continue
+                self.tree.insert("", "end", values=values)
 
 
 class ManagePermissionsWindow(tk.Toplevel):

@@ -16,7 +16,9 @@ Login a monte (gestito da main.py):
 L'operatore (EmployeeHireHistoryId) arriva dal chiamante.
 """
 import logging
+import os
 import socket
+from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 
@@ -73,6 +75,9 @@ class KitPreparationWindow(tk.Toplevel):
         self._build_picking_tab()
         self._build_requests_tab()
 
+        self.requests_authorized = False
+        self.notebook.bind('<<NotebookTabChanged>>', self._on_tab_changed)
+
         if tab == 'priority':
             self.notebook.select(self.priority_frame)
         else:
@@ -82,6 +87,25 @@ class KitPreparationWindow(tk.Toplevel):
         self._refresh_picking_lists()
         self._refresh_requests()
         logger.info("KitPreparationWindow aperta da %s (tab=%s)", self.user_name, tab)
+
+    def _on_tab_changed(self, event=None):
+        """Il tab Richieste Materiale richiede un login autorizzato separato."""
+        selected = self.notebook.select()
+        if selected != str(self.requests_frame):
+            return
+        if self.requests_authorized:
+            return
+        # Torna al tab prelievo prima di chiedere il login
+        self.notebook.select(self.picking_frame)
+
+        def _authorize():
+            self.requests_authorized = True
+            self.notebook.select(self.requests_frame)
+
+        try:
+            self.app._execute_authorized_action('richiesta_materiali_produzione', _authorize)
+        except Exception as e:
+            logger.error("Errore login tab Richieste Materiale: %s", e)
 
     # ────────────────────────── TAB PRIORITA' ──────────────────────────── #
 
@@ -360,9 +384,16 @@ class KitPreparationWindow(tk.Toplevel):
             ), tags=(tag,))
 
     def _load_list_clicked(self):
-        """Scelta file da T:\\KITTING (finestra se piu' di uno) e import."""
+        """Apre il selettore file per importare una o piu' liste da T:\\KITTING."""
+        self._open_file_chooser()
+
+    def _open_file_chooser(self, include_loaded_default=False):
+        """Scelta multipla di file .xlsx in T:\\KITTING con filtro e ordinamento.
+        I file gia' caricati (nome con _gia_caricato_) sono nascosti di default;
+        si possono mostrare con il checkbox apposito."""
+        L = self.lang.get
         try:
-            files = kep.list_kitting_files()
+            files = kep.list_kitting_files(include_loaded=include_loaded_default)
         except kep.EssegiParseError as e:
             messagebox.showerror(
                 self.lang.get('error_title', 'Errore'),
@@ -376,33 +407,33 @@ class KitPreparationWindow(tk.Toplevel):
                 parent=self)
             return
 
-        if len(files) == 1:
-            self._import_file(files[0]['path'])
-        else:
-            self._open_file_chooser(files)
-
-    def _open_file_chooser(self, files):
-        """Finestra di scelta quando in T:\\KITTING ci sono piu' file (spec §5.1.1).
-        Con filtro per nome file e ordinamento cliccando sulle intestazioni."""
-        L = self.lang.get
         dlg = tk.Toplevel(self)
         dlg.title(L('kit_choose_file_title', 'Scegli la lista di prelievo'))
-        dlg.geometry("680x380")
+        dlg.geometry("720x420")
         dlg.transient(self)
         dlg.grab_set()
 
         ttk.Label(dlg, text=L(
             'kit_choose_file_msg',
-            'Più file presenti in T:\\KITTING — seleziona quello corretto:'),
+            "Seleziona uno o piu' file da importare:"),
             padding=(8, 8, 8, 0)).pack(anchor='w')
 
-        # ── Filtro nome file ──────────────────────────────────────────────
+        # ── Filtro e checkbox ─────────────────────────────────────────────
         top = ttk.Frame(dlg, padding=(8, 4, 8, 0))
         top.pack(fill='x')
         ttk.Label(top, text=L('kit_filter_file', 'Filtro nome file:')).pack(side='left')
         filter_var = tk.StringVar()
         filter_entry = ttk.Entry(top, textvariable=filter_var, width=32)
         filter_entry.pack(side='left', padx=6)
+
+        include_loaded_var = tk.BooleanVar(value=include_loaded_default)
+        ttk.Checkbutton(
+            top,
+            text=L('kit_show_loaded_files', 'Visualizza gia'' caricati'),
+            variable=include_loaded_var,
+            command=lambda: refresh_files()
+        ).pack(side='left', padx=(12, 0))
+
         self._count_var = tk.StringVar(value='')
         ttk.Label(top, textvariable=self._count_var, foreground='#666').pack(side='left', padx=6)
 
@@ -412,8 +443,8 @@ class KitPreparationWindow(tk.Toplevel):
             'date':   L('kit_col_file_date', 'Modificato il'),
             'orders': L('kit_col_orders', 'Ordini'),
         }
-        widths = {'file': 240, 'date': 150, 'orders': 240}
-        tree = ttk.Treeview(dlg, columns=cols, show='headings', selectmode='browse')
+        widths = {'file': 260, 'date': 150, 'orders': 240}
+        tree = ttk.Treeview(dlg, columns=cols, show='headings', selectmode='extended')
 
         # Stato ordinamento (default: data decrescente, come l'elenco originale)
         sort_state = {'col': 'date', 'reverse': True}
@@ -422,6 +453,11 @@ class KitPreparationWindow(tk.Toplevel):
             'date':   lambda f: f.get('date'),
             'orders': lambda f: str(f.get('orders_compact') or '').lower(),
         }
+
+        def refresh_files():
+            nonlocal files
+            files = kep.list_kitting_files(include_loaded=include_loaded_var.get())
+            render()
 
         def render(*_a):
             txt = filter_var.get().strip().lower()
@@ -455,12 +491,11 @@ class KitPreparationWindow(tk.Toplevel):
             sel = tree.selection()
             if not sel:
                 return
-            path = sel[0]  # l'iid della riga è il path del file
+            paths = list(sel)
             dlg.destroy()
-            self._import_file(path)
+            self._import_selected_files(paths)
 
-        # Barra pulsanti in basso — impacchettata PRIMA dell'albero, così resta
-        # sempre visibile e l'albero riempie lo spazio restante.
+        # Barra pulsanti in basso
         btns = ttk.Frame(dlg, padding=8)
         btns.pack(side='bottom', fill='x')
         ttk.Button(btns, text=L('kit_btn_confirm', 'Conferma'),
@@ -477,6 +512,44 @@ class KitPreparationWindow(tk.Toplevel):
         filter_var.trace_add('write', render)
         render()
         filter_entry.focus_set()
+
+    def _import_selected_files(self, paths):
+        """Importa in sequenza i file selezionati e li rinomina dopo il successo."""
+        if not paths:
+            return
+        imported = 0
+        for path in paths:
+            if self._import_file(path):
+                imported += 1
+                self._rename_loaded_file(path)
+        if imported:
+            messagebox.showinfo(
+                self.lang.get('info_title', 'Informazione'),
+                self.lang.get('kit_msg_imported_n', 'Importati {n} file.')
+                .replace('{n}', str(imported)),
+                parent=self)
+        self._refresh_picking_lists()
+
+    def _rename_loaded_file(self, path):
+        """Rinomina il file aggiungendo _gia_caricato_gg_mm_YYYY prima dell'estensione."""
+        directory, filename = os.path.split(path)
+        name, ext = os.path.splitext(filename)
+        suffix = datetime.now().strftime('%d_%m_%Y')
+        new_name = f"{name}_gia_caricato_{suffix}{ext}"
+        new_path = os.path.join(directory, new_name)
+        try:
+            os.rename(path, new_path)
+            logger.info('File rinominato dopo import: %s -> %s', path, new_path)
+            return new_path
+        except Exception as e:
+            logger.error('Errore rinomina file %s: %s', path, e)
+            messagebox.showwarning(
+                self.lang.get('warning_title', 'Attenzione'),
+                self.lang.get('kit_warn_rename_failed',
+                              'Import completato ma impossibile rinominare il file:\\n{path}\\n{e}')
+                .replace('{path}', path).replace('{e}', str(e)),
+                parent=self)
+            return None
 
     def _parse_with_mapping(self, path):
         """Parsa il file usando il dizionario colonne (dbo.KitColumnAliases).
@@ -570,9 +643,10 @@ class KitPreparationWindow(tk.Toplevel):
                     n_smt, n_empty, len(rows))
 
     def _import_file(self, path):
+        """Importa un singolo file .xlsx. Ritorna True se ha successo, False altrimenti."""
         parsed = self._parse_with_mapping(path)
         if parsed is None:
-            return
+            return False
 
         # Escludi righe SMT (descrizione Components contiene 'SMT') e senza reel code
         self._exclude_smt_and_empty(parsed)
@@ -583,11 +657,9 @@ class KitPreparationWindow(tk.Toplevel):
                               'Nessuna riga valida da importare dopo l\'esclusione dei codici '
                               'SMT e delle righe senza reel code.'),
                 parent=self)
-            return
+            return False
 
         # Guardia duplicati: stesso file (hash) gia' importato, QUALSIASI stato
-        # (incluso CLOSED). Il ri-caricamento e' bloccato per non sovrascrivere o
-        # cancellare il lavoro di verifica gia' fatto sulla lista esistente.
         try:
             cursor = self.db.conn.cursor()
             cursor.execute(
@@ -598,7 +670,7 @@ class KitPreparationWindow(tk.Toplevel):
             cursor.close()
         except Exception as e:
             messagebox.showerror(self.lang.get('error_title', 'Errore'), str(e), parent=self)
-            return
+            return False
         if dup:
             messagebox.showwarning(
                 self.lang.get('warning_title', 'Attenzione'),
@@ -608,7 +680,7 @@ class KitPreparationWindow(tk.Toplevel):
                               'il ri-caricamento è bloccato.')
                 .replace('{id}', str(dup[0])).replace('{status}', str(dup[1])),
                 parent=self)
-            return
+            return False
 
         # Anteprima e conferma
         summary = self.lang.get('kit_import_summary',
@@ -627,7 +699,7 @@ class KitPreparationWindow(tk.Toplevel):
                 self.lang.get('kit_import_preview_title', 'Conferma import lista'),
                 summary + '\n\n' + self.lang.get('kit_msg_proceed', 'Procedere con l\'import?'),
                 parent=self):
-            return
+            return False
 
         # Insert transazionale
         try:
@@ -680,14 +752,9 @@ class KitPreparationWindow(tk.Toplevel):
             self.db.conn.rollback()
             logger.error("Errore import lista prelievo: %s", e)
             messagebox.showerror(self.lang.get('error_title', 'Errore'), str(e), parent=self)
-            return
+            return False
 
-        messagebox.showinfo(
-            self.lang.get('info_title', 'Informazione'),
-            self.lang.get('kit_msg_import_done', 'Lista importata correttamente (#{id})')
-            .replace('{id}', str(list_id)),
-            parent=self)
-        self._refresh_picking_lists()
+        return True
 
     def _add_label_rows_to_list(self, list_id, order_numbers):
         """Calcola e inserisce righe etichetta automatiche per gli ordini della lista."""

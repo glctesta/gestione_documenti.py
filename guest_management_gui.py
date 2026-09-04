@@ -326,11 +326,20 @@ class GuestManagementWindow(tk.Toplevel):
             # --- Contenuto specifico per tipo di servizio ---
             if service_type == 'Shuttle':
                 title_html = '<h3 style="color: #1565C0;">🚐 Reiterare cerere transport / Transport Request Resend</h3>'
+                # Hotel in cui alloggiano gli ospiti: recuperato dal booking hotel
+                # associato alla stessa visita (utile al conducente anche quando la
+                # destinazione e' la fabbrica).
+                hotel_info = self._get_visit_hotel_info(data['arrival_detail_id'])
+                hotel_line = (
+                    '<p><strong>Hotel cazare / Accommodation hotel:</strong> '
+                    f'<span style="color: #1565C0; font-weight: bold;">{hotel_info}</span></p>'
+                ) if hotel_info else ''
                 service_details = f"""
                     {guests_html}
                     {flight_info}
                     <p><strong>Data sosire:</strong> {arr_date}</p>
                     <p><strong>Data plecare:</strong> {dep_date}</p>
+                    {hotel_line}
                 """
                 if provider_name:
                     service_details = f'<p><strong>Serviciu transport:</strong> {provider_name}</p>' + service_details
@@ -1379,6 +1388,38 @@ class GuestManagementWindow(tk.Toplevel):
                 return f"{row.Name} — {row.TownName}" if row.TownName else row.Name
         except Exception as e:
             logger.warning(f"Errore recupero nome fornitore per email {email}: {e}")
+        return None
+
+    def _get_visit_hotel_info(self, arrival_detail_id):
+        """Trova il fornitore hotel (nome — localita') associato alla stessa visita di un
+        booking shuttle, cercando l'altro booking service email dello stesso visitatore
+        il cui indirizzo appartiene a un supporter di tipo Hotel (SupporterTypeID = 1)."""
+        try:
+            cursor = self.db.conn.cursor()
+            cursor.execute("""
+                SELECT TOP 1 bse.EmailRequestBooking
+                FROM Employee.dbo.VisitorBookingServiceEmails bse
+                INNER JOIN Employee.dbo.VisitorArrivalDetails vad
+                    ON bse.VisitorArrivalDetailId = vad.VisitorArrivalDetailId
+                WHERE vad.VisitorId = (
+                        SELECT VisitorId FROM Employee.dbo.VisitorArrivalDetails
+                        WHERE VisitorArrivalDetailId = ?
+                      )
+                  AND bse.EmailRequestBooking IS NOT NULL
+                  AND EXISTS (
+                        SELECT 1 FROM Employee.dbo.VisitorSupportersData vs
+                        WHERE vs.ReservationEmail = bse.EmailRequestBooking
+                          AND vs.SupporterTypeID = 1
+                          AND vs.DateOut IS NULL
+                      )
+                ORDER BY bse.SentOnDate DESC
+            """, (arrival_detail_id,))
+            row = cursor.fetchone()
+            cursor.close()
+            if row and row.EmailRequestBooking:
+                return self._get_provider_name(row.EmailRequestBooking)
+        except Exception as e:
+            logger.warning(f"Errore recupero hotel associato al booking {arrival_detail_id}: {e}")
         return None
 
     def _get_company_billing_html(self):

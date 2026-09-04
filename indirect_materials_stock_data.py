@@ -574,79 +574,112 @@ def check_and_send_purchasing_reminder(db, lang, country_code='RO'):
     """Verifica i solleciti di acquisto non confermati e, ogni 2 giorni lavorativi,
     invia un reminder email in inglese agli acquisti.
     Ritorna dict: {sent, count, recipients, reason}.
+
+    Usa email_job_coordinator per garantire UN SOLO invio cross-PC.
     """
     from business_days import count_business_days_between, is_business_day
+    from email_job_coordinator import claim_job_run, release_job_lock, log_job_run
 
     if not is_business_day(country_code=country_code):
         return {'sent': False, 'count': 0, 'reason': 'not_business_day'}
 
-    recipients = _get_reorder_recipients(db)
-    if not recipients:
-        return {'sent': False, 'count': 0, 'reason': 'no_recipients'}
+    job_name = 'purchasing_reminder'
+    if not claim_job_run(db, job_name, lock_minutes=120):
+        return {'sent': False, 'count': 0, 'reason': 'locked_or_disabled'}
 
-    rows = db.fetch_all(
-        """
-        SELECT l.RiordineLogId, m.CodiceMateriale, m.DescrizioneMateriale,
-               l.QtaSuggerita, l.DataInvio, l.ReminderCount
-        FROM Traceability_RS.ind.RiordineEmailLog l
-        JOIN Traceability_RS.ind.Materiali m ON m.MaterialeId = l.MaterialeId
-        WHERE l.Stato = 'INVIATO'
-          AND l.DataInvio >= DATEADD(DAY, -60, GETDATE())
-        ORDER BY l.DataInvio ASC
-        """
-    )
-
-    today = datetime.now().date()
-    items = []
-    for row in (rows or []):
-        log_id, codice, descrizione, qta, data_invio, reminder_count = row
-        business_days = count_business_days_between(data_invio, today, country_code=country_code)
-        calendar_days = (today - data_invio.date()).days if data_invio else 0
-        # Reminder ogni 2 giorni lavorativi rispetto alla prima richiesta.
-        if business_days >= 2 * ((reminder_count or 0) + 1):
-            items.append({
-                'log_id': log_id,
-                'codice': codice or '',
-                'descrizione': descrizione or '',
-                'qta': float(qta) if qta is not None else None,
-                'business_days': business_days,
-                'calendar_days': calendar_days,
-                'reminder_count': reminder_count or 0,
-            })
-
-    if not items:
-        return {'sent': False, 'count': 0, 'reason': 'no_reminders_due'}
-
-    subject = "Indirect Materials Purchase Orders - Pending Confirmation Reminder"
-    body = _build_purchasing_reminder_email(items)
+    email_sent = False
 
     try:
-        from email_connector import EmailSender
-        sender = EmailSender()
-        sender.send_email(to_email='; '.join(recipients), subject=subject,
-                          body=body, is_html=True)
-    except Exception as e:
-        logger.error(f"Errore invio reminder acquisti: {e}", exc_info=True)
-        return {'sent': False, 'count': len(items), 'reason': f'error: {e}'}
+        recipients = _get_reorder_recipients(db)
+        if not recipients:
+            release_job_lock(db, job_name)
+            log_job_run(db, job_name, 'SKIPPED', 'nessun destinatario configurato')
+            return {'sent': False, 'count': 0, 'reason': 'no_recipients'}
 
-    db._ensure_connection()
-    with db._lock:
-        cur = db.cursor
+        rows = db.fetch_all(
+            """
+            SELECT l.RiordineLogId, m.CodiceMateriale, m.DescrizioneMateriale,
+                   l.QtaSuggerita, l.DataInvio, l.ReminderCount
+            FROM Traceability_RS.ind.RiordineEmailLog l
+            JOIN Traceability_RS.ind.Materiali m ON m.MaterialeId = l.MaterialeId
+            WHERE l.Stato = 'INVIATO'
+              AND l.DataInvio >= DATEADD(DAY, -60, GETDATE())
+            ORDER BY l.DataInvio ASC
+            """
+        )
+
+        today = datetime.now().date()
+        items = []
+        for row in (rows or []):
+            log_id, codice, descrizione, qta, data_invio, reminder_count = row
+            business_days = count_business_days_between(data_invio, today, country_code=country_code)
+            calendar_days = (today - data_invio.date()).days if data_invio else 0
+            # Reminder ogni 2 giorni lavorativi rispetto alla prima richiesta.
+            if business_days >= 2 * ((reminder_count or 0) + 1):
+                items.append({
+                    'log_id': log_id,
+                    'codice': codice or '',
+                    'descrizione': descrizione or '',
+                    'qta': float(qta) if qta is not None else None,
+                    'business_days': business_days,
+                    'calendar_days': calendar_days,
+                    'reminder_count': reminder_count or 0,
+                })
+
+        if not items:
+            release_job_lock(db, job_name)
+            log_job_run(db, job_name, 'SKIPPED', 'nessun reminder dovuto')
+            return {'sent': False, 'count': 0, 'reason': 'no_reminders_due'}
+
+        subject = "Indirect Materials Purchase Orders - Pending Confirmation Reminder"
+        body = _build_purchasing_reminder_email(items)
+
         try:
-            for it in items:
-                cur.execute(
-                    "UPDATE ind.RiordineEmailLog "
-                    "SET ReminderCount = ReminderCount + 1, DataUltimoReminder = GETDATE() "
-                    "WHERE RiordineLogId = ?",
-                    (it['log_id'],)
-                )
-            db.conn.commit()
+            from email_connector import EmailSender
+            sender = EmailSender()
+            sender.send_email(to_email='; '.join(recipients), subject=subject,
+                              body=body, is_html=True)
+            email_sent = True
         except Exception as e:
-            db.conn.rollback()
-            logger.error(f"Errore aggiornamento reminder count: {e}", exc_info=True)
+            logger.error(f"Errore invio reminder acquisti: {e}", exc_info=True)
+            release_job_lock(db, job_name)
+            log_job_run(db, job_name, 'ERROR', f"errore invio: {e}")
+            return {'sent': False, 'count': len(items), 'reason': f'error: {e}'}
 
-    logger.info(f"Reminder acquisti inviato per {len(items)} materiali.")
-    return {'sent': True, 'count': len(items), 'recipients': recipients, 'reason': 'ok'}
+        db._ensure_connection()
+        with db._lock:
+            cur = db.cursor
+            try:
+                for it in items:
+                    cur.execute(
+                        "UPDATE ind.RiordineEmailLog "
+                        "SET ReminderCount = ReminderCount + 1, DataUltimoReminder = GETDATE() "
+                        "WHERE RiordineLogId = ?",
+                        (it['log_id'],)
+                    )
+                db.conn.commit()
+                logger.info(f"Reminder acquisti inviato per {len(items)} materiali.")
+                log_job_run(
+                    db, job_name, 'OK',
+                    f"inviati {len(items)} materiali a {len(recipients)} destinatari"
+                )
+                return {'sent': True, 'count': len(items), 'recipients': recipients, 'reason': 'ok'}
+            except Exception as e:
+                db.conn.rollback()
+                logger.error(f"Errore aggiornamento reminder count: {e}", exc_info=True)
+                # L'email e' gia' stata consegnata: non rilasciare il lock per non re-inviare.
+                log_job_run(
+                    db, job_name, 'OK',
+                    f"inviati {len(items)} materiali ma aggiornamento contatori fallito: {e}"
+                )
+                return {'sent': True, 'count': len(items), 'recipients': recipients,
+                        'reason': f'ok (db update error: {e})'}
+    except Exception as e:
+        logger.error(f"Errore imprevisto purchasing reminder: {e}", exc_info=True)
+        if not email_sent:
+            release_job_lock(db, job_name)
+        log_job_run(db, job_name, 'ERROR', f"errore imprevisto: {e}")
+        return {'sent': False, 'count': 0, 'reason': f'error: {e}'}
 
 
 _daily_email_table_ensured = False

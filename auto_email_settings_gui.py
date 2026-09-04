@@ -224,7 +224,8 @@ class AutoEmailSubscriptionWindow(tk.Toplevel):
             if status == self._status_opts[2] and r['_subscribed']:
                 continue
             if needle and needle not in ((r['Atribute'] or '') + ' ' +
-                                         (r['Name'] or '')).lower():
+                                         (r['Name'] or '') + ' ' +
+                                         (r['Value'] or '')).lower():
                 continue
             tags = []
             if r['IsBlocked']:
@@ -409,6 +410,7 @@ class AutoEmailAdminWindow(tk.Toplevel):
         self.geometry('1000x600')
         self.minsize(820, 480)
         self.transient(master)
+        self._all_rows = []
         self._build_ui()
         self.grab_set()
         self._load()
@@ -420,6 +422,18 @@ class AutoEmailAdminWindow(tk.Toplevel):
         tk.Label(header, text=L('aes_admin_title', 'Gestione Servizi Email Automatiche (super user)'),
                  bg='#7B1FA2', fg='white', font=('Helvetica', 12, 'bold')).pack(
             side=tk.LEFT, padx=12, pady=8)
+
+        # Filtri
+        flt = ttk.Frame(self)
+        flt.pack(fill=tk.X, padx=10, pady=(8, 0))
+        ttk.Label(flt, text=L('aes_search', 'Cerca') + ':').pack(side=tk.LEFT, padx=(0, 4))
+        self._v_search = tk.StringVar()
+        self._v_search.trace_add('write', lambda *_: self._refresh_tree())
+        ttk.Entry(flt, textvariable=self._v_search, width=60).pack(side=tk.LEFT)
+        ttk.Button(flt, text=L('aes_clear_filter', '✖ Azzera'),
+                   command=lambda: self._v_search.set('')).pack(side=tk.LEFT, padx=4)
+        self._lbl_count = ttk.Label(flt, text='', foreground='#555')
+        self._lbl_count.pack(side=tk.RIGHT)
 
         wrap = ttk.Frame(self)
         wrap.pack(fill=tk.BOTH, expand=True, padx=10, pady=(8, 4))
@@ -470,7 +484,7 @@ class AutoEmailAdminWindow(tk.Toplevel):
                    command=self.destroy).pack(side=tk.RIGHT, padx=4)
 
     def _load(self):
-        self.tree.delete(*self.tree.get_children())
+        self._all_rows = []
         self._rows_by_id = {}
         try:
             rows = _fetch(self.db,
@@ -482,12 +496,35 @@ class AutoEmailAdminWindow(tk.Toplevel):
             messagebox.showerror(self.lang.get('error', 'Errore'), str(e), parent=self)
             return
         for r in rows:
+            self._all_rows.append(r)
             self._rows_by_id[r['IDSettings']] = r
-            mand = self.lang.get('yes', 'Sì') if r['IsBlocked'] else self.lang.get('no', 'No')
+        self._refresh_tree()
+
+    def _refresh_tree(self):
+        L = self.lang.get
+        prev = self.tree.selection()
+        self.tree.delete(*self.tree.get_children())
+        needle = self._v_search.get().strip().lower()
+        shown = 0
+        for r in self._all_rows:
+            haystack = ((r['Atribute'] or '') + ' ' +
+                        (r['Name'] or '') + ' ' +
+                        (r['Value'] or '')).lower()
+            if needle and needle not in haystack:
+                continue
+            mand = L('yes', 'Sì') if r['IsBlocked'] else L('no', 'No')
             self.tree.insert('', 'end', iid=str(r['IDSettings']),
                              values=(r['IDSettings'], r['Atribute'], r['Name'] or '',
                                      r['Value'] or '', mand),
                              tags=('mand',) if r['IsBlocked'] else ())
+            shown += 1
+        self._lbl_count.config(text=L('aes_count', '{0} di {1} servizi').format(
+            shown, len(self._all_rows)))
+        for iid in prev:
+            if self.tree.exists(iid):
+                self.tree.selection_set(iid)
+                self.tree.see(iid)
+                break
 
     def _on_select(self, _e=None):
         sel = self.tree.selection()

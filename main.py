@@ -308,7 +308,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.3.2.4'  # Versione aggiornata
+APP_VERSION = '2.4.3.2.9'  # Versione aggiornata
 # Nome programma usato come chiave in SwVersions / VersionDMLogs.
 # In produzione = nome dell'exe; in sviluppo usa il nome canonico.
 APP_PROGRAM_NAME = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else 'DocumentManagement.exe'
@@ -4887,6 +4887,12 @@ class Database:
                 self.conn.commit()
 
                 inserted_id = result[0] if result and result[0] is not None else None
+                if inserted_id is None:
+                    self.last_error_details = (
+                        "SCOPE_IDENTITY() ha restituito NULL. Verificare che la tabella "
+                        "di destinazione abbia una colonna IDENTITY e che l'INSERT sia andato a buon fine."
+                    )
+                    logger.error("[DATABASE] execute_query_with_id: SCOPE_IDENTITY() NULL")
                 return inserted_id
 
             except pyodbc.Error as e:
@@ -4898,6 +4904,42 @@ class Database:
                 self.last_error_details = str(e)
                 self.conn.rollback()
                 logger.exception(f"[DATABASE] Errore inaspettato execute_query_with_id: {e}")
+                return None
+
+    def execute_insert_returning(self, query, params=None):
+        """
+        Esegue una query INSERT con OUTPUT clause e restituisce il valore restituito.
+        La query deve contenere una singola colonna in OUTPUT, es.:
+            INSERT INTO Tabella (...) OUTPUT inserted.Id VALUES (...)
+        """
+        self._ensure_connection()
+        with self._lock:
+            try:
+                if params:
+                    self.cursor.execute(query, params)
+                else:
+                    self.cursor.execute(query)
+
+                result = self.cursor.fetchone()
+                self.conn.commit()
+
+                if result is None or result[0] is None:
+                    self.last_error_details = (
+                        "INSERT eseguito ma OUTPUT ha restituito NULL. Verificare la query e lo schema."
+                    )
+                    logger.error("[DATABASE] execute_insert_returning: INSERT OK ma OUTPUT NULL")
+                    return None
+                return result[0]
+
+            except pyodbc.Error as e:
+                self.last_error_details = str(e)
+                self.conn.rollback()
+                logger.exception(f"[DATABASE] Errore execute_insert_returning: {e}")
+                return None
+            except Exception as e:
+                self.last_error_details = str(e)
+                self.conn.rollback()
+                logger.exception(f"[DATABASE] Errore inaspettato execute_insert_returning: {e}")
                 return None
 
     def ensure_program_usage_table(self):
@@ -5809,15 +5851,19 @@ class Database:
     def fetch_user_permissions(self, employee_hire_history_id):
         """Recupera i permessi attivi per un dato dipendente."""
         query = """
-                SELECT a.AuthorizedUsedId, ap.TranslationValue + ' [' + ap.MenuValue + ']' AS MenuKey
+                SELECT a.AuthorizedUsedId,
+                       a.TranslationKey AS TranslationKey,
+                       ap.TranslationValue + ' [' + ap.MenuValue + ']' AS MenuKey,
+                       ap.MenuValue AS MenuValue
                 FROM Employee.dbo.employees e
                          INNER JOIN employee.dbo.EmployeeHireHistory h ON h.EmployeeId = e.EmployeeId
-                         LEFT JOIN Traceability_rs.dbo.AutorizedUsers a \
+                         LEFT JOIN Traceability_rs.dbo.AutorizedUsers a
                                    ON h.EmployeeHireHistoryId = a.EmployeeHireHistoryId
                          LEFT JOIN traceability_rs.dbo.AppTranslations ap ON ap.TranslationKey = a.TranslationKey
-                WHERE h.EmployeeHireHistoryId = ? \
+                WHERE h.EmployeeHireHistoryId = ?
                   AND a.DateOut IS NULL
-                  ORDER BY ap.TranslationValue + ' [' + ap.LanguageCode + ']'; \
+                  AND ap.MenuValue IS NOT NULL
+                ORDER BY ap.TranslationValue + ' [' + ap.MenuValue + ']';
                 """
         try:
             self.cursor.execute(query, employee_hire_history_id)
@@ -15132,21 +15178,17 @@ class App(tk.Tk):
         self._execute_authorized_action('setta_pc_report_labelscrap', _open)
 
     def open_kit_priority_with_login(self):
-        """Apre la gestione priorità ordini kit (pianificatore) dopo login semplice."""
+        """Apre la gestione priorità ordini kit dopo login autorizzato
+        (stessa chiave del prelievo/preformatura)."""
         import kit_preparation_gui
-
-        def _open(user_id):
-            emp_id = None
-            try:
-                emp_id = self.db.get_employee_hire_history_id(user_id)
-            except Exception as exc:
-                logger.warning(f"open_kit_priority_with_login: hire history id non trovato: {exc}")
-            kit_preparation_gui.open_kit_preparation_window(
+        self._execute_authorized_action(
+            menu_translation_key='conferma_kit_completamento',
+            action_callback=lambda: kit_preparation_gui.open_kit_preparation_window(
                 self, self.db, self.lang,
-                self.last_authenticated_user_name, emp_id or 0, tab='priority'
+                self.last_authenticated_user_name,
+                self.last_authorized_user_id, tab='priority'
             )
-
-        self._execute_simple_login(action_callback=_open)
+        )
 
     def open_kit_picking_with_login(self):
         """Apre il prelievo magazzino kit dopo login autorizzato
@@ -15163,10 +15205,10 @@ class App(tk.Tk):
 
     def open_kit_preforming_with_login(self):
         """Apre l'ingresso preformatura kit dopo login autorizzato
-        (chiave 'verifica_kit_materiale', spec Kit Preparation §2.3)."""
+        (stessa chiave del prelievo 'conferma_kit_completamento', spec Kit Preparation §2.3)."""
         import kit_pf_gui
         self._execute_authorized_action(
-            menu_translation_key='verifica_kit_materiale',
+            menu_translation_key='conferma_kit_completamento',
             action_callback=lambda: kit_pf_gui.open_kit_pf_window(
                 self, self.db, self.lang,
                 self.last_authenticated_user_name,
@@ -15559,6 +15601,10 @@ class App(tk.Tk):
         # Ritardo 65 secondi: Reminder acquisti materiali indiretti non confermati (10:00)
         self.after(65000, self._start_purchasing_reminder_scheduler)
 
+        # Ritardo 75 secondi: Info Spedizioni — scansione file Excel nelle directory
+        # \\192.168.10.110\Shipping\<sito> e invio email ai destinatari configurati
+        self.after(75000, self._start_shipment_info_scheduler)
+
     def _start_fqc_email_scheduler(self):
         """Daemon thread che invia l'email FQC alle 15:30 e alle 23:30 (Lun-Sab)."""
         import threading
@@ -15726,6 +15772,29 @@ class App(tk.Tk):
 
         threading.Thread(target=_worker, daemon=True,
                          name='purchasing_reminder_scheduler').start()
+
+    def _start_shipment_info_scheduler(self):
+        """Daemon thread che ogni 60 secondi controlla le directory di spedizione
+        configurate in ShipmentEmailConfig; quando trova un file Excel D365 invia
+        l'email ai destinatari configurati e rinomina il file con 'Executed_'.
+        Il claim atomico (email_job_coordinator) garantisce un solo invio multi-PC."""
+        import threading
+
+        def _worker():
+            import time as _time
+
+            while True:
+                _time.sleep(60)
+                try:
+                    import shipment_info_service
+                    res = shipment_info_service.run_shipment_info_check(self.db)
+                    if res.get('sent') or res.get('errors'):
+                        logger.info(f"shipment_info_scheduler: {res}")
+                except Exception as exc:
+                    logger.error(f"shipment_info_scheduler: {exc}", exc_info=True)
+
+        threading.Thread(target=_worker, daemon=True,
+                         name='shipment_info_scheduler').start()
 
     def _check_weekly_visitor_email(self):
         """Invia email settimanale con lista visitatori programmati (solo lunedì, una volta).
@@ -16665,6 +16734,15 @@ class App(tk.Tk):
         self._execute_authorized_action(
             menu_translation_key='submenu_permissions',  # Chiave per accedere alla gestione
             action_callback=lambda: permissions_gui.open_manage_permissions_window(self, self.db, self.lang)
+        )
+
+    def open_automatic_email_manager_with_login(self):
+        """Apre la gestione centralizzata degli invii automatici dopo login autorizzato."""
+        import automatic_email_manager_gui
+        self._execute_authorized_action(
+            menu_translation_key='gestione_invii_automatici',
+            action_callback=lambda: automatic_email_manager_gui.open_automatic_email_manager(
+                self, self.db, self.lang)
         )
 
     def open_view_permissions_with_login(self):
@@ -17617,6 +17695,13 @@ class App(tk.Tk):
             command=self._open_personnel_bulk_info_with_login
         )
 
+        # Gestione Orari (WorkBreaks)
+        self.personnel_menu.add_separator()
+        self.personnel_menu.add_command(
+            label=self.lang.get('submenu_workbreaks', 'Gestione Orari'),
+            command=self._open_workbreaks_manager_with_login
+        )
+
         # FAQ
         self.personnel_menu.add_separator()
         faq_submenu = tk.Menu(self.personnel_menu, tearoff=0)
@@ -17719,12 +17804,12 @@ class App(tk.Tk):
             command=self._open_shipment_workstation_config
         )
         self.shipments_submenu.add_command(
-            label=self.lang.get('submenu_shipment_confirm', '✅ Conferma Shipping'),
-            command=self._open_shipment_confirmation
+            label=self.lang.get('submenu_shipment_info', 'ℹ️ Info Spedizioni'),
+            command=self._open_shipment_info
         )
         self.shipments_submenu.add_command(
-            label=self.lang.get('submenu_account_managers', '👤 Account Manager Clienti'),
-            command=self._open_client_account_managers
+            label=self.lang.get('submenu_find_shipments', '🔎 Trova spedizioni'),
+            command=self._open_find_shipments
         )
 
         # Comandi del menu NPI
@@ -18626,6 +18711,9 @@ class App(tk.Tk):
         self.permissions_submenu.add_command(
             label=self.lang.get('submenu_view_permissions', "Visualizza Autorizzazioni"),
             command=self.open_view_permissions_with_login)
+        self.permissions_submenu.add_command(
+            label=self.lang.get('submenu_automatic_emails', "Gestione Invii Automatici"),
+            command=self.open_automatic_email_manager_with_login)
 
         self.tools_menu.add_separator()
 
@@ -21400,15 +21488,15 @@ class App(tk.Tk):
                 f"{self.lang.get('fgt_open_err', 'Impossibile aprire la finestra')}:\n{e}",
                 parent=self)
 
-    def _open_shipment_confirmation(self):
-        """Apre la finestra di conferma spedizioni urgenti (con autorizzazione)."""
+    def _open_shipment_info(self):
+        """Apre la finestra 'Info Spedizioni' (configurazione sito/directory/destinatari email)."""
         def authorized_action():
             try:
-                from orders.shipment_confirmation_window import open_shipment_confirmation_window
+                import shipment_info_gui
                 user_name = getattr(self, 'last_authenticated_user_name', 'Unknown')
-                open_shipment_confirmation_window(self, self.db, self.lang, user_name)
+                shipment_info_gui.open_shipment_info_form(self, self.db, self.lang, user_name)
             except Exception as e:
-                logger.error(f"Errore apertura conferma spedizioni: {e}", exc_info=True)
+                logger.error(f"Errore apertura Info Spedizioni: {e}", exc_info=True)
                 messagebox.showerror(
                     self.lang.get('error', 'Errore'),
                     f"Impossibile aprire la finestra:\n{e}",
@@ -21416,29 +21504,23 @@ class App(tk.Tk):
                 )
 
         self._execute_authorized_action(
-            menu_translation_key='conferma_spedizioni',
+            menu_translation_key='indirizzi_email_per_spedizioni',
             action_callback=authorized_action
         )
 
-    def _open_client_account_managers(self):
-        """Apre la gestione Account Manager clienti / preferenze email spedizioni (con autorizzazione)."""
-        def authorized_action():
-            try:
-                import client_account_managers_gui
-                user_name = getattr(self, 'last_authenticated_user_name', 'Unknown')
-                client_account_managers_gui.open_client_account_managers(self, self.db, self.lang, user_name)
-            except Exception as e:
-                logger.error(f"Errore apertura Account Manager clienti: {e}", exc_info=True)
-                messagebox.showerror(
-                    self.lang.get('error', 'Errore'),
-                    f"Impossibile aprire la finestra:\n{e}",
-                    parent=self
-                )
-
-        self._execute_authorized_action(
-            menu_translation_key='conferma_spedizioni',
-            action_callback=authorized_action
-        )
+    def _open_find_shipments(self):
+        """Apre la finestra 'Trova spedizioni' (ricerca su WarehouseFinish)."""
+        try:
+            import find_shipments_gui
+            user_name = getattr(self, 'last_authenticated_user_name', 'Unknown')
+            find_shipments_gui.open_find_shipments(self, self.db, self.lang, user_name)
+        except Exception as e:
+            logger.error(f"Errore apertura Trova spedizioni: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire la finestra:\n{e}",
+                parent=self
+            )
 
     def open_equipment_types_manager_with_login(self):
         """Apre la finestra di gestione tipi macchine con autorizzazione"""
@@ -21568,6 +21650,25 @@ class App(tk.Tk):
         def authorized_action():
             self._open_personnel_bulk_info()
         self._execute_authorized_action('messaggi_bulk', authorized_action)
+
+    def _open_workbreaks_manager_with_login(self):
+        """Apre il form Gestione Orari (WorkBreaks) previo login autorizzato."""
+        def authorized_action():
+            start = time.monotonic()
+            logger.info("Apertura Gestione Orari - inizio")
+            try:
+                import workbreaks_manager
+                logger.info("Apertura Gestione Orari - import modulo in %.3fs", time.monotonic() - start)
+                workbreaks_manager.open_workbreaks_manager(self, self.db, self.lang)
+                logger.info("Apertura Gestione Orari - completata in %.3fs", time.monotonic() - start)
+            except Exception as e:
+                logger.error(f"Errore apertura Gestione Orari: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire Gestione Orari:\n{e}",
+                    parent=self
+                )
+        self._execute_authorized_action('gestisci_orari', authorized_action)
 
     def _open_indirect_materials_order_confirmation(self):
         """Apre il form di conferma ordini acquisti materiali indiretti."""

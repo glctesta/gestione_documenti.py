@@ -50,6 +50,7 @@ _Q_CHECK_EXISTING = """
 SELECT TOP 1
     ProductConsumptionId,
     MaterialConsumptionGR,
+    MaterialeId,
     DateSys,
     [User]
 FROM [Traceability_RS].[dbo].[ProductConsumptions]
@@ -66,15 +67,50 @@ WHERE  ProductConsumptionId = ?
 
 _Q_INSERT = """
 INSERT INTO [Traceability_RS].[dbo].[ProductConsumptions]
-    (IdProduct, MaterialConsumptionGR, MaterialConsumption, [User], DateSys)
-VALUES (?, ?, ?, ?, GETDATE())
+    (IdProduct, MaterialConsumptionGR, MaterialConsumption, MaterialeId, [User], DateSys)
+VALUES (?, ?, ?, ?, ?, GETDATE())
 """
+
+# Materiali indiretti delle famiglie Alloy / Flux, usati come link per i consumi
+_Q_CONSUMPTION_MATERIALS = """
+SELECT M.MaterialeId, M.CodiceMateriale, M.DescrizioneMateriale, F.Famiglia
+FROM ind.Materiali M
+INNER JOIN ind.FamigliaMateriali F ON F.FamigliaMaterialiId = M.FamigliaMaterialiId
+WHERE M.IsActive = 1
+  AND F.Famiglia IN ('Alloy', 'Flux')
+ORDER BY M.CodiceMateriale
+"""
+
+# Tipo consumo → famiglia materiali
+_MAT_TYPE_FAMILY = {'Alloy_GR': 'Alloy', 'Flux_GR': 'Flux'}
 
 _Q_COUNT_PRODUCTS = """
 SELECT COUNT(DISTINCT IdProduct)
 FROM   [Traceability_RS].[dbo].[ProductConsumptions]
 WHERE  DateOut IS NULL
 """
+
+
+def _ensure_materialeid_column(db):
+    """Aggiunge la colonna MaterialeId a ProductConsumptions se manca (idempotente)."""
+    try:
+        db._ensure_connection()
+        with db._lock:
+            cur = db.cursor
+            cur.execute(
+                "SELECT COUNT(*) FROM sys.columns "
+                "WHERE object_id = OBJECT_ID('Traceability_RS.dbo.ProductConsumptions') "
+                "  AND name = 'MaterialeId'"
+            )
+            if cur.fetchone()[0] == 0:
+                cur.execute(
+                    "ALTER TABLE Traceability_RS.dbo.ProductConsumptions "
+                    "ADD MaterialeId INT NULL"
+                )
+                db.conn.commit()
+                logger.info("Colonna MaterialeId aggiunta a ProductConsumptions")
+    except Exception as e:
+        logger.warning("Impossibile assicurare colonna MaterialeId: %s", e)
 
 
 # ── Colours / style tokens ─────────────────────────────────────────────────────
@@ -107,12 +143,17 @@ class MaterialConsumptionForm(tk.Toplevel):
         self._all_products: list        = []   # [(IDProduct, ProductCode), ...]
         self._existing_consumption: dict | None = None
         self._combo_display_map: dict[str, str] = {}
+        self._materials_map:   dict[str, dict] = {}  # mat_type → {display: MaterialeId}
+        self._materials_by_id: dict[str, dict] = {}  # mat_type → {MaterialeId: display}
+        self._materials_display: dict[str, list] = {}  # mat_type → [display]
 
         self.title(self.lang.get('mat_cons_title', 'Material Consumption Management'))
         self.resizable(False, False)
         self.configure(bg=_C_BG)
         self.grab_set()
 
+        _ensure_materialeid_column(self.db)
+        self._load_consumption_materials()
         self._build_ui()
         self._load_products()
         self._load_count()
@@ -298,13 +339,15 @@ class MaterialConsumptionForm(tk.Toplevel):
                        bg=_C_CARD, fg=_C_TEXT,
                        font=('Segoe UI', 10),
                        activebackground=_C_CARD,
-                       selectcolor=_C_CARD).pack(side=tk.LEFT, padx=(0, 12))
+                       selectcolor=_C_CARD,
+                       command=self._on_type_changed).pack(side=tk.LEFT, padx=(0, 12))
         tk.Radiobutton(row, text=self.lang.get('mat_cons_flux', 'Flux_GR'),
                        variable=self._type_var, value='Flux_GR',
                        bg=_C_CARD, fg=_C_TEXT,
                        font=('Segoe UI', 10),
                        activebackground=_C_CARD,
-                       selectcolor=_C_CARD).pack(side=tk.LEFT, padx=(0, 24))
+                       selectcolor=_C_CARD,
+                       command=self._on_type_changed).pack(side=tk.LEFT, padx=(0, 24))
 
         # Value field
         tk.Label(row,
@@ -327,7 +370,54 @@ class MaterialConsumptionForm(tk.Toplevel):
         tk.Label(row, text='gr', bg=_C_CARD, fg=_C_SUBTEXT,
                  font=('Segoe UI', 9)).pack(side=tk.LEFT, padx=4)
 
+        # Material combo (ind.Materiali, famiglia del tipo selezionato: Alloy/Flux)
+        row2 = tk.Frame(parent, bg=_C_CARD)
+        row2.pack(fill=tk.X, pady=(10, 0))
+        self._material_lbl = tk.Label(row2,
+                 text=self.lang.get('mat_cons_material', 'Materiale:'),
+                 bg=_C_CARD, fg=_C_TEXT,
+                 font=('Segoe UI', 9), width=14, anchor=tk.W)
+        self._material_lbl.pack(side=tk.LEFT)
+        self._material_var = tk.StringVar()
+        self._material_combo = ttk.Combobox(
+            row2, textvariable=self._material_var,
+            values=self._materials_display.get('Alloy_GR', []),
+            width=70, font=('Segoe UI', 10), state='readonly'
+        )
+        self._material_combo.pack(side=tk.LEFT)
+
     # ── Data loading ──────────────────────────────────────────────────────────
+
+    def _load_consumption_materials(self):
+        """Carica i materiali indiretti delle famiglie Alloy e Flux, indicizzati per tipo consumo."""
+        by_family: dict[str, list] = {}
+        try:
+            cur = self.db.conn.cursor()
+            cur.execute(_Q_CONSUMPTION_MATERIALS)
+            for r in cur.fetchall():
+                display = f"{r.CodiceMateriale} — {r.DescrizioneMateriale or ''}".strip(' —')
+                by_family.setdefault(r.Famiglia, []).append((r.MaterialeId, display))
+            cur.close()
+        except Exception as e:
+            logger.error(f'MaterialConsumptionForm _load_consumption_materials: {e}', exc_info=True)
+
+        for mat_type, family in _MAT_TYPE_FAMILY.items():
+            entries = by_family.get(family, [])
+            self._materials_map[mat_type] = {display: mid for mid, display in entries}
+            self._materials_by_id[mat_type] = {mid: display for mid, display in entries}
+            self._materials_display[mat_type] = [display for _, display in entries]
+            if not entries:
+                logger.warning(f"Nessun materiale della famiglia '{family}' trovato in ind.Materiali")
+
+    def _on_type_changed(self):
+        """Aggiorna la combo materiali quando cambia il tipo Alloy/Flux."""
+        mat_type = self._type_var.get()
+        if not hasattr(self, '_material_combo'):
+            return
+        self._material_combo['values'] = self._materials_display.get(mat_type, [])
+        self._material_var.set('')
+        if self._id_product is not None:
+            self._load_existing_consumption_state()
 
     def _load_products(self):
         try:
@@ -462,10 +552,16 @@ class MaterialConsumptionForm(tk.Toplevel):
             self._existing_consumption = {
                 'id': existing.ProductConsumptionId,
                 'gr': existing.MaterialConsumptionGR,
+                'materiale_id': existing.MaterialeId,
                 'date': existing.DateSys,
                 'user': existing.User,
                 'type': mat_type,
             }
+            mat_display = self._materials_by_id.get(mat_type, {}).get(existing.MaterialeId, '')
+            if mat_display:
+                self._material_var.set(mat_display)
+            else:
+                self._material_var.set('')
             self._existing_lbl.config(
                 text=(
                     f"✅ {mat_type} already set: {existing.MaterialConsumptionGR} gr"
@@ -478,6 +574,7 @@ class MaterialConsumptionForm(tk.Toplevel):
             self._info_id_var.set(str(self._id_product))
         else:
             self._existing_consumption = None
+            self._material_var.set('')
             self._existing_lbl.config(
                 text=self.lang.get(
                     'mat_cons_no_existing',
@@ -539,6 +636,17 @@ class MaterialConsumptionForm(tk.Toplevel):
 
         mat_type = self._type_var.get()  # 'Alloy_GR' or 'Flux_GR'
 
+        # Materiale: obbligatorio se esistono materiali della famiglia del tipo selezionato
+        materials_map = self._materials_map.get(mat_type, {})
+        material_id = materials_map.get(self._material_var.get().strip())
+        if self._materials_display.get(mat_type) and material_id is None:
+            messagebox.showwarning(
+                self.lang.get('warning', 'Warning'),
+                self.lang.get('mat_cons_no_material', 'Selezionare un materiale dalla lista.'),
+                parent=self
+            )
+            return
+
         try:
             cur = self.db.conn.cursor()
 
@@ -559,6 +667,7 @@ class MaterialConsumptionForm(tk.Toplevel):
                         f"  Product : {self._product_code}\n"
                         f"  Type    : {mat_type}\n"
                         f"  Value   : {existing_gr} gr\n"
+                        f"  Materiale: {self._materials_by_id.get(mat_type, {}).get(existing.MaterialeId, '—')}\n"
                         f"  Date    : {existing_date}\n"
                         f"  User    : {existing_user}\n\n"
                         f"{self.lang.get('mat_cons_overwrite', 'Do you want to replace it with the new value?')}"
@@ -575,6 +684,7 @@ class MaterialConsumptionForm(tk.Toplevel):
                 self._id_product,
                 value_gr,
                 mat_type,
+                material_id,
                 self.logged_user or 'system'
             ))
             self.db.conn.commit()

@@ -93,13 +93,15 @@ def get_prod_items(cursor, list_id: int) -> List[dict]:
     """
     cursor.execute("""
         WITH ig AS (
-            SELECT material_code,
-                   SUM(ISNULL(cpf.qty_actual, qty_picked)) AS qty_expected,
-                   MIN(id) AS representative_item_id
-            FROM Traceability_RS.dbo.picking_list_items
-            WHERE picking_list_id = ? AND qty_picked > 0
-              AND pick_status NOT IN (?, ?)
-            GROUP BY material_code
+            SELECT i.material_code,
+                   SUM(ISNULL(cpf.qty_actual, i.qty_picked)) AS qty_expected,
+                   MIN(i.id) AS representative_item_id
+            FROM Traceability_RS.dbo.picking_list_items i
+            LEFT JOIN Traceability_RS.dbo.kit_item_checks cpf
+                   ON cpf.item_id = i.id AND cpf.phase = 'PREFORMING'
+            WHERE i.picking_list_id = ? AND i.qty_picked > 0
+              AND i.pick_status NOT IN (?, ?)
+            GROUP BY i.material_code
         )
         SELECT ig.representative_item_id,
                ig.material_code,
