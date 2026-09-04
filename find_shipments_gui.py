@@ -134,6 +134,15 @@ class FindShipmentsWindow(tk.Toplevel):
             entry.bind('<Return>', lambda e: self._search())
             self._vars[key] = var
 
+        # Data packing list (DateEntry, campo vuoto = nessun filtro)
+        tk.Label(frm, text=L('find_ship_date', 'Data PL:')).grid(row=1, column=4,
+                                                                 sticky=tk.W, padx=4, pady=4)
+        from tkcalendar import DateEntry
+        self._date_entry = DateEntry(frm, width=15, date_pattern='dd/mm/yyyy',
+                                     font=('Segoe UI', 10))
+        self._date_entry.grid(row=1, column=5, sticky=tk.W, padx=4, pady=4)
+        self._date_entry.delete(0, 'end')  # parte vuoto: nessun filtro data
+
         tk.Button(frm, text=L('search', 'Cerca'), width=14,
                   bg='#2e86de', fg='#ffffff', relief=tk.FLAT,
                   command=self._search).grid(row=0, column=6, rowspan=2,
@@ -173,7 +182,14 @@ class FindShipmentsWindow(tk.Toplevel):
         L = self._L
         values = {k: v.get().strip() for k, v in self._vars.items()}
 
-        if not any(values.values()):
+        # Data PL: campo vuoto = nessun filtro
+        date_filter = None
+        try:
+            date_filter = self._date_entry.get_date()
+        except Exception:
+            date_filter = None
+
+        if not any(values.values()) and date_filter is None:
             messagebox.showwarning(
                 L('warning', 'Attenzione'),
                 L('find_ship_no_criteria', 'Inserire almeno un criterio di ricerca.'),
@@ -186,6 +202,9 @@ class FindShipmentsWindow(tk.Toplevel):
             if values[key]:
                 inner_filters.append(condition)
                 params.append(values[key])
+        if date_filter is not None:
+            inner_filters.append("CAST(DeclaredAllDateERP AS DATE) = ?")
+            params.append(date_filter)
         inner_where = ('AND ' + ' AND '.join(inner_filters)) if inner_filters else ''
 
         outer_where = ''
