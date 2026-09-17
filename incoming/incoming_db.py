@@ -1,0 +1,631 @@
+# File: incoming/incoming_db.py
+"""Accesso dati per il modulo Ricezione (incoming).
+
+Tabelle (schema [Traceability_RS].[dyn], vedi incoming/incoming_setup.sql):
+  - IncomingRequest     : richieste incoming tra PC
+  - IncomingReminderLog : log dei reminder inviati (popup/email)
+
+Settings (traceability_rs.dbo.settings, colonna 'atribute' VARCHAR(30)):
+  - Incoming_email_<TIPO>        : destinatari email per tipo richiesta (una riga per email)
+  - Incoming_rem_<TIPO>          : reminder/giorno per tipo richiesta
+  - Incoming_soluzione_problemi  : destinatari report mensile
+
+Funziona sia con la classe Database di main.py sia con BackgroundDatabase
+del servizio background: helper `_cursor` + pattern `with db._lock`.
+"""
+import logging
+from datetime import date, datetime
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Costanti di dominio (contratto condiviso)
+# ---------------------------------------------------------------------------
+REQUEST_TYPES = {
+    'MPN_MANCANTE': 'MPN Mancante',
+    'MPN_SBAGLIATO': 'MPN Sbagliato',
+    'PO_MANCANTE': 'Mancanza P.O.',
+    'PO_QUANTITA': 'P.O. Quantità',
+}
+
+STATUS_PENDING = 'PENDING'
+STATUS_ANSWERED = 'ANSWERED'
+STATUS_CONFIRMED_OK = 'CONFIRMED_OK'
+STATUS_CONFIRMED_KO = 'CONFIRMED_KO'
+
+MONTHLY_RECIPIENTS_ATTRIBUTE = 'Incoming_soluzione_problemi'
+
+DEFAULT_REMINDERS_PER_DAY = 2
+
+# Età (minuti) oltre la quale una richiesta PENDING va in escalation, e minuti
+# minimi fra due popup di escalation consecutivi per la stessa richiesta.
+ESCALATION_AGE_MINUTES = 120
+ESCALATION_REPEAT_MINUTES = 30
+
+_TABLE = 'Traceability_RS.dyn.IncomingRequest'
+_LOG_TABLE = 'Traceability_RS.dyn.IncomingReminderLog'
+_SETTINGS_TABLE = 'traceability_rs.dbo.settings'
+
+# Nomi attributo settings: settings.atribute e' VARCHAR(30), nessuno supera il limite.
+def _email_attribute(request_type):
+    return 'Incoming_email_%s' % request_type
+
+
+def _reminders_attribute(request_type):
+    return 'Incoming_rem_%s' % request_type
+
+
+_COLUMNS = [
+    'Id', 'RequestNumber', 'RequestType', 'SupplierId', 'SupplierName',
+    'DdtNumber', 'DdtDate', 'PurOrderNumber', 'MpnCode', 'WrongMpn',
+    'QtyToReceive', 'QtyExpectedPerPo', 'RequestedBy', 'RequestedOn',
+    'RequesterHost', 'Status', 'AnswerMpnCode', 'AnswerText',
+    'AnsweredBy', 'AnsweredOn', 'ConfirmedOk', 'ConfirmedBy', 'ConfirmedOn',
+    'LastEscalationPopup',
+]
+
+_COLUMNS_SQL = ', '.join('[%s]' % c for c in _COLUMNS)
+
+
+# ---------------------------------------------------------------------------
+# Accesso DB uniforme
+# ---------------------------------------------------------------------------
+def _cursor(db):
+    if hasattr(db, '_ensure_connection'):
+        try:
+            db._ensure_connection()
+        except Exception:
+            pass
+    return db.cursor
+
+
+def _fetch_dicts(cur):
+    """Converte il result set corrente in lista di dict con chiavi PascalCase."""
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def _row_to_dict(cur, row):
+    if row is None:
+        return None
+    cols = [d[0] for d in cur.description]
+    return dict(zip(cols, row))
+
+
+def _read_setting_values(db, attribute):
+    with db._lock:
+        cur = _cursor(db)
+        cur.execute(
+            "SELECT [VALUE] FROM %s WHERE atribute = ?" % _SETTINGS_TABLE,
+            (attribute,))
+        return [r[0] for r in cur.fetchall() if r[0]]
+
+
+def _parse_emails(values):
+    """Splitta valori settings multi-email (';' o ',') come in utils.get_email_recipients."""
+    emails = []
+    for value in values:
+        value = str(value)
+        if ';' in value:
+            chunks = [e.strip() for e in value.split(';')]
+        elif ',' in value:
+            chunks = [e.strip() for e in value.split(',')]
+        else:
+            chunks = [value.strip()]
+        emails.extend(e for e in chunks if e and '@' in e)
+    return emails
+
+
+# ---------------------------------------------------------------------------
+# DDL idempotente (equivalente Python di incoming_setup.sql)
+# ---------------------------------------------------------------------------
+_DDL_REQUEST = """
+IF NOT EXISTS (
+    SELECT 1 FROM sys.tables
+    WHERE object_id = OBJECT_ID('[Traceability_RS].[dyn].[IncomingRequest]')
+)
+BEGIN
+    CREATE TABLE [Traceability_RS].[dyn].[IncomingRequest] (
+        Id                   INT IDENTITY(1,1) NOT NULL
+            CONSTRAINT PK_dyn_IncomingRequest PRIMARY KEY,
+        RequestNumber        NVARCHAR(20)  NOT NULL
+            CONSTRAINT UQ_dyn_IncomingRequest_Number UNIQUE,
+        RequestType          NVARCHAR(30)  NOT NULL,
+        SupplierId           INT           NULL,
+        SupplierName         NVARCHAR(200) NULL,
+        DdtNumber            NVARCHAR(50)  NULL,
+        DdtDate              DATE          NULL,
+        PurOrderNumber       NVARCHAR(50)  NULL,
+        MpnCode              NVARCHAR(100) NULL,
+        WrongMpn             NVARCHAR(100) NULL,
+        QtyToReceive         DECIMAL(18,3) NULL,
+        QtyExpectedPerPo     DECIMAL(18,3) NULL,
+        RequestedBy          NVARCHAR(100) NULL,
+        RequestedOn          DATETIME      NOT NULL
+            CONSTRAINT DF_dyn_IncomingRequest_RequestedOn DEFAULT (GETDATE()),
+        RequesterHost        NVARCHAR(100) NULL,
+        Status               NVARCHAR(20)  NOT NULL
+            CONSTRAINT DF_dyn_IncomingRequest_Status DEFAULT ('PENDING'),
+        AnswerMpnCode        NVARCHAR(100) NULL,
+        AnswerText           NVARCHAR(1000) NULL,
+        AnsweredBy           NVARCHAR(100) NULL,
+        AnsweredOn           DATETIME      NULL,
+        ConfirmedOk          BIT           NULL,
+        ConfirmedBy          NVARCHAR(100) NULL,
+        ConfirmedOn          DATETIME      NULL,
+        LastEscalationPopup  DATETIME      NULL
+    );
+    CREATE NONCLUSTERED INDEX IX_dyn_IncomingRequest_Status
+        ON [Traceability_RS].[dyn].[IncomingRequest] (Status, RequestedOn);
+    CREATE NONCLUSTERED INDEX IX_dyn_IncomingRequest_RequestedOn
+        ON [Traceability_RS].[dyn].[IncomingRequest] (RequestedOn);
+END
+"""
+
+_DDL_REMINDER_LOG = """
+IF NOT EXISTS (
+    SELECT 1 FROM sys.tables
+    WHERE object_id = OBJECT_ID('[Traceability_RS].[dyn].[IncomingReminderLog]')
+)
+BEGIN
+    CREATE TABLE [Traceability_RS].[dyn].[IncomingReminderLog] (
+        Id          INT IDENTITY(1,1) NOT NULL
+            CONSTRAINT PK_dyn_IncomingReminderLog PRIMARY KEY,
+        RequestId   INT      NOT NULL,
+        SentAt      DATETIME NOT NULL
+            CONSTRAINT DF_dyn_IncomingReminderLog_SentAt DEFAULT (GETDATE()),
+        Channel     NVARCHAR(20) NULL,
+        CONSTRAINT FK_dyn_IncomingReminderLog_Request
+            FOREIGN KEY (RequestId) REFERENCES [Traceability_RS].[dyn].[IncomingRequest] (Id)
+    );
+    CREATE NONCLUSTERED INDEX IX_dyn_IncomingReminderLog_Request_SentAt
+        ON [Traceability_RS].[dyn].[IncomingReminderLog] (RequestId, SentAt);
+END
+"""
+
+_SEED_SETTINGS = [
+    (_reminders_attribute(t), str(DEFAULT_REMINDERS_PER_DAY)) for t in REQUEST_TYPES
+]
+
+
+def _exec_ddl(db, sql):
+    with db._lock:
+        cur = _cursor(db)
+        cur.execute(sql)
+        db.conn.commit()
+
+
+def _seed_settings(db):
+    with db._lock:
+        cur = _cursor(db)
+        for attribute, value in _SEED_SETTINGS:
+            cur.execute(
+                """
+                INSERT INTO %s (atribute, [value])
+                SELECT ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM %s WHERE atribute = ?
+                )
+                """ % (_SETTINGS_TABLE, _SETTINGS_TABLE),
+                (attribute, value, attribute))
+        db.conn.commit()
+
+
+def create_tables(db):
+    """Crea (se mancanti) IncomingRequest + IncomingReminderLog e fa il seed
+    dei settings di default (reminder/giorno per tipo richiesta). Idempotente."""
+    try:
+        _exec_ddl(db, _DDL_REQUEST)
+        _exec_ddl(db, _DDL_REMINDER_LOG)
+        _seed_settings(db)
+        logger.info("incoming: tabelle e seed settings verificati")
+    except Exception:
+        try:
+            db.conn.rollback()
+        except Exception:
+            pass
+        logger.exception("incoming: creazione tabelle/seed fallita")
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Creazione / lettura richieste
+# ---------------------------------------------------------------------------
+def next_request_number(cursor) -> str:
+    """'INC-YYYYMMDD-####' con contatore giornaliero.
+
+    Deve essere chiamato DENTRO la transazione di inserimento (stesso lock),
+    cosi' la riga committata rende il numero univoco anche fra piu' PC.
+    """
+    prefix = 'INC-%s-' % date.today().strftime('%Y%m%d')
+    cursor.execute(
+        "SELECT COUNT(*) FROM %s WHERE RequestNumber LIKE ?" % _TABLE,
+        (prefix + '%',))
+    count = cursor.fetchone()[0] or 0
+    return '%s%04d' % (prefix, count + 1)
+
+
+def create_request(db, data: dict) -> tuple:
+    """Inserisce una nuova richiesta. Ritorna (request_id, request_number).
+
+    data keys: request_type, supplier_id, supplier_name, ddt_number, ddt_date,
+    pur_order_number, mpn_code, wrong_mpn, qty_to_receive, qty_expected_per_po,
+    requested_by, requester_host
+    """
+    with db._lock:
+        cur = _cursor(db)
+        try:
+            request_number = next_request_number(cur)
+            cur.execute(
+                """
+                INSERT INTO %s
+                    (RequestNumber, RequestType, SupplierId, SupplierName,
+                     DdtNumber, DdtDate, PurOrderNumber, MpnCode, WrongMpn,
+                     QtyToReceive, QtyExpectedPerPo, RequestedBy, RequesterHost,
+                     Status)
+                OUTPUT INSERTED.Id
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """ % _TABLE,
+                (request_number,
+                 data.get('request_type'),
+                 data.get('supplier_id'),
+                 data.get('supplier_name'),
+                 data.get('ddt_number'),
+                 data.get('ddt_date'),
+                 data.get('pur_order_number'),
+                 data.get('mpn_code'),
+                 data.get('wrong_mpn'),
+                 data.get('qty_to_receive'),
+                 data.get('qty_expected_per_po'),
+                 data.get('requested_by'),
+                 data.get('requester_host'),
+                 STATUS_PENDING))
+            row = cur.fetchone()
+            request_id = int(row[0]) if row else None
+            if request_id is None:
+                raise RuntimeError("INSERT IncomingRequest: Id non restituito")
+            db.conn.commit()
+            logger.info("incoming: creata richiesta %s (id=%s) tipo=%s da %s",
+                        request_number, request_id,
+                        data.get('request_type'), data.get('requested_by'))
+            return request_id, request_number
+        except Exception:
+            try:
+                db.conn.rollback()
+            except Exception:
+                pass
+            logger.exception("incoming: creazione richiesta fallita")
+            raise
+
+
+def get_request(db, request_id) -> dict | None:
+    """Riga completa come dict con chiavi PascalCase, o None se non esiste."""
+    with db._lock:
+        cur = _cursor(db)
+        cur.execute(
+            "SELECT %s FROM %s WHERE Id = ?" % (_COLUMNS_SQL, _TABLE),
+            (request_id,))
+        return _row_to_dict(cur, cur.fetchone())
+
+
+def get_pending_requests(db, request_type=None) -> list:
+    """Richieste con Status='PENDING', per RequestedOn crescente."""
+    with db._lock:
+        cur = _cursor(db)
+        if request_type:
+            cur.execute(
+                "SELECT %s FROM %s WHERE Status = ? AND RequestType = ?"
+                " ORDER BY RequestedOn" % (_COLUMNS_SQL, _TABLE),
+                (STATUS_PENDING, request_type))
+        else:
+            cur.execute(
+                "SELECT %s FROM %s WHERE Status = ? ORDER BY RequestedOn"
+                % (_COLUMNS_SQL, _TABLE),
+                (STATUS_PENDING,))
+        return _fetch_dicts(cur)
+
+
+# ---------------------------------------------------------------------------
+# Risposta e conferma
+# ---------------------------------------------------------------------------
+def answer_request(db, request_id, answer_mpn_code, answer_text, answered_by) -> bool:
+    """Registra la risposta: Status='ANSWERED', AnsweredOn=GETDATE().
+    Ritorna True solo se la richiesta era PENDING."""
+    with db._lock:
+        cur = _cursor(db)
+        try:
+            cur.execute(
+                """
+                UPDATE %s
+                SET AnswerMpnCode = ?, AnswerText = ?, AnsweredBy = ?,
+                    AnsweredOn = GETDATE(), Status = ?
+                WHERE Id = ? AND Status = ?
+                """ % _TABLE,
+                (answer_mpn_code, answer_text, answered_by,
+                 STATUS_ANSWERED, request_id, STATUS_PENDING))
+            ok = cur.rowcount == 1
+            db.conn.commit()
+            if ok:
+                logger.info("incoming: risposta registrata per richiesta id=%s da %s",
+                            request_id, answered_by)
+            else:
+                logger.warning("incoming: answer_request id=%s ignorato (non PENDING o inesistente)",
+                               request_id)
+            return ok
+        except Exception:
+            try:
+                db.conn.rollback()
+            except Exception:
+                pass
+            logger.exception("incoming: answer_request id=%s fallita", request_id)
+            raise
+
+
+def confirm_request(db, request_id, ok: bool, confirmed_by) -> bool:
+    """Conferma l'esito: Status CONFIRMED_OK/CONFIRMED_KO + ConfirmedOn.
+    Ritorna True solo se la richiesta era in uno stato confermabile."""
+    status = STATUS_CONFIRMED_OK if ok else STATUS_CONFIRMED_KO
+    with db._lock:
+        cur = _cursor(db)
+        try:
+            cur.execute(
+                """
+                UPDATE %s
+                SET ConfirmedOk = ?, ConfirmedBy = ?, ConfirmedOn = GETDATE(),
+                    Status = ?
+                WHERE Id = ? AND Status IN (?, ?)
+                """ % _TABLE,
+                (1 if ok else 0, confirmed_by, status,
+                 request_id, STATUS_PENDING, STATUS_ANSWERED))
+            done = cur.rowcount == 1
+            db.conn.commit()
+            if done:
+                logger.info("incoming: richiesta id=%s confermata %s da %s",
+                            request_id, status, confirmed_by)
+            else:
+                logger.warning("incoming: confirm_request id=%s ignorato (stato non confermabile)",
+                               request_id)
+            return done
+        except Exception:
+            try:
+                db.conn.rollback()
+            except Exception:
+                pass
+            logger.exception("incoming: confirm_request id=%s fallita", request_id)
+            raise
+
+
+# ---------------------------------------------------------------------------
+# Configurazione email / reminder (settings)
+# ---------------------------------------------------------------------------
+def get_email_config(db, request_type) -> dict:
+    """{'emails': [str], 'reminders_per_day': int} per il tipo richiesta."""
+    emails = _parse_emails(_read_setting_values(db, _email_attribute(request_type)))
+    reminder_values = _read_setting_values(db, _reminders_attribute(request_type))
+    try:
+        reminders_per_day = int(str(reminder_values[0]).strip())
+    except (IndexError, ValueError):
+        reminders_per_day = DEFAULT_REMINDERS_PER_DAY
+    return {'emails': emails, 'reminders_per_day': reminders_per_day}
+
+
+def save_email_config(db, request_type, emails: list, reminders_per_day: int):
+    """Sostituisce destinatari e reminder/giorno per il tipo richiesta."""
+    emails = [e.strip() for e in (emails or []) if e and e.strip()]
+    with db._lock:
+        cur = _cursor(db)
+        try:
+            cur.execute(
+                "DELETE FROM %s WHERE atribute IN (?, ?)" % _SETTINGS_TABLE,
+                (_email_attribute(request_type), _reminders_attribute(request_type)))
+            for email in emails:
+                cur.execute(
+                    "INSERT INTO %s (atribute, [value]) VALUES (?, ?)" % _SETTINGS_TABLE,
+                    (_email_attribute(request_type), email))
+            cur.execute(
+                "INSERT INTO %s (atribute, [value]) VALUES (?, ?)" % _SETTINGS_TABLE,
+                (_reminders_attribute(request_type), str(int(reminders_per_day))))
+            db.conn.commit()
+            logger.info("incoming: config email salvata per %s (%d destinatari, %d reminder/giorno)",
+                        request_type, len(emails), int(reminders_per_day))
+        except Exception:
+            try:
+                db.conn.rollback()
+            except Exception:
+                pass
+            logger.exception("incoming: save_email_config %s fallita", request_type)
+            raise
+
+
+def get_monthly_recipients(db) -> list:
+    """Destinatari report mensile dal settings atribute='Incoming_soluzione_problemi'."""
+    return _parse_emails(_read_setting_values(db, MONTHLY_RECIPIENTS_ATTRIBUTE))
+
+
+def save_monthly_recipients(db, emails: list):
+    """Sostituisce i destinatari del report mensile (una riga settings per email)."""
+    emails = [e.strip() for e in (emails or []) if e and e.strip()]
+    with db._lock:
+        cur = _cursor(db)
+        try:
+            cur.execute(
+                "DELETE FROM %s WHERE atribute = ?" % _SETTINGS_TABLE,
+                (MONTHLY_RECIPIENTS_ATTRIBUTE,))
+            for email in emails:
+                cur.execute(
+                    "INSERT INTO %s (atribute, [value]) VALUES (?, ?)" % _SETTINGS_TABLE,
+                    (MONTHLY_RECIPIENTS_ATTRIBUTE, email))
+            db.conn.commit()
+            logger.info("incoming: destinatari report mensile salvati (%d email)",
+                        len(emails))
+        except Exception:
+            try:
+                db.conn.rollback()
+            except Exception:
+                pass
+            logger.exception("incoming: save_monthly_recipients fallita")
+            raise
+
+
+# ---------------------------------------------------------------------------
+# Escalation
+# ---------------------------------------------------------------------------
+def get_escalation_candidates(db) -> list:
+    """PENDING con eta' >= ESCALATION_AGE_MINUTES e mai escalate o escalate
+    almeno ESCALATION_REPEAT_MINUTES fa."""
+    with db._lock:
+        cur = _cursor(db)
+        cur.execute(
+            """
+            SELECT %s FROM %s
+            WHERE Status = ?
+              AND DATEDIFF(MINUTE, RequestedOn, GETDATE()) >= %d
+              AND (LastEscalationPopup IS NULL
+                   OR DATEDIFF(MINUTE, LastEscalationPopup, GETDATE()) >= %d)
+            ORDER BY RequestedOn
+            """ % (_COLUMNS_SQL, _TABLE,
+                   ESCALATION_AGE_MINUTES, ESCALATION_REPEAT_MINUTES),
+            (STATUS_PENDING,))
+        return _fetch_dicts(cur)
+
+
+def mark_escalation_sent(db, request_id):
+    """Marca l'invio del popup di escalation (UPDATE atomico LastEscalationPopup)."""
+    with db._lock:
+        cur = _cursor(db)
+        try:
+            cur.execute(
+                "UPDATE %s SET LastEscalationPopup = GETDATE() WHERE Id = ?" % _TABLE,
+                (request_id,))
+            db.conn.commit()
+        except Exception:
+            try:
+                db.conn.rollback()
+            except Exception:
+                pass
+            logger.exception("incoming: mark_escalation_sent id=%s fallita", request_id)
+            raise
+
+
+# ---------------------------------------------------------------------------
+# Reminder
+# ---------------------------------------------------------------------------
+def get_pending_for_reminders(db) -> list:
+    """Tutte le PENDING con dati minimi per il loop dei reminder."""
+    with db._lock:
+        cur = _cursor(db)
+        cur.execute(
+            """
+            SELECT Id, RequestNumber, RequestType, RequestedOn, RequesterHost
+            FROM %s
+            WHERE Status = ?
+            ORDER BY RequestedOn
+            """ % _TABLE,
+            (STATUS_PENDING,))
+        return _fetch_dicts(cur)
+
+
+def count_reminders_today(db, request_id) -> int:
+    with db._lock:
+        cur = _cursor(db)
+        cur.execute(
+            """
+            SELECT COUNT(*) FROM %s
+            WHERE RequestId = ? AND SentAt >= CAST(CAST(GETDATE() AS DATE) AS DATETIME)
+            """ % _LOG_TABLE,
+            (request_id,))
+        return int(cur.fetchone()[0] or 0)
+
+
+def log_reminder_sent(db, request_id, channel: str = None):
+    with db._lock:
+        cur = _cursor(db)
+        try:
+            cur.execute(
+                "INSERT INTO %s (RequestId, Channel) VALUES (?, ?)" % _LOG_TABLE,
+                (request_id, channel))
+            db.conn.commit()
+        except Exception:
+            try:
+                db.conn.rollback()
+            except Exception:
+                pass
+            logger.exception("incoming: log_reminder_sent id=%s fallita", request_id)
+            raise
+
+
+# ---------------------------------------------------------------------------
+# Statistiche mensili / YTD
+# ---------------------------------------------------------------------------
+def _stats_for_range(db, start: datetime, end: datetime) -> dict:
+    """Aggregato per tipo su [start, end): by_type con total, answered,
+    confirmed_ok, confirmed_ko, avg_response_minutes (float|None)."""
+    with db._lock:
+        cur = _cursor(db)
+        cur.execute(
+            """
+            SELECT RequestType, RequestedOn, AnsweredOn, ConfirmedOk, Status
+            FROM %s
+            WHERE RequestedOn >= ? AND RequestedOn < ?
+            """ % _TABLE,
+            (start, end))
+        rows = cur.fetchall()
+
+    by_type = {}
+    for request_type, requested_on, answered_on, confirmed_ok, _status in rows:
+        bucket = by_type.setdefault(request_type, {
+            'total': 0, 'answered': 0, 'confirmed_ok': 0, 'confirmed_ko': 0,
+            '_response_minutes': [],
+        })
+        bucket['total'] += 1
+        if answered_on is not None:
+            bucket['answered'] += 1
+            try:
+                delta = (answered_on - requested_on).total_seconds() / 60.0
+                bucket['_response_minutes'].append(max(delta, 0.0))
+            except (TypeError, AttributeError):
+                pass
+        if confirmed_ok is True:
+            bucket['confirmed_ok'] += 1
+        elif confirmed_ok is False:
+            bucket['confirmed_ko'] += 1
+
+    for bucket in by_type.values():
+        minutes = bucket.pop('_response_minutes')
+        bucket['avg_response_minutes'] = (
+            float(sum(minutes)) / len(minutes)) if minutes else None
+    return {'by_type': by_type}
+
+
+def get_monthly_stats(db, year: int, month: int) -> dict:
+    """{'month': {...by_type...}, 'ytd': {...by_type da gennaio a fine mese...}}."""
+    month_start = datetime(year, month, 1)
+    if month == 12:
+        next_month = datetime(year + 1, 1, 1)
+    else:
+        next_month = datetime(year, month + 1, 1)
+    ytd_start = datetime(year, 1, 1)
+    return {
+        'month': _stats_for_range(db, month_start, next_month),
+        'ytd': _stats_for_range(db, ytd_start, next_month),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Etichette tipo richiesta tradotte
+# ---------------------------------------------------------------------------
+
+def type_label(lang, request_type):
+    """Etichetta del tipo richiesta tradotta nella lingua corrente (fallback italiano).
+    Accetta sia il language manager sia il suo metodo bound .get."""
+    default = REQUEST_TYPES.get(request_type, request_type)
+    get = lang if callable(lang) else lang.get
+    try:
+        return get('incoming_type_' + str(request_type).lower(), default)
+    except Exception:
+        return default
+
+
+def type_choices(lang):
+    """Lista etichette tradotte, nello stesso ordine di REQUEST_TYPES."""
+    return [type_label(lang, k) for k in REQUEST_TYPES]

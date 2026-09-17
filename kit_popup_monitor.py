@@ -25,6 +25,10 @@ logger = logging.getLogger("PlanMonitor")
 
 POLL_INTERVAL_MS = 10_000
 
+# Categorie popup del modulo Ricezione (incoming) — gestite da IncomingMonitor,
+# escluse da questo monitor (popup Kit).
+INCOMING_CATEGORIES = ('INCOMING', 'INCOMING_ANSWER')
+
 
 class KitPopupMonitor:
     """Monitor background popup Kit Preparation (tutti i PC)."""
@@ -80,10 +84,16 @@ class KitPopupMonitor:
         if server_config.is_alert_muted():
             muted_clause = "AND category <> ? "
             params.append(server_config.CATEGORY_SERVER_DOWN)
+        # Le categorie del modulo Ricezione (incoming) sono gestite da
+        # IncomingMonitor: qui vanno escluse (sennò verrebbero claimate
+        # come popup Kit, anche le risposte punto-a-punto per hostname).
+        incoming_clause = "AND category NOT IN (?, ?) "
+        params.extend(INCOMING_CATEGORIES)
         query = (f"SELECT TOP 10 id, title, message, order_number, created_date, category "
                  f"FROM Traceability_RS.dbo.kit_popup_queue "
                  f"WHERE displayed_date IS NULL AND target IN ({placeholders}) "
                  f"{muted_clause}"
+                 f"{incoming_clause}"
                  f"ORDER BY created_date ASC")
         if hasattr(self.db, 'fetch_all'):
             rows = self.db.fetch_all(query, tuple(params))

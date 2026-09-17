@@ -11396,6 +11396,11 @@ class App(tk.Tk):
         self._monthly_report_thread = None
         self._monthly_report_stop_event = threading.Event()
         self._start_monthly_report_background_task()
+
+        # Inizializza il thread per reminder email e report mensile Ricezione (incoming)
+        self._incoming_email_thread = None
+        self._incoming_email_stop_event = threading.Event()
+        self._start_incoming_email_background_task()
         
         # Inizializza il thread per l'invio automatico email FAI fails
         self._fai_fails_email_thread = None
@@ -11613,6 +11618,43 @@ class App(tk.Tk):
                 logger.info("Background task per report mensile avviato")
         except Exception as e:
             logger.error(f"Errore nell'avvio del background task report mensile: {e}", exc_info=True)
+
+    def _start_incoming_email_background_task(self):
+        """Avvia il thread per reminder email e report mensile del modulo Ricezione (incoming)."""
+        try:
+            if self._incoming_email_thread is None or not self._incoming_email_thread.is_alive():
+                self._incoming_email_stop_event.clear()
+                self._incoming_email_thread = threading.Thread(
+                    target=self._incoming_email_worker,
+                    daemon=True,
+                    name="IncomingEmailWorker"
+                )
+                self._incoming_email_thread.start()
+                logger.info("Background task Ricezione (reminder/report) avviato")
+        except Exception as e:
+            logger.error(f"Errore avvio background task Ricezione: {e}", exc_info=True)
+
+    def _incoming_email_worker(self):
+        """Worker Ricezione: reminder email sulle richieste pending (lock cross-PC via
+        job 'incoming_reminders') e report mensile il primo giorno lavorativo del mese
+        (claim atomico sul job 'incoming_monthly_report': un solo invio al mese)."""
+        from datetime import datetime as _dt
+        while not self._incoming_email_stop_event.is_set():
+            try:
+                from incoming.incoming_email import (
+                    check_and_send_reminders, generate_and_send_monthly_report,
+                )
+                check_and_send_reminders(self.db)
+
+                # Report mensile: solo il primo giorno lavorativo del mese, dalle 09:00
+                now = _dt.now()
+                if now.hour >= 9 and self._is_first_working_day_of_month():
+                    generate_and_send_monthly_report(self.db)
+            except Exception as e:
+                logger.error(f"Errore worker email Ricezione: {e}", exc_info=True)
+
+            # Attesa 15 minuti, interrompibile dallo stop event
+            self._incoming_email_stop_event.wait(900)
 
     def _is_first_working_day_of_month(self):
         """
@@ -12739,6 +12781,12 @@ class App(tk.Tk):
             logger.info("Arresto background task report mensile...")
             self._monthly_report_stop_event.set()
             self._monthly_report_thread.join(timeout=5)
+
+        # Ferma anche il thread reminder/report Ricezione (incoming)
+        if self._incoming_email_thread and self._incoming_email_thread.is_alive():
+            logger.info("Arresto background task Ricezione (reminder/report)...")
+            self._incoming_email_stop_event.set()
+            self._incoming_email_thread.join(timeout=5)
 
         # Ferma anche il thread email settimanale NPI
         if self._weekly_npi_email_thread and self._weekly_npi_email_thread.is_alive():
@@ -14233,12 +14281,21 @@ class App(tk.Tk):
             mandatory=(mandatory or not can_postpone),
             countdown_seconds=UPDATE_COUNTDOWN_SECONDS,
             logo_path="assets/logo_gtmc_green.png",
-            ready=True
+            ready=True,
+            start_countdown=True
         )
         self._update_dialog_open = False
         action = 'update' if result == 'download' else 'postpone'
         logger.info(f"_show_update_ready_dialog: esito = '{action}' (mandatory={mandatory})")
         if action == 'postpone':
+            # Persiste il rinvio: senza questo salvataggio skip_count resta
+            # sempre 0, l'update non diventa MAI obbligatorio e i PC che
+            # posticipano restano bloccati sulla vecchia versione all'infinito.
+            try:
+                persisted_skip, _ = load_update_skip_count()
+                save_update_skip_count(persisted_skip + 1, version_info.Version)
+            except Exception as e:
+                logger.error(f"_show_update_ready_dialog: salvataggio skip_count fallito: {e}")
             if can_postpone:
                 self._update_postpone_count += 1
                 self._update_postpone_total += postpone_secs
@@ -14257,8 +14314,14 @@ class App(tk.Tk):
                         self.after_cancel(prev)
                     except Exception:
                         pass
+                def _retrigger():
+                    # Pulisci il riferimento PRIMA di rilanciare: altrimenti il
+                    # guard di _periodic_version_check vedrebbe un id stale e
+                    # sopprimerebbe per sempre i controlli successivi.
+                    self._update_retrigger_job = None
+                    self._trigger_update(version_info, mandatory)
                 self._update_retrigger_job = self.after(
-                    postpone_secs * 1000, lambda: self._trigger_update(version_info, mandatory))
+                    postpone_secs * 1000, _retrigger)
                 self.periodic_check_job_id = self.after(
                     (postpone_secs + 60) * 1000, self._periodic_version_check)
             return
@@ -15115,6 +15178,52 @@ class App(tk.Tk):
                 messagebox.showerror(
                     self.lang.get('error', 'Errore'),
                     f"Impossibile aprire Stampa per ordini etichette:\n{e}",
+                    parent=self
+                )
+        self._execute_simple_login(action_callback=_open)
+
+    def _open_kanban_load_with_auth(self):
+        """Apre la pagina Kanban produzione — Carica schede (server :6500).
+        Richiede il permesso 'crea_kanBan_produzione'."""
+        def _open():
+            try:
+                from wip_kanban import launcher
+                lang = getattr(self, 'lang', None)
+                lang_code = getattr(lang, 'current_language', None) or 'it'
+                launcher.open_load_page(
+                    self.db,
+                    self.last_authorized_user_id,
+                    self.last_authenticated_user_name,
+                    lang_code
+                )
+            except Exception as e:
+                logger.error(f"Errore apertura Kanban Carica schede: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire Kanban Carica schede:\n{e}",
+                    parent=self
+                )
+        self._execute_authorized_action('crea_kanBan_produzione', _open)
+
+    def _open_kanban_pick_with_simple_login(self):
+        """Apre la pagina Kanban produzione — Preleva schede (server :6500).
+        Login semplice: tutte le operazioni sono auditate sul server."""
+        def _open(user_id):
+            try:
+                from wip_kanban import launcher
+                lang = getattr(self, 'lang', None)
+                lang_code = getattr(lang, 'current_language', None) or 'it'
+                launcher.open_pick_page(
+                    self.db,
+                    user_id,
+                    self.last_authenticated_user_name,
+                    lang_code
+                )
+            except Exception as e:
+                logger.error(f"Errore apertura Kanban Preleva schede: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire Kanban Preleva schede:\n{e}",
                     parent=self
                 )
         self._execute_simple_login(action_callback=_open)
@@ -16934,6 +17043,15 @@ class App(tk.Tk):
             user = User(name=cached_user_name)
             if isinstance(action_callback, collections.abc.Callable):
                 action_callback(cached_user_id)
+            # 🆕 Log attività utente (anche da cache: le aperture vanno tracciate per le statistiche)
+            try:
+                self.db.log_user_activity(
+                    employee_hire_history_id=cached_user_id,
+                    activity=caller_function,
+                    username=cached_user_name
+                )
+            except Exception as _log_exc:
+                logger.warning(f"_execute_simple_login: log (cache) fallito: {_log_exc}")
             return user
 
         # Ciclo: in caso di password/credenziali errate si ripropone sempre la form di login.
@@ -17044,6 +17162,15 @@ class App(tk.Tk):
             self.last_authorized_user_id = cached_auth["authorized_used_id"]
             self._temp_authorized_user_id = cached_auth["user_id"]
             action_callback()
+            # 🆕 Log attività utente (anche da cache: le aperture vanno tracciate per le statistiche)
+            try:
+                self.db.log_user_activity(
+                    employee_hire_history_id=cached_auth["authorized_used_id"],
+                    activity=menu_translation_key,
+                    username=cached_auth["user_name"]
+                )
+            except Exception as _log_exc:
+                logger.warning(f"_execute_authorized_action: log (cache) fallito: {_log_exc}")
             return True
 
         # Ciclo: in caso di password/credenziali errate si ripropone sempre la form di login.
@@ -17452,6 +17579,8 @@ class App(tk.Tk):
         self.kanban_locations_submenu = tk.Menu(self.kanban_root_submenu, tearoff=0)
         self.kanban_materials_submenu = tk.Menu(self.kanban_root_submenu, tearoff=0)
         self.kanban_core_submenu = tk.Menu(self.kanban_root_submenu, tearoff=0)
+        # Kanban produzione WIP/REPAIR (server web dedicato :6500)
+        self.kanban_produzione_submenu = tk.Menu(self.kanban_root_submenu, tearoff=0)
 
         # TracciabilitÃ 
         self.traceability_submenu = tk.Menu(self.production_submenu, tearoff=0)
@@ -17487,6 +17616,11 @@ class App(tk.Tk):
 
         # RMA Knowledge Base
         self.rma_submenu = tk.Menu(self.production_submenu, tearoff=0)
+
+        # Ricezione (Incoming): Richiesta / Soluzioni / Setup
+        self.receiving_submenu = tk.Menu(self.production_submenu, tearoff=0)
+        self.receiving_richiesta_submenu = tk.Menu(self.receiving_submenu, tearoff=0)
+        self.receiving_ordine_submenu = tk.Menu(self.receiving_richiesta_submenu, tearoff=0)
 
     def _init_tools_submenus(self):
         """Inizializza i sottomenu di Strumenti"""
@@ -18144,12 +18278,107 @@ class App(tk.Tk):
                                             menu=self.reports_submenu)
         self._update_reports_submenu()
 
-        # 9. RMA Knowledge Base
         self.production_submenu.add_separator()
+
+        # 9. Ricezione (Incoming)
+        self.production_submenu.add_cascade(label=self.lang.get('menu_receiving', "Ricezione"),
+                                            menu=self.receiving_submenu)
+        self._update_receiving_submenu()
+
+        # 10. RMA Knowledge Base
         self.production_submenu.add_command(
             label=self.lang.get('menu_rma_kb', '🔧 RMA Knowledge Base'),
             command=self.open_rma_knowledge_base
         )
+
+    def _update_receiving_submenu(self):
+        """Aggiorna il sottomenu Ricezione (Richiesta / Soluzioni / Setup)."""
+        self.receiving_submenu.delete(0, 'end')
+        self.receiving_richiesta_submenu.delete(0, 'end')
+        self.receiving_ordine_submenu.delete(0, 'end')
+
+        # 1. Richiesta (4 tipi)
+        self.receiving_richiesta_submenu.add_command(
+            label=self.lang.get('incoming_type_mpn_mancante', "MPN Mancante"),
+            command=lambda: self.open_incoming_richiesta_with_login('MPN_MANCANTE')
+        )
+        self.receiving_richiesta_submenu.add_command(
+            label=self.lang.get('incoming_type_mpn_sbagliato', "MPN Sbagliato"),
+            command=lambda: self.open_incoming_richiesta_with_login('MPN_SBAGLIATO')
+        )
+        self.receiving_richiesta_submenu.add_cascade(
+            label=self.lang.get('incoming_menu_order', "Ordine"),
+            menu=self.receiving_ordine_submenu
+        )
+        self.receiving_ordine_submenu.add_command(
+            label=self.lang.get('incoming_type_po_mancante', "Mancanza P.O."),
+            command=lambda: self.open_incoming_richiesta_with_login('PO_MANCANTE')
+        )
+        self.receiving_ordine_submenu.add_command(
+            label=self.lang.get('incoming_type_po_quantita', "P.O. Quantità"),
+            command=lambda: self.open_incoming_richiesta_with_login('PO_QUANTITA')
+        )
+        self.receiving_submenu.add_cascade(
+            label=self.lang.get('incoming_menu_richiesta', "Richiesta"),
+            menu=self.receiving_richiesta_submenu
+        )
+
+        # 2. Soluzioni
+        self.receiving_submenu.add_command(
+            label=self.lang.get('incoming_menu_soluzioni', "Soluzioni"),
+            command=self.open_incoming_soluzioni_with_login
+        )
+
+        self.receiving_submenu.add_separator()
+
+        # 3. Setup
+        self.receiving_submenu.add_command(
+            label=self.lang.get('incoming_menu_setup_operators', "Gestione operatori"),
+            command=self.open_incoming_setup_with_login
+        )
+        self.receiving_submenu.add_command(
+            label=self.lang.get('incoming_menu_setup_workstations', "Gestione workstations"),
+            command=self.open_incoming_workstation_config_with_login
+        )
+
+    # ------------------------------------------------------------------ #
+    #  Ricezione (Incoming) — aperture con login/autorizzazione            #
+    # ------------------------------------------------------------------ #
+    def open_incoming_richiesta_with_login(self, request_type):
+        """Apre la form di invio richiesta Ricezione dopo login (chiave 'incoming_richiesta')."""
+        def action():
+            from incoming.incoming_request_gui import open_incoming_request
+            user_name = getattr(self, 'last_authenticated_user_name', 'Unknown')
+            open_incoming_request(self, self.db, self.lang, user_name, request_type)
+
+        self._execute_authorized_action('incoming_richiesta', action)
+
+    def open_incoming_soluzioni_with_login(self):
+        """Apre la finestra Soluzioni Ricezione dopo login (chiave 'incoming_soluzioni')."""
+        def action():
+            from incoming.incoming_solutions_gui import open_incoming_solutions
+            user_name = getattr(self, 'last_authenticated_user_name', 'Unknown')
+            open_incoming_solutions(self, self.db, self.lang, user_name)
+
+        self._execute_authorized_action('incoming_soluzioni', action)
+
+    def open_incoming_setup_with_login(self):
+        """Apre il Setup Ricezione (gestione operatori/email) dopo login (chiave 'incoming_setup')."""
+        def action():
+            from incoming.incoming_setup_gui import open_incoming_setup
+            user_name = getattr(self, 'last_authenticated_user_name', 'Unknown')
+            open_incoming_setup(self, self.db, self.lang, user_name)
+
+        self._execute_authorized_action('incoming_setup', action)
+
+    def open_incoming_workstation_config_with_login(self):
+        """Apre la configurazione postazione Ricezione (ricevente/emittente) dopo login."""
+        def action():
+            from incoming.incoming_workstation_config import open_workstation_config
+            user_name = getattr(self, 'last_authenticated_user_name', 'Unknown')
+            open_workstation_config(self, self.lang, user_name)
+
+        self._execute_authorized_action('incoming_setup', action)
 
     def _update_declarations_submenu(self):
         """Aggiorna il sottomenu Dichiarazioni"""
@@ -18320,6 +18549,7 @@ class App(tk.Tk):
         self.kanban_locations_submenu.delete(0, 'end')
         self.kanban_materials_submenu.delete(0, 'end')
         self.kanban_core_submenu.delete(0, 'end')
+        self.kanban_produzione_submenu.delete(0, 'end')
 
         # Locazioni KanBan
         self.kanban_locations_submenu.add_command(
@@ -18384,6 +18614,20 @@ class App(tk.Tk):
         self.kanban_root_submenu.add_cascade(
             label=self.lang.get('submenu_kanban_core', 'KanBan'),
             menu=self.kanban_core_submenu
+        )
+
+        # Kanban produzione WIP/REPAIR (web server dedicato :6500)
+        self.kanban_produzione_submenu.add_command(
+            label=self.lang.get('submenu_kanban_carica_schede', 'Carica schede'),
+            command=self._open_kanban_load_with_auth
+        )
+        self.kanban_produzione_submenu.add_command(
+            label=self.lang.get('submenu_kanban_preleva_schede', 'Preleva schede'),
+            command=self._open_kanban_pick_with_simple_login
+        )
+        self.kanban_root_submenu.add_cascade(
+            label=self.lang.get('menu_kanban_produzione', 'Kanban produzione'),
+            menu=self.kanban_produzione_submenu
         )
 
     def _update_traceability_submenu(self):
@@ -18757,6 +19001,8 @@ class App(tk.Tk):
         self.tools_menu.add_separator()
         self.tools_menu.add_command(label=self.lang.get('manage_translations', "Gestione Traduzioni"),
                                     command=self.open_translations_manager_with_login)
+        self.tools_menu.add_command(label=self.lang.get('menu_usage_statistics', "Statistiche uso form"),
+                                    command=self.open_usage_statistics_with_login)
         self.tools_menu.add_separator()
         self.tools_menu.add_command(label=self.lang.get('submenu_maint_times', "Tempi Manutenzione"),
                                     command=self.open_maintenance_times_with_login)
@@ -21263,6 +21509,22 @@ class App(tk.Tk):
             action_callback=lambda user_name: materials_gui.open_manage_materials(self, self.db, self.lang, user_name)
         )
 
+    def open_usage_statistics_with_login(self):
+        """Apre le statistiche mensili di utilizzo delle form (login semplice)."""
+        def action(user_id):
+            try:
+                import usage_stats_gui
+                usage_stats_gui.open_usage_statistics(self, self.db, self.lang)
+            except Exception as e:
+                logger.error(f"Errore apertura statistiche uso form: {e}", exc_info=True)
+                messagebox.showerror(
+                    self.lang.get('error', 'Errore'),
+                    f"Impossibile aprire le statistiche uso form: {str(e)}",
+                    parent=self
+                )
+
+        self._execute_simple_login(action_callback=action)
+
     def open_translations_manager_with_login(self):
         """Apre la finestra di gestione traduzioni con login autorizzato"""
         def action():
@@ -21490,6 +21752,7 @@ class App(tk.Tk):
 
     def _open_shipment_info(self):
         """Apre la finestra 'Info Spedizioni' (configurazione sito/directory/destinatari email)."""
+        logger.info("Apertura form ShipmentInfo per utente %s", getattr(self, 'last_authenticated_user_name', 'Unknown'))
         def authorized_action():
             try:
                 import shipment_info_gui
@@ -21510,6 +21773,7 @@ class App(tk.Tk):
 
     def _open_find_shipments(self):
         """Apre la finestra 'Trova spedizioni' (ricerca su WarehouseFinish)."""
+        logger.info("Apertura form FindShipments per utente %s", getattr(self, 'last_authenticated_user_name', 'Unknown'))
         try:
             import find_shipments_gui
             user_name = getattr(self, 'last_authenticated_user_name', 'Unknown')
@@ -21594,7 +21858,7 @@ class App(tk.Tk):
         )
 
     def _open_indirect_materials_report(self):
-        logger.info("Apertura Report Materiali Indiretti")
+        logger.info("Apertura Report Materiali Indiretti[_open_indirect_materials_report]")
         """Apre la finestra Report Mensile Materiali Indiretti."""
         try:
             from indirect_materials_report import open_indirect_materials_report
@@ -22150,6 +22414,19 @@ class App(tk.Tk):
             logger.info("KitPopupMonitor avviato")
         except Exception as e:
             logger.error(f"Errore avvio KitPopupMonitor: {e}", exc_info=True)
+
+        # Monitor popup Ricezione (Incoming): popup nuove richieste sulle postazioni
+        # riceventi e popup risposta sulla postazione mittente (hostname).
+        try:
+            from incoming.incoming_monitor import IncomingMonitor
+            from incoming.incoming_workstation_config import (
+                is_incoming_receiver, is_incoming_sender,
+            )
+            if is_incoming_receiver() or is_incoming_sender():
+                self._incoming_monitor = IncomingMonitor(self, self.db, self.lang)
+                logger.info("IncomingMonitor avviato (postazione Ricezione)")
+        except Exception as e:
+            logger.error(f"Errore avvio IncomingMonitor: {e}", exc_info=True)
 
         # Kit Dashboard: watcher (ping /health del server indipendente; alert
         # popup KIT_PREP + email se down). Il web server gira autonomo sul .72

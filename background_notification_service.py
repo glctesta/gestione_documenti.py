@@ -250,6 +250,7 @@ MARKERS = {
     "kit": ("kit_host.json", "kit_popup_monitor", "KitPopupMonitor"),
     "label_scrap": ("labelscrap_print_host.json", "label_scrap_monitor", "LabelScrapMonitor"),
     "shipment": ("shipment_host.json", "orders.shipment_monitor", "ShipmentMonitor"),
+    "incoming": ("incoming_workstation.json", "incoming.incoming_monitor", "IncomingMonitor"),
 }
 
 # Kit usa due marker separati, ma noi lo avviamo se almeno uno dei due esiste.
