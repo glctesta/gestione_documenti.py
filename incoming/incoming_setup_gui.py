@@ -120,7 +120,7 @@ class IncomingSetupWindow(tk.Toplevel):
 
         self.title(self.lang.get('incoming_setup_title',
                                  'Setup — Ricezione (Incoming)'))
-        self.geometry("680x640")
+        self.geometry("680x760")
         self.resizable(False, False)
         self.transient(master)
         self.grab_set()
@@ -128,6 +128,7 @@ class IncomingSetupWindow(tk.Toplevel):
         # (request_type, type_label, emails_var, reminders_var)
         self._type_rows = []
         self._monthly_text = None
+        self._master_text = None
 
         self._build_ui()
         self._load_all()
@@ -201,10 +202,30 @@ class IncomingSetupWindow(tk.Toplevel):
                    'Destinatari report mensile (soluzione problemi)'),
             padding=10,
         )
-        monthly_frame.pack(fill="both", expand=True, pady=(0, 10))
+        monthly_frame.pack(fill="x", pady=(0, 10))
 
         self._monthly_text = tk.Text(monthly_frame, height=4, wrap="word")
         self._monthly_text.pack(fill="both", expand=True)
+
+        # --- Master ticket ---------------------------------------------- #
+        master_frame = ttk.LabelFrame(
+            main,
+            text=L('incoming_setup_master_frame',
+                   'Master ticket (vede tutti i ticket aperti)'),
+            padding=10,
+        )
+        master_frame.pack(fill="x", pady=(0, 10))
+
+        self._master_text = tk.Text(master_frame, height=2, wrap="word")
+        self._master_text.pack(fill="x")
+        ttk.Label(
+            master_frame,
+            text=L('incoming_setup_master_hint',
+                   'Email degli utenti abilitati a vedere tutti i ticket, '
+                   'indipendentemente dai destinatari configurati per tipo.'),
+            font=("Segoe UI", 8),
+            foreground="#555555",
+        ).pack(anchor="w", pady=(4, 0))
 
         # --- Postazione ------------------------------------------------- #
         ws_frame = ttk.LabelFrame(
@@ -260,6 +281,14 @@ class IncomingSetupWindow(tk.Toplevel):
         self._monthly_text.delete("1.0", "end")
         self._monthly_text.insert("1.0", "\n".join(_load_monthly_recipients(self.db)))
 
+        self._master_text.delete("1.0", "end")
+        try:
+            master_emails = incoming_db.get_master_emails(self.db)
+        except Exception as e:
+            logger.error("get_master_emails fallita: %s", e, exc_info=True)
+            master_emails = []
+        self._master_text.insert("1.0", "\n".join(master_emails))
+
     # ------------------------------------------------------------------ #
     #  Salvataggio                                                         #
     # ------------------------------------------------------------------ #
@@ -276,6 +305,9 @@ class IncomingSetupWindow(tk.Toplevel):
 
         valid_monthly, rejected_monthly = _parse_emails(self._monthly_text.get("1.0", "end"))
         rejected_all.extend(rejected_monthly)
+
+        valid_master, rejected_master = _parse_emails(self._master_text.get("1.0", "end"))
+        rejected_all.extend(rejected_master)
 
         if rejected_all:
             messagebox.showerror(
@@ -298,11 +330,12 @@ class IncomingSetupWindow(tk.Toplevel):
                     self.db, request_type, parsed_by_type[request_type], reminders)
 
             _save_monthly_recipients(self.db, valid_monthly)
+            incoming_db.save_master_emails(self.db, valid_master)
 
-            logger.info("Setup Incoming salvato da %s: tipi=%s, destinatari mensili=%d",
+            logger.info("Setup Incoming salvato da %s: tipi=%s, destinatari mensili=%d, master=%d",
                         self.user_name,
                         {k: len(v) for k, v in parsed_by_type.items()},
-                        len(valid_monthly))
+                        len(valid_monthly), len(valid_master))
             messagebox.showinfo(
                 L('info', 'Info'),
                 L('incoming_setup_saved', 'Configurazione salvata con successo.'),

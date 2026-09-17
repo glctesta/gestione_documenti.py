@@ -35,6 +35,10 @@ STATUS_CONFIRMED_KO = 'CONFIRMED_KO'
 
 MONTHLY_RECIPIENTS_ATTRIBUTE = 'Incoming_soluzione_problemi'
 
+# Email (una per riga settings) degli utenti "master": vedono TUTTI i ticket
+# aperti, indipendentemente dai destinatari configurati per tipo.
+MASTER_ATTRIBUTE = 'Sys_master_for_tikets'
+
 DEFAULT_REMINDERS_PER_DAY = 2
 
 # Età (minuti) oltre la quale una richiesta PENDING va in escalation, e minuti
@@ -185,6 +189,9 @@ END
 
 _SEED_SETTINGS = [
     (_reminders_attribute(t), str(DEFAULT_REMINDERS_PER_DAY)) for t in REQUEST_TYPES
+] + [
+    # Valore vuoto: nessun master finche' non viene configurato (Setup o SQL).
+    (MASTER_ATTRIBUTE, ''),
 ]
 
 
@@ -308,20 +315,78 @@ def get_request(db, request_id) -> dict | None:
         return _row_to_dict(cur, cur.fetchone())
 
 
-def get_pending_requests(db, request_type=None) -> list:
-    """Richieste con Status='PENDING', per RequestedOn crescente."""
+def get_pending_requests(db, request_type=None, allowed_types=None) -> list:
+    """Richieste con Status='PENDING', per RequestedOn crescente.
+
+    allowed_types=None -> nessun filtro aggiuntivo (vista master).
+    allowed_types=set/list -> solo i tipi indicati; lista vuota -> nessun risultato.
+    """
     with db._lock:
         cur = _cursor(db)
+        sql = "SELECT %s FROM %s WHERE Status = ?" % (_COLUMNS_SQL, _TABLE)
+        params = [STATUS_PENDING]
         if request_type:
-            cur.execute(
-                "SELECT %s FROM %s WHERE Status = ? AND RequestType = ?"
-                " ORDER BY RequestedOn" % (_COLUMNS_SQL, _TABLE),
-                (STATUS_PENDING, request_type))
-        else:
-            cur.execute(
-                "SELECT %s FROM %s WHERE Status = ? ORDER BY RequestedOn"
-                % (_COLUMNS_SQL, _TABLE),
-                (STATUS_PENDING,))
+            sql += " AND RequestType = ?"
+            params.append(request_type)
+        if allowed_types is not None:
+            if not allowed_types:
+                return []
+            placeholders = ', '.join('?' * len(allowed_types))
+            sql += " AND RequestType IN (%s)" % placeholders
+            params.extend(sorted(allowed_types))
+        sql += " ORDER BY RequestedOn"
+        cur.execute(sql, params)
+        return _fetch_dicts(cur)
+
+
+def get_requests_report(db, filters: dict | None = None) -> list:
+    """Report richieste incoming con filtri combinabili (periodo, MPN, stato...).
+
+    filters (tutti opzionali):
+      date_from, date_to  -> su CAST(RequestedOn AS DATE), estremi inclusi
+      request_type        -> RequestType esatto
+      supplier            -> LIKE '%v%' su SupplierName
+      mpn_code            -> LIKE '%v%' su MpnCode (codice prodotto richiesto)
+      wrong_mpn           -> LIKE '%v%' su WrongMpn
+      answer_mpn          -> LIKE '%v%' su AnswerMpnCode
+      status              -> 'EVASE' (ANSWERED + CONFIRMED_*), 'NON_EVASE' (PENDING),
+                             None/'' per tutte
+    """
+    filters = filters or {}
+    sql = "SELECT %s FROM %s WHERE 1=1" % (_COLUMNS_SQL, _TABLE)
+    params = []
+    if filters.get('date_from'):
+        sql += " AND CAST(RequestedOn AS DATE) >= ?"
+        params.append(filters['date_from'])
+    if filters.get('date_to'):
+        sql += " AND CAST(RequestedOn AS DATE) <= ?"
+        params.append(filters['date_to'])
+    if filters.get('request_type'):
+        sql += " AND RequestType = ?"
+        params.append(filters['request_type'])
+    if filters.get('supplier'):
+        sql += " AND SupplierName LIKE ?"
+        params.append('%%%s%%' % filters['supplier'])
+    if filters.get('mpn_code'):
+        sql += " AND MpnCode LIKE ?"
+        params.append('%%%s%%' % filters['mpn_code'])
+    if filters.get('wrong_mpn'):
+        sql += " AND WrongMpn LIKE ?"
+        params.append('%%%s%%' % filters['wrong_mpn'])
+    if filters.get('answer_mpn'):
+        sql += " AND AnswerMpnCode LIKE ?"
+        params.append('%%%s%%' % filters['answer_mpn'])
+    status = filters.get('status')
+    if status == 'EVASE':
+        sql += " AND Status IN (?, ?, ?)"
+        params.extend([STATUS_ANSWERED, STATUS_CONFIRMED_OK, STATUS_CONFIRMED_KO])
+    elif status == 'NON_EVASE':
+        sql += " AND Status = ?"
+        params.append(STATUS_PENDING)
+    sql += " ORDER BY RequestedOn DESC"
+    with db._lock:
+        cur = _cursor(db)
+        cur.execute(sql, params)
         return _fetch_dicts(cur)
 
 
@@ -440,6 +505,89 @@ def save_email_config(db, request_type, emails: list, reminders_per_day: int):
 def get_monthly_recipients(db) -> list:
     """Destinatari report mensile dal settings atribute='Incoming_soluzione_problemi'."""
     return _parse_emails(_read_setting_values(db, MONTHLY_RECIPIENTS_ATTRIBUTE))
+
+
+# ---------------------------------------------------------------------------
+# Master ticket (settings 'Sys_master_for_tikets')
+# ---------------------------------------------------------------------------
+def get_master_emails(db) -> list:
+    """Email degli utenti master: vedono tutti i ticket aperti."""
+    return _parse_emails(_read_setting_values(db, MASTER_ATTRIBUTE))
+
+
+def save_master_emails(db, emails: list):
+    """Sostituisce le email master (una riga settings per email)."""
+    emails = [e.strip() for e in (emails or []) if e and e.strip()]
+    with db._lock:
+        cur = _cursor(db)
+        try:
+            cur.execute(
+                "DELETE FROM %s WHERE atribute = ?" % _SETTINGS_TABLE,
+                (MASTER_ATTRIBUTE,))
+            for email in emails:
+                cur.execute(
+                    "INSERT INTO %s (atribute, [value]) VALUES (?, ?)" % _SETTINGS_TABLE,
+                    (MASTER_ATTRIBUTE, email))
+            db.conn.commit()
+            logger.info("incoming: email master ticket salvate (%d)", len(emails))
+        except Exception:
+            try:
+                db.conn.rollback()
+            except Exception:
+                pass
+            logger.exception("incoming: save_master_emails fallita")
+            raise
+
+
+def is_ticket_master(db, user_email) -> bool:
+    """True se l'email dell'utente loggato e' tra quelle master (confronto case-insensitive)."""
+    if not user_email:
+        return False
+    low = str(user_email).strip().lower()
+    return any(e.lower() == low for e in get_master_emails(db))
+
+
+def get_visible_types_for_email(db, user_email) -> set:
+    """Tipi di richiesta visibili per l'email: quelli in cui figura tra i destinatari."""
+    if not user_email:
+        return set()
+    low = str(user_email).strip().lower()
+    visible = set()
+    for rt in REQUEST_TYPES:
+        emails = get_email_config(db, rt).get('emails') or []
+        if any(e.lower() == low for e in emails):
+            visible.add(rt)
+    return visible
+
+
+def resolve_user_email(db, user_name):
+    """Email aziendale (WorkEmail) dell'utente loggato, dal nome visualizzato.
+
+    Stessa query di auto_email_settings_gui._resolve_user_email: cerca per
+    'Nome Cognome' o 'Cognome Nome' fra i dipendenti attivi (EmployeerId = 2).
+    """
+    if not user_name:
+        return None
+    with db._lock:
+        cur = _cursor(db)
+        cur.execute(
+            """
+            SELECT TOP 1 ea.WorkEmail
+            FROM Employee.dbo.EmployeeHireHistory h
+            INNER JOIN Employee.dbo.Employees e ON e.EmployeeId = h.EmployeeId
+            LEFT JOIN Employee.dbo.EmployeeAddress ea
+                ON ea.EmployeeId = e.EmployeeId AND ea.DateOut IS NULL
+            WHERE h.EndWorkDate IS NULL AND h.EmployeerId = 2
+              AND (e.EmployeeName + ' ' + e.EmployeeSurname = ?
+                   OR e.EmployeeSurname + ' ' + e.EmployeeName = ?)
+            """,
+            (user_name, user_name))
+        row = cur.fetchone()
+        if row and row[0]:
+            email = str(row[0]).strip()
+            if email and '@' in email:
+                return email
+    return None
 
 
 def save_monthly_recipients(db, emails: list):

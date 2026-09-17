@@ -87,8 +87,21 @@ class IncomingSolutionsWindow(tk.Toplevel):
         self._rows_by_iid = {}
         self._selected = None
         self._refresh_job = None
+
+        # Visibilita' ticket: il master (settings 'Sys_master_for_tikets') vede
+        # tutti i ticket aperti; gli altri solo i tipi per cui la loro email
+        # aziendale figura tra i destinatari configurati per tipo.
+        self.user_email = incoming_db.resolve_user_email(db, self.user_name)
+        self.is_master = incoming_db.is_ticket_master(db, self.user_email)
+        if self.is_master:
+            self.visible_types = None  # nessun filtro
+        else:
+            self.visible_types = incoming_db.get_visible_types_for_email(db, self.user_email)
+
+        type_keys = incoming_db.REQUEST_TYPES if self.visible_types is None \
+            else [k for k in incoming_db.REQUEST_TYPES if k in self.visible_types]
         self._type_key_by_label = {
-            incoming_db.type_label(L, k): k for k in incoming_db.REQUEST_TYPES}
+            incoming_db.type_label(L, k): k for k in type_keys}
 
         self._build_ui()
         self.grab_set()
@@ -102,8 +115,15 @@ class IncomingSolutionsWindow(tk.Toplevel):
 
         header = tk.Frame(self, bg='#1F3864')
         header.pack(fill=tk.X)
-        tk.Label(header, text=L('inc_sol_title', 'Soluzioni — Ricezione'),
-                 bg='#1F3864', fg='white', font=('Helvetica', 13, 'bold')).pack(
+        if self.is_master:
+            view_txt = L('inc_sol_master_view', '(master — vista completa)')
+        elif self.visible_types:
+            view_txt = L('inc_sol_limited_view', '(solo tipi assegnati)')
+        else:
+            view_txt = L('inc_sol_no_types', 'Nessun tipo assegnato alla tua email')
+        email_txt = f"{self.user_name} <{self.user_email}>" if self.user_email else self.user_name
+        tk.Label(header, text=f"{L('inc_sol_title', 'Soluzioni — Ricezione')}   {email_txt}   {view_txt}",
+                 bg='#1F3864', fg='white', font=('Helvetica', 11, 'bold')).pack(
             side=tk.LEFT, padx=12, pady=10)
 
         # Filtro tipo
@@ -181,7 +201,7 @@ class IncomingSolutionsWindow(tk.Toplevel):
         if not self.winfo_exists():
             return
         try:
-            rows = incoming_db.get_pending_requests(self.db, self._filter_type_key())
+            rows = incoming_db.get_pending_requests(self.db, self._filter_type_key(), self.visible_types)
         except Exception as e:
             logger.error(f"Incoming solutions: lettura pending fallita: {e}", exc_info=True)
             messagebox.showerror(L('error', 'Errore'), str(e), parent=self)
