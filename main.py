@@ -308,7 +308,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.3.2.9'  # Versione aggiornata
+APP_VERSION = '2.4.3.4.3'  # Versione aggiornata
 # Nome programma usato come chiave in SwVersions / VersionDMLogs.
 # In produzione = nome dell'exe; in sviluppo usa il nome canonico.
 APP_PROGRAM_NAME = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else 'DocumentManagement.exe'
@@ -3852,6 +3852,7 @@ class Database:
         """
         query = """
             SELECT TOP (1)
+            c.CalibrationId,
             c.CalibratedOn,
             c.ExpireOn,
             c.NrCertificate
@@ -3917,21 +3918,74 @@ class Database:
                 cursor.close()
 
     def add_new_calibration(self, equipment_id, expiry_date, supplier_id, pdf_bytes, username):
-        """Inserisce una nuova calibrazione"""
+        """Inserisce una nuova calibrazione e ritorna il CalibrationId appena creato"""
         try:
             query = """
                     INSERT INTO [Traceability_RS].[eqp].[Calibrations]
                     ([EquipmentID], [SupplierId], [CalibratedOn], [ExpireOn], [NrCertificate], [User], [DateSys], [IsValid])
+                    OUTPUT INSERTED.[CalibrationId]
                     VALUES (?, ?, GETDATE(), ?, ?, ?, GETDATE(), 1) \
                     """
 
             self.cursor.execute(query, (equipment_id, supplier_id, expiry_date, pdf_bytes, username))
+            new_id = self.cursor.fetchval()
             self.conn.commit()
+            return new_id
 
         except Exception as e:
             self.conn.rollback()
             logger.error(f"Errore nell'inserimento calibrazione per equipment {equipment_id}: {e}")
             raise
+
+    def add_calibration_document(self, calibration_id, filename, data, username):
+        """Inserisce un documento allegato a una calibrazione (tabella uno-a-molti)"""
+        try:
+            query = """
+                    INSERT INTO [Traceability_RS].[eqp].[CalibrationDocuments]
+                    ([CalibrationId], [FileName], [DocumentData], [UploadedBy], [UploadedOn])
+                    VALUES (?, ?, ?, ?, GETDATE()) \
+                    """
+
+            self.cursor.execute(query, (calibration_id, filename, data, username))
+            self.conn.commit()
+
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Errore nell'inserimento documento calibrazione {calibration_id}: {e}")
+            raise
+
+    def get_calibration_documents(self, calibration_id):
+        """Elenco dei documenti allegati a una calibrazione (senza i dati binari)"""
+        query = """
+            SELECT [Id], [FileName], [UploadedBy], [UploadedOn]
+            FROM [Traceability_RS].[eqp].[CalibrationDocuments]
+            WHERE [CalibrationId] = ?
+            ORDER BY [Id]
+        """
+        cursor = None
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(query, calibration_id)
+            return cursor.fetchall()
+        finally:
+            if cursor:
+                cursor.close()
+
+    def get_calibration_document_data(self, doc_id):
+        """Recupera nome file e dati binari di un singolo documento"""
+        query = """
+            SELECT [FileName], [DocumentData]
+            FROM [Traceability_RS].[eqp].[CalibrationDocuments]
+            WHERE [Id] = ?
+        """
+        cursor = None
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(query, doc_id)
+            return cursor.fetchone()
+        finally:
+            if cursor:
+                cursor.close()
 
     def update_calibration(self, calibration_id, expiry_date, supplier_id, pdf_bytes, username):
         """Aggiorna una calibrazione esistente"""

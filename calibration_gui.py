@@ -24,7 +24,7 @@ class CalibrationsWindow(tk.Toplevel):
         self.current_equipment_id = None
 
         self.title(self.lang.get('calibrations_title', "Gestione Calibrazioni"))
-        self.geometry("650x600")  # Aumentata altezza per il nuovo bottone
+        self.geometry("680x760")  # Aumentata altezza per sezione documenti multipli
         self.transient(parent)
         self.grab_set()
 
@@ -32,9 +32,12 @@ class CalibrationsWindow(tk.Toplevel):
         self._create_widgets()
         self._load_initial_data()
 
-        self.selected_pdf_path = None  # PDF scelto per nuovo inserimento
-        self.selected_pdf_bytes = None  # bytes del PDF scelto per nuovo inserimento
-        self.current_cert_bytes = None  # bytes del certificato dell'ultima calibrazione caricata
+        self.selected_pdf_path = None  # nome del primo PDF scelto (retrocompatibilita')
+        self.selected_pdf_bytes = None  # bytes del primo PDF scelto (retrocompatibilita')
+        self.current_cert_bytes = None  # bytes del certificato legacy dell'ultima calibrazione caricata
+        self.selected_docs = []  # lista di dict {'filename', 'bytes'} per upload multiplo
+        self.current_docs = {}  # indice listbox -> (doc_id, filename) oppure ('legacy', filename)
+        self.current_calibration_id = None
 
     def _create_widgets(self):
         main_frame = ttk.Frame(self, padding="10")
@@ -44,6 +47,23 @@ class CalibrationsWindow(tk.Toplevel):
         select_frame = ttk.LabelFrame(main_frame, text=self.lang.get('select_equipment', "Seleziona Attrezzatura"),
                                       padding="10")
         select_frame.pack(fill=tk.X, expand=True, pady=(0, 10))
+
+        # Intestazione con logo + istruzione per l'operatore
+        header = ttk.Frame(select_frame)
+        header.pack(fill=tk.X, pady=(0, 8))
+        try:
+            from PIL import Image, ImageTk
+            img = Image.open("Logo.png")
+            img.thumbnail((48, 48))
+            self._logo_img = ImageTk.PhotoImage(img)
+            ttk.Label(header, image=self._logo_img).pack(side="left", padx=(0, 10))
+        except Exception:
+            pass
+        ttk.Label(header,
+                  text=self.lang.get('calibration_search_hint',
+                                     "Ricerca l'attrezzatura per aggiungere le informazioni di calibrazione."),
+                  wraplength=480, font=('Segoe UI', 10, 'italic')).pack(side="left", fill=tk.X, expand=True)
+
         self.combo_equipment = ttk.Combobox(select_frame, state="normal", font=('Segoe UI', 10))
         self.combo_equipment.pack(fill=tk.X, expand=True)
         self.combo_equipment.bind("<<ComboboxSelected>>", self._on_equipment_select)
@@ -70,13 +90,30 @@ class CalibrationsWindow(tk.Toplevel):
         self.btn_open_cert = ttk.Button(self.details_frame, text=self.lang.get('open_certificate', "Apri certificato"),
                                         command=self._open_certificate, state="disabled")
         self.btn_open_cert.grid(row=2, column=2, sticky="e", pady=2, padx=5)
-        
+
         # Bottone Export Storico
-        self.btn_export_history = ttk.Button(self.details_frame, 
+        self.btn_export_history = ttk.Button(self.details_frame,
                                              text=self.lang.get('export_history', "Esporta Storico"),
-                                             command=self._export_calibration_history, 
+                                             command=self._export_calibration_history,
                                              state="disabled")
         self.btn_export_history.grid(row=3, column=1, columnspan=2, sticky="e", pady=5, padx=5)
+
+        # Elenco documenti dell'ultima calibrazione
+        ttk.Label(self.details_frame, text=self.lang.get('calib_docs_label', "Documenti allegati:")).grid(
+            row=4, column=0, sticky="w", pady=(10, 2), padx=5)
+        self.details_frame.columnconfigure(0, weight=1)
+        docs_row = ttk.Frame(self.details_frame)
+        docs_row.grid(row=5, column=0, columnspan=3, sticky="ew", pady=2, padx=5)
+        self.lb_docs = tk.Listbox(docs_row, height=4, font=('Segoe UI', 9))
+        sb_docs = ttk.Scrollbar(docs_row, orient="vertical", command=self.lb_docs.yview)
+        self.lb_docs.configure(yscrollcommand=sb_docs.set)
+        self.lb_docs.pack(side="left", fill=tk.BOTH, expand=True)
+        sb_docs.pack(side="left", fill="y")
+        self.lb_docs.bind('<Double-Button-1>', lambda e: self._open_selected_document())
+        self.btn_open_doc = ttk.Button(self.details_frame,
+                                       text=self.lang.get('calib_open_document', "Apri documento"),
+                                       command=self._open_selected_document, state="disabled")
+        self.btn_open_doc.grid(row=6, column=2, sticky="e", pady=2, padx=5)
 
         self.insert_frame = ttk.LabelFrame(main_frame,
                                            text=self.lang.get('new_calibration_data', "Inserisci Nuova Calibrazione"),
@@ -98,23 +135,36 @@ class CalibrationsWindow(tk.Toplevel):
         self.combo_cert_body.bind('<KeyRelease>', self._on_supplier_search)
         self.combo_cert_body.bind('<<ComboboxSelected>>', lambda e: self.focus())
 
-        # Sostituisce "Numero certificato" con Upload PDF
+        # Upload multiplo PDF (relazione uno-a-molti con la calibrazione)
         ttk.Label(self.insert_frame, text=self.lang.get('certificate_pdf', "Certificato (PDF):")).grid(row=2,
                                                                                                        column=0,
-                                                                                                       sticky="w",
+                                                                                                       sticky="nw",
                                                                                                        pady=5, padx=5)
+        docs_sel_row = ttk.Frame(self.insert_frame)
+        docs_sel_row.grid(row=2, column=1, columnspan=2, sticky="ew", pady=5, padx=5)
+        self.lb_selected_docs = tk.Listbox(docs_sel_row, height=4, font=('Segoe UI', 9))
+        sb_sel = ttk.Scrollbar(docs_sel_row, orient="vertical", command=self.lb_selected_docs.yview)
+        self.lb_selected_docs.configure(yscrollcommand=sb_sel.set)
+        self.lb_selected_docs.pack(side="left", fill=tk.BOTH, expand=True)
+        sb_sel.pack(side="left", fill="y")
         self.lbl_cert_file = ttk.Label(self.insert_frame,
                                        text=self.lang.get('no_file_selected', "Nessun file selezionato"),
                                        foreground="gray")
-        self.lbl_cert_file.grid(row=2, column=1, sticky="w", pady=5, padx=5)
-        self.btn_upload_pdf = ttk.Button(self.insert_frame, text=self.lang.get('upload_pdf', "Carica PDF"),
+        self.lbl_cert_file.grid(row=3, column=1, sticky="w", pady=(0, 5), padx=5)
+
+        btns_row = ttk.Frame(self.insert_frame)
+        btns_row.grid(row=4, column=1, columnspan=2, sticky="e", pady=2, padx=5)
+        self.btn_upload_pdf = ttk.Button(btns_row, text=self.lang.get('calib_add_pdf', "Aggiungi PDF"),
                                          command=self._choose_pdf_file)
-        self.btn_upload_pdf.grid(row=2, column=2, sticky="w", pady=5, padx=5)
+        self.btn_upload_pdf.pack(side="left", padx=(0, 5))
+        self.btn_remove_doc = ttk.Button(btns_row, text=self.lang.get('calib_remove_selected', "Rimuovi selezionato"),
+                                         command=self._remove_selected_doc, state="disabled")
+        self.btn_remove_doc.pack(side="left")
 
         self.btn_save = ttk.Button(self.insert_frame, text=self.lang.get('save_button', "Salva"),
                                    command=self._save_calibration)
-        self.btn_save.grid(row=3, column=1, sticky="e", pady=10, padx=5)
-        self.btn_save.state(["disabled"])  # Disabilitato finché non viene caricato un PDF
+        self.btn_save.grid(row=5, column=1, sticky="e", pady=10, padx=5)
+        self.btn_save.state(["disabled"])  # Disabilitato finché non viene caricato almeno un PDF
 
     def _load_initial_data(self):
         self._load_equipment_list()
@@ -135,7 +185,7 @@ class CalibrationsWindow(tk.Toplevel):
         except Exception as e:
             messagebox.showerror(self.lang.get('error', "Errore"), f"Impossibile caricare la lista attrezzature:\n{e}",
                                  parent=self)
-    
+
     def _on_equipment_search(self, event=None):
         """Filtra la lista equipment mentre l'utente digita"""
         value = self.combo_equipment.get().lower()
@@ -174,20 +224,24 @@ class CalibrationsWindow(tk.Toplevel):
 
     def _load_calibration_data(self, equipment_id):
         try:
-            # reset stato certificati
+            # reset stato certificati e documenti
             self.current_cert_bytes = None
             self.selected_pdf_path = None
             self.selected_pdf_bytes = None
-            self.lbl_cert_file.config(text=self.lang.get('no_file_selected', "Nessun file selezionato"),
-                                      foreground="gray")
-            self.btn_save.state(["disabled"])
+            self.selected_docs = []
+            self.lb_selected_docs.delete(0, tk.END)
+            self._refresh_selected_docs_label()
+            self.current_docs = {}
+            self.current_calibration_id = None
+            self.lb_docs.delete(0, tk.END)
+            self.btn_open_doc.configure(state="disabled")
 
             row = self.db.get_last_calibration(equipment_id)
 
             if row:
                 self.lbl_last_date.config(text=str(row.CalibratedOn) if row.CalibratedOn else "N/D")
                 self.lbl_expiry_date.config(text=str(row.ExpireOn) if row.ExpireOn else "NESSUNA")
-                # certificato
+                # certificato (colonna legacy)
                 cert = getattr(row, 'NrCertificate', None)
                 if cert:
                     try:
@@ -202,6 +256,9 @@ class CalibrationsWindow(tk.Toplevel):
                 self.btn_open_cert.configure(state="normal" if has_cert else "disabled")
                 # Abilita export storico
                 self.btn_export_history.configure(state="normal")
+                # Documenti allegati (tabella uno-a-molti, fallback su legacy)
+                self.current_calibration_id = getattr(row, 'CalibrationId', None)
+                self._load_documents_list(cert)
             else:
                 self.lbl_last_date.config(text="Nessuna calibrazione registrata")
                 self.lbl_expiry_date.config(text="N/D")
@@ -218,7 +275,59 @@ class CalibrationsWindow(tk.Toplevel):
         except Exception as e:
             messagebox.showerror(self.lang.get('error', "Errore"), f"Impossibile caricare i dati di calibrazione:\n{e}",
                                  parent=self)
-    
+
+    def _load_documents_list(self, legacy_cert):
+        """Popola la lista documenti dell'ultima calibrazione (fallback sulla colonna legacy)"""
+        self.lb_docs.delete(0, tk.END)
+        self.current_docs = {}
+        docs = []
+        if self.current_calibration_id:
+            try:
+                docs = self.db.get_calibration_documents(self.current_calibration_id) or []
+            except Exception as e:
+                logger.error(f"Errore caricamento documenti calibrazione {self.current_calibration_id}: {e}")
+                docs = []
+        idx = 0
+        for d in docs:
+            label = d.FileName
+            if getattr(d, 'UploadedOn', None):
+                label = f"{d.FileName}  ({d.UploadedOn})"
+            self.lb_docs.insert(tk.END, label)
+            self.current_docs[idx] = (d.Id, d.FileName)
+            idx += 1
+        if idx == 0 and legacy_cert:
+            self.lb_docs.insert(tk.END, "certificato.pdf")
+            self.current_docs[0] = ('legacy', 'certificato.pdf')
+            idx += 1
+        if idx == 0:
+            self.lb_docs.insert(tk.END, self.lang.get('calib_no_documents', "Nessun documento allegato"))
+        self.btn_open_doc.configure(state="normal" if idx else "disabled")
+
+    def _refresh_selected_docs_label(self):
+        """Aggiorna conteggio/label dei PDF selezionati e lo stato dei pulsanti"""
+        n = len(self.selected_docs)
+        self.selected_pdf_bytes = self.selected_docs[0]['bytes'] if n else None
+        self.selected_pdf_path = self.selected_docs[0]['filename'] if n else None
+        if n:
+            self.lbl_cert_file.config(text=f"{n} PDF", foreground="black")
+            self.btn_save.state(["!disabled"])
+            self.btn_remove_doc.state(["!disabled"])
+        else:
+            self.lbl_cert_file.config(text=self.lang.get('no_file_selected', "Nessun file selezionato"),
+                                      foreground="gray")
+            self.btn_save.state(["disabled"])
+            self.btn_remove_doc.state(["disabled"])
+
+    def _remove_selected_doc(self):
+        sel = self.lb_selected_docs.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        self.lb_selected_docs.delete(idx)
+        if 0 <= idx < len(self.selected_docs):
+            self.selected_docs.pop(idx)
+        self._refresh_selected_docs_label()
+
     def _export_calibration_history(self):
         """Esporta lo storico calibrazioni dell'equipment selezionato in Excel"""
         if not self.current_equipment_id:
@@ -228,15 +337,15 @@ class CalibrationsWindow(tk.Toplevel):
                 parent=self
             )
             return
-        
+
         try:
             # Recupera nome equipment per il filename
             selected_equipment_name = self.combo_equipment.get()
             equipment_safe_name = selected_equipment_name.replace('/', '_').replace('\\', '_').replace(':', '_')
-            
+
             # Recupera tutte le calibrazioni per questo equipment (anche quelle non valide)
             calibrations = self.db.get_all_calibrations_history(self.current_equipment_id)
-            
+
             if not calibrations:
                 messagebox.showinfo(
                     self.lang.get('info', "Informazione"),
@@ -244,26 +353,26 @@ class CalibrationsWindow(tk.Toplevel):
                     parent=self
                 )
                 return
-            
+
             # Crea directory C:\Temp se non esiste
             import os
             temp_dir = r"C:\Temp"
             os.makedirs(temp_dir, exist_ok=True)
-            
+
             # Nome file con timestamp
             from datetime import datetime
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"Calibrazioni_{equipment_safe_name}_{timestamp}.xlsx"
             filepath = os.path.join(temp_dir, filename)
-            
+
             # Crea Excel con openpyxl
             from openpyxl import Workbook
             from openpyxl.styles import Font, PatternFill, Alignment
-            
+
             wb = Workbook()
             ws = wb.active
             ws.title = "Storico Calibrazioni"
-            
+
             # Header
             headers = [
                 "ID Calibrazione",
@@ -272,23 +381,23 @@ class CalibrationsWindow(tk.Toplevel):
                 "Ente Certificatore",
                 "Valido"
             ]
-            
+
             # Stile header
             header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
             header_font = Font(bold=True, color="FFFFFF")
-            
+
             for col_num, header in enumerate(headers, 1):
                 cell = ws.cell(row=1, column=col_num, value=header)
                 cell.fill = header_fill
                 cell.font = header_font
                 cell.alignment = Alignment(horizontal="center", vertical="center")
-            
+
             # Dati
             for row_num, cal in enumerate(calibrations, 2):
                 ws.cell(row=row_num, column=1, value=cal.CalibrationID)
                 ws.cell(row=row_num, column=2, value=str(cal.CalibratedOn) if cal.CalibratedOn else "N/D")
                 ws.cell(row=row_num, column=3, value=str(cal.ExpireOn) if cal.ExpireOn else "N/D")
-                
+
                 # Recupera nome fornitore
                 supplier_name = "N/D"
                 if hasattr(cal, 'SupplierId') and cal.SupplierId:
@@ -297,9 +406,9 @@ class CalibrationsWindow(tk.Toplevel):
                             supplier_name = name
                             break
                 ws.cell(row=row_num, column=4, value=supplier_name)
-                
+
                 ws.cell(row=row_num, column=5, value="Sì" if getattr(cal, 'IsValid', 1) == 1 else "No")
-            
+
             # Auto-size columns
             for column in ws.columns:
                 max_length = 0
@@ -312,10 +421,10 @@ class CalibrationsWindow(tk.Toplevel):
                         pass
                 adjusted_width = min(max_length + 2, 50)
                 ws.column_dimensions[column_letter].width = adjusted_width
-            
+
             # Salva file
             wb.save(filepath)
-            
+
             # Apri file automaticamente
             if hasattr(os, "startfile"):  # Windows
                 os.startfile(filepath)
@@ -324,13 +433,13 @@ class CalibrationsWindow(tk.Toplevel):
                     subprocess.Popen(["open", filepath])
                 else:
                     subprocess.Popen(["xdg-open", filepath])
-            
+
             messagebox.showinfo(
                 self.lang.get('success', "Successo"),
                 f"Storico esportato con successo:\n{filepath}",
                 parent=self
             )
-            
+
         except Exception as e:
             messagebox.showerror(
                 self.lang.get('error', "Errore"),
@@ -340,28 +449,52 @@ class CalibrationsWindow(tk.Toplevel):
             logger.error(f"Errore export calibrazioni: {e}", exc_info=True)
 
     def _choose_pdf_file(self):
-        path = filedialog.askopenfilename(
+        """Permette di aggiungere uno o più PDF alla lista dei documenti da allegare"""
+        paths = filedialog.askopenfilenames(
             title=self.lang.get('select_pdf_title', "Seleziona file PDF"),
             filetypes=[("PDF", "*.pdf")]
         )
-        if not path:
-            self.btn_save.state(["disabled"])
+        if not paths:
             return
+        loaded = 0
+        for path in paths:
+            try:
+                with open(path, "rb") as f:
+                    data = f.read()
+                if not data:
+                    raise ValueError("Empty file")
+                filename = os.path.basename(path)
+                # Evita duplicati con lo stesso nome nella lista
+                if any(d['filename'] == filename for d in self.selected_docs):
+                    continue
+                self.selected_docs.append({'filename': filename, 'bytes': data})
+                self.lb_selected_docs.insert(tk.END, filename)
+                loaded += 1
+            except Exception as e:
+                messagebox.showerror(self.lang.get('error', "Errore"),
+                                     self.lang.get('pdf_load_error', f"Impossibile caricare il PDF: {e}"),
+                                     parent=self)
+        self._refresh_selected_docs_label()
+
+    def _open_file_bytes(self, data, filename):
+        """Scrive i dati binari su un file temporaneo e li apre con l'applicazione predefinita"""
         try:
-            with open(path, "rb") as f:
-                data = f.read()
-            if not data:
-                raise ValueError("Empty file")
-            self.selected_pdf_path = path
-            self.selected_pdf_bytes = data
-            filename = os.path.basename(path)
-            self.lbl_cert_file.config(text=filename, foreground="black")
-            self.btn_save.state(["!disabled"])  # abilita il pulsante Salva
-        except Exception as e:
-            self.btn_save.state(["disabled"])
-            messagebox.showerror(self.lang.get('error', "Errore"),
-                                 self.lang.get('pdf_load_error', f"Impossibile caricare il PDF: {e}"),
-                                 parent=self)
+            data = bytes(data)
+        except Exception:
+            pass  # pyodbc può restituire già bytes
+        suffix = os.path.splitext(filename)[1] or ".pdf"
+        fd, temp_path = tempfile.mkstemp(prefix="calibration_", suffix=suffix)
+        os.close(fd)
+        with open(temp_path, "wb") as f:
+            f.write(data)
+        # Apri con app predefinita
+        if hasattr(os, "startfile"):  # Windows
+            os.startfile(temp_path)
+        else:
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", temp_path])
+            else:
+                subprocess.Popen(["xdg-open", temp_path])
 
     def _open_certificate(self):
         if not self.current_cert_bytes:
@@ -370,18 +503,32 @@ class CalibrationsWindow(tk.Toplevel):
                                 parent=self)
             return
         try:
-            fd, temp_path = tempfile.mkstemp(prefix="calibration_", suffix=".pdf")
-            os.close(fd)
-            with open(temp_path, "wb") as f:
-                f.write(self.current_cert_bytes)
-            # Apri con app predefinita
-            if hasattr(os, "startfile"):  # Windows
-                os.startfile(temp_path)
-            else:
-                if sys.platform == "darwin":
-                    subprocess.Popen(["open", temp_path])
-                else:
-                    subprocess.Popen(["xdg-open", temp_path])
+            self._open_file_bytes(self.current_cert_bytes, 'certificato.pdf')
+        except Exception as e:
+            messagebox.showerror(self.lang.get('error', "Errore"),
+                                 self.lang.get('pdf_open_error', f"Impossibile aprire il PDF: {e}"),
+                                 parent=self)
+
+    def _open_selected_document(self):
+        """Apre il documento selezionato nella lista dell'ultima calibrazione"""
+        sel = self.lb_docs.curselection()
+        if not sel:
+            return
+        entry = self.current_docs.get(sel[0])
+        if not entry:
+            return
+        doc_id, filename = entry
+        try:
+            if doc_id == 'legacy':
+                self._open_certificate()
+                return
+            row = self.db.get_calibration_document_data(doc_id)
+            if not row or not row.DocumentData:
+                messagebox.showinfo(self.lang.get('info', "Informazione"),
+                                    self.lang.get('no_certificate_to_open', "Nessun certificato da aprire."),
+                                    parent=self)
+                return
+            self._open_file_bytes(row.DocumentData, row.FileName or filename)
         except Exception as e:
             messagebox.showerror(self.lang.get('error', "Errore"),
                                  self.lang.get('pdf_open_error', f"Impossibile aprire il PDF: {e}"),
@@ -407,7 +554,7 @@ class CalibrationsWindow(tk.Toplevel):
                                                  "Selezionare un ente certificatore valido dalla lista."),
                                    parent=self)
             return
-        if not self.selected_pdf_bytes:
+        if not self.selected_docs:
             messagebox.showwarning(
                 self.lang.get('missing_data', "Dati Mancanti"),
                 self.lang.get('certificate_required', "Caricare un certificato PDF prima di salvare."),
@@ -419,16 +566,26 @@ class CalibrationsWindow(tk.Toplevel):
             # LOGICA SEMPLIFICATA: Sempre INSERT nuovo record
             # 1. Invalida tutte le calibrazioni precedenti per questo equipment (IsValid = 0)
             self.db.invalidate_previous_calibrations(equipment_id)
-            
-            # 2. Inserisce la nuova calibrazione (IsValid = 1 di default)
-            self.db.add_new_calibration(
-                equipment_id, 
-                new_expiry_date, 
-                supplier_id, 
-                self.selected_pdf_bytes,
+
+            # 2. Inserisce la nuova calibrazione (IsValid = 1 di default).
+            #    Il primo PDF viene salvato anche nella colonna legacy NrCertificate
+            #    per retrocompatibilità con i lettori esistenti.
+            first_bytes = self.selected_docs[0]['bytes']
+            new_cal_id = self.db.add_new_calibration(
+                equipment_id,
+                new_expiry_date,
+                supplier_id,
+                first_bytes,
                 username
             )
-            
+
+            # 3. Inserisce tutti i documenti nella tabella uno-a-molti
+            if new_cal_id:
+                for doc in self.selected_docs:
+                    self.db.add_calibration_document(new_cal_id, doc['filename'], doc['bytes'], username)
+            else:
+                logger.error("add_new_calibration non ha restituito un CalibrationId; documenti non salvati")
+
             messagebox.showinfo(
                 self.lang.get('success', "Successo"),
                 "Nuova calibrazione inserita correttamente.",
@@ -436,22 +593,18 @@ class CalibrationsWindow(tk.Toplevel):
             )
 
             # Reset campi
-            self.selected_pdf_path = None
-            self.selected_pdf_bytes = None
-            self.lbl_cert_file.config(
-                text=self.lang.get('no_file_selected', "Nessun file selezionato"),
-                foreground="gray"
-            )
-            self.btn_save.state(["disabled"])
+            self.selected_docs = []
+            self.lb_selected_docs.delete(0, tk.END)
+            self._refresh_selected_docs_label()
             self.combo_cert_body.set('')
-            
+
             # Ricarica dati per mostrare la nuova calibrazione
             self._load_calibration_data(equipment_id)
 
         except Exception as e:
             messagebox.showerror(
                 self.lang.get('error', "Errore di Salvataggio"),
-                f"Impossibile salvare i dati:\n{e}", 
+                f"Impossibile salvare i dati:\n{e}",
                 parent=self
             )
 
