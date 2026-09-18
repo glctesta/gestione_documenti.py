@@ -1,4 +1,4 @@
-﻿#import configparser
+#import configparser
 # --- StdIO safeguard + Faulthandler sicuro per exe windowed ---
 import shutil
 import sys, os, atexit
@@ -11517,6 +11517,13 @@ class App(tk.Tk):
         # Imposta la gestione della chiusura della finestra una sola volta
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
 
+        # Ripristino focus da taskbar: Tk withdrawa automaticamente le finestre
+        # transient (dialoghi modali con grab_set) quando il master viene
+        # iconificato; al ritorno il grab resta attivo ma il dialogo e' invisibile
+        # e l'app risulta impossibile da focalizzare. Al <Map> (ripristino) il
+        # dialogo che detiene il grab viene rimesso a video sopra la finestra.
+        self.bind('<Map>', self._restore_grabbed_dialog)
+
     def open_scrap_validation_with_login(self):
         """Apre la finestra di validazione scarti dopo login."""
 
@@ -22393,6 +22400,50 @@ class App(tk.Tk):
 
         return default_minutes
 
+    def _restore_grabbed_dialog(self, event=None):
+        """Al ripristino da taskbar/deiconifica, rimette a video il dialogo
+        modale che detiene il grab.
+
+        Diagnostica del blocco "app non focalizzabile dalla taskbar": le
+        finestre transient (tutti i dialoghi con transient+grab_set) vengono
+        ritirate (withdraw) automaticamente da Tk quando il master viene
+        iconificato. Se una di esse teneva il grab, al ritorno l'applicazione
+        appare congelata: il grab e' ancora attivo ma la finestra che lo
+        detiene non e' visibile e non compare in taskbar. Qui la riesumiamo
+        sopra la finestra principale; se non puo' essere mostrata, ne
+        rilasciamo il grab in modo che l'app torni utilizzabile.
+        """
+        if getattr(self, '_closing', False):
+            return
+        try:
+            holder = self.grab_current()
+        except Exception:
+            return
+        if holder is None:
+            return
+        try:
+            if not holder.winfo_exists():
+                return
+            if not holder.winfo_viewable():
+                # Il dialogo e' stato ritirato (withdraw) durante la
+                # minimizzazione: lo rimettiamo a video, altrimenti l'app
+                # resta bloccata da un grab senza finestra visibile.
+                try:
+                    holder.deiconify()
+                except Exception:
+                    try:
+                        holder.grab_release()
+                    except Exception:
+                        pass
+                    return
+            holder.lift()
+            try:
+                holder.focus_force()
+            except Exception:
+                pass
+        except Exception as e:
+            logger.debug(f"_restore_grabbed_dialog: {e}")
+
     def _setup_inactivity_monitor(self):
         """Configura il monitor di inattività. Chiude l'app dopo N minuti senza interazione."""
         minutes = self._load_stay_alive_minutes()
@@ -22704,26 +22755,36 @@ class App(tk.Tk):
                     pass
                 setattr(self, job_attr, None)
 
-        # L'arresto dei servizi puo' richiedere diversi secondi (i thread vengono
-        # joinati con timeout): al posto dello slideshow mostriamo lo stato.
+        # L'arresto dei servizi (join fino a 5s per thread) e la disconnessione
+        # dal DB possono richiedere diversi secondi: li eseguiamo in un thread
+        # in background e chiudiamo subito la finestra, cosi' la chiusura e'
+        # immediata per l'utente. I thread daemon vengono comunque terminati
+        # all'uscita del processo se lo shutdown non li conclude in tempo.
         services = self._collect_shutdown_services()
-        total = len(services)
-        if total:
+        if services:
             self._show_shutdown_notice()
-        for idx, (name, stop_fn) in enumerate(services, start=1):
-            self._show_shutdown_notice(f"({idx}/{total}) {name}")
+        # Registrazione chiusura sessione sincrona: deve avvenire prima della
+        # disconnessione e mentre la connessione e' ancora garantita disponibile.
+        self._register_program_usage_end()
+        threading.Thread(target=self._shutdown_services_worker,
+                         args=(services,), daemon=True, name="AppShutdown").start()
+        self.destroy()
+
+    def _shutdown_services_worker(self, services):
+        """Ferma i servizi attivi e disconnette il DB (thread in background).
+
+        Non tocca la UI: qualsiasi riferimento a widget distrutti e' protetto
+        dal try/except per singolo servizio.
+        """
+        for name, stop_fn in services:
             try:
                 stop_fn()
             except Exception as e:
                 logger.error(f"Errore arresto servizio '{name}': {e}", exc_info=True)
-
-        if total:
-            self._show_shutdown_notice(
-                self.lang.get('shutdown_closing_session',
-                              'Chiusura sessione e disconnessione database...'))
-        self._register_program_usage_end()
-        self.db.disconnect()
-        self.destroy()
+        try:
+            self.db.disconnect()
+        except Exception as e:
+            logger.error(f"Errore disconnessione DB in chiusura: {e}", exc_info=True)
 
 
 class UpdateNotificationDialog(tk.Toplevel):
