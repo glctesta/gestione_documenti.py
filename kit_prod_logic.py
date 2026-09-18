@@ -161,7 +161,7 @@ def apply_prod_check(cursor, list_id: int, material_code: str, qty_received: flo
         WITH ig AS (
             SELECT material_code,
                    SUM(ISNULL(cpf.qty_actual, qty_picked)) AS qty_expected,
-                   MIN(id) AS representative_item_id,
+                   MIN(i.id) AS representative_item_id,
                    MAX(i.order_number) AS order_number
             FROM Traceability_RS.dbo.picking_list_items i
             LEFT JOIN Traceability_RS.dbo.kit_item_checks cpf
