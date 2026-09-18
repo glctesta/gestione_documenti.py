@@ -590,6 +590,98 @@ def resolve_user_email(db, user_name):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Fornitori (Sites): inserimento rapido dalla form Ricezione
+# ---------------------------------------------------------------------------
+def normalize_vat(vat):
+    """Normalizza un codice IVA per il confronto: maiuscolo, senza spazi."""
+    return ''.join(str(vat or '').split()).upper()
+
+
+def find_suppliers_by_vat(db, vat):
+    """Fornitori con lo stesso codice IVA (normalizzato, con/senza prefisso 'IT').
+
+    Ritorna lista di {'IDSite', 'SiteName'}; vuota se il codice e' libero.
+    """
+    norm = normalize_vat(vat)
+    if not norm:
+        return []
+    variants = {norm}
+    if norm.startswith('IT') and len(norm) > 2:
+        variants.add(norm[2:])
+    else:
+        variants.add('IT' + norm)
+    placeholders = ', '.join('?' * len(variants))
+    sql = (
+        "SELECT IDSite, SiteName FROM Traceability_RS.dbo.Sites "
+        "WHERE REPLACE(UPPER(SiteVat), ' ', '') IN (%s)" % placeholders)
+    with db._lock:
+        cur = _cursor(db)
+        cur.execute(sql, tuple(sorted(variants)))
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def supplier_name_suggestions(db, name, limit=5, cutoff=0.6):
+    """Nomi fornitore simili a quello proposto (difflib), per evitare duplicati.
+
+    Ritorna lista di {'IDSite', 'SiteName'} ordinata per somiglianza.
+    """
+    import difflib
+    term = (name or '').strip().lower()
+    if len(term) < 3:
+        return []
+    with db._lock:
+        cur = _cursor(db)
+        cur.execute(
+            "SELECT IDSite, SiteName FROM Traceability_RS.dbo.Sites "
+            "WHERE IsSupplier = 1 AND SiteName IS NOT NULL AND SiteName <> ''")
+        cols = [d[0] for d in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    choices = {str(r['SiteName']).strip().lower(): r for r in rows
+               if str(r['SiteName'] or '').strip()}
+    matches = difflib.get_close_matches(term, list(choices.keys()), n=limit, cutoff=cutoff)
+    return [choices[m] for m in matches]
+
+
+def create_supplier(db, name, vat):
+    """Inserisce un nuovo fornitore in dbo.Sites (stesso pattern di
+    Database.add_new_site: IDLastPhase=139, IsSupplier=1).
+
+    Ritorna il nuovo IDSite. Il chiamante deve aver gia' verificato che il
+    codice IVA non esista (find_suppliers_by_vat).
+    """
+    name = (name or '').strip()[:250]
+    vat = (vat or '').strip()[:50]
+    if not name or not vat:
+        raise ValueError("Nome e codice IVA sono obbligatori")
+    sql = """
+        INSERT INTO Traceability_RS.dbo.Sites
+            (SiteName, SiteAddress, SiteVat, SiteCountry, Logo,
+             IDLastPhase, IsSupplier, IsTempraryLeasingComp)
+        OUTPUT INSERTED.IDSite
+        VALUES (?, NULL, ?, NULL, NULL, 139, 1, 0)
+    """
+    with db._lock:
+        cur = _cursor(db)
+        try:
+            cur.execute(sql, (name, vat))
+            row = cur.fetchone()
+            db.conn.commit()
+            new_id = int(row[0]) if row else None
+            if new_id is None:
+                raise RuntimeError("INSERT Sites: IDSite non restituito")
+            logger.info("incoming: creato fornitore '%s' (IDSite=%s, VAT=%s)", name, new_id, vat)
+            return new_id
+        except Exception:
+            try:
+                db.conn.rollback()
+            except Exception:
+                pass
+            logger.exception("incoming: creazione fornitore '%s' fallita", name)
+            raise
+
+
 def save_monthly_recipients(db, emails: list):
     """Sostituisce i destinatari del report mensile (una riga settings per email)."""
     emails = [e.strip() for e in (emails or []) if e and e.strip()]

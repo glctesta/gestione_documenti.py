@@ -140,8 +140,11 @@ class IncomingRequestWindow(tk.Toplevel):
             row=1, column=0, sticky='w', padx=6, pady=6)
         self._v_supplier = tk.StringVar()
         self._cb_supplier = ttk.Combobox(form, textvariable=self._v_supplier, width=52)
-        self._cb_supplier.grid(row=1, column=1, columnspan=2, sticky='w', padx=4, pady=6)
+        self._cb_supplier.grid(row=1, column=1, sticky='w', padx=4, pady=6)
         self._cb_supplier.bind('<KeyRelease>', self._on_supplier_key)
+        ttk.Button(form, text=L('inc_req_new_supplier', 'Nuovo fornitore…'),
+                   command=self._open_new_supplier).grid(
+            row=1, column=2, sticky='w', padx=4, pady=6)
         self._refresh_supplier_values('')
 
         # DDT numero
@@ -220,6 +223,23 @@ class IncomingRequestWindow(tk.Toplevel):
     def _on_supplier_key(self, _ev=None):
         self._refresh_supplier_values(self._v_supplier.get())
 
+    def _open_new_supplier(self, initial=None):
+        """Apre il dialog di inserimento rapido fornitore e seleziona il risultato.
+
+        Il dialog verifica univocita' del codice IVA e propone i fornitori con
+        nome simile prima di inserire. Se l'utente sceglie un esistente dalla
+        lista delle similitudini, viene selezionato quello.
+        """
+        typed = (initial if initial is not None else self._v_supplier.get()).strip()
+        dlg = NewSupplierDialog(self, self.db, self.lang, initial_name=typed)
+        if not dlg.result:
+            return
+        sup = dlg.result
+        if not any(s['IDSite'] == sup['id'] for s in self._suppliers):
+            self._suppliers.append({'IDSite': sup['id'], 'SiteName': sup['name']})
+        self._refresh_supplier_values('')
+        self._v_supplier.set(f"{sup['name']} ({sup['id']})")
+
     # ── Dinamica campi per tipo ───────────────────────────────────────────────
     def _current_type_key(self):
         return self._type_key_by_label.get(self._v_type.get()) or 'MPN_MANCANTE'
@@ -272,6 +292,14 @@ class IncomingRequestWindow(tk.Toplevel):
         # Fornitore
         disp = self._v_supplier.get().strip()
         sup = self._supplier_by_display.get(disp)
+        if not sup and disp:
+            # Non in elenco: offri l'inserimento rapido (con codice IVA obbligatorio)
+            if messagebox.askyesno(L('inc_req_new_supplier_title', 'Inserimento nuovo fornitore'),
+                                   L('inc_req_offer_new_supplier',
+                                     'Il fornitore "{0}" non e'' in elenco.\nInserirlo ora?').format(disp),
+                                   parent=self):
+                self._open_new_supplier(initial=disp)
+                sup = self._supplier_by_display.get(self._v_supplier.get().strip())
         if not sup:
             messagebox.showinfo(L('info', 'Info'),
                                 L('inc_req_select_supplier', 'Seleziona un fornitore dall\'elenco.'), parent=self)
@@ -364,3 +392,200 @@ class IncomingRequestWindow(tk.Toplevel):
                             parent=self)
         logger.info(f"Incoming request creata: {request_number} (id={request_id}) tipo={key}")
         self._reset()
+
+
+# ── Dialog inserimento rapido fornitore ───────────────────────────────────────
+class NewSupplierDialog(tk.Toplevel):
+    """Inserimento rapido di un fornitore non presente in anagrafica.
+
+    Flusso: validazione campi -> verifica codice IVA gia' esistente (rifiuto)
+    -> eventuale proposta di nomi simili (dialog dedicato) -> INSERT in
+    dbo.Sites. Il risultato e' in self.result: {'id': IDSite, 'name': nome}
+    oppure None se annullato / scelto un esistente gia' noto al chiamante
+    (in quel caso result punta all'esistente, cosi' viene selezionato).
+    """
+
+    def __init__(self, master, db, lang, initial_name=""):
+        super().__init__(master)
+        self.db = db
+        self.lang = lang
+        self.result = None
+        L = self.lang.get
+
+        self.title(L('inc_req_new_supplier_title', 'Inserimento nuovo fornitore'))
+        self.geometry('460x230')
+        self.resizable(False, False)
+        self.transient(master)
+        self.grab_set()
+
+        frm = ttk.Frame(self, padding=16)
+        frm.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frm, text=L('inc_req_supplier_name', 'Ragione sociale:')).grid(
+            row=0, column=0, sticky='w', pady=6)
+        self._v_name = tk.StringVar(value=initial_name)
+        ttk.Entry(frm, textvariable=self._v_name, width=40).grid(
+            row=0, column=1, sticky='w', padx=6, pady=6)
+
+        ttk.Label(frm, text=L('inc_req_supplier_vat', 'Codice IVA / P.IVA (*):')).grid(
+            row=1, column=0, sticky='w', pady=6)
+        self._v_vat = tk.StringVar()
+        vat_entry = ttk.Entry(frm, textvariable=self._v_vat, width=25)
+        vat_entry.grid(row=1, column=1, sticky='w', padx=6, pady=6)
+
+        ttk.Label(frm, text=L('inc_req_vat_mandatory',
+                              '(*) Il codice IVA e'' obbligatorio: viene verificato che non esista gia''.'),
+                  font=('Segoe UI', 8), foreground='#555555', wraplength=420,
+                  justify='left').grid(row=2, column=0, columnspan=2, sticky='w', pady=(2, 8))
+
+        bar = ttk.Frame(frm)
+        bar.grid(row=3, column=0, columnspan=2, sticky='e', pady=(10, 0))
+        ttk.Button(bar, text=L('inc_req_save_supplier', 'Salva fornitore'),
+                   command=self._on_ok).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bar, text=L('btn_close', 'Annulla'),
+                   command=self.destroy).pack(side=tk.LEFT, padx=4)
+
+        self.protocol('WM_DELETE_WINDOW', self.destroy)
+        self.update_idletasks()
+        vat_entry.focus_set()
+
+    def _on_ok(self):
+        L = self.lang.get
+        name = self._v_name.get().strip()
+        vat = self._v_vat.get().strip()
+        if not name:
+            messagebox.showinfo(L('info', 'Info'),
+                                L('inc_req_name_required', 'Inserire la ragione sociale del fornitore.'),
+                                parent=self)
+            return
+        if not vat:
+            messagebox.showinfo(L('info', 'Info'),
+                                L('inc_req_vat_required', 'Inserire il codice IVA del fornitore (obbligatorio).'),
+                                parent=self)
+            return
+        if len(name) > 250:
+            messagebox.showinfo(L('info', 'Info'),
+                                L('inc_req_name_too_long', 'Ragione sociale troppo lunga (max 250 caratteri).'),
+                                parent=self)
+            return
+
+        # 1. Codice IVA gia' presente -> rifiuto, mostrando i fornitori esistenti
+        try:
+            existing = incoming_db.find_suppliers_by_vat(self.db, vat)
+        except Exception as e:
+            logger.error(f"Verifica IVA fornitore fallita: {e}", exc_info=True)
+            messagebox.showerror(L('error', 'Errore'),
+                                 L('inc_req_vat_check_error', 'Impossibile verificare il codice IVA:\n{0}').format(e),
+                                 parent=self)
+            return
+        if existing:
+            names = '\n'.join(f"• {r['SiteName']} (ID {r['IDSite']})" for r in existing[:10])
+            messagebox.showwarning(
+                L('warning', 'Attenzione'),
+                L('inc_req_vat_exists',
+                  'Esiste gia'' una societa'' con questo codice IVA:\n{0}\n\n'
+                  'Inserimento rifiutato: selezionare la societa'' esistente.').format(names),
+                parent=self)
+            return
+
+        # 2. Verifica similitudine nomi: propone eventuali fornitori esistenti
+        try:
+            matches = incoming_db.supplier_name_suggestions(self.db, name)
+        except Exception as e:
+            logger.error(f"Verifica similitudine nomi fallita: {e}", exc_info=True)
+            matches = []
+        if matches:
+            sim = SimilarSuppliersDialog(self, self.lang, matches)
+            if sim.cancelled:
+                return  # l'utente chiude: resta nel dialog per correggere
+            if sim.selected:
+                # Usa il fornitore esistente selezionato: nessun INSERT
+                self.result = {'id': sim.selected['IDSite'],
+                               'name': str(sim.selected['SiteName']).strip()}
+                self.destroy()
+                return
+            # sim.selected None + non annullato -> l'utente conferma "Inserisci nuovo"
+
+        # 3. Inserimento
+        try:
+            new_id = incoming_db.create_supplier(self.db, name, vat)
+        except Exception as e:
+            logger.error(f"Inserimento fornitore '{name}' fallito: {e}", exc_info=True)
+            messagebox.showerror(L('error', 'Errore'),
+                                 L('inc_req_supplier_save_error',
+                                   'Errore durante l''inserimento del fornitore:\n{0}').format(e),
+                                 parent=self)
+            return
+        self.result = {'id': new_id, 'name': name}
+        messagebox.showinfo(L('info', 'Info'),
+                            L('inc_req_supplier_created', 'Fornitore "{0}" inserito correttamente.').format(name),
+                            parent=self)
+        self.destroy()
+
+
+class SimilarSuppliersDialog(tk.Toplevel):
+    """Mostra i fornitori con nome simile a quello inserito.
+
+    L'utente puo' selezionarne uno (selected valorizzato), confermare
+    l'inserimento di un nuovo fornitore (selected=None, cancelled=False)
+    oppure annullare tornando al dialog di inserimento (cancelled=True).
+    """
+
+    def __init__(self, master, lang, matches):
+        super().__init__(master)
+        self.lang = lang
+        self.selected = None
+        self.cancelled = True   # resta True finche' non si preme una delle due azioni
+        L = self.lang.get
+
+        self.title(L('inc_req_similar_title', 'Possibili fornitori esistenti'))
+        self.geometry('520x300')
+        self.transient(master)
+        self.grab_set()
+
+        frm = ttk.Frame(self, padding=12)
+        frm.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frm, text=L('inc_req_similar_msg',
+                              'Esistono fornitori con nome simile. Verificare che non sia lo stesso '
+                              'prima di inserirne uno nuovo.'),
+                  wraplength=490, justify='left').pack(anchor='w', pady=(0, 8))
+
+        wrap = ttk.Frame(frm)
+        wrap.pack(fill=tk.BOTH, expand=True)
+        self._list = tk.Listbox(wrap, height=8, font=('Segoe UI', 9))
+        sb = ttk.Scrollbar(wrap, orient='vertical', command=self._list.yview)
+        self._list.configure(yscrollcommand=sb.set)
+        self._list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.pack(side=tk.LEFT, fill=tk.Y)
+        for m in matches:
+            self._list.insert(tk.END, f"{m['SiteName']}  (ID {m['IDSite']})")
+        self._matches = matches
+        if matches:
+            self._list.selection_set(0)
+
+        bar = ttk.Frame(frm)
+        bar.pack(fill=tk.X, pady=(10, 0))
+        ttk.Button(bar, text=L('inc_req_similar_use', 'Usa selezionato'),
+                   command=self._on_use).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bar, text=L('inc_req_similar_proceed', 'Inserisci nuovo'),
+                   command=self._on_proceed).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bar, text=L('btn_close', 'Annulla'),
+                   command=self.destroy).pack(side=tk.RIGHT, padx=4)
+
+        self.protocol('WM_DELETE_WINDOW', self.destroy)
+
+    def _on_use(self):
+        sel = self._list.curselection()
+        if not sel:
+            messagebox.showinfo(self.lang.get('info', 'Info'),
+                                self.lang.get('inc_req_similar_pick',
+                                              'Selezionare un fornitore dall''elenco.'), parent=self)
+            return
+        self.selected = self._matches[sel[0]]
+        self.cancelled = False
+        self.destroy()
+
+    def _on_proceed(self):
+        self.selected = None
+        self.cancelled = False
+        self.destroy()
