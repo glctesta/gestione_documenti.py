@@ -39,6 +39,24 @@ logger = logging.getLogger("WipKanban")
 PORT = 6505
 HIGHLIGHT_TTL_SEC = 60
 
+
+def _setup_file_logging():
+    """Aggiunge un handler su file (logs/display_server.log nella root del
+    progetto) cosi' gli errori di avvio restano visibili anche con pythonw."""
+    try:
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        log_dir = os.path.join(project_root, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        fh = logging.FileHandler(
+            os.path.join(log_dir, "display_server.log"), encoding="utf-8"
+        )
+        fh.setFormatter(logging.Formatter(
+            "%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
+        logger.addHandler(fh)
+        logging.getLogger().addHandler(fh)
+    except Exception as e:
+        logger.warning("Log su file non disponibile: %s", e)
+
 # Highlight attivi in memoria: {(area, deposit): {position, labelcode,
 # order_number, product_code, ts}} — ts = epoch del POST.
 _highlights = {}
@@ -158,9 +176,18 @@ def _active_highlight(area, deposit):
 
 
 def main():
-    app = create_app()
-    logger.info("Avvio display kanban su 0.0.0.0:%s", PORT)
-    app.run(host="0.0.0.0", port=PORT, threaded=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    )
+    _setup_file_logging()
+    try:
+        app = create_app()
+        logger.info("Avvio display kanban su 0.0.0.0:%s", PORT)
+        app.run(host="0.0.0.0", port=PORT, threaded=True)
+    except Exception:
+        logger.exception("AVVIO FALLITO: display kanban su porta %s", PORT)
+        raise
 
 
 if __name__ == "__main__":
