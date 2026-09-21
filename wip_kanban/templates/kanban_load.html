@@ -258,6 +258,26 @@
           body: JSON.stringify({ labelcode: code })
         });
         msg(UI.board_loaded.replace('{label}', code).replace('{code}', pos), 'success');
+        // Notifica fire-and-forget al display di reparto (:6505): il monitor
+        // evidenzia la posizione 3D appena caricata. Il fallimento del display
+        // NON deve bloccare il caricamento.
+        try {
+          const hlInfo = res.info || {};
+          const hlArea = pos.charAt(0) === 'R' ? 'REPAIR' : 'WIP';
+          fetch('http://' + location.hostname + ':6505/api/highlight', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              area: hlArea,
+              deposit: 1,
+              kind: 'load',
+              position: pos,
+              labelcode: code,
+              order_number: hlInfo.OrderNumber || hlInfo.order_number || '',
+              product_code: hlInfo.ProductCode || hlInfo.product_code || ''
+            })
+          }).catch(() => {});
+        } catch (e) { /* display assente: ignora */ }
         $('scan-input').value = '';
         $('scan-info').textContent = '';
         lastScanInfo = null;

@@ -33,11 +33,21 @@
         <span class="pick-position" id="pick-position"></span>
         <span class="pick-meta" id="pick-meta"></span>
       </div>
+      <div class="pick-physical" id="pick-physical"></div>
       <div id="scene-wrap">
         <div id="scene-scale">
           <div id="scene"></div>
           <div id="labels-row"></div>
         </div>
+      </div>
+    </div>
+
+    <!-- ══════════════ Modalità CONFERMA: highlight appena scaduto ══════════════ -->
+    <div id="view-confirm" class="view">
+      <div class="confirm-box">
+        <h1 class="confirm-title" id="confirm-title"></h1>
+        <div class="confirm-detail" id="confirm-detail"></div>
+        <div class="confirm-putback">{{ ui.display_put_back }}</div>
       </div>
     </div>
 
@@ -92,6 +102,9 @@
     function palletHtml(pallet, target, pickLevel) {
       let html = '<div class="pallet' + (target ? ' target' : ' dim') +
         '" style="transform:translate3d(' + pallet._x + 'px,0px,0px)">';
+      // wrapper interno: sul target gira l'animazione di salto (translateZ),
+      // così il transform di posizionamento del pallet resta intatto
+      html += '<div class="pallet-inner">';
       // base pallet
       html += '<div class="pallet-slab" style="position:absolute;left:0;top:0;width:' + F +
         'px;height:' + F + 'px;transform-style:preserve-3d;transform:translateZ(0px)">' +
@@ -109,8 +122,27 @@
           'px;transform-style:preserve-3d;transform:translate3d(' + xy[0] + 'px,' + xy[1] +
           'px,' + z + 'px)">' + boxFaces(B, B, B, 'box') + '</div>';
       });
-      html += '</div>';
+      html += '</div></div>';
       return html;
+    }
+
+    // Posizione fisica in lingua (rumeno sul display): "Palet RP4 — nivelul 1 (jos), față stânga".
+    // Lettera = penultimo carattere del PositionCode, livello = ultima cifra.
+    const COL_SIDE = {
+      A: () => UI.box_front + ' ' + UI.box_left,    // față stânga
+      B: () => UI.box_front + ' ' + UI.box_right,   // față dreapta
+      C: () => UI.box_back + ' ' + UI.box_right,    // spate dreapta
+      D: () => UI.box_back + ' ' + UI.box_left      // spate stânga
+    };
+
+    function physicalText(position) {
+      const m = (position || '').match(/^([WR]P\d+)([A-D])([1-4])$/);
+      if (!m) return '';
+      const levels = { 1: UI.display_level_1, 2: UI.display_level_2, 3: UI.display_level_3, 4: UI.display_level_4 };
+      return UI.display_physical
+        .replace('{pallet}', UI.display_pallet_word + ' ' + m[1])
+        .replace('{level}', levels[m[3]] || m[3])
+        .replace('{side}', COL_SIDE[m[2]]());
     }
 
     // ── Rendering modalità 3D ───────────────────────────────────────────────
@@ -124,6 +156,7 @@
         '{{ ui.display_board }}: <b>' + esc(highlight.labelcode || '—') + '</b> · ' +
         '{{ ui.display_order }}: <b>' + esc(highlight.order_number || '—') + '</b> · ' +
         '{{ ui.display_product }}: <b>' + esc(highlight.product_code || '—') + '</b>';
+      $('pick-physical').textContent = physicalText(highlight.position);
 
       const n = Math.max(state.pallets.length, 1);
       const W = n * S + F;
@@ -204,6 +237,29 @@
       }
     }
 
+    // ── Schermata di conferma (highlight appena scaduto) ────────────────────
+    const CONFIRM_MS = 12000;
+    let lastHighlight = null;   // ultimo highlight ricevuto (per la conferma)
+    let confirmKey = null;      // chiave dell'highlight gia' confermato (no ripetizione)
+    let confirmTimer = null;
+
+    function renderConfirm(h) {
+      const isLoad = h.kind === 'load';
+      const title = $('confirm-title');
+      title.textContent = isLoad ? UI.display_confirm_load : UI.display_confirm_pick;
+      title.className = 'confirm-title' + (isLoad ? ' kind-load' : '');
+      $('confirm-detail').innerHTML = UI.display_confirm_detail
+        .replace('{label}', '<b>' + esc(h.labelcode || '—') + '</b>')
+        .replace('{product}', '<b>' + esc(h.product_code || '—') + '</b>')
+        .replace('{order}', '<b>' + esc(h.order_number || '—') + '</b>');
+    }
+
+    function setMode(mode) {
+      ['view-idle', 'view-3d', 'view-confirm'].forEach(v => $(v).classList.remove('active'));
+      $('view-' + mode).classList.add('active');
+      lastMode = mode;
+    }
+
     // ── Polling stato (2s) ──────────────────────────────────────────────────
     async function poll() {
       let state;
@@ -217,14 +273,35 @@
       }
       lastState = state;
       const highlight = state.highlight || null;
-      const mode = highlight ? '3d' : 'idle';
-      if (mode !== lastMode) {
-        $(mode === '3d' ? 'view-3d' : 'view-idle').classList.add('active');
-        $(mode === '3d' ? 'view-idle' : 'view-3d').classList.remove('active');
-        lastMode = mode;
+
+      if (highlight) {
+        // Evidenziazione attiva: vista 3D (fila completa + pallet target).
+        lastHighlight = highlight;
+        confirmKey = null;
+        clearTimeout(confirmTimer);
+        if (lastMode !== '3d') setMode('3d');
+        render3d(state, highlight);
+        return;
       }
-      if (mode === '3d') render3d(state, highlight);
-      else renderIdle(state);
+
+      if (lastHighlight) {
+        const key = lastHighlight.kind + '|' + lastHighlight.position + '|' + lastHighlight.labelcode;
+        if (key !== confirmKey) {
+          // Highlight appena scaduto: conferma grande per ~12s, poi dashboard.
+          confirmKey = key;
+          renderConfirm(lastHighlight);
+          if (lastMode !== 'confirm') setMode('confirm');
+          clearTimeout(confirmTimer);
+          confirmTimer = setTimeout(() => {
+            if (lastMode === 'confirm') { setMode('idle'); renderIdle(lastState || {}); }
+          }, CONFIRM_MS);
+          return;
+        }
+        if (lastMode === 'confirm') return; // conferma ancora in corso
+      }
+
+      if (lastMode !== 'idle') setMode('idle');
+      renderIdle(state);
     }
 
     setInterval(poll, 2000);

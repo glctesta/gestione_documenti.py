@@ -141,15 +141,19 @@ def create_app():
             deposit = int(body.get("deposit") or 1)
         except (TypeError, ValueError):
             deposit = 1
+        kind = (body.get("kind") or "pick").lower().strip()
+        if kind not in ("pick", "load"):
+            kind = "pick"
         with _highlights_lock:
             _highlights[(area, deposit)] = {
                 "position": (body.get("position") or "").upper().strip(),
                 "labelcode": body.get("labelcode") or "",
-                "order_number": body.get("order_number") or "",
-                "product_code": body.get("product_code") or "",
+                "order_number": body.get("order_number") or body.get("orderNumber") or "",
+                "product_code": body.get("product_code") or body.get("productCode") or "",
+                "kind": kind,
                 "ts": time.time(),
             }
-        logger.info("Highlight %s deposit=%s pos=%s", area, deposit,
+        logger.info("Highlight %s (%s) deposit=%s pos=%s", area, kind, deposit,
                     body.get("position"))
         return jsonify({"ok": True})
 
@@ -171,6 +175,7 @@ def _active_highlight(area, deposit):
             "labelcode": h["labelcode"],
             "order_number": h["order_number"],
             "product_code": h["product_code"],
+            "kind": h.get("kind", "pick"),
             "age_sec": round(age, 1),
         }
 
