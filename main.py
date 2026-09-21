@@ -1,4 +1,4 @@
-#import configparser
+﻿#import configparser
 # --- StdIO safeguard + Faulthandler sicuro per exe windowed ---
 import shutil
 import sys, os, atexit
@@ -308,7 +308,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.3.4.4'  # Versione aggiornata
+APP_VERSION = '2.4.3.4.6'  # Versione aggiornata
 # Nome programma usato come chiave in SwVersions / VersionDMLogs.
 # In produzione = nome dell'exe; in sviluppo usa il nome canonico.
 APP_PROGRAM_NAME = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else 'DocumentManagement.exe'
@@ -15289,6 +15289,22 @@ class App(tk.Tk):
                 )
         self._execute_simple_login(action_callback=_open)
 
+    def _open_kanban_report(self):
+        """Apre la pagina Kanban produzione — Report schede (server :6500).
+        Pagina pubblica: nessun login, nessun token richiesto."""
+        try:
+            from wip_kanban import launcher
+            lang = getattr(self, 'lang', None)
+            lang_code = getattr(lang, 'current_language', None) or 'it'
+            launcher.open_report_page(lang_code)
+        except Exception as e:
+            logger.error(f"Errore apertura Kanban Report: {e}", exc_info=True)
+            messagebox.showerror(
+                self.lang.get('error', 'Errore'),
+                f"Impossibile aprire Kanban Report:\n{e}",
+                parent=self
+            )
+
     def open_ei_aros_label_with_login(self):
         """Etichette EI → Aros: login semplice per registrare l'operatore che
         stampa (il nome finisce sull'etichetta)."""
@@ -18685,6 +18701,10 @@ class App(tk.Tk):
         self.kanban_produzione_submenu.add_command(
             label=self.lang.get('submenu_kanban_preleva_schede', 'Preleva schede'),
             command=self._open_kanban_pick_with_simple_login
+        )
+        self.kanban_produzione_submenu.add_command(
+            label=self.lang.get('submenu_kanban_report', 'Report Kanban'),
+            command=self._open_kanban_report
         )
         self.kanban_root_submenu.add_cascade(
             label=self.lang.get('menu_kanban_produzione', 'Kanban produzione'),

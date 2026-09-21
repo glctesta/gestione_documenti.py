@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="{{ lang }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ ui.display_title_wip if area == 'WIP' else ui.display_title_repair }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='display.css') }}">
+</head>
+<body>
+  <div id="display-root">
+
+    <!-- ══════════════ Modalità IDLE: dashboard ══════════════ -->
+    <div id="view-idle" class="view active">
+      <div class="idle-header">
+        <img src="{{ url_for('static', filename='Logo.png') }}" alt="Logo" class="logo">
+        <div class="idle-clock">
+          <span id="clock-time">--:--:--</span><span class="date-part" id="clock-date"></span>
+        </div>
+      </div>
+      <h1 class="idle-title" id="idle-title">{{ ui.display_title_wip if area == 'WIP' else ui.display_title_repair }}</h1>
+      <div class="idle-subtitle">{{ ui.display_area }}: {{ area }} &nbsp;·&nbsp; {{ ui.display_deposit }}: {{ deposit }}</div>
+      <div class="stats-grid" id="stats-grid"></div>
+      <div class="last-op-card" id="last-op-card"></div>
+    </div>
+
+    <!-- ══════════════ Modalità 3D: richiesta di prelievo ══════════════ -->
+    <div id="view-3d" class="view">
+      <div class="pick-banner">
+        <span class="pick-icon">&#9888;</span>
+        <span class="pick-text">{{ ui.display_pick_request }}</span>
+      </div>
+      <div class="pick-info">
+        <span class="pick-position" id="pick-position"></span>
+        <span class="pick-meta" id="pick-meta"></span>
+      </div>
+      <div id="scene-wrap">
+        <div id="scene-scale">
+          <div id="scene"></div>
+          <div id="labels-row"></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    // ── Config pagina (dal server) ──────────────────────────────────────────
+    const AREA = {{ area|tojson }};
+    const DEPOSIT = {{ deposit|tojson }};
+    const UI = {{ ui|tojson }};
+
+    // ── Geometria scena (px, pre-scale): cubi 3D in CSS puro ────────────────
+    const B = 46;      // lato scatola
+    const GAP = 6;     // gap orizzontale tra scatole
+    const VGAP = 4;    // gap verticale tra livelli
+    const SLAB = 10;   // spessore base pallet
+    const PS = 60;     // gap tra pallet nella fila
+    const F = 2 * B + GAP;            // impronta pallet (2x2 scatole)
+    const S = F + PS;                 // passo pallet (asse X)
+    const STACK_H = SLAB + 4 * B + 3 * VGAP;
+    const TILT = 55 * Math.PI / 180;  // inclinazione camera (rotateX)
+    const DEPTH_PX = F * Math.cos(TILT);    // profondità proiettata
+    const STACK_PX = STACK_H * Math.sin(TILT); // altezza torre proiettata
+    // Colonne → quadranti pianta: A davanti-sx, B davanti-dx, C dietro-dx, D dietro-sx
+    const COL_POS = { A: [0, B + GAP], B: [B + GAP, B + GAP], C: [B + GAP, 0], D: [0, 0] };
+
+    let lastMode = 'idle';
+    let lastState = null;
+
+    const $ = id => document.getElementById(id);
+
+    // ── Orologio (1s) ───────────────────────────────────────────────────────
+    function tickClock() {
+      const now = new Date();
+      $('clock-time').textContent = now.toLocaleTimeString('{{ lang }}', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      $('clock-date').textContent = now.toLocaleDateString('{{ lang }}', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+    }
+    setInterval(tickClock, 1000);
+    tickClock();
+
+    // ── Costruttori facce 3D ────────────────────────────────────────────────
+    // Cubo ancorato col corner basso nella sua posizione translate3d:
+    //   top:   piano XY sollevato di h          → translateZ(h)
+    //   front: piano y=d (visibile con camera rotateX) → rotateX(90) translateZ(-d)
+    function boxFaces(w, d, h, cls) {
+      return '<div class="face ' + cls + '-top" style="width:' + w + 'px;height:' + d +
+        'px;transform:translateZ(' + h + 'px)"></div>' +
+        '<div class="face ' + cls + '-front" style="width:' + w + 'px;height:' + h +
+        'px;transform:rotateX(90deg) translateZ(' + (-d) + 'px)"></div>';
+    }
+
+    function palletHtml(pallet, target, pickLevel) {
+      let html = '<div class="pallet' + (target ? ' target' : ' dim') +
+        '" style="transform:translate3d(' + pallet._x + 'px,0px,0px)">';
+      // base pallet
+      html += '<div class="pallet-slab" style="position:absolute;left:0;top:0;width:' + F +
+        'px;height:' + F + 'px;transform-style:preserve-3d;transform:translateZ(0px)">' +
+        boxFaces(F, F, SLAB, 'slab') + '</div>';
+      // 16 scatole: indice posizioni = col*4 + (livello-1), colonne A-D
+      pallet.positions.forEach((pos, idx) => {
+        const col = 'ABCD'[Math.floor(idx / 4)];
+        const level = (idx % 4) + 1;
+        const xy = COL_POS[col];
+        const z = SLAB + (level - 1) * (B + VGAP);
+        const occupied = pos.LabelCode ? (pos.ScanResult === 'FAIL' ? 'box-fail' : 'box-ok') : 'box-empty';
+        const pick = target && level === pickLevel ? ' box-pick' : '';
+        html += '<div class="box ' + occupied + pick + '" title="' + pos.PositionCode +
+          '" style="position:absolute;left:0;top:0;width:' + B + 'px;height:' + B +
+          'px;transform-style:preserve-3d;transform:translate3d(' + xy[0] + 'px,' + xy[1] +
+          'px,' + z + 'px)">' + boxFaces(B, B, B, 'box') + '</div>';
+      });
+      html += '</div>';
+      return html;
+    }
+
+    // ── Rendering modalità 3D ───────────────────────────────────────────────
+    function render3d(state, highlight) {
+      const m = (highlight.position || '').match(/^([WR]P\d+)([A-D])([1-4])$/);
+      const targetCode = m ? m[1] : (highlight.position || '').slice(0, -2);
+      const pickLevel = m ? parseInt(m[3], 10) : null;
+
+      $('pick-position').textContent = highlight.position || '?';
+      $('pick-meta').innerHTML =
+        '{{ ui.display_board }}: <b>' + esc(highlight.labelcode || '—') + '</b> · ' +
+        '{{ ui.display_order }}: <b>' + esc(highlight.order_number || '—') + '</b> · ' +
+        '{{ ui.display_product }}: <b>' + esc(highlight.product_code || '—') + '</b>';
+
+      const n = Math.max(state.pallets.length, 1);
+      const W = n * S + F;
+      const H = Math.round(DEPTH_PX + STACK_PX);
+
+      const scene = $('scene');
+      scene.style.width = W + 'px';
+      scene.style.height = F + 'px';
+      // Posiziona la scena nel wrapper: centro di rotazione a H - DEPTH_PX/2 dal top
+      scene.style.position = 'absolute';
+      scene.style.left = '0';
+      scene.style.top = Math.round(H - DEPTH_PX / 2 - F / 2) + 'px';
+
+      let html = '';
+      state.pallets.forEach((p, i) => {
+        p._x = i * S;
+        html += palletHtml(p, p.code === targetCode, pickLevel);
+      });
+      scene.innerHTML = html;
+
+      // Etichette master code: flex row a larghezze fisse, allineate ai pallet
+      const labels = $('labels-row');
+      let lh = '';
+      state.pallets.forEach(p => {
+        lh += '<div class="pallet-label' + (p.code === targetCode ? ' target' : ' dim') +
+          '" style="width:' + S + 'px">' + esc(p.code) + '</div>';
+      });
+      labels.innerHTML = lh;
+      labels.style.position = 'absolute';
+      labels.style.top = H + 'px';
+      labels.style.left = Math.round((F - S) / 2) + 'px';
+
+      // Scala automatica per riempire la larghezza/altezza disponibili
+      const wrap = $('scene-wrap');
+      const availW = wrap.clientWidth;
+      const availH = wrap.clientHeight;
+      const scale = Math.min(1, availW / W, availH / (H + 70));
+      const scaleEl = $('scene-scale');
+      scaleEl.style.width = W + 'px';
+      scaleEl.style.height = (H + 70) + 'px';
+      scaleEl.style.transform = 'scale(' + scale + ')';
+    }
+
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    }
+
+    // ── Rendering dashboard idle ────────────────────────────────────────────
+    function renderIdle(state) {
+      const c = state.counts || {};
+      const cards = [
+        [c.pallets, UI.display_pallets, ''],
+        [c.positions, UI.display_positions, ''],
+        [c.boards, UI.display_boards, ''],
+        [c.orders, UI.display_orders, ''],
+        [c.products, UI.display_products, ''],
+        [c.in_today, UI.display_in_today, 'accent-in'],
+        [c.out_today, UI.display_out_today, 'accent-out'],
+      ];
+      $('stats-grid').innerHTML = cards.map(([v, l, cls]) =>
+        '<div class="stat-card ' + cls + '"><div class="stat-value">' + (v | 0) +
+        '</div><div class="stat-label">' + esc(l) + '</div></div>').join('');
+
+      const op = state.last_operation;
+      if (!op) {
+        $('last-op-card').innerHTML = '<span class="last-op-title">' + esc(UI.display_last_operation) +
+          '</span><span class="last-op-none">' + esc(UI.display_no_operations) + '</span>';
+      } else {
+        const when = op.DateIn ? new Date(op.DateIn).toLocaleString('{{ lang }}') : '—';
+        $('last-op-card').innerHTML =
+          '<span class="last-op-title">' + esc(UI.display_last_operation) + '</span>' +
+          '<span class="last-op-badge action-' + (op.Action === 'IN' ? 'in">&#9660; ' + esc(UI.display_action_in)
+            : 'out">&#9650; ' + esc(UI.display_action_out)) + '</span>' +
+          '<span class="last-op-detail"><b>' + esc(op.LabelCode || '—') + '</b> · ' +
+          esc(op.ProductCode || '—') + ' · ' + esc(op.OrderNumber || '—') +
+          ' <span class="muted">@ ' + esc(op.PositionCode || '—') + ' — ' + esc(op.User || '—') +
+          ', ' + esc(when) + '</span></span>';
+      }
+    }
+
+    // ── Polling stato (2s) ──────────────────────────────────────────────────
+    async function poll() {
+      let state;
+      try {
+        const res = await fetch('/api/state?area=' + encodeURIComponent(AREA) +
+          '&deposit=' + encodeURIComponent(DEPOSIT), { cache: 'no-store' });
+        if (!res.ok) return;
+        state = await res.json();
+      } catch (e) {
+        return; // rete assente: mantieni l'ultima vista
+      }
+      lastState = state;
+      const highlight = state.highlight || null;
+      const mode = highlight ? '3d' : 'idle';
+      if (mode !== lastMode) {
+        $(mode === '3d' ? 'view-3d' : 'view-idle').classList.add('active');
+        $(mode === '3d' ? 'view-idle' : 'view-3d').classList.remove('active');
+        lastMode = mode;
+      }
+      if (mode === '3d') render3d(state, highlight);
+      else renderIdle(state);
+    }
+
+    setInterval(poll, 2000);
+    poll();
+    window.addEventListener('resize', () => {
+      if (lastMode === '3d' && lastState && lastState.highlight) render3d(lastState, lastState.highlight);
+    });
+  </script>
+</body>
+</html>

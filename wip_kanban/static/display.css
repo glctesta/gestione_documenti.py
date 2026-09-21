@@ -1,0 +1,365 @@
+/* ============================================================================
+   display.css — Display di reparto kanban (server :6505).
+   Grafica 3D in CSS puro (nessun CDN): scena con transform-style preserve-3d,
+   camera = rotateX(55deg) ortografica (senza perspective): la fila pallet
+   resta orizzontale e le etichette sotto la scena sono allineate (larghezze
+   fisse). Ogni scatola e' un cubo 3D (facce top + front).
+   Palette in stile VandeWiele: verdi su sfondo scuro.
+   ========================================================================== */
+
+:root {
+  --vdw-green: #2c5f2e;
+  --vdw-green-bright: #4caf50;
+  --vdw-green-dark: #1b3f1b;
+  --bg: #0d1b2a;
+  --bg-card: #16233a;
+  --bg-card-2: #1b2c47;
+  --text: #eef2f7;
+  --text-dim: #9fb0c7;
+  --box-ok: #3a86ff;
+  --box-ok-hi: #6aa9ff;
+  --box-fail: #e76f51;
+  --box-fail-hi: #f4a261;
+  --box-empty: rgba(120, 140, 165, 0.18);
+  --highlight: #2eff7b;
+  /* Dimensioni scena (px, prima dello scale) */
+  --box: 46px;      /* lato scatola */
+  --boxgap: 6px;    /* distanza orizzontale tra scatole */
+  --vgap: 4px;      /* distanza verticale tra livelli */
+  --slab: 10px;     /* spessore base pallet */
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 50% 30%, #16263f 0%, var(--bg) 70%);
+  color: var(--text);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+#display-root {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+}
+
+/* ── Viste (idle / 3D) con transizione morbida ─────────────────────────── */
+.view {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.8s ease;
+}
+.view.active { opacity: 1; pointer-events: auto; }
+
+/* ═══════════════════════════ VISTA IDLE (dashboard) ═════════════════════ */
+
+#view-idle {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2.5vh 3vw;
+  gap: 1.2vh;
+}
+
+.idle-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 1700px;
+}
+
+.idle-header .logo {
+  height: 9vh;
+  width: auto;
+  border-radius: 8px;
+  background: #fff;
+  padding: 6px;
+}
+
+.idle-clock {
+  font-size: 6vh;
+  font-weight: bold;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.6);
+}
+.idle-clock .date-part {
+  font-size: 2.6vh;
+  font-weight: normal;
+  color: var(--text-dim);
+  margin-left: 1.2vw;
+}
+
+.idle-title {
+  margin: 0.5vh 0 0;
+  font-size: 11vh;
+  line-height: 1.05;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-align: center;
+  background: linear-gradient(180deg, #ffffff 20%, #9fd6a4 90%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-shadow: 0 0 40px rgba(76, 175, 80, 0.25);
+}
+
+.idle-subtitle {
+  font-size: 3vh;
+  color: var(--text-dim);
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1.2vw;
+  width: 100%;
+  max-width: 1700px;
+  margin-top: 1.5vh;
+}
+
+.stat-card {
+  background: linear-gradient(160deg, var(--bg-card-2), var(--bg-card));
+  border: 1px solid rgba(120, 160, 120, 0.25);
+  border-radius: 14px;
+  padding: 2.2vh 1vw;
+  text-align: center;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.stat-card .stat-value {
+  font-size: 7vh;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  line-height: 1.1;
+}
+.stat-card .stat-label {
+  font-size: 2vh;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: 0.6vh;
+}
+.stat-card.accent-in  .stat-value { color: var(--vdw-green-bright); }
+.stat-card.accent-out .stat-value { color: var(--box-fail-hi); }
+
+.last-op-card {
+  width: 100%;
+  max-width: 1700px;
+  margin-top: 1vh;
+  background: linear-gradient(160deg, var(--bg-card-2), var(--bg-card));
+  border: 1px solid rgba(120, 160, 120, 0.25);
+  border-radius: 14px;
+  padding: 2vh 2vw;
+  display: flex;
+  align-items: center;
+  gap: 2vw;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.last-op-card .last-op-title {
+  font-size: 2.2vh;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  min-width: 10vw;
+}
+.last-op-badge {
+  font-size: 3.2vh;
+  font-weight: 900;
+  padding: 1vh 1.6vw;
+  border-radius: 10px;
+  letter-spacing: 0.06em;
+}
+.last-op-badge.action-in  { background: var(--vdw-green); color: #fff; }
+.last-op-badge.action-out { background: #8a3324; color: #fff; }
+.last-op-detail {
+  font-size: 3vh;
+  line-height: 1.35;
+}
+.last-op-detail .muted { color: var(--text-dim); font-size: 2.2vh; }
+.last-op-none { font-size: 2.6vh; color: var(--text-dim); }
+
+/* ═══════════════════════════ VISTA 3D (evidenziazione) ══════════════════ */
+
+#view-3d {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2vh 2vw;
+}
+
+.pick-banner {
+  display: flex;
+  align-items: center;
+  gap: 1.5vw;
+  background: linear-gradient(90deg, #7a1f12, #b3381f);
+  border: 2px solid var(--box-fail-hi);
+  border-radius: 14px;
+  padding: 1.2vh 2vw;
+  box-shadow: 0 0 30px rgba(231, 111, 81, 0.45);
+  animation: banner-pulse 1.2s ease-in-out infinite;
+}
+.pick-banner .pick-icon {
+  font-size: 6vh;
+  font-weight: 900;
+  color: #ffd23f;
+}
+.pick-banner .pick-text {
+  font-size: 5.5vh;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  color: #fff;
+  text-transform: uppercase;
+}
+@keyframes banner-pulse {
+  0%, 100% { box-shadow: 0 0 30px rgba(231, 111, 81, 0.45); }
+  50%      { box-shadow: 0 0 60px rgba(231, 111, 81, 0.85); }
+}
+
+.pick-info {
+  margin-top: 1.2vh;
+  display: flex;
+  gap: 2vw;
+  align-items: baseline;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.pick-info .pick-position {
+  font-size: 9vh;
+  font-weight: 900;
+  color: var(--highlight);
+  text-shadow: 0 0 30px rgba(46, 255, 123, 0.5);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.05em;
+}
+.pick-info .pick-meta {
+  font-size: 3.2vh;
+  color: var(--text);
+}
+.pick-info .pick-meta b { color: #ffd23f; }
+
+/* Scena 3D: camera inclinata, ortografica (allineamento etichette garantito) */
+#scene-wrap {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  overflow: hidden;
+}
+
+#scene-scale {
+  transform-origin: bottom center;
+}
+
+#scene {
+  position: relative;
+  transform-style: preserve-3d;
+  transform: rotateX(55deg);
+}
+
+/* Pallet: gruppo 3D; la fila e' lungo l'asse X */
+.pallet {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-style: preserve-3d;
+  transition: opacity 0.6s ease;
+}
+
+.pallet.dim { opacity: 0.18; }
+
+.pallet.target {
+  animation: pallet-glow 1.1s ease-in-out infinite;
+}
+@keyframes pallet-glow {
+  0%, 100% {
+    filter: drop-shadow(0 0 6px rgba(46, 255, 123, 0.55));
+  }
+  50% {
+    filter: drop-shadow(0 0 26px rgba(46, 255, 123, 1));
+  }
+}
+
+/* Facce 3D generiche (coordinate inline generate dal JS) */
+.face {
+  position: absolute;
+  left: 0;
+  top: 0;
+  backface-visibility: visible;
+}
+
+/* Base pallet (slab) */
+.slab-top {
+  background: linear-gradient(135deg, #6b4f2a 0%, #59390f 100%);
+  border: 1px solid #7d6238;
+}
+.slab-front {
+  background: linear-gradient(180deg, #4a3315, #33230c);
+}
+
+/* Scatole */
+.box-top  { border: 1px solid rgba(255, 255, 255, 0.25); }
+.box-front { border: 1px solid rgba(0, 0, 0, 0.35); }
+
+.box-empty .box-top,
+.box-empty .box-front {
+  background: var(--box-empty);
+  border-color: rgba(140, 160, 185, 0.35);
+}
+
+.box-ok .box-top    { background: linear-gradient(135deg, var(--box-ok-hi), var(--box-ok)); }
+.box-ok .box-front  { background: linear-gradient(180deg, var(--box-ok), #1f5fc4); }
+
+.box-fail .box-top   { background: linear-gradient(135deg, var(--box-fail-hi), var(--box-fail)); }
+.box-fail .box-front { background: linear-gradient(180deg, var(--box-fail), #b23c22); }
+
+/* Livello da prelevare: lampeggio verde */
+.box-pick .box-top,
+.box-pick .box-front {
+  background: var(--highlight) !important;
+  animation: box-blink 0.7s step-start infinite;
+}
+@keyframes box-blink {
+  50% { opacity: 0.25; }
+}
+
+/* Etichette master code sotto la scena (flex row a larghezze fisse:
+   allineamento garantito con le posizioni X dei pallet, scena ortografica) */
+#labels-row {
+  display: flex;
+  margin-top: 1.5vh;
+}
+.pallet-label {
+  flex: 0 0 auto;
+  text-align: center;
+  font-size: 3vh;
+  font-weight: 900;
+  color: var(--text);
+  letter-spacing: 0.08em;
+  padding-top: 0.6vh;
+  border-top: 3px solid var(--vdw-green);
+}
+.pallet-label.target {
+  color: var(--highlight);
+  border-top-color: var(--highlight);
+  text-shadow: 0 0 18px rgba(46, 255, 123, 0.7);
+}
+.pallet-label.dim { opacity: 0.3; }
+
+/* Livelli indicati sul lato (legenda verticale opzionale) */
+.scene-legend {
+  margin-top: 0.8vh;
+  font-size: 2vh;
+  color: var(--text-dim);
+}

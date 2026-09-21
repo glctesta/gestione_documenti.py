@@ -1166,6 +1166,8 @@ class FqcMasterForm(_ClientProductMixin, tk.Toplevel):
              self._start_edit, _C_WARNING).pack(side=tk.LEFT, padx=2)
         _btn(btns, self.lang.get('fqc_delete_item', '🗑 Delete (logical)'),
              self._delete_item, _C_ERROR).pack(side=tk.LEFT, padx=2)
+        _btn(btns, self.lang.get('fqc_copy_docs_btn', '📋 Copy documentation'),
+             self._open_copy_docs, _C_HEADER).pack(side=tk.LEFT, padx=2)
 
         # Item editor panel (initially hidden)
         self._edit_outer, ep = _card(body, self.lang.get('fqc_item_editor', 'ITEM EDITOR'))
@@ -1399,6 +1401,15 @@ class FqcMasterForm(_ClientProductMixin, tk.Toplevel):
         self._edit_outer.pack_forget()
         self._edit_item_id = None
         self._edit_photo   = None
+
+    def _open_copy_docs(self):
+        """Opens the copy-documentation form (lazy import to avoid circularity)."""
+        try:
+            import fqc_copy_docs_gui
+            fqc_copy_docs_gui.open_fqc_copy_docs(self, self.db, self.lang, self.user_name)
+        except Exception as exc:
+            logger.error(f"FqcMasterForm _open_copy_docs: {exc}", exc_info=True)
+            messagebox.showerror('Error', str(exc), parent=self)
 
 
 # ╔════════════════════════════════════════════════════════════════════════════╗

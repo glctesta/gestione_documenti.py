@@ -1,0 +1,8 @@
+{
+  "_comment": "Configurazione del monitor di reparto kanban. Copiare questo file in display_config.json (stessa cartella di display_launcher.py) e adattare i valori. Il launcher apre il browser sull'URL http://<server>:<port>/display?area=<area>&deposit=<deposit>.",
+  "area": "WIP",
+  "deposit": 1,
+  "server": "192.168.10.72",
+  "port": 6505,
+  "fullscreen": true
+}
