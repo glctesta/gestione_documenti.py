@@ -71,8 +71,8 @@
     const TILT = 55 * Math.PI / 180;  // inclinazione camera (rotateX)
     const DEPTH_PX = F * Math.cos(TILT);    // profondità proiettata
     const STACK_PX = STACK_H * Math.sin(TILT); // altezza torre proiettata
-    // Colonne → quadranti pianta: A davanti-sx, B davanti-dx, C dietro-dx, D dietro-sx
-    const COL_POS = { A: [0, B + GAP], B: [B + GAP, B + GAP], C: [B + GAP, 0], D: [0, 0] };
+    // Colonne → quadranti pianta: A davanti-dx, B davanti-sx, C dietro-dx (dietro A), D dietro-sx (dietro B)
+    const COL_POS = { A: [B + GAP, B + GAP], B: [0, B + GAP], C: [B + GAP, 0], D: [0, 0] };
 
     let lastMode = 'idle';
     let lastState = null;
@@ -129,10 +129,10 @@
     // Posizione fisica in lingua (rumeno sul display): "Palet RP4 — nivelul 1 (jos), față stânga".
     // Lettera = penultimo carattere del PositionCode, livello = ultima cifra.
     const COL_SIDE = {
-      A: () => UI.box_front + ' ' + UI.box_left,    // față stânga
-      B: () => UI.box_front + ' ' + UI.box_right,   // față dreapta
-      C: () => UI.box_back + ' ' + UI.box_right,    // spate dreapta
-      D: () => UI.box_back + ' ' + UI.box_left      // spate stânga
+      A: () => UI.box_front + ' ' + UI.box_right,   // față dreapta
+      B: () => UI.box_front + ' ' + UI.box_left,    // față stânga
+      C: () => UI.box_back + ' ' + UI.box_right,    // spate dreapta (în spatele lui A)
+      D: () => UI.box_back + ' ' + UI.box_left      // spate stânga (în spatele lui B)
     };
 
     function physicalText(position) {
