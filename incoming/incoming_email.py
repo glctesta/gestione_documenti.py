@@ -240,7 +240,7 @@ def process_escalations(db, dry_run: bool = False) -> int:
                 # cosi' una sola istanza (anche tra piu' PC receiver) vince.
                 cur.execute(
                     """
-                    UPDATE Traceability_RS.dbo.IncomingRequest
+                    UPDATE Traceability_RS.dyn.IncomingRequest
                     SET LastEscalationPopup = GETDATE()
                     WHERE Id = ? AND Status = ?
                       AND DATEDIFF(MINUTE, RequestedOn, GETDATE()) >= ?

@@ -9,7 +9,7 @@ confermare la soluzione (CONFIRMED_OK) o segnalarla come non risolutiva
 (CONFIRMED_KO) tramite incoming_db.confirm_request.
 
 Il contratto incoming_db non espone un getter per le richieste ANSWERED
-(filtro per utente): qui si legge direttamente Traceability_RS.dbo.IncomingRequest
+(filtro per utente): qui si legge direttamente Traceability_RS.dyn.IncomingRequest
 con il pattern DB uniforme (funziona sia con Database di main.py sia con
 BackgroundDatabase del servizio background).
 
@@ -40,7 +40,7 @@ _Q_MY_REQUESTS = """
 SELECT Id, RequestNumber, RequestType, SupplierName, DdtNumber, DdtDate, PurOrderNumber,
        MpnCode, WrongMpn, QtyToReceive, QtyExpectedPerPo, Status, RequestedBy, RequestedOn,
        RequesterHost, AnswerMpnCode, AnswerText, AnsweredBy, AnsweredOn, ConfirmedOk, ConfirmedOn
-FROM Traceability_RS.dbo.IncomingRequest
+FROM Traceability_RS.dyn.IncomingRequest
 WHERE Status = ? AND (RequestedBy = ? OR RequesterHost = ?)
 ORDER BY AnsweredOn DESC
 """
