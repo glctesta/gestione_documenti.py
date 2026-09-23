@@ -20,6 +20,7 @@
       <h1 class="idle-title" id="idle-title">{{ ui.display_title_wip if area == 'WIP' else ui.display_title_repair }}</h1>
       <div class="idle-subtitle">{{ ui.display_area }}: {{ area }} &nbsp;·&nbsp; {{ ui.display_deposit }}: {{ deposit }}</div>
       <div class="stats-grid" id="stats-grid"></div>
+      <div class="picks-card" id="picks-card"></div>
       <div class="last-op-card" id="last-op-card"></div>
     </div>
 
@@ -219,6 +220,20 @@
       $('stats-grid').innerHTML = cards.map(([v, l, cls]) =>
         '<div class="stat-card ' + cls + '"><div class="stat-value">' + (v | 0) +
         '</div><div class="stat-label">' + esc(l) + '</div></div>').join('');
+
+      // Ricerche ordine WIP (stat globali WIP: valide solo sul display WIP)
+      const pk = state.picks || { open: {}, passed: {} };
+      const o = pk.open || {}, p = pk.passed || {};
+      $('picks-card').innerHTML =
+        '<span class="picks-title">' + esc(UI.display_picks_title) + '</span>' +
+        '<div class="picks-group"><span class="picks-group-label">' + esc(UI.display_picks_open) + '</span>' +
+        '<span class="picks-stat"><b>' + (o.orders | 0) + '</b> ' + esc(UI.display_orders) + '</span>' +
+        '<span class="picks-stat"><b>' + (o.boards | 0) + '</b> ' + esc(UI.display_boards) + '</span>' +
+        '<span class="picks-stat"><b>' + (o.products | 0) + '</b> ' + esc(UI.display_products) + '</span></div>' +
+        '<div class="picks-group"><span class="picks-group-label">' + esc(UI.display_picks_passed) + '</span>' +
+        '<span class="picks-stat"><b>' + (p.orders | 0) + '</b> ' + esc(UI.display_orders) + '</span>' +
+        '<span class="picks-stat"><b>' + (p.boards | 0) + '</b> ' + esc(UI.display_boards) + '</span>' +
+        '<span class="picks-stat"><b>' + (p.products | 0) + '</b> ' + esc(UI.display_products) + '</span></div>';
 
       const op = state.last_operation;
       if (!op) {

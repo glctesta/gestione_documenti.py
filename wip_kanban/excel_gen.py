@@ -122,3 +122,44 @@ def report_workbook(rows, ui, path=None):
     _auto_width(ws)
     wb.save(path)
     return path
+
+
+# (chiave riga, chiave i18n) — schede cercate non passate PTHM (prelievo per ordine)
+_PICKS_FIELDS = [
+    ("ProductCode", "col_product"),
+    ("OrderNumber", "col_order"),
+    ("LabelCode", "col_labelcode"),
+    ("PositionCode", "col_position"),
+    ("RequestedBy", "col_requestedby"),
+    ("RequestedOn", "col_requestedon"),
+]
+
+
+def order_picks_workbook(rows, ui, path=None):
+    """Workbook delle schede pending (cercate, non ancora passate PTHM).
+    Stesso stile di report_workbook. rows: lista di dict da order_picks_open."""
+    if not path:
+        path = os.path.join(tempfile.gettempdir(),
+                            f"kanban_wip_picks_{datetime.now():%Y%m%d_%H%M%S}.xlsx")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = ui.get("picks_sheet", "WIP picks")
+    headers = [ui.get(label_key, label_key) for _, label_key in _PICKS_FIELDS]
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.fill = _HEADER_FILL
+        cell.font = _HEADER_FONT
+        cell.border = _BORDER
+        cell.alignment = Alignment(horizontal="center")
+    for row in rows:
+        ws.append([row.get(key) for key, _ in _PICKS_FIELDS])
+    for r in ws.iter_rows(min_row=2):
+        for cell in r:
+            cell.border = _BORDER
+            if isinstance(cell.value, datetime):
+                cell.number_format = _DATETIME_FMT
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{max(ws.max_row, 1)}"
+    _auto_width(ws)
+    wb.save(path)
+    return path

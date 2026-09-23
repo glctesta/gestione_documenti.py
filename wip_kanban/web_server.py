@@ -110,6 +110,20 @@ def _start_shift_email_scheduler():
     logger.info("Scheduler email kanban avviato")
 
 
+def _start_picks_scheduler():
+    """Thread daemon: sweep PTHM (ogni 60s) + email giornaliera picks (7:00)."""
+    import threading
+
+    def _run():
+        from wip_kanban import picks_tasks
+        picks_tasks.scheduler_loop()
+
+    t = threading.Thread(target=_run, daemon=True,
+                         name="wip_kanban_picks_tasks")
+    t.start()
+    logger.info("Scheduler picks WIP avviato (sweep PTHM + email 7:00)")
+
+
 def _is_bindable(host: str, port: int) -> bool:
     """True se l'indirizzo è locale e la porta è libera su questo PC."""
     import socket
@@ -126,6 +140,7 @@ def _is_bindable(host: str, port: int) -> bool:
 def main():
     app = create_app()
     _start_shift_email_scheduler()
+    _start_picks_scheduler()
     cfg = server_config.load_config()
     # Bind di default su TUTTE le interfacce: il check del dashboard (localhost)
     # e i client (server_host_ip) devono entrambi raggiungere il server.

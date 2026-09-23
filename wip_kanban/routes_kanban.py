@@ -355,3 +355,43 @@ def api_withdraw():
         return jsonify({"error": "db_error", "message": str(e)}), 500
     finally:
         conn.close()
+
+
+# ── Prelievo per ordine WIP (scarico differito al passaggio PTHM) ────────────
+
+@kanban_bp.route("/api/order-pick", methods=["POST"])
+@auth.require_page_token_or_session("kanban_pick")
+def api_order_pick():
+    order_number = ((request.get_json(silent=True) or {}).get("order_number") or "").strip()
+    if not order_number:
+        return jsonify({"error": "missing_order"}), 400
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        ok, err, info = kanban_logic.order_pick_create(cur, order_number, _user_name())
+        if not ok:
+            conn.rollback()
+            return jsonify({"error": err}), 404 if err == "no_boards" else 400
+        conn.commit()
+        return jsonify({"ok": True, "info": info})
+    except Exception as e:
+        conn.rollback()
+        logger.exception("Errore prelievo per ordine %s: %s", order_number, e)
+        return jsonify({"error": "db_error", "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@kanban_bp.route("/api/order-picks-open.xlsx")
+@auth.require_page_token_or_session("kanban_pick")
+def api_order_picks_xlsx():
+    ui, _ = _ui()
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        rows = kanban_logic.order_picks_open(cur)
+        path = excel_gen.order_picks_workbook(rows, ui)
+        return send_file(path, as_attachment=True,
+                         download_name=f"kanban_wip_picks_{datetime.now():%Y%m%d_%H%M}.xlsx")
+    finally:
+        conn.close()

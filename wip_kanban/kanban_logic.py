@@ -635,6 +635,9 @@ def display_state(cur, area, deposit=1):
         "area": area,
         "deposit": deposit,
         "pallets": pallets,
+        "picks": order_picks_stats(cur) if area == "WIP"
+        else {"open": {"orders": 0, "boards": 0, "products": 0},
+              "passed": {"orders": 0, "boards": 0, "products": 0}},
         "counts": {
             "pallets": int(n_pallets or 0),
             "positions": int(n_positions or 0),
@@ -646,3 +649,153 @@ def display_state(cur, area, deposit=1):
         },
         "last_operation": last,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Prelievo per ordine WIP — scarico differito al passaggio PTHM
+#
+# Flusso: l'operatore "prenota" un ordine WIP (order_pick_create): le schede
+# restano fisicamente in kanban ma vengono marcate PendingPickId. Lo sweep
+# PTHM (scheduler del server :6500, ogni 60s) scarica dal kanban (DateOut) le
+# schede pending la cui ULTIMA scansione e' nella fase PTHM successiva alla
+# richiesta. Match ESATTO su PhaseName ('PTHM': esclude 'AOI PTHM',
+# 'PTHM SELECTIVE', 'PTHM BOT' ecc.).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Fasi che scaricano dal kanban le schede in prelievo-per-ordine (match esatto
+# su PhaseName; estendibile aggiungendo nomi alla tupla).
+PTHM_PHASE_NAMES = ("PTHM",)
+# Utente registrato sullo scarico automatico (audit + OutUser).
+PTHM_OUT_USER = "PTHM"
+
+
+def order_pick_create(cur, order_number, user):
+    """Registra un prelievo-per-ordine WIP: marca PendingPickId su tutte le
+    schede attive dell'ordine in area WIP. Restituisce
+    (ok, errore, info) con info = {'pick_id','count','product_code','locations'}."""
+    order_number = (order_number or "").strip()
+    if not order_number:
+        return False, "missing_order", None
+    cur.execute(
+        """SELECT wl.PositionCode, wb.LabelCode, wb.OrderNumber, wb.ProductCode,
+                  wb.DateIn, wb.[User] AS LoadedBy
+           FROM Traceability_RS.ind.WipKanbanBoards wb
+           JOIN Traceability_RS.ind.WipKanbanLocations wl ON wl.LocationId = wb.LocationId
+           WHERE wl.Area = 'WIP' AND wb.DateOut IS NULL AND wb.OrderNumber = ?
+           ORDER BY wl.PositionCode""",
+        (order_number,),
+    )
+    cols = [d[0] for d in cur.description]
+    locations = [{c: row[i] for i, c in enumerate(cols)} for row in cur.fetchall()]
+    if not locations:
+        return False, "no_boards", None
+
+    product_code = locations[0]["ProductCode"]
+    # OUTPUT perche' SCOPE_IDENTITY() non sopravvive al batch separato di pyodbc
+    cur.execute(
+        """INSERT INTO Traceability_RS.ind.WipKanbanOrderPicks
+           (OrderNumber, ProductCode, RequestedBy, RequestedOn, BoardCount)
+           OUTPUT INSERTED.PickId
+           VALUES (?, ?, ?, GETDATE(), ?)""",
+        (order_number, product_code, user, len(locations)),
+    )
+    pick_id = int(cur.fetchone()[0])
+    cur.execute(
+        """UPDATE Traceability_RS.ind.WipKanbanBoards
+           SET PendingPickId = ?
+           WHERE DateOut IS NULL AND PendingPickId IS NULL
+             AND OrderNumber = ?
+             AND LocationId IN (SELECT LocationId FROM Traceability_RS.ind.WipKanbanLocations
+                                WHERE Area = 'WIP')""",
+        (pick_id, order_number),
+    )
+    # La riga pick e' gia' la traccia della richiesta: nessun audit aggiuntivo.
+    return True, None, {
+        "pick_id": pick_id,
+        "count": len(locations),
+        "product_code": product_code,
+        "locations": locations,
+    }
+
+
+def pthm_sweep(cur):
+    """Scarica dal kanban (DateOut, OutUser='PTHM') le schede pending il cui
+    pick e' stato richiesto prima dell'ultima scansione PTHM. Incrementa
+    PassedCount del pick e scrive audit OUT. Restituisce le schede scaricate."""
+    placeholders = ", ".join("?" * len(PTHM_PHASE_NAMES))
+    cur.execute(
+        f"""SELECT wb.BoardKanbanId, wb.LabelCode, wb.OrderNumber, wb.ProductCode,
+                  wl.PositionCode, wb.PendingPickId
+           FROM Traceability_RS.ind.WipKanbanBoards wb
+           JOIN Traceability_RS.ind.WipKanbanLocations wl ON wl.LocationId = wb.LocationId
+           JOIN Traceability_RS.ind.WipKanbanOrderPicks op ON op.PickId = wb.PendingPickId
+           CROSS APPLY (
+               SELECT TOP 1 ph.PhaseName, s.ScanTimeFinish
+               FROM Traceability_RS.dbo.Scannings s
+               LEFT JOIN Traceability_RS.dbo.OrderPhases op2 ON op2.IDOrderPhase = s.IDOrderPhase
+               LEFT JOIN Traceability_RS.dbo.Phases ph ON ph.IDPhase = op2.IDPhase
+               WHERE s.IDBoard = wb.IDBoard
+               ORDER BY s.IDScan DESC
+           ) ls
+           WHERE wb.PendingPickId IS NOT NULL AND wb.DateOut IS NULL
+             AND ls.PhaseName IN ({placeholders})
+             AND ls.ScanTimeFinish >= op.RequestedOn
+           ORDER BY wb.PendingPickId, wl.PositionCode""",
+        tuple(PTHM_PHASE_NAMES),
+    )
+    cols = [d[0] for d in cur.description]
+    rows = [{c: row[i] for i, c in enumerate(cols)} for row in cur.fetchall()]
+
+    swept = []
+    for r in rows:
+        cur.execute(
+            """UPDATE Traceability_RS.ind.WipKanbanBoards
+               SET DateOut = GETDATE(), OutUser = ?
+               WHERE BoardKanbanId = ?""",
+            (PTHM_OUT_USER, r["BoardKanbanId"]),
+        )
+        cur.execute(
+            """UPDATE Traceability_RS.ind.WipKanbanOrderPicks
+               SET PassedCount = PassedCount + 1
+               WHERE PickId = ?""",
+            (r["PendingPickId"],),
+        )
+        _audit(cur, "OUT", r["LabelCode"], r["PositionCode"],
+               r["OrderNumber"], r["ProductCode"], PTHM_OUT_USER)
+        swept.append(r)
+    return swept
+
+
+def order_picks_open(cur):
+    """Schede pending (in attesa di scarico PTHM) con dati del pick, per Excel."""
+    cur.execute(
+        """SELECT op.ProductCode, wb.OrderNumber, wb.LabelCode, wl.PositionCode,
+                  op.RequestedBy, op.RequestedOn
+           FROM Traceability_RS.ind.WipKanbanBoards wb
+           JOIN Traceability_RS.ind.WipKanbanLocations wl ON wl.LocationId = wb.LocationId
+           JOIN Traceability_RS.ind.WipKanbanOrderPicks op ON op.PickId = wb.PendingPickId
+           WHERE wb.PendingPickId IS NOT NULL AND wb.DateOut IS NULL
+           ORDER BY wb.OrderNumber, wl.PositionCode""",
+    )
+    cols = [d[0] for d in cur.description]
+    return [{c: row[i] for i, c in enumerate(cols)} for row in cur.fetchall()]
+
+
+def order_picks_stats(cur):
+    """Conteggi per il display e la mail: 'open' = schede pending WIP,
+    'passed' = schede gia' scaricate da uno sweep PTHM (DateOut NOT NULL,
+    PendingPickId mantenuto come storico). Entrambi per Area='WIP'."""
+    stats = {}
+    for key, dateout_clause in (("open", "IS NULL"), ("passed", "IS NOT NULL")):
+        cur.execute(
+            f"""SELECT COUNT(DISTINCT wb.OrderNumber), COUNT(*),
+                       COUNT(DISTINCT wb.ProductCode)
+                FROM Traceability_RS.ind.WipKanbanBoards wb
+                JOIN Traceability_RS.ind.WipKanbanLocations wl ON wl.LocationId = wb.LocationId
+                WHERE wl.Area = 'WIP' AND wb.PendingPickId IS NOT NULL
+                  AND wb.DateOut {dateout_clause}""",
+        )
+        orders, boards, products = cur.fetchone()
+        stats[key] = {"orders": int(orders or 0), "boards": int(boards or 0),
+                      "products": int(products or 0)}
+    return stats

@@ -165,6 +165,38 @@ html, body {
   gap: 2vw;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
 }
+
+/* Ricerche ordine WIP (prelievo per ordine, scarico differito PTHM) */
+.picks-card {
+  width: 100%;
+  max-width: 1700px;
+  margin-top: 1vh;
+  background: linear-gradient(160deg, var(--bg-card-2), var(--bg-card));
+  border: 1px solid rgba(106, 169, 255, 0.35);
+  border-radius: 14px;
+  padding: 2vh 2vw;
+  display: flex;
+  align-items: center;
+  gap: 2.5vw;
+  flex-wrap: wrap;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.picks-title {
+  font-size: 2.2vh;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  min-width: 12vw;
+}
+.picks-group { display: flex; align-items: baseline; gap: 1.2vw; }
+.picks-group-label {
+  font-size: 2.4vh;
+  font-weight: bold;
+  color: var(--box-ok-hi);
+}
+.picks-group + .picks-group .picks-group-label { color: var(--vdw-green-bright); }
+.picks-stat { font-size: 2.6vh; color: var(--text); }
+.picks-stat b { font-size: 4.5vh; font-variant-numeric: tabular-nums; color: #fff; }
 .last-op-card .last-op-title {
   font-size: 2.2vh;
   color: var(--text-dim);

@@ -20,6 +20,26 @@
     <div id="message" class="message" style="display:none;"></div>
 
     <section class="panel">
+      <h2>{{ ui.pick_order_title }}</h2>
+      <div class="actions">
+        <input type="text" id="order-pick-input" placeholder="{{ ui.search_order }}" autocomplete="off">
+        <button id="order-pick-btn">{{ ui.pick_order_btn }}</button>
+        <button id="order-picks-xlsx-btn" class="secondary">{{ ui.pick_order_excel_btn }}</button>
+      </div>
+      <div id="order-pick-info" class="info" style="margin-top:0.5rem;"></div>
+      <table id="order-pick-table" style="margin-top:1rem; display:none;">
+        <thead>
+          <tr>
+            <th>{{ ui.col_position }}</th>
+            <th>{{ ui.col_labelcode }}</th>
+            <th>{{ ui.col_product }}</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section class="panel">
       <h2>{{ ui.found_locations }}</h2>
       <div class="actions">
         <input type="text" id="order-search" placeholder="{{ ui.search_order }}" autocomplete="off">
@@ -210,10 +230,60 @@
       }
     }
 
+    // ── Prelievo per ordine WIP (scarico differito al passaggio PTHM) ───────
+    let orderPicking = false;
+
+    async function orderPick() {
+      if (orderPicking) return;
+      clearMsg();
+      const order = $('order-pick-input').value.trim();
+      if (!order) return;
+      orderPicking = true;
+      try {
+        const res = await apiFetch('/kanban/api/order-pick', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ order_number: order })
+        });
+        const info = res.info || {};
+        const locs = info.locations || [];
+        $('order-pick-info').textContent = UI.pick_order_success
+          .replace('{count}', String(info.count || locs.length))
+          .replace('{user}', USER);
+        const table = $('order-pick-table');
+        const tbody = table.querySelector('tbody');
+        tbody.innerHTML = '';
+        locs.forEach(l => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = '<td><strong>' + (l.PositionCode || '') + '</strong></td>' +
+            '<td>' + (l.LabelCode || '') + '</td>' +
+            '<td>' + (l.ProductCode || '') + '</td>';
+          tbody.appendChild(tr);
+        });
+        table.style.display = locs.length ? 'table' : 'none';
+      } catch (e) {
+        $('order-pick-info').textContent = '';
+        $('order-pick-table').style.display = 'none';
+        if (e.error === 'no_boards') {
+          msg(UI.pick_order_no_boards.replace('{order}', order), 'error');
+        } else {
+          msg(UI.msg_error + (e.message || e), 'error');
+        }
+      } finally {
+        orderPicking = false;
+      }
+    }
+
     $('search-btn').addEventListener('click', search);
     $('order-search').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
     $('product-search').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
     $('labelcode-search').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
+    $('order-pick-btn').addEventListener('click', orderPick);
+    $('order-pick-input').addEventListener('keydown', e => { if (e.key === 'Enter') orderPick(); });
+    $('order-picks-xlsx-btn').addEventListener('click', () => {
+      const tokenParam = TOKEN ? '?token=' + TOKEN : '';
+      window.location = '/kanban/api/order-picks-open.xlsx' + tokenParam;
+    });
     $('withdraw-btn').addEventListener('click', withdraw);
     $('scan-input').addEventListener('keydown', e => { if (e.key === 'Enter') withdraw(); });
     // Scanner che iniettano il CR come carattere: strip e prelievo automatico.
@@ -236,6 +306,9 @@
     #results-table { width: 100%; border-collapse: collapse; }
     #results-table th, #results-table td { padding: 0.4rem 0.6rem; border-bottom: 1px solid #ddd; text-align: left; }
     #results-table th { background: #2c5f2e; color: #fff; }
+    #order-pick-table { width: 100%; border-collapse: collapse; }
+    #order-pick-table th, #order-pick-table td { padding: 0.4rem 0.6rem; border-bottom: 1px solid #ddd; text-align: left; }
+    #order-pick-table th { background: #2c5f2e; color: #fff; }
     .info { color: #2c5f2e; font-weight: bold; }
   </style>
 </body>
