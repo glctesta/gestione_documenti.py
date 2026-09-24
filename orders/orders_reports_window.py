@@ -1,4 +1,4 @@
-﻿# File: orders/orders_reports_window.py
+# File: orders/orders_reports_window.py
 """
 Finestra per la gestione delle spedizioni dinamiche
 """
@@ -384,7 +384,13 @@ class DynamicShippingWindow(tk.Toplevel):
             if filters is None:
                 filters = self._get_current_filters()
             
+            # IMPORTANTE: cursore DEDICATO, non quello condiviso dell'app. Questa
+            # query usa 8 OUTER APPLY con table-valued function; con SQLNCLI11 il
+            # cursore condiviso fallisce a volte con
+            #   ('HY010', 'Function sequence error (0) (SQLGetData)')
+            # su fetchall. SET NOCOUNT ON evita result-set di conteggio spuri.
             query = """
+            SET NOCOUNT ON;
             WITH OrderData AS (
                 SELECT o.IDOrder, 
                     d.[SONumber], 
@@ -493,8 +499,15 @@ class DynamicShippingWindow(tk.Toplevel):
                 SONumber
             """
             
-            self.db.cursor.execute(query, params)
-            rows = self.db.cursor.fetchall()
+            cur = self.db.conn.cursor()
+            try:
+                cur.execute(query, params)
+                rows = cur.fetchall()
+            finally:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
 
             # Ordini finiti a magazzino non ancora spediti (FASE 1).
             # Calcolati PRIMA del ciclo per: (a) colorare di rosso gli ordini

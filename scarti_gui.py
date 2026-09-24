@@ -453,6 +453,38 @@ def open_scrap_declaration_window(parent, db_connection, lang_manager):
                                 lang_manager.get('saved_ok', "Dichiarazione salvata"),
                                 parent=win)
             win.destroy()
+        elif getattr(db_connection, 'last_scrap_duplicate', False):
+            # Esiste gia' una dichiarazione per questa coppia (etichetta, area):
+            # l'indice univoco lo impedisce. Offri l'aggiornamento dei dati.
+            logger.warning(f"[scarti_gui] Dichiarazione duplicata (IDLabel={id_label}, Phase={origin_map[origin_name]})")
+            if messagebox.askyesno(
+                    lang_manager.get('scrap_dup_title', "Dichiarazione esistente"),
+                    lang_manager.get('scrap_dup_message',
+                        "Esiste già una dichiarazione di scarto per questo codice in quest'area.\n"
+                        "Aggiornarla con i nuovi dati (motivo, note, riferimenti, foto)?"),
+                    parent=win):
+                upd = db_connection.update_scrap_declaration(
+                    user_name=user_name,
+                    id_label_code=id_label,
+                    id_parent_phase=origin_map[origin_name],
+                    scrap_reason_id=reason_map[reason_name],
+                    note=note,
+                    picture_bytes=picture_bytes,
+                    riferiments=riferiments
+                )
+                if upd:
+                    logger.info(f"[scarti_gui] Dichiarazione esistente aggiornata (IDLabel={id_label})")
+                    messagebox.showinfo(lang_manager.get('info', "Informazione"),
+                                        lang_manager.get('scrap_dup_updated',
+                                                        "Dichiarazione aggiornata con successo."),
+                                        parent=win)
+                    win.destroy()
+                else:
+                    logger.error(f"[scarti_gui] Errore aggiornamento dichiarazione: {db_connection.last_error_details}")
+                    messagebox.showerror(lang_manager.get('error', "Errore"),
+                                         lang_manager.get('scrap_dup_update_failed',
+                                                         f"Errore nell'aggiornamento: {db_connection.last_error_details}"),
+                                         parent=win)
         else:
             logger.error(f"[scarti_gui] Errore salvataggio dichiarazione: {db_connection.last_error_details}")
             messagebox.showerror(lang_manager.get('error', "Errore"),

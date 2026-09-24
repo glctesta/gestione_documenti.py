@@ -61,6 +61,14 @@
       </div>
 
       <div style="margin-top:1rem;">
+        <label><strong>{{ ui.orders }}</strong><br>
+          <input type="text" id="order-filter" placeholder="{{ ui.filter_order }}" autocomplete="off" style="width:100%; margin-bottom:0.25rem;">
+          <select id="order-select" multiple size="5" style="width:100%;"></select>
+        </label>
+        <div id="orders-info" class="info" style="margin-top:0.25rem;"></div>
+      </div>
+
+      <div style="margin-top:1rem;">
         <label><strong>{{ ui.script }}</strong>
           <textarea id="script-text" rows="10"></textarea>
         </label>
@@ -81,6 +89,48 @@
     let printers = [];
     let currentLabel = null;
     let currentScript = '';
+    const selectedOrders = new Map();
+
+    const selectedOrderIds = () =>
+      Array.from(selectedOrders.entries()).filter(([, o]) => o._selected).map(([id]) => id);
+
+    function updateOrdersInfo() {
+      const count = selectedOrderIds().length;
+      $('orders-info').textContent = count ? UI.orders_selected.replace('{count}', count) : '';
+    }
+
+    function renderOrderSelect() {
+      const sel = $('order-select');
+      sel.innerHTML = '';
+      selectedOrders.forEach((o, id) => {
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = `${o.OrderNumber} - ${o.ProductCode} (${o.ProductName})`;
+        opt.selected = !!o._selected;
+        sel.appendChild(opt);
+      });
+      updateOrdersInfo();
+    }
+
+    let orderSearchTimeout = null;
+
+    async function searchOrders() {
+      const q = $('order-filter').value.trim();
+      if (!q) { renderOrderSelect(); return; }
+      try {
+        const rows = await apiFetch('/print/api/orders/search?q=' + encodeURIComponent(q));
+        const kept = new Map();
+        selectedOrders.forEach((o, id) => { if (o._selected) kept.set(id, o); });
+        rows.forEach(o => {
+          if (!kept.has(o.IDOrder)) kept.set(o.IDOrder, { ...o, _selected: false });
+        });
+        selectedOrders.clear();
+        kept.forEach((o, id) => selectedOrders.set(id, o));
+        renderOrderSelect();
+      } catch (e) {
+        msg(UI.msg_error + (e.message || e), 'error');
+      }
+    }
 
     const $ = id => document.getElementById(id);
     const msg = (text, type = 'info') => {
@@ -194,6 +244,17 @@
     $('label-filter').addEventListener('input', () => renderLabelSelect($('label-filter').value));
     $('label-select').addEventListener('change', onLabelChange);
 
+    $('order-filter').addEventListener('input', () => {
+      clearTimeout(orderSearchTimeout);
+      orderSearchTimeout = setTimeout(searchOrders, 300);
+    });
+    $('order-select').addEventListener('change', () => {
+      const chosen = new Set(Array.from($('order-select').selectedOptions)
+        .map(o => parseInt(o.value, 10)));
+      selectedOrders.forEach((o, id) => { o._selected = chosen.has(id); });
+      updateOrdersInfo();
+    });
+
     $('back-btn').addEventListener('click', () => {
       window.location.href = '/bom?token=' + TOKEN + '&lang=' + LANG;
     });
@@ -213,7 +274,7 @@
         printer_id: printerId,
         quantity: quantity,
         script: script,
-        order_ids: []
+        order_ids: selectedOrderIds()
       };
       if (!isTrace) {
         payload.prefix = $('prefix-input').value || '';

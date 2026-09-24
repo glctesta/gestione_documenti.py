@@ -31,11 +31,21 @@ CREATE TABLE Traceability_RS.dbo.ShipmentEmailConfig (
     ToEmails      NVARCHAR(MAX)     NULL,
     CcEmails      NVARCHAR(MAX)     NULL,
     IsActive      BIT               NOT NULL DEFAULT 1,
+    [Language]    VARCHAR(2)        NULL,
+    ReferentName  NVARCHAR(200)     NULL,
+    ReferentEmail NVARCHAR(300)     NULL,
     [User]        NVARCHAR(100)     NULL,
     DateIn        DATETIME          NOT NULL DEFAULT GETDATE(),
     DateOut       DATETIME          NULL
 )
 """
+
+# Colonne aggiunte successivamente alla creazione: le assicuriamo anche qui
+_ALTER_COLUMNS = [
+    ("[Language]", "VARCHAR(2) NULL"),
+    ("ReferentName", "NVARCHAR(200) NULL"),
+    ("ReferentEmail", "NVARCHAR(300) NULL"),
+]
 
 # File gia' elaborati: la presenza della riga (qualsiasi Status) impedisce per
 # sempre il re-invio per quel sito/file. La rename con prefisso Executed_
@@ -74,7 +84,8 @@ VALUES (?, ?, 'ERROR', ?)
 
 _Q_CONFIGS = """
 SELECT c.ConfigId, c.IDSite, s.SiteName, c.DirectoryName,
-       c.ToEmails, c.CcEmails, c.IsActive
+       c.ToEmails, c.CcEmails, c.IsActive,
+       c.[Language], c.ReferentName, c.ReferentEmail
 FROM Traceability_RS.dbo.ShipmentEmailConfig c
 INNER JOIN Traceability_RS.dbo.Sites s ON s.IDSite = c.IDSite
 WHERE c.DateOut IS NULL
@@ -92,13 +103,25 @@ _COL_QUANTITY = 'quantity'
 
 
 def ensure_config_table(db):
-    """Crea le tabelle ShipmentEmailConfig e ShipmentProcessedFiles se mancano (best-effort)."""
+    """Crea le tabelle ShipmentEmailConfig e ShipmentProcessedFiles se mancano (best-effort),
+    e assicura le colonne Language/ReferentName/ReferentEmail sulla config."""
     try:
         db._ensure_connection()
         with db._lock:
             cur = db.cursor
             cur.execute(CREATE_TABLE_SQL)
             cur.execute(CREATE_PROCESSED_TABLE_SQL)
+            for col_name, col_def in _ALTER_COLUMNS:
+                cur.execute(
+                    "SELECT COUNT(*) FROM sys.columns "
+                    "WHERE object_id = OBJECT_ID('Traceability_RS.dbo.ShipmentEmailConfig') "
+                    f"  AND name = '{col_name.strip('[]')}'"
+                )
+                if cur.fetchone()[0] == 0:
+                    cur.execute(
+                        f"ALTER TABLE Traceability_RS.dbo.ShipmentEmailConfig "
+                        f"ADD {col_name} {col_def}"
+                    )
             db.conn.commit()
     except Exception as e:
         logger.warning("Impossibile assicurare tabelle spedizioni: %s", e)
@@ -265,11 +288,42 @@ def _format_date(value):
         return str(value)[:10]
 
 
-def _build_html(site_name, file_name, data, greeting):
+def _build_html(site_name, file_name, data, greeting, lang='IT',
+                referent_name='', referent_email=''):
     from html import escape
+    lang = (lang or 'IT').upper()
     date_txt = data['ship_date'] or '—'
     total = data['total_qty']
     total_fmt = f"{total:,.0f}" if total == int(total) else f"{total:,.2f}"
+
+    if lang == 'EN':
+        intro = (
+            f"Please find attached the data for the shipment of <strong>{escape(date_txt)}</strong> "
+            f"(file <em>{escape(file_name)}</em>): <strong>{data['item_count']}</strong> item codes "
+            f"for a total of <strong>{total_fmt}</strong> pieces."
+        )
+        headers = ('Item code', 'Sales order', 'Production order', 'Quantity')
+        contact_label = 'For any information, please contact'
+        auto_note = 'This message was generated automatically by the Traceability RS system — please do not reply.'
+    else:
+        intro = (
+            f"in allegato trovate i dati relativi alla spedizione del giorno "
+            f"<strong>{escape(date_txt)}</strong> (file <em>{escape(file_name)}</em>): "
+            f"<strong>{data['item_count']}</strong> codici per un totale di "
+            f"<strong>{total_fmt}</strong> pezzi."
+        )
+        headers = ('Codice prodotto', 'Ordine di vendita', 'Ordine di produzione', 'Quantità')
+        contact_label = 'Per informazioni contattare'
+        auto_note = ('Messaggio generato automaticamente dal sistema Traceability RS — '
+                     'si prega di non rispondere.')
+
+    contact_html = ''
+    if referent_name or referent_email:
+        contact_parts = ' — '.join(p for p in (escape(referent_name), escape(referent_email)) if p)
+        contact_html = (
+            f'<p style="margin:0 0 4px 0;"><strong>{contact_label}:</strong> '
+            f'<span style="color: #1f3864;">{contact_parts}</span></p>'
+        )
 
     table_rows = []
     for item, number, batch, qty in data['rows']:
@@ -282,9 +336,6 @@ def _build_html(site_name, file_name, data, greeting):
             f"<td style='padding:6px 10px;border:1px solid #dde1e7;text-align:right;'>{qty_fmt}</td>"
             f"</tr>"
         )
-
-    body_date = escape(date_txt)
-    body_file = escape(file_name)
 
     return f"""<!DOCTYPE html>
 <html>
@@ -301,12 +352,7 @@ def _build_html(site_name, file_name, data, greeting):
         <tr>
           <td style="padding:24px 24px 8px 24px;color:#2c3e50;font-size:15px;">
             <p style="margin:0 0 12px 0;"><strong>{greeting},</strong></p>
-            <p style="margin:0 0 12px 0;line-height:1.5;">
-              in allegato trovate i dati relativi alla spedizione del giorno
-              <strong>{body_date}</strong> (file <em>{body_file}</em>):
-              <strong>{data['item_count']}</strong> codici per un totale di
-              <strong>{total_fmt}</strong> pezzi.
-            </p>
+            <p style="margin:0 0 12px 0;line-height:1.5;">{intro}</p>
           </td>
         </tr>
         <tr>
@@ -314,19 +360,23 @@ def _build_html(site_name, file_name, data, greeting):
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
                    style="border-collapse:collapse;font-size:13px;color:#2c3e50;">
               <tr style="background-color:#1f3864;color:#ffffff;">
-                <th style="padding:8px 10px;border:1px solid #1f3864;text-align:left;">Item number</th>
-                <th style="padding:8px 10px;border:1px solid #1f3864;text-align:left;">Sales order</th>
-                <th style="padding:8px 10px;border:1px solid #1f3864;text-align:left;">Production order</th>
-                <th style="padding:8px 10px;border:1px solid #1f3864;text-align:right;">Quantity</th>
+                <th style="padding:8px 10px;border:1px solid #1f3864;text-align:left;">{headers[0]}</th>
+                <th style="padding:8px 10px;border:1px solid #1f3864;text-align:left;">{headers[1]}</th>
+                <th style="padding:8px 10px;border:1px solid #1f3864;text-align:left;">{headers[2]}</th>
+                <th style="padding:8px 10px;border:1px solid #1f3864;text-align:right;">{headers[3]}</th>
               </tr>
               {''.join(table_rows)}
             </table>
           </td>
         </tr>
         <tr>
+          <td style="padding:8px 24px 12px 24px;color:#2c3e50;font-size:13px;">
+            {contact_html}
+          </td>
+        </tr>
+        <tr>
           <td style="padding:8px 24px 24px 24px;color:#7f8c8d;font-size:12px;">
-            <p style="margin:0;">Messaggio generato automaticamente dal sistema Traceability RS —
-            si prega di non rispondere.</p>
+            <p style="margin:0;">{auto_note}</p>
           </td>
         </tr>
       </table>
@@ -336,9 +386,12 @@ def _build_html(site_name, file_name, data, greeting):
 </html>"""
 
 
-def _greeting():
+def _greeting(lang='IT'):
     from datetime import datetime
-    return 'Buonasera' if datetime.now().hour >= 18 else 'Buongiorno'
+    evening = datetime.now().hour >= 18
+    if (lang or 'IT').upper() == 'EN':
+        return 'Good evening' if evening else 'Good morning'
+    return 'Buonasera' if evening else 'Buongiorno'
 
 
 def _send_for_file(db, config, file_path):
@@ -367,7 +420,11 @@ def _send_for_file(db, config, file_path):
     subject = (f"Spedizione {config['SiteName']} del {date_part} — "
                f"{data['item_count']} codici / {total_fmt} pz")
 
-    html = _build_html(config['SiteName'], file_name, data, _greeting())
+    html = _build_html(config['SiteName'], file_name, data,
+                       _greeting(config.get('Language')),
+                       lang=config.get('Language'),
+                       referent_name=config.get('ReferentName') or '',
+                       referent_email=config.get('ReferentEmail') or '')
 
     attachments = [file_path]
     logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Logo.png')

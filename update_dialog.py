@@ -38,7 +38,8 @@ class UpdateDialog:
                  on_download: Optional[Callable] = None,
                  on_skip: Optional[Callable] = None,
                  logo_path: Optional[str] = None,
-                 ready: bool = False):
+                 ready: bool = False,
+                 start_countdown: bool = False):
         self.parent = parent
         self.lang = lang
         self.current_version = current_version
@@ -50,6 +51,10 @@ class UpdateDialog:
         self.on_skip = on_skip
         self.logo_path = logo_path
         self.ready = ready
+        # start_countdown: avvia il conto alla rovescia anche quando ready=True
+        # (prima il countdown partiva solo con ready=False, che main.py non
+        # usava mai: l'update automatico era quindi morto).
+        self.start_countdown = start_countdown
 
         self.result = None
         self._tick_job = None
@@ -103,8 +108,9 @@ class UpdateDialog:
         tk.Label(versions, text=self.new_version,
                  bg='#E8EAF6', fg='#2E7D32', font=('Segoe UI', 10, 'bold')).grid(row=1, column=1, sticky='w', padx=(6, 0), pady=(4, 0))
 
-        # Countdown (piccolo, sotto le versioni) — nascosto se già pronto
-        if self.ready:
+        # Countdown (piccolo, sotto le versioni). Con start_countdown=True il
+        # testo iniziale e' il conto alla rovescia anche quando ready=True.
+        if self.ready and not self.start_countdown:
             ready_msg = self.lang.get('update_ready_msg',
                                       'Tutto pronto: premi "Installa ora" per aggiornare.')
         else:
@@ -197,8 +203,9 @@ class UpdateDialog:
         # Mantieni in primo piano
         self._keep_on_top()
 
-        # Avvia countdown solo se non è già pronto
-        if not self.ready:
+        # Avvia countdown se richiesto esplicitamente (start_countdown) oppure
+        # nel vecchio comportamento da "non pronto"
+        if self.start_countdown or not self.ready:
             self._schedule_tick()
 
     def _load_logo(self, parent):
@@ -356,9 +363,10 @@ def show_update_dialog(parent, lang, current_version: str, new_version: str,
                        on_download: Optional[Callable] = None,
                        on_skip: Optional[Callable] = None,
                        logo_path: Optional[str] = None,
-                       ready: bool = False) -> str:
+                       ready: bool = False,
+                       start_countdown: bool = False) -> str:
     """Funzione di comodo per mostrare il dialogo."""
     dlg = UpdateDialog(parent, lang, current_version, new_version,
                        whatsnew, mandatory, countdown_seconds,
-                       on_download, on_skip, logo_path, ready)
+                       on_download, on_skip, logo_path, ready, start_countdown)
     return dlg.show()

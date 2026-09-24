@@ -7,18 +7,47 @@ mentre i moduli pesanti vengono caricati in background.
 
 import tkinter as tk
 from tkinter import ttk
+import random
 import threading
 import os
 import sys
 
 
 # ── Colori app ────────────────────────────────────────────────────────────────
+# Palette di default (prima della lista casuale): blu-notte.
 BG_COLOR      = "#1e2a3a"   # sfondo scuro blu-notte
 ACCENT_COLOR  = "#4fc3f7"   # azzurro chiaro
 TEXT_COLOR    = "#e0f7fa"   # bianco-azzurro
 BAR_COLOR     = "#4fc3f7"   # barra progresso
 TROUGH_COLOR  = "#2c3e50"   # sfondo barra
 TITLE_COLOR   = "#ffffff"   # bianco puro per titolo
+
+# Rose di palette (bg, accent, text, bar, trough, title): a ogni apertura
+# viene scelta una a caso, cosi' lo splash ha un colore di fondo diverso
+# (colori decisi, contrasto leggibile con testo chiaro).
+_SPLASH_PALETTES = [
+    ("#1e2a3a", "#4fc3f7", "#e0f7fa", "#4fc3f7", "#2c3e50", "#ffffff"),  # blu notte
+    ("#14532d", "#4ade80", "#dcfce7", "#4ade80", "#166534", "#ffffff"),  # verde bosco
+    ("#7f1d1d", "#f87171", "#fee2e2", "#f87171", "#991b1b", "#ffffff"),  # rosso mattone
+    ("#4c1d95", "#c084fc", "#ede9fe", "#c084fc", "#5b21b6", "#ffffff"),  # viola
+    ("#7c2d12", "#fb923c", "#ffedd5", "#fb923c", "#9a3412", "#ffffff"),  # arancio tramonto
+    ("#134e4a", "#2dd4bf", "#ccfbf1", "#2dd4bf", "#115e59", "#ffffff"),  # petrolio
+    ("#1e3a8a", "#60a5fa", "#dbeafe", "#60a5fa", "#1e40af", "#ffffff"),  # blu royal
+    ("#831843", "#f472b6", "#fce7f3", "#f472b6", "#9d174d", "#ffffff"),  # fucsia
+    ("#713f12", "#facc15", "#fef9c3", "#facc15", "#854d0e", "#ffffff"),  # oro
+    ("#312e81", "#818cf8", "#e0e7ff", "#818cf8", "#3730a3", "#ffffff"),  # indaco
+    ("#3f6212", "#a3e635", "#ecfccb", "#a3e635", "#4d7c0f", "#ffffff"),  # lime scuro
+    ("#27272a", "#ef4444", "#fafafa", "#ef4444", "#3f3f46", "#ffffff"),  # grafite/rosso
+]
+
+
+def _random_palette() -> dict:
+    """Palette casuale per lo splash (una diversa a ogni apertura)."""
+    bg, accent, text, bar, trough, title = random.choice(_SPLASH_PALETTES)
+    return {
+        'bg': bg, 'accent': accent, 'text': text,
+        'bar': bar, 'trough': trough, 'title': title,
+    }
 
 
 def _resource_path(relative_path: str) -> str:
@@ -45,10 +74,19 @@ class SplashScreen:
         self._lock = threading.Lock()
         self._closed = False
 
+        # Colore di fondo casuale a ogni apertura
+        self._palette = _random_palette()
+        self.bg_color     = self._palette['bg']
+        self.accent_color = self._palette['accent']
+        self.text_color   = self._palette['text']
+        self.bar_color    = self._palette['bar']
+        self.trough_color = self._palette['trough']
+        self.title_color  = self._palette['title']
+
         # ── Crea la finestra splash ───────────────────────────────────────────
         self._win = tk.Toplevel(root)
         self._win.overrideredirect(True)          # niente bordi / barra titolo
-        self._win.configure(bg=BG_COLOR)
+        self._win.configure(bg=self.bg_color)
         self._win.attributes("-topmost", True)    # sempre in primo piano
         self._win.resizable(False, False)
 
@@ -69,16 +107,17 @@ class SplashScreen:
 
     def _build_ui(self):
         win = self._win
+        BG = self.bg_color
 
         # Bordo sottile decorativo
-        border = tk.Frame(win, bg=ACCENT_COLOR, bd=0)
+        border = tk.Frame(win, bg=self.accent_color, bd=0)
         border.place(x=0, y=0, width=self.WIDTH, height=2)
 
         # ── Logo ──────────────────────────────────────────────────────────────
         logo_path = _resource_path("logo.png")
         self._logo_image = None   # mantieni riferimento per evitare GC
 
-        logo_frame = tk.Frame(win, bg=BG_COLOR)
+        logo_frame = tk.Frame(win, bg=BG)
         logo_frame.pack(pady=(22, 8))
 
         try:
@@ -87,15 +126,15 @@ class SplashScreen:
             # Ridimensiona proporzionalmente: max 160×80
             img.thumbnail((160, 80), Image.Resampling.LANCZOS)
             self._logo_image = ImageTk.PhotoImage(img)
-            tk.Label(logo_frame, image=self._logo_image, bg=BG_COLOR).pack()
+            tk.Label(logo_frame, image=self._logo_image, bg=BG).pack()
         except Exception:
             # Fallback testuale se PIL non disponibile o logo mancante
             tk.Label(
                 logo_frame,
                 text="TraceabilityRS",
                 font=("Segoe UI", 20, "bold"),
-                fg=ACCENT_COLOR,
-                bg=BG_COLOR,
+                fg=self.accent_color,
+                bg=BG,
             ).pack()
 
         # ── Titolo + versione ─────────────────────────────────────────────────
@@ -110,8 +149,8 @@ class SplashScreen:
             win,
             text="TraceabilityRS Management Suite",
             font=("Segoe UI", 13, "bold"),
-            fg=TITLE_COLOR,
-            bg=BG_COLOR,
+            fg=self.title_color,
+            bg=BG,
         ).pack(pady=(0, 2))
 
         if version_str:
@@ -119,25 +158,25 @@ class SplashScreen:
                 win,
                 text=f"v{version_str}",
                 font=("Segoe UI", 9),
-                fg=ACCENT_COLOR,
-                bg=BG_COLOR,
+                fg=self.accent_color,
+                bg=BG,
             ).pack(pady=(0, 14))
         else:
-            tk.Frame(win, bg=BG_COLOR, height=14).pack()
+            tk.Frame(win, bg=BG, height=14).pack()
 
         # ── Barra di progresso ────────────────────────────────────────────────
-        bar_frame = tk.Frame(win, bg=BG_COLOR)
+        bar_frame = tk.Frame(win, bg=BG)
         bar_frame.pack(fill="x", padx=40, pady=(0, 6))
 
         style = ttk.Style(win)
         style.theme_use("clam")
         style.configure(
             "Splash.Horizontal.TProgressbar",
-            troughcolor=TROUGH_COLOR,
-            background=BAR_COLOR,
-            bordercolor=BG_COLOR,
-            lightcolor=BAR_COLOR,
-            darkcolor=BAR_COLOR,
+            troughcolor=self.trough_color,
+            background=self.bar_color,
+            bordercolor=BG,
+            lightcolor=self.bar_color,
+            darkcolor=self.bar_color,
             thickness=10,
         )
 
@@ -157,13 +196,13 @@ class SplashScreen:
             win,
             textvariable=self._status_var,
             font=("Segoe UI", 9),
-            fg=TEXT_COLOR,
-            bg=BG_COLOR,
+            fg=self.text_color,
+            bg=BG,
         )
         self._status_label.pack(pady=(0, 10))
 
         # ── Linea inferiore decorativa ────────────────────────────────────────
-        tk.Frame(win, bg=ACCENT_COLOR, bd=0).place(
+        tk.Frame(win, bg=self.accent_color, bd=0).place(
             x=0, y=self.HEIGHT - 2, width=self.WIDTH, height=2
         )
 

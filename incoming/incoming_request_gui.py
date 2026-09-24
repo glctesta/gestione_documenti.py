@@ -29,6 +29,11 @@ except ImportError:  # esecuzione come script standalone
     import incoming_db
 
 try:
+    from . import incoming_email
+except ImportError:  # esecuzione come script standalone
+    import incoming_email
+
+try:
     from calendar_widget import DatePickerEntry
 except ImportError:
     DatePickerEntry = None
@@ -177,6 +182,11 @@ class IncomingRequestWindow(tk.Toplevel):
             row=6, column=0, sticky='w', padx=6, pady=6)
         self._add_entry(form, 'wrong_mpn', row=6, col=1)
 
+        # Codice interno (componente) da abbinare all'MPN
+        ttk.Label(form, text=L('inc_req_component_code', 'Codice interno (componente):')).grid(
+            row=9, column=0, sticky='w', padx=6, pady=6)
+        self._add_entry(form, 'component_code', row=9, col=1)
+
         # Quantità
         ttk.Label(form, text=L('inc_req_qty_receive', 'Quantità da ricevere:')).grid(
             row=7, column=0, sticky='w', padx=6, pady=6)
@@ -247,6 +257,9 @@ class IncomingRequestWindow(tk.Toplevel):
     def _on_type_change(self):
         key = self._current_type_key()
         visible = set(_FIELDS_BY_TYPE.get(key, ())) | {'ddt_number', 'ddt_date'}
+        # Il codice interno si abbina all'MPN: visibile solo per i tipi MPN.
+        if key in ('MPN_MANCANTE', 'MPN_SBAGLIATO'):
+            visible.add('component_code')
         for name, (lbl, widget) in self._rows.items():
             if name in ('ddt_number', 'ddt_date'):
                 continue  # sempre visibili
@@ -345,6 +358,16 @@ class IncomingRequestWindow(tk.Toplevel):
                 return
             data[name] = val
 
+        # Codice interno (componente): opzionale; se mancante in
+        # dbo.Components (IDCOMPONENTTYPE = 1) viene inserito silente.
+        component_code = self._vars['component_code'].get().strip().upper() or None
+        if component_code and key in ('MPN_MANCANTE', 'MPN_SBAGLIATO'):
+            try:
+                incoming_db.ensure_component(self.db, component_code)
+            except Exception as e:
+                logger.error(f"Incoming request: verifica componente fallita: {e}", exc_info=True)
+        data['component_code'] = component_code
+
         for name in ('qty_to_receive', 'qty_expected_per_po'):
             try:
                 val = self._parse_qty(name)
@@ -371,21 +394,32 @@ class IncomingRequestWindow(tk.Toplevel):
 
         # Popup per i PC receiver (transazione separata, dopo il commit di create_request)
         try:
+            popup_msg = L('inc_req_popup_msg',
+                          '{0} — Fornitore: {1} — DDT: {2} — Da: {3}').format(
+                incoming_db.type_label(L, key), data['supplier_name'],
+                data.get('ddt_number') or '-', self.user_name)
+            if data.get('component_code'):
+                popup_msg += ' — ' + L('inc_req_popup_code', 'Codice: {0}').format(
+                    data['component_code'])
             with self.db._lock:
                 cur = _cursor(self.db)
                 queue_popup(
                     cur,
                     target='INCOMING_RECEIVER',
                     title=L('inc_req_popup_title', 'Nuova richiesta Ricezione — {0}').format(request_number),
-                    message=L('inc_req_popup_msg',
-                              '{0} — Fornitore: {1} — DDT: {2} — Da: {3}').format(
-                        incoming_db.type_label(L, key), data['supplier_name'],
-                        data.get('ddt_number') or '-', self.user_name),
+                    message=popup_msg,
                     order_number=request_number,
                     category='INCOMING')
                 self.db.conn.commit()
         except Exception as e:
             logger.error(f"Incoming request: popup non accodato per {request_number}: {e}", exc_info=True)
+
+        # Email di notifica ai destinatari configurati per il tipo
+        try:
+            req = incoming_db.get_request(self.db, request_id) or {}
+            incoming_email.send_new_request_email(self.db, req)
+        except Exception as e:
+            logger.error(f"Incoming request: email non inviata per {request_number}: {e}", exc_info=True)
 
         messagebox.showinfo(L('info', 'Info'),
                             L('inc_req_sent', 'Richiesta {0} inviata.').format(request_number),

@@ -52,3 +52,20 @@ BEGIN
     );
 END
 GO
+
+-- Lingua email (IT/EN) e referente da citare nel testo
+IF NOT EXISTS (SELECT 1 FROM sys.columns
+               WHERE object_id = OBJECT_ID('dbo.ShipmentEmailConfig')
+                 AND name = 'Language')
+    ALTER TABLE dbo.ShipmentEmailConfig ADD [Language] VARCHAR(2) NULL;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.columns
+               WHERE object_id = OBJECT_ID('dbo.ShipmentEmailConfig')
+                 AND name = 'ReferentName')
+    ALTER TABLE dbo.ShipmentEmailConfig ADD ReferentName NVARCHAR(200) NULL;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.columns
+               WHERE object_id = OBJECT_ID('dbo.ShipmentEmailConfig')
+                 AND name = 'ReferentEmail')
+    ALTER TABLE dbo.ShipmentEmailConfig ADD ReferentEmail NVARCHAR(300) NULL;
+GO

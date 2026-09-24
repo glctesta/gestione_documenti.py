@@ -120,7 +120,7 @@ class IncomingSetupWindow(tk.Toplevel):
 
         self.title(self.lang.get('incoming_setup_title',
                                  'Setup — Ricezione (Incoming)'))
-        self.geometry("680x760")
+        self.geometry("680x860")
         self.resizable(False, False)
         self.transient(master)
         self.grab_set()
@@ -128,6 +128,7 @@ class IncomingSetupWindow(tk.Toplevel):
         # (request_type, type_label, emails_var, reminders_var)
         self._type_rows = []
         self._monthly_text = None
+        self._engineering_text = None
         self._master_text = None
 
         self._build_ui()
@@ -207,6 +208,26 @@ class IncomingSetupWindow(tk.Toplevel):
         self._monthly_text = tk.Text(monthly_frame, height=4, wrap="word")
         self._monthly_text.pack(fill="both", expand=True)
 
+        # --- Ingegneria (TO email soluzione) ------------------------------ #
+        engineering_frame = ttk.LabelFrame(
+            main,
+            text=L('incoming_setup_engineering_frame',
+                   'Indirizzi email Ingegneria (destinatari in TO della email soluzione)'),
+            padding=10,
+        )
+        engineering_frame.pack(fill="x", pady=(0, 10))
+
+        self._engineering_text = tk.Text(engineering_frame, height=3, wrap="word")
+        self._engineering_text.pack(fill="x")
+        ttk.Label(
+            engineering_frame,
+            text=L('incoming_setup_engineering_hint',
+                   'Indirizzi Ingegneria inseriti come destinatari principali (A) '
+                   'dell\'email preconfezionata di richiesta soluzione.'),
+            font=("Segoe UI", 8),
+            foreground="#555555",
+        ).pack(anchor="w", pady=(4, 0))
+
         # --- Master ticket ---------------------------------------------- #
         master_frame = ttk.LabelFrame(
             main,
@@ -281,6 +302,14 @@ class IncomingSetupWindow(tk.Toplevel):
         self._monthly_text.delete("1.0", "end")
         self._monthly_text.insert("1.0", "\n".join(_load_monthly_recipients(self.db)))
 
+        self._engineering_text.delete("1.0", "end")
+        try:
+            engineering_emails = incoming_db.get_engineering_recipients(self.db)
+        except Exception as e:
+            logger.error("get_engineering_recipients fallita: %s", e, exc_info=True)
+            engineering_emails = []
+        self._engineering_text.insert("1.0", "\n".join(engineering_emails))
+
         self._master_text.delete("1.0", "end")
         try:
             master_emails = incoming_db.get_master_emails(self.db)
@@ -306,6 +335,10 @@ class IncomingSetupWindow(tk.Toplevel):
         valid_monthly, rejected_monthly = _parse_emails(self._monthly_text.get("1.0", "end"))
         rejected_all.extend(rejected_monthly)
 
+        valid_engineering, rejected_engineering = _parse_emails(
+            self._engineering_text.get("1.0", "end"))
+        rejected_all.extend(rejected_engineering)
+
         valid_master, rejected_master = _parse_emails(self._master_text.get("1.0", "end"))
         rejected_all.extend(rejected_master)
 
@@ -330,12 +363,13 @@ class IncomingSetupWindow(tk.Toplevel):
                     self.db, request_type, parsed_by_type[request_type], reminders)
 
             _save_monthly_recipients(self.db, valid_monthly)
+            incoming_db.save_engineering_recipients(self.db, valid_engineering)
             incoming_db.save_master_emails(self.db, valid_master)
 
-            logger.info("Setup Incoming salvato da %s: tipi=%s, destinatari mensili=%d, master=%d",
+            logger.info("Setup Incoming salvato da %s: tipi=%s, destinatari mensili=%d, ingegneria=%d, master=%d",
                         self.user_name,
                         {k: len(v) for k, v in parsed_by_type.items()},
-                        len(valid_monthly), len(valid_master))
+                        len(valid_monthly), len(valid_engineering), len(valid_master))
             messagebox.showinfo(
                 L('info', 'Info'),
                 L('incoming_setup_saved', 'Configurazione salvata con successo.'),

@@ -1,4 +1,4 @@
-﻿#import configparser
+#import configparser
 # --- StdIO safeguard + Faulthandler sicuro per exe windowed ---
 import shutil
 import sys, os, atexit
@@ -308,7 +308,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.3.4.6'  # Versione aggiornata
+APP_VERSION = '2.4.3.5.0'  # Versione aggiornata
 # Nome programma usato come chiave in SwVersions / VersionDMLogs.
 # In produzione = nome dell'exe; in sviluppo usa il nome canonico.
 APP_PROGRAM_NAME = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else 'DocumentManagement.exe'
@@ -3692,6 +3692,11 @@ class Database:
         if riferiments is None:
             riferiments = ""
 
+        # Reset flag duplicato: l'indice univoco (IdLabelCode, IDParentPhase)
+        # impedisce due dichiarazioni per la stessa coppia; il chiamante lo
+        # usa per proporre l'aggiornamento della riga esistente.
+        self.last_scrap_duplicate = False
+
         cur = None
         try:
             cur = self.conn.cursor()
@@ -3711,6 +3716,10 @@ class Database:
             # Se la colonna non esiste, fallback al vecchio schema
             self.conn.rollback()
             msg = str(e).lower()
+            if "cannot insert duplicate key" in msg or "2601" in msg:
+                self.last_scrap_duplicate = True
+                self.last_error_details = str(e)
+                return False
             if "invalid column" in msg and "riferiments" in msg:
                 try:
                     cur = self.conn.cursor()
@@ -3730,6 +3739,61 @@ class Database:
             else:
                 self.last_error_details = str(e)
                 return False
+        finally:
+            try:
+                if cur: cur.close()
+            except Exception:
+                pass
+
+    def update_scrap_declaration(self, user_name, id_label_code, id_parent_phase,
+                                 scrap_reason_id, note, picture_bytes, riferiments=None):
+        """
+        Aggiorna la dichiarazione esistente per la coppia
+        (IdLabelCode, IDParentPhase), che e' univoca per indice.
+        Usato quando l'INSERT fallisce per chiave duplicata: permette di
+        correggere/integrare motivo, note, riferimenti e foto.
+        Le colonne di validazione (Accepted/Refuzed/ValidatorNotes) NON
+        vengono toccate.
+        """
+        if riferiments is None:
+            riferiments = ""
+
+        cur = None
+        try:
+            cur = self.conn.cursor()
+            query_new = """
+                UPDATE dbo.ScarpDeclarations
+                SET [User] = ?, [ScrapReasonId] = ?, [Note] = ?, [Riferiments] = ?,
+                    [DateIn] = GETDATE(), [Picture] = ?
+                WHERE [IdLabelCode] = ? AND [IDParentPhase] = ?;
+            """
+            cur.execute(query_new, user_name, scrap_reason_id, note, riferiments,
+                        picture_bytes, id_label_code, id_parent_phase)
+            self.conn.commit()
+            return cur.rowcount > 0
+
+        except Exception as e:
+            self.conn.rollback()
+            msg = str(e).lower()
+            if "invalid column" in msg and "riferiments" in msg:
+                try:
+                    cur = self.conn.cursor()
+                    query_old = """
+                        UPDATE dbo.ScarpDeclarations
+                        SET [User] = ?, [ScrapReasonId] = ?, [Note] = ?,
+                            [DateIn] = GETDATE(), [Picture] = ?
+                        WHERE [IdLabelCode] = ? AND [IDParentPhase] = ?;
+                    """
+                    cur.execute(query_old, user_name, scrap_reason_id, note,
+                                picture_bytes, id_label_code, id_parent_phase)
+                    self.conn.commit()
+                    return cur.rowcount > 0
+                except Exception as e2:
+                    self.conn.rollback()
+                    self.last_error_details = str(e2)
+                    return False
+            self.last_error_details = str(e)
+            return False
         finally:
             try:
                 if cur: cur.close()
@@ -22542,6 +22606,13 @@ class App(tk.Tk):
 
         # Monitor popup Ricezione (Incoming): popup nuove richieste sulle postazioni
         # riceventi e popup risposta sulla postazione mittente (hostname).
+        try:
+            # DDL/ALTER idempotenti (incl. colonna ComponentCode): auto-applicazione
+            # a ogni avvio, cosi' le migration non dipendono da SQL manuale.
+            from incoming import incoming_db as _incoming_db
+            _incoming_db.create_tables(self.db)
+        except Exception as e:
+            logger.error(f"Verifica DDL modulo Ricezione fallita: {e}", exc_info=True)
         try:
             from incoming.incoming_monitor import IncomingMonitor
             from incoming.incoming_workstation_config import (

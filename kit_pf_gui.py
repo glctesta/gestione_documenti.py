@@ -147,6 +147,10 @@ class KitPFVerifyWindow(tk.Toplevel):
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        # Finestra di lavoro: tiene il focus (grab) finche' e' aperta,
+        # altrimenti il focus resta alla finestra elenco e i campi di
+        # scansione risultano non editabili.
+        self.grab_set()
 
         try:
             self._start_session()
@@ -157,7 +161,20 @@ class KitPFVerifyWindow(tk.Toplevel):
             return
 
         self._refresh()
-        self.scan_entry.focus_set()
+        # focus_set durante __init__ (finestra non ancora mappata) viene
+        # ignorato su Windows: attivazione rinviata dopo il rendering.
+        self.after(50, self._activate)
+
+    def _activate(self):
+        """Porta la finestra in primo piano e focus sulla scansione."""
+        if not self.winfo_exists():
+            return
+        try:
+            self.lift()
+            self.focus_force()
+            self.scan_entry.focus_set()
+        except Exception:
+            pass
 
     # ─────────────────────────── UI ──────────────────────────────────── #
 

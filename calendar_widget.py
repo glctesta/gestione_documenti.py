@@ -44,21 +44,28 @@ class DatePickerEntry(ttk.Frame):
 
     def get(self):
         """Restituisce la data selezionata nel formato YYYY-MM-DD"""
+        # Il DateEntry mostra la data nel formato locale (es. 9/15/26), quindi
+        # la leggiamo direttamente dal widget: interpreta sia la selezione dal
+        # calendario sia la digitazione manuale.
         try:
-            date_str = self.date_var.get()
-            # Valida il formato
-            datetime.strptime(date_str, '%Y-%m-%d')
-            return date_str
-        except ValueError:
-            logger.error(f"Formato data non valido: {self.date_var.get()}")
-            return None
+            return self.entry.get_date().strftime('%Y-%m-%d')
+        except (ValueError, tk.TclError):
+            pass
+        # Fallback: interpreta i formati più comuni digitati a mano
+        raw = (self.entry.get() or '').strip() or self.date_var.get().strip()
+        for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%d.%m.%Y',
+                    '%d/%m/%y', '%m/%d/%y', '%d.%m.%y'):
+            try:
+                return datetime.strptime(raw, fmt).strftime('%Y-%m-%d')
+            except ValueError:
+                continue
+        logger.error(f"Formato data non valido: {raw!r}")
+        return None
 
     def set(self, date_str: str):
         """Imposta una data nel formato YYYY-MM-DD"""
         try:
-            # Valida il formato
-            datetime.strptime(date_str, '%Y-%m-%d')
-            self.date_var.set(date_str)
+            self.entry.set_date(datetime.strptime(date_str, '%Y-%m-%d').date())
         except ValueError:
             logger.error(f"Formato data non valido: {date_str}")
 

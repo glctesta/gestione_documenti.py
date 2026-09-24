@@ -387,6 +387,23 @@ IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='sv' A
     INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv',N'inc_conf_title',N'Bekräfta lösningar — Inleverans');
 GO
 
+-- inc_req_component_code
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='it' AND [TranslationKey]='inc_req_component_code')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'it',N'inc_req_component_code',N'Codice interno (componente):');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='en' AND [TranslationKey]='inc_req_component_code')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'en',N'inc_req_component_code',N'Internal code (component):');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='ro' AND [TranslationKey]='inc_req_component_code')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'ro',N'inc_req_component_code',N'Cod intern (component):');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='de' AND [TranslationKey]='inc_req_component_code')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'de',N'inc_req_component_code',N'Interner Code (Komponente):');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='sv' AND [TranslationKey]='inc_req_component_code')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv',N'inc_req_component_code',N'Intern kod (komponent):');
+GO
+
 -- inc_req_data
 IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='it' AND [TranslationKey]='inc_req_data')
     INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'it',N'inc_req_data',N'Dati richiesta');
@@ -521,6 +538,23 @@ IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='de' A
 GO
 IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='sv' AND [TranslationKey]='inc_req_po')
     INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv',N'inc_req_po',N'P.O.-nummer');
+GO
+
+-- inc_req_popup_code
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='it' AND [TranslationKey]='inc_req_popup_code')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'it',N'inc_req_popup_code',N'Codice: {0}');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='en' AND [TranslationKey]='inc_req_popup_code')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'en',N'inc_req_popup_code',N'Code: {0}');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='ro' AND [TranslationKey]='inc_req_popup_code')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'ro',N'inc_req_popup_code',N'Cod: {0}');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='de' AND [TranslationKey]='inc_req_popup_code')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'de',N'inc_req_popup_code',N'Code: {0}');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='sv' AND [TranslationKey]='inc_req_popup_code')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv',N'inc_req_popup_code',N'Kod: {0}');
 GO
 
 -- inc_req_popup_msg
@@ -936,6 +970,40 @@ IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='sv' A
     INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv',N'inc_sol_mpn_required',N'Ange korrekt MPN-kod.');
 GO
 
+-- inc_sol_outlook_email
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='it' AND [TranslationKey]='inc_sol_outlook_email')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'it',N'inc_sol_outlook_email',N'📧 Crea email soluzione (Outlook)');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='en' AND [TranslationKey]='inc_sol_outlook_email')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'en',N'inc_sol_outlook_email',N'📧 Create solution email (Outlook)');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='ro' AND [TranslationKey]='inc_sol_outlook_email')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'ro',N'inc_sol_outlook_email',N'📧 Creează email soluție (Outlook)');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='de' AND [TranslationKey]='inc_sol_outlook_email')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'de',N'inc_sol_outlook_email',N'📧 Lösungs-E-Mail erstellen (Outlook)');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='sv' AND [TranslationKey]='inc_sol_outlook_email')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv',N'inc_sol_outlook_email',N'📧 Skapa lösningsepost (Outlook)');
+GO
+
+-- inc_sol_outlook_failed
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='it' AND [TranslationKey]='inc_sol_outlook_failed')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'it',N'inc_sol_outlook_failed',N'Impossibile aprire Outlook per creare la email.');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='en' AND [TranslationKey]='inc_sol_outlook_failed')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'en',N'inc_sol_outlook_failed',N'Unable to open Outlook to create the email.');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='ro' AND [TranslationKey]='inc_sol_outlook_failed')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'ro',N'inc_sol_outlook_failed',N'Imposibil de deschis Outlook pentru a crea emailul.');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='de' AND [TranslationKey]='inc_sol_outlook_failed')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'de',N'inc_sol_outlook_failed',N'Outlook konnte nicht zum Erstellen der E-Mail geöffnet werden.');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='sv' AND [TranslationKey]='inc_sol_outlook_failed')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv',N'inc_sol_outlook_failed',N'Det gick inte att öppna Outlook för att skapa e-posten.');
+GO
+
 -- inc_sol_pending
 IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='it' AND [TranslationKey]='inc_sol_pending')
     INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'it',N'inc_sol_pending',N'in attesa');
@@ -1048,6 +1116,23 @@ IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='sv' A
     INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv',N'inc_sol_send',N'✉ Skicka svar');
 GO
 
+-- inc_sol_setup_recipients
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='it' AND [TranslationKey]='inc_sol_setup_recipients')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'it',N'inc_sol_setup_recipients',N'⚙ Destinatari…');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='en' AND [TranslationKey]='inc_sol_setup_recipients')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'en',N'inc_sol_setup_recipients',N'⚙ Recipients…');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='ro' AND [TranslationKey]='inc_sol_setup_recipients')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'ro',N'inc_sol_setup_recipients',N'⚙ Destinatari…');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='de' AND [TranslationKey]='inc_sol_setup_recipients')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'de',N'inc_sol_setup_recipients',N'⚙ Empfänger…');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='sv' AND [TranslationKey]='inc_sol_setup_recipients')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv',N'inc_sol_setup_recipients',N'⚙ Mottagare…');
+GO
+
 -- inc_sol_text_required
 IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='it' AND [TranslationKey]='inc_sol_text_required')
     INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'it',N'inc_sol_text_required',N'Inserire una descrizione della soluzione.');
@@ -1148,6 +1233,40 @@ IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='de' A
 GO
 IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='sv' AND [TranslationKey]='incoming_setup_email_frame')
     INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv',N'incoming_setup_email_frame',N'E-postmottagare och påminnelser per förfrågningstyp');
+GO
+
+-- incoming_setup_engineering_frame
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='it' AND [TranslationKey]='incoming_setup_engineering_frame')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'it',N'incoming_setup_engineering_frame',N'Indirizzi email Ingegneria (destinatari in TO della email soluzione)');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='en' AND [TranslationKey]='incoming_setup_engineering_frame')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'en',N'incoming_setup_engineering_frame',N'Engineering email addresses (TO recipients of the solution email)');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='ro' AND [TranslationKey]='incoming_setup_engineering_frame')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'ro',N'incoming_setup_engineering_frame',N'Adrese email Inginerie (destinatari în TO al emailului de soluție)');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='de' AND [TranslationKey]='incoming_setup_engineering_frame')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'de',N'incoming_setup_engineering_frame',N'Engineering-E-Mail-Adressen (TO-Empfänger der Lösungs-E-Mail)');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='sv' AND [TranslationKey]='incoming_setup_engineering_frame')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv',N'incoming_setup_engineering_frame',N'Engineering e-postadresser (TO-mottagare av lösningsmailet)');
+GO
+
+-- incoming_setup_engineering_hint
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='it' AND [TranslationKey]='incoming_setup_engineering_hint')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'it',N'incoming_setup_engineering_hint',N'Indirizzi Ingegneria inseriti come destinatari principali (A) dell''email preconfezionata di richiesta soluzione.');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='en' AND [TranslationKey]='incoming_setup_engineering_hint')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'en',N'incoming_setup_engineering_hint',N'Engineering addresses inserted as main recipients (To) of the pre-composed solution request email.');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='ro' AND [TranslationKey]='incoming_setup_engineering_hint')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'ro',N'incoming_setup_engineering_hint',N'Adresele de Inginerie introduse ca destinatari principali (Către) ai emailului predefinit de solicitare soluție.');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='de' AND [TranslationKey]='incoming_setup_engineering_hint')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'de',N'incoming_setup_engineering_hint',N'Engineering-Adressen als Hauptempfänger (An) der vorgefertigten Lösungsanfrage-E-Mail.');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='sv' AND [TranslationKey]='incoming_setup_engineering_hint')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv',N'incoming_setup_engineering_hint',N'Engineering-adresser som huvudmottagare (Till) av det förberedda lösningsförfrågan-mailet.');
 GO
 
 -- incoming_setup_header

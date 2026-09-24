@@ -31,6 +31,7 @@ BEGIN
         PurOrderNumber       NVARCHAR(50)  NULL,
         MpnCode              NVARCHAR(100) NULL,              -- MPN atteso / da verificare
         WrongMpn             NVARCHAR(100) NULL,              -- MPN ricevuto errato (MPN_SBAGLIATO)
+        ComponentCode        NVARCHAR(100) NULL,              -- codice interno (dbo.Components, IDCOMPONENTTYPE = 1)
         QtyToReceive         DECIMAL(18,3) NULL,              -- quantita' effettivamente arrivata
         QtyExpectedPerPo     DECIMAL(18,3) NULL,              -- quantita' attesa dal P.O.
         RequestedBy          NVARCHAR(100) NULL,
@@ -60,6 +61,21 @@ END
 ELSE
 BEGIN
     PRINT 'Tabella dyn.IncomingRequest gia'' esistente';
+END
+GO
+
+-- ------------------------------------------------------------
+-- 1b) Colonna ComponentCode (idempotente): installazioni pre-esistenti
+-- ------------------------------------------------------------
+IF COL_LENGTH('[Traceability_RS].[dyn].[IncomingRequest]', 'ComponentCode') IS NULL
+BEGIN
+    ALTER TABLE [Traceability_RS].[dyn].[IncomingRequest]
+        ADD ComponentCode NVARCHAR(100) NULL;
+    PRINT 'Aggiunta colonna ComponentCode a dyn.IncomingRequest';
+END
+ELSE
+BEGIN
+    PRINT 'Colonna ComponentCode gia'' presente';
 END
 GO
 

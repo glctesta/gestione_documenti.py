@@ -35,6 +35,10 @@ STATUS_CONFIRMED_KO = 'CONFIRMED_KO'
 
 MONTHLY_RECIPIENTS_ATTRIBUTE = 'Incoming_soluzione_problemi'
 
+# Email (una per riga settings) di Ingegneria: destinatari in TO
+# dell'email preconfezionata di richiesta soluzione.
+ENGINEERING_ATTRIBUTE = 'Incoming_email_ingegneria'
+
 # Email (una per riga settings) degli utenti "master": vedono TUTTI i ticket
 # aperti, indipendentemente dai destinatari configurati per tipo.
 MASTER_ATTRIBUTE = 'Sys_master_for_tikets'
@@ -62,7 +66,7 @@ def _reminders_attribute(request_type):
 _COLUMNS = [
     'Id', 'RequestNumber', 'RequestType', 'SupplierId', 'SupplierName',
     'DdtNumber', 'DdtDate', 'PurOrderNumber', 'MpnCode', 'WrongMpn',
-    'QtyToReceive', 'QtyExpectedPerPo', 'RequestedBy', 'RequestedOn',
+    'ComponentCode', 'QtyToReceive', 'QtyExpectedPerPo', 'RequestedBy', 'RequestedOn',
     'RequesterHost', 'Status', 'AnswerMpnCode', 'AnswerText',
     'AnsweredBy', 'AnsweredOn', 'ConfirmedOk', 'ConfirmedBy', 'ConfirmedOn',
     'LastEscalationPopup',
@@ -142,6 +146,7 @@ BEGIN
         PurOrderNumber       NVARCHAR(50)  NULL,
         MpnCode              NVARCHAR(100) NULL,
         WrongMpn             NVARCHAR(100) NULL,
+        ComponentCode        NVARCHAR(100) NULL,              -- codice interno (dbo.Components, IDCOMPONENTTYPE = 1)
         QtyToReceive         DECIMAL(18,3) NULL,
         QtyExpectedPerPo     DECIMAL(18,3) NULL,
         RequestedBy          NVARCHAR(100) NULL,
@@ -187,6 +192,16 @@ BEGIN
 END
 """
 
+# ALTER idempotente per installazioni gia' esistenti (tabella creata prima
+# dell'introduzione della colonna ComponentCode).
+_DDL_ALTER_COMPONENT_CODE = """
+IF COL_LENGTH('[Traceability_RS].[dyn].[IncomingRequest]', 'ComponentCode') IS NULL
+BEGIN
+    ALTER TABLE [Traceability_RS].[dyn].[IncomingRequest]
+        ADD ComponentCode NVARCHAR(100) NULL;
+END
+"""
+
 _SEED_SETTINGS = [
     (_reminders_attribute(t), str(DEFAULT_REMINDERS_PER_DAY)) for t in REQUEST_TYPES
 ] + [
@@ -224,6 +239,7 @@ def create_tables(db):
     try:
         _exec_ddl(db, _DDL_REQUEST)
         _exec_ddl(db, _DDL_REMINDER_LOG)
+        _exec_ddl(db, _DDL_ALTER_COMPONENT_CODE)
         _seed_settings(db)
         logger.info("incoming: tabelle e seed settings verificati")
     except Exception:
@@ -256,8 +272,8 @@ def create_request(db, data: dict) -> tuple:
     """Inserisce una nuova richiesta. Ritorna (request_id, request_number).
 
     data keys: request_type, supplier_id, supplier_name, ddt_number, ddt_date,
-    pur_order_number, mpn_code, wrong_mpn, qty_to_receive, qty_expected_per_po,
-    requested_by, requester_host
+    pur_order_number, mpn_code, wrong_mpn, component_code, qty_to_receive,
+    qty_expected_per_po, requested_by, requester_host
     """
     with db._lock:
         cur = _cursor(db)
@@ -268,10 +284,10 @@ def create_request(db, data: dict) -> tuple:
                 INSERT INTO %s
                     (RequestNumber, RequestType, SupplierId, SupplierName,
                      DdtNumber, DdtDate, PurOrderNumber, MpnCode, WrongMpn,
-                     QtyToReceive, QtyExpectedPerPo, RequestedBy, RequesterHost,
-                     Status)
+                     ComponentCode, QtyToReceive, QtyExpectedPerPo,
+                     RequestedBy, RequesterHost, Status)
                 OUTPUT INSERTED.Id
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """ % _TABLE,
                 (request_number,
                  data.get('request_type'),
@@ -282,6 +298,7 @@ def create_request(db, data: dict) -> tuple:
                  data.get('pur_order_number'),
                  data.get('mpn_code'),
                  data.get('wrong_mpn'),
+                 data.get('component_code'),
                  data.get('qty_to_receive'),
                  data.get('qty_expected_per_po'),
                  data.get('requested_by'),
@@ -388,6 +405,54 @@ def get_requests_report(db, filters: dict | None = None) -> list:
         cur = _cursor(db)
         cur.execute(sql, params)
         return _fetch_dicts(cur)
+
+
+# ---------------------------------------------------------------------------
+# Componenti (dbo.Components): codice interno abbinato all'MPN
+# ---------------------------------------------------------------------------
+def component_exists(db, code) -> bool:
+    """True se il codice esiste in Traceability_RS.dbo.Components con
+    IDCOMPONENTTYPE = 1 (componenti standard)."""
+    code = (code or '').strip().upper()
+    if not code:
+        return False
+    with db._lock:
+        cur = _cursor(db)
+        cur.execute(
+            "SELECT 1 FROM Traceability_RS.dbo.Components "
+            "WHERE ComponentCode = ? AND IDCOMPONENTTYPE = 1",
+            (code,))
+        return cur.fetchone() is not None
+
+
+def ensure_component(db, code) -> bool:
+    """Inserisce il codice in dbo.Components (IDCOMPONENTTYPE = 1) se assente.
+
+    Inserimento silente: nessuna segnalazione all'utente, solo log.
+    Ritorna True se il codice esiste (gia' presente o appena inserito)."""
+    code = (code or '').strip().upper()
+    if not code:
+        return False
+    if component_exists(db, code):
+        return True
+    with db._lock:
+        cur = _cursor(db)
+        try:
+            cur.execute(
+                "INSERT INTO Traceability_RS.dbo.Components "
+                "(ComponentCode, ComponentDescription, IDCOMPONENTTYPE) "
+                "VALUES (?, '', 1)",
+                (code,))
+            db.conn.commit()
+            logger.info("incoming: creato componente '%s' (IDCOMPONENTTYPE=1)", code)
+            return True
+        except Exception:
+            try:
+                db.conn.rollback()
+            except Exception:
+                pass
+            logger.exception("incoming: inserimento componente '%s' fallito", code)
+            return False
 
 
 # ---------------------------------------------------------------------------
@@ -505,6 +570,38 @@ def save_email_config(db, request_type, emails: list, reminders_per_day: int):
 def get_monthly_recipients(db) -> list:
     """Destinatari report mensile dal settings atribute='Incoming_soluzione_problemi'."""
     return _parse_emails(_read_setting_values(db, MONTHLY_RECIPIENTS_ATTRIBUTE))
+
+
+# ---------------------------------------------------------------------------
+# Destinatari Ingegneria (settings 'Incoming_email_ingegneria'): vanno in TO
+# dell'email preconfezionata di richiesta soluzione.
+# ---------------------------------------------------------------------------
+def get_engineering_recipients(db) -> list:
+    return _parse_emails(_read_setting_values(db, ENGINEERING_ATTRIBUTE))
+
+
+def save_engineering_recipients(db, emails: list):
+    """Sostituisce i destinatari Ingegneria (una riga settings per email)."""
+    emails = [e.strip() for e in (emails or []) if e and e.strip()]
+    with db._lock:
+        cur = _cursor(db)
+        try:
+            cur.execute(
+                "DELETE FROM %s WHERE atribute = ?" % _SETTINGS_TABLE,
+                (ENGINEERING_ATTRIBUTE,))
+            for email in emails:
+                cur.execute(
+                    "INSERT INTO %s (atribute, [value]) VALUES (?, ?)" % _SETTINGS_TABLE,
+                    (ENGINEERING_ATTRIBUTE, email))
+            db.conn.commit()
+            logger.info("incoming: destinatari Ingegneria salvati (%d email)", len(emails))
+        except Exception:
+            try:
+                db.conn.rollback()
+            except Exception:
+                pass
+            logger.exception("incoming: save_engineering_recipients fallita")
+            raise
 
 
 # ---------------------------------------------------------------------------

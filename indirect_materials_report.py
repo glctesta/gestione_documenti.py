@@ -7,6 +7,10 @@ Report mensile richieste e consegne materiali indiretti.
 - Tab "Verifica acquisti": per ogni codice sollecitato al riordino, se l'acquisto
                      e' poi arrivato davvero (confronto fra la giacenza al momento
                      della richiesta e i carichi Excel/D365 successivi)
+- Tab "Ordini di acquisto": ordini inseriti via conferma acquisti (ind.RiordineEmailLog
+                     Stato='CONFERMATO'): chi, quando, qty richiesta/ordinata, arrivo previsto
+- Tab "In attesa di acquisto": solleciti RiordineEmailLog Stato='INVIATO' degli ultimi 60
+                     giorni (stessa lista del popup di avvio)
 - Export Excel:      salva i tre tab in un file .xlsx
 """
 
@@ -213,6 +217,81 @@ class IndirectMaterialsReportWindow(tk.Toplevel):
                       "(stock D365) e il successivo, dopo la data della richiesta."),
                   font=('Segoe UI', 8), foreground='#666').pack(anchor='w', padx=6, pady=(0, 4))
 
+        # ── Tab Ordini di acquisto ──────────────────────────────────────
+        po_frame = ttk.Frame(self.notebook)
+        self.notebook.add(po_frame,
+                          text=self.lang.get('ind_rep_tab_purchorders', 'Ordini di Acquisto'))
+
+        po_cols = ('data_conf', 'confermato_da', 'codice', 'descrizione', 'tipo',
+                   'qty_rich', 'qty_ord', 'po', 'arrivo', 'data_rich')
+        self.purchord_tree = ttk.Treeview(po_frame, columns=po_cols, show='headings')
+        po_headers = {
+            'data_conf':     self.lang.get('ind_rep_col_conf_date', 'Data Inserimento'),
+            'confermato_da': self.lang.get('ind_rep_col_conf_by', 'Inserito da'),
+            'codice':        self.lang.get('ind_import_col_code', 'Codice'),
+            'descrizione':   self.lang.get('ind_import_col_desc', 'Descrizione'),
+            'tipo':          self.lang.get('ind_req_col_type', 'Tipo'),
+            'qty_rich':      self.lang.get('ind_rep_col_qty_req', 'Qty Richiesta'),
+            'qty_ord':       self.lang.get('ind_rep_col_qty_ord', 'Qty Ordinata'),
+            'po':            self.lang.get('ind_rep_col_po', 'PO'),
+            'arrivo':        self.lang.get('ind_rep_col_eta', 'Arrivo Previsto'),
+            'data_rich':     self.lang.get('ind_rep_col_last_reorder', 'Ultima richiesta'),
+        }
+        po_widths = {'data_conf': 130, 'confermato_da': 110, 'codice': 100,
+                     'descrizione': 220, 'tipo': 100, 'qty_rich': 100, 'qty_ord': 100,
+                     'po': 90, 'arrivo': 110, 'data_rich': 110}
+        for c in po_cols:
+            self.purchord_tree.heading(c, text=po_headers[c])
+            self.purchord_tree.column(c, width=po_widths[c],
+                                      anchor='e' if c in ('qty_rich', 'qty_ord') else 'w')
+
+        po_sb_v = ttk.Scrollbar(po_frame, orient='vertical', command=self.purchord_tree.yview)
+        po_sb_h = ttk.Scrollbar(po_frame, orient='horizontal', command=self.purchord_tree.xview)
+        self.purchord_tree.configure(yscrollcommand=po_sb_v.set, xscrollcommand=po_sb_h.set)
+        po_sb_v.pack(side='right', fill='y')
+        po_sb_h.pack(side='bottom', fill='x')
+        self.purchord_tree.pack(fill='both', expand=True)
+
+        self.purchord_total_var = tk.StringVar()
+        ttk.Label(po_frame, textvariable=self.purchord_total_var,
+                  font=('Segoe UI', 9, 'italic')).pack(anchor='e', padx=6)
+
+        # ── Tab In attesa di acquisto ───────────────────────────────────
+        # Stessa query del popup di avvio (PurchasingMonitor): solleciti
+        # inviati e non confermati. NON filtrata dalla toolbar, perche' la
+        # lista deve coincidere sempre con il popup.
+        pend_frame = ttk.Frame(self.notebook)
+        self.notebook.add(pend_frame,
+                          text=self.lang.get('ind_rep_tab_pending', 'In attesa di acquisto'))
+
+        pend_cols = ('codice', 'descrizione', 'giacenza', 'minimo', 'qty', 'data', 'giorni')
+        self.pending_tree = ttk.Treeview(pend_frame, columns=pend_cols, show='headings')
+        pend_headers = {
+            'codice':      self.lang.get('ind_import_col_code', 'Codice'),
+            'descrizione': self.lang.get('ind_import_col_desc', 'Descrizione'),
+            'giacenza':    self.lang.get('ind_stock_col_stock', 'Giacenza'),
+            'minimo':      self.lang.get('ind_min_col_min', 'Scorta minima'),
+            'qty':         self.lang.get('ind_reorder_col_qty', 'Qta da ordinare'),
+            'data':        self.lang.get('purchasing_popup_date', 'Data invio'),
+            'giorni':      self.lang.get('purchasing_popup_days', 'Giorni'),
+        }
+        pend_widths = {'codice': 110, 'descrizione': 300, 'giacenza': 90, 'minimo': 100,
+                       'qty': 110, 'data': 110, 'giorni': 70}
+        for c in pend_cols:
+            self.pending_tree.heading(c, text=pend_headers[c])
+            self.pending_tree.column(c, width=pend_widths[c],
+                                     anchor='e' if c in ('giacenza', 'minimo', 'qty')
+                                            else ('center' if c == 'giorni' else 'w'))
+
+        pend_sb = ttk.Scrollbar(pend_frame, orient='vertical', command=self.pending_tree.yview)
+        self.pending_tree.configure(yscrollcommand=pend_sb.set)
+        pend_sb.pack(side='right', fill='y')
+        self.pending_tree.pack(fill='both', expand=True)
+
+        self.pending_total_var = tk.StringVar()
+        ttk.Label(pend_frame, textvariable=self.pending_total_var,
+                  font=('Segoe UI', 9, 'italic')).pack(anchor='e', padx=6)
+
     # ------------------------------------------------------------------ #
     #  Helpers                                                             #
     # ------------------------------------------------------------------ #
@@ -401,6 +480,128 @@ class IndirectMaterialsReportWindow(tk.Toplevel):
 
         # ── Verifica acquisti ────────────────────────────────────────────
         self._load_purchases()
+
+        # ── Ordini di acquisto ───────────────────────────────────────────
+        self._load_purch_orders()
+
+        # ── In attesa di acquisto ────────────────────────────────────────
+        self._load_pending()
+
+    # ------------------------------------------------------------------ #
+    #  In attesa di acquisto                                               #
+    # ------------------------------------------------------------------ #
+    def _load_pending(self):
+        """Tab 'In attesa di acquisto': solleciti inviati e non confermati
+        (ind.RiordineEmailLog Stato='INVIATO', ultimi 60 giorni) — la stessa
+        lista mostrata dal popup di avvio (indirect_materials_purchasing_monitor).
+        Non filtrata dalla toolbar: deve coincidere sempre con il popup."""
+        rows = self._fetch("""
+            SELECT m.CodiceMateriale, m.DescrizioneMateriale,
+                   l.GiacenzaRilevata, l.LivelloMinimo, l.QtaSuggerita,
+                   l.DataInvio, DATEDIFF(DAY, l.DataInvio, GETDATE()) AS GiorniTrascorsi
+            FROM ind.RiordineEmailLog l
+            JOIN ind.Materiali m ON m.MaterialeId = l.MaterialeId
+            WHERE l.Stato = 'INVIATO'
+              AND l.DataInvio >= DATEADD(DAY, -60, GETDATE())
+            ORDER BY l.DataInvio ASC
+        """)
+
+        self.pending_tree.delete(*self.pending_tree.get_children())
+        self._pending_data = rows
+
+        for (cod, desc, giac, minimo, qty, data_invio, giorni) in rows:
+            self.pending_tree.insert('', 'end', values=(
+                cod or '',
+                desc or '',
+                f"{float(giac):.2f}" if giac is not None else '-',
+                f"{float(minimo):.2f}" if minimo is not None else '-',
+                f"{float(qty):.2f}" if qty is not None else '-',
+                data_invio.strftime('%d/%m/%Y') if data_invio else '',
+                giorni or 0
+            ))
+
+        self.pending_total_var.set(
+            self.lang.get('ind_rep_total_pending',
+                          'Totale: {0} richieste in attesa di acquisto').format(len(rows))
+        )
+
+    # ------------------------------------------------------------------ #
+    #  Ordini di acquisto                                                  #
+    # ------------------------------------------------------------------ #
+    def _load_purch_orders(self):
+        """Tab 'Ordini di acquisto': ordini inseriti tramite il form di conferma
+        acquisti (indirect_materials_order_confirmation.py), che scrive su
+        ind.RiordineEmailLog con Stato='CONFERMATO'. Mostra: chi ha inserito
+        (ConfermatoDa), quando (DataConferma), qty richiesta (QtaSuggerita) e
+        qty ordinata, PO e arrivo previsto (DataPrevistaArrivo).
+        Rispetta i filtri anno/mese/tipo della toolbar (sulla data di inserimento)."""
+        where_parts = ["l.Stato = 'CONFERMATO'"]
+        params = []
+
+        year_val = self.year_var.get()
+        all_years = self.lang.get('ind_rep_all_years', 'Tutti gli anni')
+        if year_val and year_val != all_years:
+            where_parts.append('YEAR(l.DataConferma) = ?')
+            params.append(int(year_val))
+
+        month_val = self.month_var.get()
+        all_months = self.lang.get('ind_rep_all_months', 'Tutti i mesi')
+        if month_val and month_val != all_months:
+            month_num = int(month_val.split(' - ')[0])
+            where_parts.append('MONTH(l.DataConferma) = ?')
+            params.append(month_num)
+
+        type_val = self.type_var.get()
+        all_types = self.lang.get('ind_rep_all_types', 'Tutti i tipi')
+        if type_val and type_val != all_types:
+            where_parts.append("ISNULL(t.Tipo, 'Generico') = ?")
+            params.append(type_val)
+
+        query = f"""
+            SELECT l.DataConferma,
+                   l.ConfermatoDa,
+                   m.CodiceMateriale,
+                   m.DescrizioneMateriale,
+                   ISNULL(t.Tipo, 'Generico') AS Tipo,
+                   l.QtaSuggerita,
+                   l.QtaOrdinata,
+                   l.NumeroPO,
+                   l.DataPrevistaArrivo,
+                   l.DataInvio
+            FROM ind.RiordineEmailLog l
+            JOIN ind.Materiali m ON l.MaterialeId = m.MaterialeId
+            LEFT JOIN ind.TipoMateriali t ON m.TipoMaterialeId = t.TipoMaterialeId
+            WHERE {' AND '.join(where_parts)}
+            ORDER BY l.DataConferma DESC
+        """
+        rows = self._fetch(query, params or None)
+
+        self.purchord_tree.delete(*self.purchord_tree.get_children())
+        self._purchord_data = rows
+
+        qty_tot = 0.0
+        for (data_c, conf_da, cod, desc, tipo, qta_sugg, qta_ord, po, eta, data_inv) in rows:
+            qord = float(qta_ord or 0)
+            qty_tot += qord
+            self.purchord_tree.insert('', 'end', values=(
+                data_c.strftime('%d/%m/%Y %H:%M') if data_c else '',
+                conf_da or '',
+                cod or '',
+                desc or '',
+                tipo,
+                f"{float(qta_sugg):.2f}" if qta_sugg is not None else '—',
+                f"{qord:.2f}",
+                po or '',
+                eta.strftime('%d/%m/%Y') if eta else '—',
+                data_inv.strftime('%d/%m/%Y') if data_inv else ''
+            ))
+
+        self.purchord_total_var.set(
+            self.lang.get(
+                'ind_rep_total_purchorders',
+                'Totale: {0} ordini  |  Qty ordinata: {1:.2f}'
+            ).format(len(rows), qty_tot)
+        )
 
     # ------------------------------------------------------------------ #
     #  Verifica acquisti                                                   #

@@ -2387,3 +2387,20 @@ GO
 IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='sv' AND [TranslationKey]='incoming_popup_open_confirm')
     INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv',N'incoming_popup_open_confirm',N'Öppna bekräftelsefönster');
 GO
+
+-- incoming_popup_open_solutions
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='it' AND [TranslationKey]='incoming_popup_open_solutions')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'it',N'incoming_popup_open_solutions',N'Apri Soluzioni (leggi note / rispondi)');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='en' AND [TranslationKey]='incoming_popup_open_solutions')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'en',N'incoming_popup_open_solutions',N'Open Solutions (read notes / answer)');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='ro' AND [TranslationKey]='incoming_popup_open_solutions')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'ro',N'incoming_popup_open_solutions',N'Deschide Soluții (citește note / răspunde)');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='de' AND [TranslationKey]='incoming_popup_open_solutions')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'de',N'incoming_popup_open_solutions',N'Lösungen öffnen (Notizen lesen / antworten)');
+GO
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE [LanguageCode]='sv' AND [TranslationKey]='incoming_popup_open_solutions')
+    INSERT INTO [dbo].[AppTranslations] ([LanguageCode],[TranslationKey],[TranslationValue]) VALUES (N'sv',N'incoming_popup_open_solutions',N'Öppna Lösningar (läs anteckningar / svara)');
+GO

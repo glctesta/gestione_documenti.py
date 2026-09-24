@@ -25,6 +25,11 @@
         <option value="">-- Seleziona un ordine --</option>
       </select>
       <div id="order-info" class="info" style="margin-top:0.5rem;"></div>
+      <div class="actions" style="margin-top:0.5rem;">
+        <button id="template-btn" class="secondary">{{ ui.download_template }}</button>
+        <button id="import-btn" class="secondary">{{ ui.import_excel }}</button>
+        <input type="file" id="import-file" accept=".xlsx" style="display:none;">
+      </div>
     </section>
 
     <section class="panel" id="labels-section" style="display:none;">
@@ -87,6 +92,43 @@
       searchTimeout = setTimeout(searchOrders, 300);
     });
 
+    $('template-btn').addEventListener('click', async () => {
+      try {
+        const tokenParam = TOKEN ? '?token=' + TOKEN : '';
+        const res = await fetch('/print/api/labels/template' + tokenParam);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'template_associazioni_etichette.xlsx';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(a.href);
+      } catch (e) {
+        msg(UI.msg_error + (e.message || e), 'error');
+      }
+    });
+
+    $('import-btn').addEventListener('click', () => $('import-file').click());
+    $('import-file').addEventListener('change', async () => {
+      const file = $('import-file').files[0];
+      $('import-file').value = '';
+      if (!file) return;
+      const fd = new FormData();
+      fd.append('file', file);
+      try {
+        const res = await apiFetch('/print/api/labels/import', { method: 'POST', body: fd });
+        let text = UI.import_ok
+          .replace('{products}', res.products_replaced)
+          .replace('{rows}', res.rows_inserted);
+        if (res.warnings && res.warnings.length) text += ' — ' + res.warnings.join('; ');
+        msg(text, res.rows_inserted ? 'success' : 'info');
+      } catch (e) {
+        msg(UI.msg_error + (e.message || e), 'error');
+      }
+    });
+
     async function searchOrders() {
       const q = $('order-search').value.trim();
       if (!q) { $('order-select').innerHTML = '<option value="">-- Seleziona un ordine --</option>'; return; }
@@ -96,8 +138,8 @@
         sel.innerHTML = '<option value="">-- Seleziona un ordine --</option>';
         rows.forEach(o => {
           const opt = document.createElement('option');
-          opt.value = o.OrderID;
-          opt.textContent = `${o.OrderCode} - ${o.ProductCode} (${o.ProductName})`;
+          opt.value = o.IDOrder;
+          opt.textContent = `${o.OrderNumber} - ${o.ProductCode} (${o.ProductName})`;
           sel.appendChild(opt);
         });
       } catch (e) {
@@ -114,7 +156,7 @@
         orderData = data.order;
         orderLabels = data.labels || [];
         printers = data.printers || [];
-        $('order-info').textContent = `${orderData.ProductCode} - ${orderData.ProductName} (qta: ${orderData.Quantity})`;
+        $('order-info').textContent = `${orderData.ProductCode} - ${orderData.ProductName} (qta: ${orderData.OrderQuantity})`;
         renderLabelsTable();
         $('labels-section').style.display = 'block';
       } catch (e) {

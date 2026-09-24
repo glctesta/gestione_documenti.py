@@ -159,6 +159,7 @@ def new_request_messages(req: dict) -> dict:
         f"DDT: {req.get('DdtNumber', '-')} del {_fmt_dt(req.get('DdtDate'))}\n"
         f"P.O.: {req.get('PurOrderNumber', '-')}\n"
         f"MPN: {req.get('MpnCode', '-') or req.get('WrongMpn', '-')}\n"
+        f"Codice interno: {req.get('ComponentCode') or '-'}\n"
         f"Quantita': {req.get('QtyToReceive', '-')} "
         f"(attesa da P.O.: {req.get('QtyExpectedPerPo', '-')})\n"
         f"Richiesta il: {_fmt_dt(req.get('RequestedOn'))}\n\n"

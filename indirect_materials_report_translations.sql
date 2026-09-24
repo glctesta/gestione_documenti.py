@@ -343,4 +343,120 @@ IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind
 
 Oeppna filen?');
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Tab "Ordini di acquisto" (ordini inseriti via conferma acquisti)
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- ind_rep_tab_purchorders
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_tab_purchorders' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'ind_rep_tab_purchorders', 'Ordini di Acquisto');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_tab_purchorders' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'ind_rep_tab_purchorders', 'Purchase Orders');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_tab_purchorders' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'ind_rep_tab_purchorders', 'Comenzi de Achiziție');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_tab_purchorders' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'ind_rep_tab_purchorders', 'Bestellungen');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_tab_purchorders' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'ind_rep_tab_purchorders', 'Inköpsordrar');
+
+-- ind_rep_col_conf_date
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_conf_date' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'ind_rep_col_conf_date', 'Data Inserimento');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_conf_date' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'ind_rep_col_conf_date', 'Entry Date');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_conf_date' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'ind_rep_col_conf_date', 'Data Introducerii');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_conf_date' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'ind_rep_col_conf_date', 'Erfassungsdatum');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_conf_date' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'ind_rep_col_conf_date', 'Inmatningsdatum');
+
+-- ind_rep_col_conf_by
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_conf_by' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'ind_rep_col_conf_by', 'Inserito da');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_conf_by' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'ind_rep_col_conf_by', 'Entered by');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_conf_by' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'ind_rep_col_conf_by', 'Introdus de');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_conf_by' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'ind_rep_col_conf_by', 'Erfasst von');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_conf_by' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'ind_rep_col_conf_by', 'Inmatad av');
+
+-- ind_rep_col_qty_ord
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_qty_ord' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'ind_rep_col_qty_ord', 'Qty Ordinata');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_qty_ord' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'ind_rep_col_qty_ord', 'Ordered Qty');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_qty_ord' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'ind_rep_col_qty_ord', 'Cantitate Comandată');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_qty_ord' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'ind_rep_col_qty_ord', 'Bestellte Menge');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_qty_ord' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'ind_rep_col_qty_ord', 'Beställd mängd');
+
+-- ind_rep_col_po
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_po' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'ind_rep_col_po', 'PO');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_po' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'ind_rep_col_po', 'PO');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_po' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'ind_rep_col_po', 'PO');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_po' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'ind_rep_col_po', 'PO');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_po' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'ind_rep_col_po', 'PO');
+
+-- ind_rep_col_eta
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_eta' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'ind_rep_col_eta', 'Arrivo Previsto');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_eta' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'ind_rep_col_eta', 'Expected Arrival');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_eta' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'ind_rep_col_eta', 'Sosire Prevăzută');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_eta' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'ind_rep_col_eta', 'Erwartete Ankunft');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_col_eta' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'ind_rep_col_eta', 'Förväntad ankomst');
+
+-- ind_rep_total_purchorders
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_total_purchorders' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'ind_rep_total_purchorders', 'Totale: {0} ordini  |  Qty ordinata: {1:.2f}');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_total_purchorders' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'ind_rep_total_purchorders', 'Total: {0} orders  |  Ordered qty: {1:.2f}');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_total_purchorders' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'ind_rep_total_purchorders', 'Total: {0} comenzi  |  Cantitate comandată: {1:.2f}');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_total_purchorders' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'ind_rep_total_purchorders', 'Gesamt: {0} Bestellungen  |  Bestellte Menge: {1:.2f}');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_total_purchorders' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'ind_rep_total_purchorders', 'Totalt: {0} ordrar  |  Beställd mängd: {1:.2f}');
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Tab "In attesa di acquisto" (solleciti non confermati, stessa lista del popup)
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- ind_rep_tab_pending
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_tab_pending' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'ind_rep_tab_pending', 'In attesa di acquisto');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_tab_pending' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'ind_rep_tab_pending', 'Pending Purchases');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_tab_pending' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'ind_rep_tab_pending', 'Achiziții în așteptare');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_tab_pending' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'ind_rep_tab_pending', 'Ausstehende Bestellungen');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_tab_pending' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'ind_rep_tab_pending', 'Väntande inköp');
+
+-- ind_rep_total_pending
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_total_pending' AND LanguageCode = 'it')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('it', 'ind_rep_total_pending', 'Totale: {0} richieste in attesa di acquisto');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_total_pending' AND LanguageCode = 'en')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('en', 'ind_rep_total_pending', 'Total: {0} pending purchase requests');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_total_pending' AND LanguageCode = 'ro')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('ro', 'ind_rep_total_pending', 'Total: {0} cereri de achiziție în așteptare');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_total_pending' AND LanguageCode = 'de')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('de', 'ind_rep_total_pending', 'Gesamt: {0} ausstehende Bestellanfragen');
+IF NOT EXISTS (SELECT 1 FROM [dbo].[AppTranslations] WHERE TranslationKey = 'ind_rep_total_pending' AND LanguageCode = 'sv')
+    INSERT INTO [dbo].[AppTranslations] (LanguageCode, TranslationKey, TranslationValue) VALUES ('sv', 'ind_rep_total_pending', 'Totalt: {0} väntande inköpsförfrågningar');
+
 PRINT 'Traduzioni Report Materiali Indiretti inserite con successo.';

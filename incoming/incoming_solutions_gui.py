@@ -15,6 +15,7 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox
 import logging
+import threading
 
 from kit_notifications import queue_popup
 
@@ -164,12 +165,13 @@ class IncomingSolutionsWindow(tk.Toplevel):
         wrap.columnconfigure(0, weight=1)
         self.tree.bind('<<TreeviewSelect>>', self._on_select)
 
-        # Dettaglio + risposta
+        # Dettaglio + risposta (testo copiabile ma NON modificabile)
         det = ttk.LabelFrame(self, text=L('inc_sol_detail', 'Dettaglio richiesta e soluzione'), padding=8)
         det.pack(fill=tk.X, padx=10, pady=4)
-        self._v_detail = tk.StringVar()
-        tk.Label(det, textvariable=self._v_detail, justify='left', anchor='w',
-                 font=('Courier', 9)).pack(fill=tk.X, pady=2)
+        self._txt_detail = tk.Text(det, height=7, wrap='word', font=('Courier', 9),
+                                   relief='solid', bd=1)
+        self._txt_detail.pack(fill=tk.X, pady=2)
+        self._txt_detail.config(state='disabled')
 
         ans = ttk.Frame(det)
         ans.pack(fill=tk.X, pady=4)
@@ -189,8 +191,23 @@ class IncomingSolutionsWindow(tk.Toplevel):
         self._btn_send = ttk.Button(bar, text=L('inc_sol_send', '✉ Invia risposta'),
                                     command=self._send_answer, state='disabled')
         self._btn_send.pack(side=tk.LEFT, padx=4)
+        self._btn_email = ttk.Button(
+            bar, text=L('inc_sol_outlook_email', '📧 Crea email soluzione (Outlook)'),
+            command=self._create_outlook_email, state='disabled')
+        self._btn_email.pack(side=tk.LEFT, padx=4)
+        self._btn_setup = ttk.Button(
+            bar, text=L('inc_sol_setup_recipients', '⚙ Destinatari…'),
+            command=self._open_recipients_setup)
+        self._btn_setup.pack(side=tk.LEFT, padx=4)
         ttk.Button(bar, text=L('btn_close', 'Chiudi'), command=self._on_close).pack(
             side=tk.RIGHT, padx=4)
+
+    def _set_detail(self, text: str):
+        """Imposta il testo del dettaglio (widget read-only ma copiabile)."""
+        self._txt_detail.config(state='normal')
+        self._txt_detail.delete('1.0', 'end')
+        self._txt_detail.insert('1.0', text)
+        self._txt_detail.config(state='disabled')
 
     # ── Lista ─────────────────────────────────────────────────────────────────
     def _filter_type_key(self):
@@ -210,7 +227,8 @@ class IncomingSolutionsWindow(tk.Toplevel):
         self._rows_by_iid = {}
         self._selected = None
         self._btn_send.config(state='disabled')
-        self._v_detail.set('')
+        self._btn_email.config(state='disabled')
+        self._set_detail('')
         for r in rows:
             iid = str(r.get('Id'))
             self._rows_by_iid[iid] = r
@@ -259,6 +277,7 @@ class IncomingSolutionsWindow(tk.Toplevel):
             return
         self._selected = r
         self._btn_send.config(state='normal')
+        self._btn_email.config(state='normal')
         lines = [
             f"{L('inc_col_number', 'Numero')}: {r.get('RequestNumber') or ''}",
             f"{L('inc_col_type', 'Tipo')}: {incoming_db.type_label(L, r.get('RequestType'))}",
@@ -266,18 +285,133 @@ class IncomingSolutionsWindow(tk.Toplevel):
             f"{L('inc_col_ddt', 'DDT')}: {r.get('DdtNumber') or ''}  {_fmt_dt(r.get('DdtDate'))}",
             f"{L('inc_req_mpn', 'Codice MPN')}: {r.get('MpnCode') or '-'}   "
             f"{L('inc_req_wrong_mpn', 'MPN errato')}: {r.get('WrongMpn') or '-'}",
+            f"{L('inc_req_component_code', 'Codice interno (componente)')}: "
+            f"{r.get('ComponentCode') or '-'}",
             f"{L('inc_req_po', 'P.O.')}: {r.get('PurOrderNumber') or '-'}   "
             f"{L('inc_req_qty_receive', 'Q.tà da ricevere')}: {r.get('QtyToReceive') if r.get('QtyToReceive') is not None else '-'}   "
             f"{L('inc_req_qty_expected', 'Q.tà attesa P.O.')}: {r.get('QtyExpectedPerPo') if r.get('QtyExpectedPerPo') is not None else '-'}",
             f"{L('inc_col_by', 'Richiesto da')}: {r.get('RequestedBy') or ''} @ {r.get('RequesterHost') or ''}  "
             f"({_fmt_dt(r.get('RequestedOn'))})",
         ]
-        self._v_detail.set('\n'.join(lines))
+        self._set_detail('\n'.join(lines))
         if r.get('RequestType') in ('MPN_MANCANTE', 'MPN_SBAGLIATO'):
             self._e_answer_mpn.config(state='normal')
         else:
             self._v_answer_mpn.set('')
             self._e_answer_mpn.config(state='disabled')
+
+    # ── Setup destinatari ─────────────────────────────────────────────────────
+    def _open_recipients_setup(self):
+        """Apre il Setup Ricezione (gestione operatori/destinatari email)."""
+        L = self.lang.get
+        try:
+            from .incoming_setup_gui import open_incoming_setup
+        except ImportError:  # esecuzione come script standalone
+            from incoming_setup_gui import open_incoming_setup
+        try:
+            open_incoming_setup(self.master, self.db, self.lang, self.user_name)
+        except Exception as e:
+            logger.error("Apertura setup destinatari incoming fallita: %s", e,
+                         exc_info=True)
+            messagebox.showerror(L('error', 'Errore'), str(e), parent=self)
+
+    # ── Email preconfezionata (Outlook dell'utente) ───────────────────────────
+    def _create_outlook_email(self):
+        """Apre Outlook con una nuova email gia' compilata (in italiano) che
+        chiede la soluzione della richiesta selezionata il piu' velocemente
+        possibile. TO = destinatari Ingegneria (settings), CC = destinatari
+        configurati per il tipo di richiesta."""
+        L = self.lang.get
+        r = self._selected
+        if not r:
+            messagebox.showinfo(L('info', 'Info'),
+                                L('inc_sol_select', 'Seleziona una richiesta.'), parent=self)
+            return
+
+        to_recipients = []
+        try:
+            to_recipients = incoming_db.get_engineering_recipients(self.db)
+        except Exception as e:
+            logger.error("Incoming solutions: lettura destinatari Ingegneria fallita: %s",
+                         e, exc_info=True)
+
+        cc_recipients = []
+        try:
+            cfg = incoming_db.get_email_config(self.db, r.get('RequestType')) or {}
+            cc_recipients = list(cfg.get('emails') or [])
+        except Exception as e:
+            logger.error("Incoming solutions: lettura destinatari fallita: %s", e,
+                         exc_info=True)
+
+        mpn = r.get('MpnCode') or r.get('WrongMpn') or '-'
+        subject = (f"[SOLUZIONE RICHIESTA] {r.get('RequestNumber') or ''} — "
+                   f"{incoming_db.REQUEST_TYPES.get(r.get('RequestType'), r.get('RequestType'))}")
+        body = (
+            "Gentile team,\n\n"
+            "si richiede di fornire la soluzione al seguente problema di ricezione "
+            "il piu' velocemente possibile.\n\n"
+            f"Numero richiesta: {r.get('RequestNumber') or '-'}\n"
+            f"Tipo: {incoming_db.REQUEST_TYPES.get(r.get('RequestType'), r.get('RequestType'))}\n"
+            f"Fornitore: {r.get('SupplierName') or '-'} (ID {r.get('SupplierId') or '-'})\n"
+            f"DDT: {r.get('DdtNumber') or '-'} del {_fmt_dt(r.get('DdtDate')) or '-'}\n"
+            f"MPN: {mpn}\n"
+            f"Codice interno (componente): {r.get('ComponentCode') or '-'}\n"
+            f"P.O.: {r.get('PurOrderNumber') or '-'}\n"
+            f"Quantita' da ricevere: {r.get('QtyToReceive') if r.get('QtyToReceive') is not None else '-'} "
+            f"(attesa da P.O.: {r.get('QtyExpectedPerPo') if r.get('QtyExpectedPerPo') is not None else '-'})\n"
+            f"Richiesta da: {r.get('RequestedBy') or '-'} "
+            f"il {_fmt_dt(r.get('RequestedOn')) or '-'}\n\n"
+            "Grazie per la collaborazione.\n"
+        )
+
+        # La creazione della mail viene fatta in un thread separato:
+        # le chiamate COM a Outlook sul thread della UI bloccherebbero
+        # l'interfaccia (Display modale / Outlook occupato).
+        threading.Thread(
+            target=self._open_outlook_email,
+            args=(to_recipients, cc_recipients, subject, body),
+            daemon=True,
+        ).start()
+
+    def _open_outlook_email(self, to_recipients, cc_recipients, subject, body):
+        """Crea e mostra la mail in Outlook (thread separato, COM proprio)."""
+        L = self.lang.get
+        try:
+            import pythoncom
+            import win32com.client
+            pythoncom.CoInitialize()
+            try:
+                outlook = win32com.client.Dispatch("Outlook.Application")
+                mail = outlook.CreateItem(0)  # 0 = olMailItem
+                if to_recipients:
+                    mail.To = "; ".join(to_recipients)
+                if cc_recipients:
+                    mail.CC = "; ".join(cc_recipients)
+                mail.Subject = subject
+                mail.Body = body
+                mail.Display(False)  # non modale: non blocca questo thread
+            finally:
+                pythoncom.CoUninitialize()
+        except Exception as e:
+            logger.error("Creazione email Outlook fallita: %s", e, exc_info=True)
+            # Fallback: mailto con il client predefinito
+            try:
+                import urllib.parse
+                import os
+                mailto = "mailto:{to}?subject={s}&body={b}".format(
+                    to=urllib.parse.quote(";".join(to_recipients)),
+                    s=urllib.parse.quote(subject),
+                    b=urllib.parse.quote(body))
+                if cc_recipients:
+                    mailto += "&cc=" + urllib.parse.quote(";".join(cc_recipients))
+                os.startfile(mailto)
+            except Exception as e2:
+                logger.error("Fallback mailto fallito: %s", e2, exc_info=True)
+                self.after(0, lambda: messagebox.showerror(
+                    L('error', 'Errore'),
+                    L('inc_sol_outlook_failed',
+                      'Impossibile aprire Outlook per creare la email.'),
+                    parent=self))
 
     # ── Invio risposta ────────────────────────────────────────────────────────
     def _send_answer(self):

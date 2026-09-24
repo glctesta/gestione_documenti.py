@@ -172,10 +172,38 @@ class IncomingMonitor:
                       foreground='#777').pack(anchor='w', pady=(0, 6))
 
         has_answer = any(len(row) > 5 and row[5] == 'INCOMING_ANSWER' for row in rows)
+        has_request = any(len(row) > 5 and row[5] == 'INCOMING' for row in rows)
 
         def on_close():
             self._popup_open = False
             popup.destroy()
+
+        if has_request:
+            def _open_solutions():
+                on_close()
+                try:
+                    opener = getattr(self.master, 'open_incoming_soluzioni_with_login', None)
+                    if callable(opener):
+                        # Via menu principale: login/autorizzazione 'incoming_soluzioni'
+                        opener()
+                        return
+                except Exception as e:
+                    logger.error("Apertura Soluzioni con login fallita: %s", e,
+                                 exc_info=True)
+                try:
+                    from .incoming_solutions_gui import open_incoming_solutions
+                except ImportError:  # esecuzione come script standalone
+                    from incoming_solutions_gui import open_incoming_solutions
+                try:
+                    open_incoming_solutions(self.master, self.db, self.lang)
+                except Exception as e:
+                    logger.error("Apertura finestra soluzioni incoming fallita: %s", e,
+                                 exc_info=True)
+
+            ttk.Button(main,
+                       text=self.lang.get('incoming_popup_open_solutions',
+                                          'Apri Soluzioni (leggi note / rispondi)'),
+                       command=_open_solutions).pack(pady=(8, 0))
 
         if has_answer:
             def _open_confirm():

@@ -257,6 +257,46 @@ def api_generic_data():
         conn.close()
 
 
+def _insert_print_log(cur, label_id, printer_id, order_id, quantity, counter_from, counter_to,
+                      prefix, suffix, full_script, user, extra_order_ids=None):
+    """Inserisce una riga in LabelPrintLog e le associazioni in LabelPrintLogOrders.
+
+    Restituisce il LabelPrintLogId. L'associazione è best-effort: se la tabella
+    LabelPrintLogOrders non esiste ancora (migrazione non applicata) la stampa
+    non viene bloccata, viene solo loggato un warning."""
+    cur.execute(
+        """SET NOCOUNT ON;
+           INSERT INTO Traceability_RS.ind.LabelPrintLog
+           (MaterialeId, LabelPrinterId, OrderId, Quantity, CounterFrom, CounterTo,
+            Prefix, Suffix, ScriptSnapshot, PrintedAt, [User])
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), ?);
+           SELECT SCOPE_IDENTITY();""",
+        (label_id, printer_id, order_id, quantity, counter_from, counter_to,
+         prefix, suffix, full_script[:4000], user),
+    )
+    row = cur.fetchone()
+    log_id = int(row[0]) if row else None
+
+    order_ids = []
+    if order_id:
+        order_ids.append(order_id)
+    for oid in (extra_order_ids or []):
+        if oid and oid not in order_ids:
+            order_ids.append(oid)
+    if log_id and order_ids:
+        try:
+            for oid in order_ids:
+                cur.execute(
+                    """INSERT INTO Traceability_RS.ind.LabelPrintLogOrders
+                       (LabelPrintLogId, OrderId, DateIn, [User])
+                       VALUES (?, ?, GETDATE(), ?)""",
+                    (log_id, oid, user),
+                )
+        except Exception as e:
+            logger.warning("LabelPrintLogOrders non scrivibile (migrazione applicata?): %s", e)
+    return log_id
+
+
 @print_bp.route("/api/generic/print", methods=["POST"])
 @auth.require_page_token_or_session("print_generic")
 def api_generic_print():
@@ -349,14 +389,11 @@ def api_generic_print():
                     (label_id, prefix, suffix, new_last, user),
                 )
 
-        # Log stampa
-        cur.execute(
-            """INSERT INTO Traceability_RS.ind.LabelPrintLog
-               (MaterialeId, LabelPrinterId, OrderId, Quantity, CounterFrom, CounterTo,
-                Prefix, Suffix, ScriptSnapshot, PrintedAt, [User])
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), ?)""",
-            (label_id, printer_id, order_ids[0] if order_ids else None, quantity,
-             counter_from, counter_to, prefix, suffix, full_script[:4000], user),
+        # Log stampa (+ associazione a tutti gli ordini selezionati)
+        _insert_print_log(
+            cur, label_id, printer_id, order_ids[0] if order_ids else None, quantity,
+            counter_from, counter_to, prefix, suffix, full_script, user,
+            extra_order_ids=order_ids[1:],
         )
 
         conn.commit()
@@ -384,14 +421,45 @@ def api_generic_print():
 @print_bp.route("/api/orders/search")
 @auth.require_page_token_or_session("print_orders")
 def api_orders_search():
-    """Ricerca ordini per numero ordine / prodotto."""
+    """Ricerca ordini per numero ordine / prodotto.
+
+    Se il testo coincide con codici prodotto, restituisce TUTTI gli ordini
+    aperti (Orders.IsFinished = 0) di quei prodotti, senza limite di righe.
+    Altrimenti cerca per numero ordine / codice / nome prodotto (TOP 50)."""
     q = (request.args.get("q") or "").strip()
     if not q:
         return jsonify([])
     try:
         conn = db.get_conn()
         cur = conn.cursor()
-        # Cerca ordini attivi (non ancora completati in AOI) per numero ordine o prodotto
+        like = f"%{q}%"
+
+        # 1) Il testo indica un codice prodotto? → tutti gli ordini aperti di quei prodotti
+        cur.execute(
+            """SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+               SELECT IDProduct FROM Traceability_RS.dbo.Products WHERE ProductCode LIKE ?
+               SET TRANSACTION ISOLATION LEVEL READ COMMITTED;""",
+            (like,),
+        )
+        product_ids = [r[0] for r in cur.fetchall()]
+
+        if product_ids:
+            placeholders = ",".join("?" for _ in product_ids)
+            cur.execute(
+                f"""SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+                    SELECT o.IDOrder, o.OrderNumber, p.IDProduct, p.ProductCode, p.ProductName, o.OrderQuantity
+                    FROM Traceability_RS.dbo.Orders o
+                    INNER JOIN Traceability_RS.dbo.Products p ON p.IDProduct = o.IDProduct
+                    WHERE o.IsFinished = 0 AND o.IDProduct IN ({placeholders})
+                    ORDER BY o.OrderDate DESC
+                    SET TRANSACTION ISOLATION LEVEL READ COMMITTED;""",
+                product_ids,
+            )
+            rows = db.fetch_all_dict(cur)
+            conn.close()
+            return jsonify(rows)
+
+        # 2) Ricerca generica per numero ordine / codice / nome prodotto
         cur.execute(
             """SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
                SELECT TOP 50 o.IDOrder, o.OrderNumber, p.IDProduct, p.ProductCode, p.ProductName, o.OrderQuantity
@@ -475,6 +543,186 @@ def api_orders_labels():
     except Exception as e:
         logger.exception("Errore /api/orders/labels: %s", e)
         return jsonify({"error": "db_error", "message": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Associazioni prodotto → etichette (BomIndirectMaterials): template + import Excel
+# ---------------------------------------------------------------------------
+
+# Intestazioni accettate nel file Excel (prima riga), per colonna
+_TEMPLATE_HEADERS = ["CodiceProdotto", "CodiceEtichetta", "QuantitaPerPezzo"]
+_HEADER_ALIASES = {
+    "codiceprodotto": "product",
+    "productcode": "product",
+    "prodotto": "product",
+    "codiceetichetta": "label",
+    "labelcode": "label",
+    "etichetta": "label",
+    "quantitaperpezzo": "qty",
+    "quantityperpiece": "qty",
+    "quantita": "qty",
+    "qty": "qty",
+}
+
+
+@print_bp.route("/api/labels/template")
+@auth.require_page_token_or_session("print_orders")
+def api_labels_template():
+    """Scarica il template Excel per l'import delle associazioni prodotto→etichette."""
+    import openpyxl
+    from openpyxl.styles import Font
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Associazioni"
+    ws.append(_TEMPLATE_HEADERS)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    ws.append(["CODICE_PRODOTTO_ES", "CODICE_ETICHETTA_ES", 1])
+    from openpyxl.utils import get_column_letter
+    for i, w in enumerate([24, 24, 20], 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    path = os.path.join(tempfile.gettempdir(), "template_associazioni_etichette.xlsx")
+    wb.save(path)
+    from flask import send_file
+    return send_file(path, as_attachment=True,
+                     download_name="template_associazioni_etichette.xlsx")
+
+
+@print_bp.route("/api/labels/import", methods=["POST"])
+@auth.require_page_token_or_session("print_orders")
+def api_labels_import():
+    """Importa da Excel le associazioni prodotto→etichette in ind.BomIndirectMaterials.
+
+    Sostituisce le associazioni attive (DateOut IS NULL) dei prodotti presenti
+    nel file con quelle del file. Le etichette devono appartenere alla famiglia
+    'Labels'. Le associazioni importate sono usate sia dalla stampa per ordini
+    sia da quella generica."""
+    import openpyxl
+
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"error": "missing_file"}), 400
+
+    try:
+        wb = openpyxl.load_workbook(f, read_only=True, data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        wb.close()
+    except Exception as e:
+        return jsonify({"error": "invalid_excel", "message": str(e)}), 400
+
+    if not rows:
+        return jsonify({"error": "empty_file"}), 400
+
+    # Mappa le colonne dall'intestazione
+    header = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
+    col_map = {}
+    for idx, h in enumerate(header):
+        if h in _HEADER_ALIASES:
+            col_map[_HEADER_ALIASES[h]] = idx
+    if "product" not in col_map or "label" not in col_map or "qty" not in col_map:
+        return jsonify({
+            "error": "bad_header",
+            "message": f"Intestazioni attese: {', '.join(_TEMPLATE_HEADERS)}",
+        }), 400
+
+    def cell(row, key):
+        i = col_map[key]
+        return row[i] if i < len(row) else None
+
+    entries = []
+    warnings = []
+    for rno, r in enumerate(rows[1:], start=2):
+        if r is None or all(v is None or str(v).strip() == "" for v in r):
+            continue
+        pc = str(cell(r, "product") or "").strip()
+        lc = str(cell(r, "label") or "").strip()
+        qv = cell(r, "qty")
+        if not pc or not lc:
+            warnings.append(f"Riga {rno}: codice prodotto o etichetta mancante, saltata")
+            continue
+        try:
+            qty = float(qv)
+        except (TypeError, ValueError):
+            warnings.append(f"Riga {rno}: quantità non valida ({qv!r}), saltata")
+            continue
+        entries.append((pc, lc, qty))
+
+    if not entries:
+        return jsonify({"error": "no_valid_rows", "warnings": warnings}), 400
+
+    user = _get_user_name()
+    conn = db.get_conn()
+    try:
+        cur = conn.cursor()
+
+        # Risolve codici → ID (cache per codice)
+        products, labels = {}, {}
+        for pc, lc, _ in entries:
+            if pc not in products:
+                cur.execute(
+                    "SELECT IDProduct FROM Traceability_RS.dbo.Products WHERE UPPER(ProductCode) = UPPER(?)",
+                    (pc,),
+                )
+                r = cur.fetchone()
+                products[pc] = r[0] if r else None
+            if lc not in labels:
+                cur.execute(
+                    """SELECT m.MaterialeId
+                       FROM Traceability_RS.ind.Materiali m
+                       JOIN Traceability_RS.ind.FamigliaMateriali fm
+                         ON fm.FamigliaMaterialiId = m.FamigliaMaterialiId
+                       WHERE UPPER(m.CodiceMateriale) = UPPER(?) AND fm.Famiglia = 'Labels'""",
+                    (lc,),
+                )
+                r = cur.fetchone()
+                labels[lc] = r[0] if r else None
+
+        for pc, pid in products.items():
+            if pid is None:
+                warnings.append(f"{pc}: prodotto non trovato, righe saltate")
+        for lc, mid in labels.items():
+            if mid is None:
+                warnings.append(f"{lc}: etichetta non trovata (famiglia 'Labels'), righe saltate")
+
+        # Sostituzione: chiude le associazioni attive dei prodotti nel file
+        product_ids = sorted({pid for pid in products.values() if pid})
+        for pid in product_ids:
+            cur.execute(
+                """UPDATE Traceability_RS.ind.BomIndirectMaterials
+                   SET DateOut = GETDATE()
+                   WHERE idProduct = ? AND DateOut IS NULL""",
+                (pid,),
+            )
+
+        inserted = 0
+        for pc, lc, qty in entries:
+            pid, mid = products[pc], labels[lc]
+            if not pid or not mid:
+                continue
+            cur.execute(
+                """INSERT INTO Traceability_RS.ind.BomIndirectMaterials
+                   (idProduct, MaterialeId, DateIn, [User], QuantityPerPiece)
+                   VALUES (?, ?, GETDATE(), ?, ?)""",
+                (pid, mid, user, qty),
+            )
+            inserted += 1
+
+        conn.commit()
+        return jsonify({
+            "ok": True,
+            "products_replaced": len(product_ids),
+            "rows_inserted": inserted,
+            "warnings": warnings,
+        })
+    except Exception as e:
+        conn.rollback()
+        logger.exception("Errore /api/labels/import: %s", e)
+        return jsonify({"error": "db_error", "message": str(e)}), 500
+    finally:
+        conn.close()
 
 
 @print_bp.route("/api/orders/print", methods=["POST"])
@@ -580,15 +828,11 @@ def api_orders_print():
                 if not result.get("ok"):
                     return jsonify({"error": "print_error", "message": result.get("message")}), 500
                 printed += quantity
-                cur.execute(
-                    """INSERT INTO Traceability_RS.ind.LabelPrintLog
-                       (MaterialeId, LabelPrinterId, OrderId, Quantity, CounterFrom, CounterTo,
-                        Prefix, Suffix, ScriptSnapshot, PrintedAt, [User])
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), ?)""",
-                    (label_id, printer_id, order_id, quantity, counter_from, counter_to,
-                     prefix, suffix, full_script[:4000], user),
+                log_id = _insert_print_log(
+                    cur, label_id, printer_id, order_id, quantity, counter_from, counter_to,
+                    prefix, suffix, full_script, user,
                 )
-                log_ids.append(cur.fetchone())  # non restituisce niente con INSERT
+                log_ids.append(log_id)
 
         if print_all_together:
             for key, item in scripts_by_printer.items():
@@ -598,14 +842,12 @@ def api_orders_print():
                     return jsonify({"error": "print_error", "message": result.get("message")}), 500
                 for r in item["rows"]:
                     printed += r["quantity"]
-                    cur.execute(
-                        """INSERT INTO Traceability_RS.ind.LabelPrintLog
-                           (MaterialeId, LabelPrinterId, OrderId, Quantity, CounterFrom, CounterTo,
-                            Prefix, Suffix, ScriptSnapshot, PrintedAt, [User])
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), ?)""",
-                        (r["label_id"], key, order_id, r["quantity"], r["counter_from"], r["counter_to"],
-                         r["prefix"], r["suffix"], r["full_script"][:4000], user),
+                    log_id = _insert_print_log(
+                        cur, r["label_id"], key, order_id, r["quantity"],
+                        r["counter_from"], r["counter_to"],
+                        r["prefix"], r["suffix"], r["full_script"], user,
                     )
+                    log_ids.append(log_id)
 
         conn.commit()
         return jsonify({"ok": True, "printed": printed, "print_all_together": print_all_together})

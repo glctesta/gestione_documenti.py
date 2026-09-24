@@ -24,7 +24,8 @@ ORDER BY SiteName
 
 _Q_LIST = """
 SELECT c.ConfigId, c.IDSite, s.SiteName, c.DirectoryName,
-       c.ToEmails, c.CcEmails, c.IsActive, c.DateIn, c.[User]
+       c.ToEmails, c.CcEmails, c.IsActive, c.DateIn, c.[User],
+       c.[Language], c.ReferentName, c.ReferentEmail
 FROM Traceability_RS.dbo.ShipmentEmailConfig c
 INNER JOIN Traceability_RS.dbo.Sites s ON s.IDSite = c.IDSite
 WHERE c.DateOut IS NULL
@@ -33,8 +34,9 @@ ORDER BY s.SiteName
 
 _Q_INSERT = """
 INSERT INTO Traceability_RS.dbo.ShipmentEmailConfig
-    (IDSite, DirectoryName, ToEmails, CcEmails, IsActive, [User])
-VALUES (?, ?, ?, ?, ?, ?)
+    (IDSite, DirectoryName, ToEmails, CcEmails, IsActive, [User],
+     [Language], ReferentName, ReferentEmail)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _Q_SOFT_DELETE = """
@@ -47,6 +49,7 @@ _EMAIL_RE = re.compile(r'^[^@\s;]+@[^@\s;]+\.[^@\s;]+$')
 
 
 def open_shipment_info_form(master, db, lang, user_name: str):
+    logger.info("Apertura form ShipmentInfoForm per utente %s", user_name)
     return ShipmentInfoForm(master, db, lang, user_name)
 
 
@@ -66,8 +69,8 @@ class ShipmentInfoForm(tk.Toplevel):
         self._L = L
 
         self.title(L('ship_info_title', 'Info Spedizioni'))
-        self.geometry('860x560')
-        self.minsize(760, 480)
+        self.geometry('860x660')
+        self.minsize(760, 680)
         self.configure(bg='#f4f6f8')
         self.grab_set()
 
@@ -122,28 +125,49 @@ class ShipmentInfoForm(tk.Toplevel):
         tk.Entry(frm, textvariable=self._cc_var, width=60,
                  font=('Segoe UI', 10)).grid(row=3, column=1, sticky=tk.W, **pad)
 
+        tk.Label(frm, text=L('ship_info_lang', 'Lingua email:'), bg='#ffffff',
+                 font=('Segoe UI', 10)).grid(row=4, column=0, sticky=tk.W, **pad)
+        self._lang_var = tk.StringVar(value='IT')
+        ttk.Combobox(frm, textvariable=self._lang_var, state='readonly',
+                     values=('IT', 'EN'), width=5,
+                     font=('Segoe UI', 10)).grid(row=4, column=1, sticky=tk.W, **pad)
+
+        tk.Label(frm, text=L('ship_info_referent', 'Referente:'), bg='#ffffff',
+                 font=('Segoe UI', 10)).grid(row=5, column=0, sticky=tk.W, **pad)
+        self._referent_var = tk.StringVar(value=self.logged_user)
+        tk.Entry(frm, textvariable=self._referent_var, width=40,
+                 font=('Segoe UI', 10)).grid(row=5, column=1, sticky=tk.W, **pad)
+
+        tk.Label(frm, text=L('ship_info_referent_email', 'Email referente:'),
+                 bg='#ffffff', font=('Segoe UI', 10)).grid(row=6, column=0, sticky=tk.W, **pad)
+        self._referent_email_var = tk.StringVar(value=self._get_user_email())
+        tk.Entry(frm, textvariable=self._referent_email_var, width=40,
+                 font=('Segoe UI', 10)).grid(row=6, column=1, sticky=tk.W, **pad)
+
         self._active_var = tk.IntVar(value=1)
         tk.Checkbutton(frm, text=L('ship_info_active', 'Servizio attivo'),
                        variable=self._active_var, bg='#ffffff',
-                       font=('Segoe UI', 10)).grid(row=4, column=1, sticky=tk.W, **pad)
+                       font=('Segoe UI', 10)).grid(row=7, column=1, sticky=tk.W, **pad)
 
         # ── Tabella configurazioni ────────────────────────────────────────────
         tbl_frm = tk.LabelFrame(top, text=L('ship_info_list', 'Configurazioni attive'),
                                 bg='#ffffff', padx=10, pady=10)
         tbl_frm.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
 
-        cols = ('site', 'dir', 'to', 'cc', 'active')
+        cols = ('site', 'dir', 'to', 'cc', 'lang', 'active')
         self._tree = ttk.Treeview(tbl_frm, columns=cols, show='headings', height=10)
         self._tree.heading('site', text=L('ship_info_site', 'Sito'))
         self._tree.heading('dir', text=L('ship_info_dir', 'Directory'))
         self._tree.heading('to', text='TO')
         self._tree.heading('cc', text='CC')
+        self._tree.heading('lang', text=L('ship_info_lang_col', 'Lingua'))
         self._tree.heading('active', text=L('ship_info_active_col', 'Attivo'))
-        self._tree.column('site', width=200)
-        self._tree.column('dir', width=140)
-        self._tree.column('to', width=220)
-        self._tree.column('cc', width=180)
-        self._tree.column('active', width=60, anchor=tk.CENTER)
+        self._tree.column('site', width=180)
+        self._tree.column('dir', width=120)
+        self._tree.column('to', width=200)
+        self._tree.column('cc', width=160)
+        self._tree.column('lang', width=55, anchor=tk.CENTER)
+        self._tree.column('active', width=55, anchor=tk.CENTER)
         vsb = ttk.Scrollbar(tbl_frm, orient=tk.VERTICAL, command=self._tree.yview)
         self._tree.configure(yscrollcommand=vsb.set)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
@@ -165,6 +189,20 @@ class ShipmentInfoForm(tk.Toplevel):
                   command=self.destroy).pack(side=tk.RIGHT, padx=4)
 
     # ── Caricamento ───────────────────────────────────────────────────────────
+
+    def _get_user_email(self) -> str:
+        """Email dell'utente corrente da vw_Soggetti (pattern guest_management_gui)."""
+        try:
+            cur = self.db.conn.cursor()
+            cur.execute(
+                "SELECT TOP 1 s.Email FROM Traceability_RS.dbo.vw_Soggetti s "
+                "WHERE s.NomeSoggetto = ?", self.logged_user)
+            row = cur.fetchone()
+            cur.close()
+            return (row.Email or '') if row else ''
+        except Exception as e:
+            logger.error(f"ShipmentInfoForm _get_user_email: {e}", exc_info=True)
+            return ''
 
     def _load_sites(self):
         try:
@@ -192,6 +230,7 @@ class ShipmentInfoForm(tk.Toplevel):
                     r.DirectoryName,
                     (r.ToEmails or '')[:60],
                     (r.CcEmails or '')[:50],
+                    r.Language or 'IT',
                     '✔' if r.IsActive else '—',
                 ))
                 self._rows[r.ConfigId] = r
@@ -214,6 +253,9 @@ class ShipmentInfoForm(tk.Toplevel):
         self._dir_var.set(row.DirectoryName or '')
         self._to_var.set(row.ToEmails or '')
         self._cc_var.set(row.CcEmails or '')
+        self._lang_var.set(row.Language or 'IT')
+        self._referent_var.set(row.ReferentName or self.logged_user)
+        self._referent_email_var.set(row.ReferentEmail or self._get_user_email())
         self._active_var.set(1 if row.IsActive else 0)
 
     def _clear_form(self):
@@ -222,6 +264,9 @@ class ShipmentInfoForm(tk.Toplevel):
         self._dir_var.set('')
         self._to_var.set('')
         self._cc_var.set('')
+        self._lang_var.set('IT')
+        self._referent_var.set(self.logged_user)
+        self._referent_email_var.set(self._get_user_email())
         self._active_var.set(1)
         self._tree.selection_remove(self._tree.selection())
 
@@ -260,7 +305,20 @@ class ShipmentInfoForm(tk.Toplevel):
                 parent=self)
             return None
 
-        return id_site, directory, ';'.join(to_list), ';'.join(cc_list)
+        language = (self._lang_var.get().strip() or 'IT').upper()
+        if language not in ('IT', 'EN'):
+            language = 'IT'
+        referent = self._referent_var.get().strip()
+        referent_email = self._referent_email_var.get().strip()
+        if referent_email and not _EMAIL_RE.match(referent_email):
+            messagebox.showwarning(
+                L('warning', 'Attenzione'),
+                L('ship_info_bad_email', 'Indirizzi non validi:') + '\n' + referent_email,
+                parent=self)
+            return None
+
+        return (id_site, directory, ';'.join(to_list), ';'.join(cc_list),
+                language, referent, referent_email)
 
     # ── Salvataggio / eliminazione ────────────────────────────────────────────
 
@@ -269,7 +327,7 @@ class ShipmentInfoForm(tk.Toplevel):
         data = self._validate()
         if not data:
             return
-        id_site, directory, to_emails, cc_emails = data
+        id_site, directory, to_emails, cc_emails, language, referent, referent_email = data
         is_active = 1 if self._active_var.get() else 0
 
         try:
@@ -277,12 +335,14 @@ class ShipmentInfoForm(tk.Toplevel):
             # Modifica: chiude il record attivo del sito e ne inserisce uno nuovo
             cur.execute(_Q_SOFT_DELETE, (id_site,))
             cur.execute(_Q_INSERT, (id_site, directory, to_emails, cc_emails,
-                                    is_active, self.logged_user))
+                                    is_active, self.logged_user,
+                                    language, referent, referent_email))
             self.db.conn.commit()
             cur.close()
             logger.info(
-                "ShipmentEmailConfig salvata: IDSite=%s dir=%s TO=%s CC=%s active=%s user=%s",
-                id_site, directory, to_emails, cc_emails, is_active, self.logged_user)
+                "ShipmentEmailConfig salvata: IDSite=%s dir=%s TO=%s CC=%s active=%s user=%s lang=%s referent=%s",
+                id_site, directory, to_emails, cc_emails, is_active,
+                self.logged_user, language, referent)
         except Exception as e:
             logger.error(f"ShipmentInfoForm _on_save: {e}", exc_info=True)
             messagebox.showerror(L('error', 'Errore'), str(e), parent=self)
