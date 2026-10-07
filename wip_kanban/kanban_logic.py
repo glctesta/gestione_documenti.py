@@ -249,16 +249,16 @@ def boards_in_master(cur, master):
 
 def _position_exists(cur, position_code):
     cur.execute(
-        "SELECT LocationId FROM Traceability_RS.ind.WipKanbanLocations WHERE PositionCode = ?",
+        "SELECT LocationId, Area FROM Traceability_RS.ind.WipKanbanLocations WHERE PositionCode = ?",
         (position_code,),
     )
     row = cur.fetchone()
-    return row[0] if row else None
+    return (row[0], row[1]) if row else None
 
 
 def _find_active_board(cur, labelcode):
     cur.execute(
-        """SELECT wb.BoardKanbanId, wl.PositionCode
+        """SELECT wb.BoardKanbanId, wl.PositionCode, wl.Area
            FROM Traceability_RS.ind.WipKanbanBoards wb
            JOIN Traceability_RS.ind.WipKanbanLocations wl ON wl.LocationId = wb.LocationId
            WHERE wb.LabelCode = ? AND wb.DateOut IS NULL""",
@@ -267,23 +267,54 @@ def _find_active_board(cur, labelcode):
     return cur.fetchone()
 
 
+def _board_has_fail(cur, idboard):
+    """True se la scheda ha almeno una scansione con esito FAIL (in qualsiasi fase)."""
+    cur.execute(
+        "SELECT COUNT(*) FROM Traceability_RS.dbo.Scannings WHERE IDBoard = ? AND IsPass = 0",
+        (idboard,),
+    )
+    return int(cur.fetchone()[0]) > 0
+
+
 def load_board(cur, position_code, labelcode, user):
-    """Carica una scheda in una posizione. Restituisce (ok, errore, info)."""
+    """Carica una scheda in una posizione. Restituisce (ok, errore, info).
+
+    Regole area:
+      - WIP:    scheda con FAIL in qualsiasi fase NON caricabile ('fail_in_wip');
+                una scheda gia' in REPAIR resta bloccata ('board_already_in').
+      - REPAIR: se la scheda e' gia' nel WIP restituisce 'board_in_wip' con i
+                dati per la conferma di trasferimento (gestita dal chiamante).
+    """
     labelcode = (labelcode or "").strip()
     if not labelcode:
         return False, "invalid_labelcode", None
-    location_id = _position_exists(cur, position_code)
-    if location_id is None:
+    pos = _position_exists(cur, position_code)
+    if pos is None:
         return False, "invalid_position", None
-
-    existing = _find_active_board(cur, labelcode)
-    if existing:
-        return False, "board_already_in", {"position": existing[1]}
+    location_id, area = pos
 
     info = board_info(cur, labelcode)
     if not info:
         return False, "invalid_labelcode", None
 
+    if area == "WIP" and _board_has_fail(cur, info["IDBoard"]):
+        return False, "fail_in_wip", info
+
+    existing = _find_active_board(cur, labelcode)
+    if existing:
+        if area == "REPAIR" and existing[2] == "WIP":
+            return False, "board_in_wip", {
+                "position": existing[1],
+                "ProductCode": info["ProductCode"],
+                "OrderNumber": info["OrderNumber"],
+            }
+        return False, "board_already_in", {"position": existing[1]}
+
+    _insert_board(cur, location_id, labelcode, info, position_code, user)
+    return True, None, info
+
+
+def _insert_board(cur, location_id, labelcode, info, position_code, user):
     cur.execute(
         """INSERT INTO Traceability_RS.ind.WipKanbanBoards
            (LocationId, IDBoard, LabelCode, IDOrder, OrderNumber, ProductCode, DateIn, [User])
@@ -293,6 +324,43 @@ def load_board(cur, position_code, labelcode, user):
     )
     _audit(cur, "IN", labelcode, position_code,
            info["OrderNumber"], info["ProductCode"], user)
+
+
+def transfer_board(cur, to_position_code, labelcode, user):
+    """Trasferisce una scheda dal Kanban WIP al Kanban REPAIR:
+    scarico (DateOut + audit OUT) dalla posizione WIP e carico nella posizione
+    REPAIR di destinazione. Restituisce (ok, errore, info)."""
+    labelcode = (labelcode or "").strip()
+    if not labelcode:
+        return False, "invalid_labelcode", None
+    pos = _position_exists(cur, to_position_code)
+    if pos is None:
+        return False, "invalid_position", None
+    to_location_id, to_area = pos
+    if to_area != "REPAIR":
+        return False, "invalid_transfer_target", None
+
+    existing = _find_active_board(cur, labelcode)
+    if not existing:
+        return False, "not_in_kanban", None
+    board_kanban_id, from_position, from_area = existing
+    if from_area != "WIP":
+        return False, "board_already_in", {"position": from_position}
+
+    cur.execute(
+        """UPDATE Traceability_RS.ind.WipKanbanBoards
+           SET DateOut = GETDATE(), OutUser = ?
+           WHERE BoardKanbanId = ?""",
+        (user, board_kanban_id),
+    )
+    info = board_info(cur, labelcode)
+    if not info:
+        return False, "invalid_labelcode", None
+    _audit(cur, "OUT", labelcode, from_position,
+           info["OrderNumber"], info["ProductCode"], user)
+    _insert_board(cur, to_location_id, labelcode, info, to_position_code, user)
+    info = dict(info)
+    info["from_position"] = from_position
     return True, None, info
 
 
@@ -327,7 +395,7 @@ def withdraw_board(cur, labelcode, user):
     row = _find_active_board(cur, labelcode)
     if not row:
         return False, "not_in_kanban", None
-    board_kanban_id, position_code = row
+    board_kanban_id, position_code = row[0], row[1]
     cur.execute(
         """UPDATE Traceability_RS.ind.WipKanbanBoards
            SET DateOut = GETDATE(), OutUser = ?

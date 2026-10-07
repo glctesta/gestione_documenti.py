@@ -1,4 +1,4 @@
-#import configparser
+﻿#import configparser
 # --- StdIO safeguard + Faulthandler sicuro per exe windowed ---
 import shutil
 import sys, os, atexit
@@ -308,7 +308,7 @@ except ImportError:
     PIL_AVAILABLE = False
 
 # --- CONFIGURAZIONE APPLICAZIONE ---
-APP_VERSION = '2.4.3.5.0'  # Versione aggiornata
+APP_VERSION = '2.4.3.5.4'  # Versione aggiornata
 # Nome programma usato come chiave in SwVersions / VersionDMLogs.
 # In produzione = nome dell'exe; in sviluppo usa il nome canonico.
 APP_PROGRAM_NAME = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else 'DocumentManagement.exe'
@@ -18470,6 +18470,12 @@ class App(tk.Tk):
             command=self.open_incoming_soluzioni_with_login
         )
 
+        # 2b. Conferma soluzioni (chi ha inserito la richiesta conferma l'esito)
+        self.receiving_submenu.add_command(
+            label=self.lang.get('incoming_menu_conferma', "Conferma soluzioni"),
+            command=self.open_incoming_conferma_with_login
+        )
+
         self.receiving_submenu.add_separator()
 
         # 3. Setup
@@ -18502,6 +18508,17 @@ class App(tk.Tk):
             open_incoming_solutions(self, self.db, self.lang, user_name)
 
         self._execute_authorized_action('incoming_soluzioni', action)
+
+    def open_incoming_conferma_with_login(self):
+        """Apre la finestra Conferma soluzioni dopo login.
+        Usa la stessa chiave 'incoming_richiesta' (ruolo mittente): chi puo'
+        inserire richieste puo' anche confermarne l'esito."""
+        def action():
+            from incoming.incoming_confirm_gui import open_incoming_confirm
+            user_name = getattr(self, 'last_authenticated_user_name', 'Unknown')
+            open_incoming_confirm(self, self.db, self.lang, user_name)
+
+        self._execute_authorized_action('incoming_richiesta', action)
 
     def open_incoming_setup_with_login(self):
         """Apre il Setup Ricezione (gestione operatori/email) dopo login (chiave 'incoming_setup')."""

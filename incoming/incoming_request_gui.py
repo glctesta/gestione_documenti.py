@@ -41,11 +41,17 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # Campi obbligatori per ogni tipo di richiesta (fornitore e DDT sono sempre richiesti).
+# Codice interno, produttore e MPN sono obbligatori per TUTTI i tipi: senza questi
+# dati il componente non puo' essere gestito (contattare il Purchasing).
 _FIELDS_BY_TYPE = {
-    'MPN_MANCANTE': ('ddt_number', 'ddt_date', 'mpn_code'),
-    'MPN_SBAGLIATO': ('ddt_number', 'ddt_date', 'wrong_mpn'),
-    'PO_MANCANTE': ('ddt_number', 'ddt_date', 'pur_order_number'),
+    'MPN_MANCANTE': ('ddt_number', 'ddt_date', 'mpn_code',
+                     'component_code', 'manufacturer'),
+    'MPN_SBAGLIATO': ('ddt_number', 'ddt_date', 'wrong_mpn',
+                      'component_code', 'manufacturer'),
+    'PO_MANCANTE': ('ddt_number', 'ddt_date', 'pur_order_number',
+                    'mpn_code', 'component_code', 'manufacturer'),
     'PO_QUANTITA': ('ddt_number', 'ddt_date', 'pur_order_number',
+                    'mpn_code', 'component_code', 'manufacturer',
                     'qty_to_receive', 'qty_expected_per_po'),
 }
 
@@ -78,6 +84,18 @@ def _fetch(db, sql, params=None):
     return [dict(zip(cols, r)) for r in rows]
 
 
+def _fmt_dt(value):
+    """Formatta un datetime/pyodbc date in 'DD/MM/YYYY HH:MM'."""
+    if value is None:
+        return ''
+    if isinstance(value, str):
+        return value
+    try:
+        return value.strftime('%d/%m/%Y %H:%M')
+    except AttributeError:
+        return str(value)
+
+
 class IncomingRequestWindow(tk.Toplevel):
     """Form di creazione di una nuova richiesta Ricezione."""
 
@@ -90,8 +108,8 @@ class IncomingRequestWindow(tk.Toplevel):
         L = self.lang.get
 
         self.title(L('inc_req_title', 'Nuova richiesta — Ricezione'))
-        self.geometry('760x640')
-        self.minsize(680, 560)
+        self.geometry('760x680')
+        self.minsize(680, 600)
         self.transient(master)
 
         # Fornitori (tutti, poi filtrati da combo)
@@ -110,6 +128,7 @@ class IncomingRequestWindow(tk.Toplevel):
             incoming_db.type_label(L, k): k for k in incoming_db.REQUEST_TYPES}
         self._build_ui()
         self.grab_set()
+        self._update_email_button()
         if request_type in incoming_db.REQUEST_TYPES:
             self._v_type.set(incoming_db.type_label(L, request_type))
         self._on_type_change()
@@ -182,10 +201,16 @@ class IncomingRequestWindow(tk.Toplevel):
             row=6, column=0, sticky='w', padx=6, pady=6)
         self._add_entry(form, 'wrong_mpn', row=6, col=1)
 
-        # Codice interno (componente) da abbinare all'MPN
+        # Codice interno (componente)
         ttk.Label(form, text=L('inc_req_component_code', 'Codice interno (componente):')).grid(
             row=9, column=0, sticky='w', padx=6, pady=6)
         self._add_entry(form, 'component_code', row=9, col=1)
+
+        # Produttore (obbligatorio: senza produttore/MPN il componente non e'
+        # gestibile in applicazione, va contattato il Purchasing)
+        ttk.Label(form, text=L('inc_req_manufacturer', 'Produttore:')).grid(
+            row=10, column=0, sticky='w', padx=6, pady=6)
+        self._add_entry(form, 'manufacturer', row=10, col=1)
 
         # Quantità
         ttk.Label(form, text=L('inc_req_qty_receive', 'Quantità da ricevere:')).grid(
@@ -200,6 +225,8 @@ class IncomingRequestWindow(tk.Toplevel):
         bar.pack(fill=tk.X, padx=10, pady=8)
         ttk.Button(bar, text=L('inc_req_send', '📨 Invia richiesta'),
                    command=self._save).pack(side=tk.LEFT, padx=4)
+        self._btn_grouped_email = ttk.Button(bar, text='', command=self._send_grouped_email)
+        self._btn_grouped_email.pack(side=tk.LEFT, padx=4)
         ttk.Button(bar, text=L('inc_req_reset', 'Azzera campi'),
                    command=self._reset).pack(side=tk.LEFT, padx=4)
         ttk.Button(bar, text=L('btn_close', 'Chiudi'), command=self.destroy).pack(
@@ -257,9 +284,6 @@ class IncomingRequestWindow(tk.Toplevel):
     def _on_type_change(self):
         key = self._current_type_key()
         visible = set(_FIELDS_BY_TYPE.get(key, ())) | {'ddt_number', 'ddt_date'}
-        # Il codice interno si abbina all'MPN: visibile solo per i tipi MPN.
-        if key in ('MPN_MANCANTE', 'MPN_SBAGLIATO'):
-            visible.add('component_code')
         for name, (lbl, widget) in self._rows.items():
             if name in ('ddt_number', 'ddt_date'):
                 continue  # sempre visibili
@@ -348,25 +372,67 @@ class IncomingRequestWindow(tk.Toplevel):
             return
         data['ddt_date'] = ddt_date
 
-        # Altri campi condizionali
-        for name in ('pur_order_number', 'mpn_code', 'wrong_mpn'):
+        # Altri campi condizionali. Produttore e MPN mancanti = blocco con
+        # rimando al Purchasing (senza questi dati il componente non e' gestibile).
+        for name in ('pur_order_number', 'mpn_code', 'wrong_mpn', 'manufacturer'):
             val = self._vars[name].get().strip().upper() or None
             if name in required and not val:
-                messagebox.showinfo(L('info', 'Info'),
-                                    L('inc_req_field_required', 'Compilare il campo richiesto ({0}).')
-                                    .format(name), parent=self)
+                if name == 'manufacturer':
+                    messagebox.showinfo(L('info', 'Info'),
+                                        L('inc_req_manufacturer_required',
+                                          'Inserire il produttore del componente.\n'
+                                          'Senza produttore il componente non puo'' essere gestito in '
+                                          'applicazione: contattare il dipartimento Purchasing.'),
+                                        parent=self)
+                elif name in ('mpn_code', 'wrong_mpn'):
+                    messagebox.showinfo(L('info', 'Info'),
+                                        L('inc_req_purchasing_msg',
+                                          'Inserire l''MPN del componente.\n'
+                                          'Senza MPN il componente non puo'' essere gestito in '
+                                          'applicazione: contattare il dipartimento Purchasing.'),
+                                        parent=self)
+                else:
+                    messagebox.showinfo(L('info', 'Info'),
+                                        L('inc_req_field_required', 'Compilare il campo richiesto ({0}).')
+                                        .format(name), parent=self)
                 return
             data[name] = val
 
-        # Codice interno (componente): opzionale; se mancante in
-        # dbo.Components (IDCOMPONENTTYPE = 1) viene inserito silente.
+        # Codice interno (componente): obbligatorio per tutti i tipi; se mancante
+        # in dbo.Components (IDCOMPONENTTYPE = 1) viene inserito silente.
         component_code = self._vars['component_code'].get().strip().upper() or None
-        if component_code and key in ('MPN_MANCANTE', 'MPN_SBAGLIATO'):
-            try:
-                incoming_db.ensure_component(self.db, component_code)
-            except Exception as e:
-                logger.error(f"Incoming request: verifica componente fallita: {e}", exc_info=True)
+        if not component_code:
+            messagebox.showinfo(L('info', 'Info'),
+                                L('inc_req_code_required', 'Inserire il codice interno del componente.'),
+                                parent=self)
+            return
+        try:
+            incoming_db.ensure_component(self.db, component_code)
+        except Exception as e:
+            logger.error(f"Incoming request: verifica componente fallita: {e}", exc_info=True)
         data['component_code'] = component_code
+
+        # Controllo duplicato sullo storico: stesso COD INTERN + PRODUCĂTOR + MPN
+        # gia' inserito e non respinto (CONFIRMED_KO escluso: riproponibile).
+        mpn_for_dup = data.get('mpn_code') or data.get('wrong_mpn')
+        if data.get('manufacturer') and mpn_for_dup:
+            try:
+                dup = incoming_db.find_request_by_triplet(
+                    self.db, component_code, data['manufacturer'], mpn_for_dup)
+            except Exception as e:
+                logger.error(f"Incoming request: controllo duplicato fallito: {e}", exc_info=True)
+                dup = None
+            if dup:
+                messagebox.showwarning(
+                    L('inc_req_duplicate_title', 'Codice gia'' inserito'),
+                    L('inc_req_duplicate_msg',
+                      'CODUL A FOST DEJA INTRODUS\n\n'
+                      'Esiste gia'' una richiesta per questo codice:\n{0} del {1} da {2}.')
+                    .format(dup.get('RequestNumber') or '?',
+                            _fmt_dt(dup.get('RequestedOn')),
+                            dup.get('RequestedBy') or '-'),
+                    parent=self)
+                return
 
         for name in ('qty_to_receive', 'qty_expected_per_po'):
             try:
@@ -414,18 +480,54 @@ class IncomingRequestWindow(tk.Toplevel):
         except Exception as e:
             logger.error(f"Incoming request: popup non accodato per {request_number}: {e}", exc_info=True)
 
-        # Email di notifica ai destinatari configurati per il tipo
-        try:
-            req = incoming_db.get_request(self.db, request_id) or {}
-            incoming_email.send_new_request_email(self.db, req)
-        except Exception as e:
-            logger.error(f"Incoming request: email non inviata per {request_number}: {e}", exc_info=True)
-
+        # Nessuna email qui: le richieste vengono raccolte e inviate con UNA
+        # email riepilogativa dal pulsante "Invia email riepilogativa".
         messagebox.showinfo(L('info', 'Info'),
-                            L('inc_req_sent', 'Richiesta {0} inviata.').format(request_number),
+                            L('inc_req_saved_not_sent',
+                              'Richiesta {0} salvata. Verra'' notificata con l''email riepilogativa.')
+                            .format(request_number),
                             parent=self)
         logger.info(f"Incoming request creata: {request_number} (id={request_id}) tipo={key}")
         self._reset()
+        self._update_email_button()
+
+    # ── Email riepilogativa raggruppata ──────────────────────────────────────
+    def _update_email_button(self):
+        """Aggiorna contatore e stato del pulsante dell'email riepilogativa."""
+        L = self.lang.get
+        try:
+            n = len(incoming_db.get_unsent_requests(self.db) or [])
+        except Exception as e:
+            logger.error(f"Incoming request: conteggio email fallito: {e}", exc_info=True)
+            n = 0
+        text = L('inc_email_grouped_send', '📨 Invia email riepilogativa ({0})').format(n)
+        self._btn_grouped_email.config(text=text, state='normal' if n > 0 else 'disabled')
+
+    def _send_grouped_email(self):
+        """Invia UNA email riepilogativa per tipo con tutte le richieste non
+        ancora notificate (EmailSent = 0)."""
+        L = self.lang.get
+        try:
+            n = incoming_email.send_grouped_new_requests_email(self.db)
+        except Exception as e:
+            logger.error(f"Incoming request: invio email riepilogativa fallito: {e}", exc_info=True)
+            messagebox.showerror(
+                L('error', 'Errore'),
+                L('inc_email_grouped_error',
+                  'Errore durante l''invio dell''email riepilogativa:\n{0}').format(e),
+                parent=self)
+            return
+        if n > 0:
+            messagebox.showinfo(
+                L('info', 'Info'),
+                L('inc_email_grouped_sent',
+                  '{0} richieste inviate in un''unica email riepilogativa.').format(n),
+                parent=self)
+        else:
+            messagebox.showinfo(L('info', 'Info'),
+                                L('inc_email_grouped_none', 'Nessuna richiesta da notificare.'),
+                                parent=self)
+        self._update_email_button()
 
 
 # ── Dialog inserimento rapido fornitore ───────────────────────────────────────

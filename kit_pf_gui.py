@@ -289,21 +289,30 @@ class KitPFVerifyWindow(tk.Toplevel):
         if not unique:
             return
         cursor = self.db.conn.cursor()
-        cursor.execute("""
+        # Il lettore QR puo' inviare '+' come '^' (layout tastiera errato):
+        # prova prima il codice grezzo, poi quello normalizzato.
+        r = None
+        matched = None
+        for variant in whl.scanned_code_variants(unique):
+            cursor.execute("""
             SELECT qty_picked FROM Traceability_RS.dbo.picking_list_items
             WHERE picking_list_id=? AND unique_number=? AND qty_picked > 0
-        """, (self.list_id, unique))
-        r = cursor.fetchone()
+            """, (self.list_id, variant))
+            r = cursor.fetchone()
+            if r is not None:
+                matched = variant
+                break
         cursor.close()
         if r is None:
             self._register_unknown(unique)
             return
+        self.scan_var.set(matched)
         self.qty_var.set(_fmt_qty(r[0]))
         self.qty_entry.focus_set()
         self.qty_entry.selection_range(0, 'end')
 
     def _on_confirm(self, event=None):
-        unique = self.scan_var.get().strip()
+        unique = whl.normalize_scanned_code(self.scan_var.get()).strip()
         qty_txt = self.qty_var.get().strip().replace(',', '.')
         self.alert_var.set('')
         if not unique:

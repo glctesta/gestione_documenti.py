@@ -100,6 +100,29 @@ def base_code(code: str) -> str:
     return code.split('|')[0]
 
 
+def normalize_scanned_code(code: str) -> str:
+    """Normalizza un codice proveniente dal lettore QR/barcode.
+
+    Alcuni lettori con layout tastiera errato inviano il '+' come '^'
+    (es. 'CNWE^02PMDIRSL4' invece di 'CNWE+02PMDIRSL4'): il codice non
+    viene trovato in lista. La conversione '^' -> '+' ripristina il
+    carattere originale.
+    """
+    return (code or '').replace('^', '+')
+
+
+def scanned_code_variants(code: str) -> List[str]:
+    """Varianti del codice scansionato da provare per il match, in ordine:
+    prima il codice grezzo, poi quello normalizzato (deduplicate)."""
+    raw = (code or '').strip()
+    norm = normalize_scanned_code(raw)
+    variants = []
+    for v in (raw, norm):
+        if v and v not in variants:
+            variants.append(v)
+    return variants
+
+
 # ──────────────────────────── Info lista ──────────────────────────────── #
 
 def get_list_info(cursor, list_id: int) -> Optional[dict]:

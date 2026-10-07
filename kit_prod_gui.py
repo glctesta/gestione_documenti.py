@@ -370,16 +370,20 @@ class KitProdVerifyWindow(tk.Toplevel):
         cursor = self.db.conn.cursor()
         items = prl.get_prod_items(cursor, self.list_id)
         cursor.close()
-        for it in items:
-            if it['material_code'].strip().upper() == material.upper():
-                self.qty_var.set(_fmt_qty(it['qty_missing']))
-                self.qty_entry.focus_set()
-                self.qty_entry.selection_range(0, 'end')
-                return
+        # Il lettore QR puo' inviare '+' come '^' (layout tastiera errato):
+        # prova prima il codice grezzo, poi quello normalizzato.
+        for variant in whl.scanned_code_variants(material):
+            for it in items:
+                if it['material_code'].strip().upper() == variant.upper():
+                    self.scan_var.set(variant)
+                    self.qty_var.set(_fmt_qty(it['qty_missing']))
+                    self.qty_entry.focus_set()
+                    self.qty_entry.selection_range(0, 'end')
+                    return
         self._register_unknown(material)
 
     def _on_confirm(self, event=None):
-        material = self.scan_var.get().strip()
+        material = whl.normalize_scanned_code(self.scan_var.get()).strip()
         qty_txt = self.qty_var.get().strip().replace(',', '.')
         self.alert_var.set('')
         if not material:
@@ -421,6 +425,7 @@ class KitProdVerifyWindow(tk.Toplevel):
         self._refresh(keep_alert=True)
 
     def _register_unknown(self, material):
+        material = whl.normalize_scanned_code(material)
         cursor = self.db.conn.cursor()
         try:
             whl.log_event(cursor, whl.orders_label(self.info['orders']),

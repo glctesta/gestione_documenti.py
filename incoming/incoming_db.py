@@ -69,7 +69,8 @@ _COLUMNS = [
     'ComponentCode', 'QtyToReceive', 'QtyExpectedPerPo', 'RequestedBy', 'RequestedOn',
     'RequesterHost', 'Status', 'AnswerMpnCode', 'AnswerText',
     'AnsweredBy', 'AnsweredOn', 'ConfirmedOk', 'ConfirmedBy', 'ConfirmedOn',
-    'LastEscalationPopup',
+    'LastEscalationPopup', 'Manufacturer', 'EmailSent', 'EmailSentAt',
+    'PopupAcknowledgedAt',
 ]
 
 _COLUMNS_SQL = ', '.join('[%s]' % c for c in _COLUMNS)
@@ -162,7 +163,12 @@ BEGIN
         ConfirmedOk          BIT           NULL,
         ConfirmedBy          NVARCHAR(100) NULL,
         ConfirmedOn          DATETIME      NULL,
-        LastEscalationPopup  DATETIME      NULL
+        LastEscalationPopup  DATETIME      NULL,
+        Manufacturer         NVARCHAR(200) NULL,
+        EmailSent            BIT           NOT NULL
+            CONSTRAINT DF_dyn_IncomingRequest_EmailSent DEFAULT (0),
+        EmailSentAt          DATETIME      NULL,
+        PopupAcknowledgedAt  DATETIME      NULL
     );
     CREATE NONCLUSTERED INDEX IX_dyn_IncomingRequest_Status
         ON [Traceability_RS].[dyn].[IncomingRequest] (Status, RequestedOn);
@@ -199,6 +205,42 @@ IF COL_LENGTH('[Traceability_RS].[dyn].[IncomingRequest]', 'ComponentCode') IS N
 BEGIN
     ALTER TABLE [Traceability_RS].[dyn].[IncomingRequest]
         ADD ComponentCode NVARCHAR(100) NULL;
+END
+"""
+
+# ALTER idempotenti: produttore, tracciamento invio email riepilogativa (EmailSent/
+# EmailSentAt) e conferma di lettura del popup (PopupAcknowledgedAt: dopo la chiusura
+# del popup la richiesta non genera piu' popup di escalation/reminder, solo email).
+_DDL_ALTER_MANUFACTURER = """
+IF COL_LENGTH('[Traceability_RS].[dyn].[IncomingRequest]', 'Manufacturer') IS NULL
+BEGIN
+    ALTER TABLE [Traceability_RS].[dyn].[IncomingRequest]
+        ADD Manufacturer NVARCHAR(200) NULL;
+END
+"""
+
+_DDL_ALTER_EMAIL_SENT = """
+IF COL_LENGTH('[Traceability_RS].[dyn].[IncomingRequest]', 'EmailSent') IS NULL
+BEGIN
+    ALTER TABLE [Traceability_RS].[dyn].[IncomingRequest]
+        ADD EmailSent BIT NOT NULL
+            CONSTRAINT DF_dyn_IncomingRequest_EmailSent DEFAULT (0);
+END
+"""
+
+_DDL_ALTER_EMAIL_SENT_AT = """
+IF COL_LENGTH('[Traceability_RS].[dyn].[IncomingRequest]', 'EmailSentAt') IS NULL
+BEGIN
+    ALTER TABLE [Traceability_RS].[dyn].[IncomingRequest]
+        ADD EmailSentAt DATETIME NULL;
+END
+"""
+
+_DDL_ALTER_POPUP_ACK = """
+IF COL_LENGTH('[Traceability_RS].[dyn].[IncomingRequest]', 'PopupAcknowledgedAt') IS NULL
+BEGIN
+    ALTER TABLE [Traceability_RS].[dyn].[IncomingRequest]
+        ADD PopupAcknowledgedAt DATETIME NULL;
 END
 """
 
@@ -240,6 +282,10 @@ def create_tables(db):
         _exec_ddl(db, _DDL_REQUEST)
         _exec_ddl(db, _DDL_REMINDER_LOG)
         _exec_ddl(db, _DDL_ALTER_COMPONENT_CODE)
+        _exec_ddl(db, _DDL_ALTER_MANUFACTURER)
+        _exec_ddl(db, _DDL_ALTER_EMAIL_SENT)
+        _exec_ddl(db, _DDL_ALTER_EMAIL_SENT_AT)
+        _exec_ddl(db, _DDL_ALTER_POPUP_ACK)
         _seed_settings(db)
         logger.info("incoming: tabelle e seed settings verificati")
     except Exception:
@@ -272,8 +318,8 @@ def create_request(db, data: dict) -> tuple:
     """Inserisce una nuova richiesta. Ritorna (request_id, request_number).
 
     data keys: request_type, supplier_id, supplier_name, ddt_number, ddt_date,
-    pur_order_number, mpn_code, wrong_mpn, component_code, qty_to_receive,
-    qty_expected_per_po, requested_by, requester_host
+    pur_order_number, mpn_code, wrong_mpn, component_code, manufacturer,
+    qty_to_receive, qty_expected_per_po, requested_by, requester_host
     """
     with db._lock:
         cur = _cursor(db)
@@ -284,10 +330,10 @@ def create_request(db, data: dict) -> tuple:
                 INSERT INTO %s
                     (RequestNumber, RequestType, SupplierId, SupplierName,
                      DdtNumber, DdtDate, PurOrderNumber, MpnCode, WrongMpn,
-                     ComponentCode, QtyToReceive, QtyExpectedPerPo,
+                     ComponentCode, Manufacturer, QtyToReceive, QtyExpectedPerPo,
                      RequestedBy, RequesterHost, Status)
                 OUTPUT INSERTED.Id
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """ % _TABLE,
                 (request_number,
                  data.get('request_type'),
@@ -299,6 +345,7 @@ def create_request(db, data: dict) -> tuple:
                  data.get('mpn_code'),
                  data.get('wrong_mpn'),
                  data.get('component_code'),
+                 data.get('manufacturer'),
                  data.get('qty_to_receive'),
                  data.get('qty_expected_per_po'),
                  data.get('requested_by'),
@@ -354,6 +401,66 @@ def get_pending_requests(db, request_type=None, allowed_types=None) -> list:
         sql += " ORDER BY RequestedOn"
         cur.execute(sql, params)
         return _fetch_dicts(cur)
+
+
+def get_unsent_requests(db, request_type=None) -> list:
+    """Richieste non ancora incluse in un'email riepilogativa (EmailSent = 0),
+    per RequestedOn crescente. Usate dal pulsante 'Invia email riepilogativa'."""
+    with db._lock:
+        cur = _cursor(db)
+        sql = "SELECT %s FROM %s WHERE EmailSent = 0" % (_COLUMNS_SQL, _TABLE)
+        params = []
+        if request_type:
+            sql += " AND RequestType = ?"
+            params.append(request_type)
+        sql += " ORDER BY RequestedOn"
+        cur.execute(sql, params)
+        return _fetch_dicts(cur)
+
+
+def mark_emails_sent(db, ids) -> int:
+    """Marca le richieste come incluse in un'email riepilogativa.
+    UPDATE atomico riga per riga (WHERE EmailSent = 0): ritorna il numero di
+    righe marcate in questa chiamata."""
+    marked = 0
+    with db._lock:
+        cur = _cursor(db)
+        try:
+            for request_id in ids:
+                cur.execute(
+                    "UPDATE %s SET EmailSent = 1, EmailSentAt = GETDATE() "
+                    "WHERE Id = ? AND EmailSent = 0" % _TABLE,
+                    (request_id,))
+                marked += cur.rowcount
+            db.conn.commit()
+            return marked
+        except Exception:
+            try:
+                db.conn.rollback()
+            except Exception:
+                pass
+            logger.exception("incoming: mark_emails_sent fallita")
+            raise
+
+
+def find_request_by_triplet(db, component_code, manufacturer, mpn) -> dict | None:
+    """Prima richiesta con lo stesso COD INTERN + PRODUCĂTOR + MPN, per il
+    controllo duplicati sullo storico.
+
+    Esclude le richieste RESPINS (CONFIRMED_KO): lo schema prevede che un MPN
+    respinto venga riproposto tramite l'applicazione, quindi quel tripletto
+    puo' essere reinserito. Bloccano solo richieste aperte (PENDING/ANSWERED)
+    o gia' approvate (CONFIRMED_OK)."""
+    with db._lock:
+        cur = _cursor(db)
+        cur.execute(
+            "SELECT TOP 1 %s FROM %s "
+            "WHERE ComponentCode = ? AND Manufacturer = ? "
+            "AND (MpnCode = ? OR WrongMpn = ?) "
+            "AND Status <> ? "
+            "ORDER BY RequestedOn DESC" % (_COLUMNS_SQL, _TABLE),
+            (component_code, manufacturer, mpn, mpn, STATUS_CONFIRMED_KO))
+        return _row_to_dict(cur, cur.fetchone())
 
 
 def get_requests_report(db, filters: dict | None = None) -> list:
@@ -809,7 +916,9 @@ def save_monthly_recipients(db, emails: list):
 # ---------------------------------------------------------------------------
 def get_escalation_candidates(db) -> list:
     """PENDING con eta' >= ESCALATION_AGE_MINUTES e mai escalate o escalate
-    almeno ESCALATION_REPEAT_MINUTES fa."""
+    almeno ESCALATION_REPEAT_MINUTES fa. Include anche le richieste il cui
+    popup e' stato chiuso (PopupAcknowledgedAt): per quelle l'escalation resta
+    solo email, senza popup (filtro applicato dal chiamante)."""
     with db._lock:
         cur = _cursor(db)
         cur.execute(
@@ -848,12 +957,15 @@ def mark_escalation_sent(db, request_id):
 # Reminder
 # ---------------------------------------------------------------------------
 def get_pending_for_reminders(db) -> list:
-    """Tutte le PENDING con dati minimi per il loop dei reminder."""
+    """Tutte le PENDING con dati minimi per il loop dei reminder.
+    Include PopupAcknowledgedAt: i reminder restano per tutte, ma chi ha gia'
+    chiuso il popup non ne riceve altri (solo email)."""
     with db._lock:
         cur = _cursor(db)
         cur.execute(
             """
-            SELECT Id, RequestNumber, RequestType, RequestedOn, RequesterHost
+            SELECT Id, RequestNumber, RequestType, RequestedOn, RequesterHost,
+                   PopupAcknowledgedAt
             FROM %s
             WHERE Status = ?
             ORDER BY RequestedOn

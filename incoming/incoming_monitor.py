@@ -16,9 +16,12 @@ categorie 'INCOMING' e 'INCOMING_ANSWER') gia' usato dal Kit Preparation
 
 Il claim e' atomico (UPDATE ... WHERE displayed_date IS NULL): un popup
 viene mostrato una sola volta anche con piu' postazioni dello stesso ruolo
-attive. Le richieste in escalation (PENDING da >= 120 min senza popup di
-escalation da >= 30 min) vengono rilevate dal monitor stesso sulle
-postazioni receiver e notificate con popup + email (incoming_email).
+attive. Chiudendo il popup le richieste mostrate vengono marcate
+(PopupAcknowledgedAt): finche' restano PENDING non generano piu' popup di
+escalation/reminder, solo email. Le richieste in escalation (PENDING da
+>= 120 min senza popup di escalation da >= 30 min) vengono rilevate dal
+monitor stesso sulle postazioni receiver e notificate con popup + email
+(incoming_email).
 """
 import logging
 import socket
@@ -176,6 +179,24 @@ class IncomingMonitor:
 
         def on_close():
             self._popup_open = False
+            # Marca le richieste mostrate come "popup visto": finche' restano
+            # PENDING non ricevono piu' popup di escalation/reminder (solo email).
+            try:
+                ack_numbers = [row[3] for row in rows
+                               if len(row) > 5 and row[5] == 'INCOMING' and row[3]]
+                if ack_numbers:
+                    with self.db._lock:
+                        cur = _cursor(self.db)
+                        for number in ack_numbers:
+                            cur.execute(
+                                "UPDATE Traceability_RS.dyn.IncomingRequest "
+                                "SET PopupAcknowledgedAt = GETDATE() "
+                                "WHERE RequestNumber = ? AND Status = 'PENDING'",
+                                (number,))
+                        self.db.conn.commit()
+            except Exception as e:
+                logger.error("IncomingMonitor: marcatura popup visto fallita: %s", e,
+                             exc_info=True)
             popup.destroy()
 
         if has_request:

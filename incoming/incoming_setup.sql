@@ -48,7 +48,12 @@ BEGIN
         ConfirmedOk          BIT           NULL,
         ConfirmedBy          NVARCHAR(100) NULL,
         ConfirmedOn          DATETIME      NULL,
-        LastEscalationPopup  DATETIME      NULL
+        LastEscalationPopup  DATETIME      NULL,
+        Manufacturer         NVARCHAR(200) NULL,              -- produttore (obbligatorio in form)
+        EmailSent            BIT           NOT NULL
+            CONSTRAINT DF_dyn_IncomingRequest_EmailSent DEFAULT (0),  -- 1 = inclusa in email riepilogativa
+        EmailSentAt          DATETIME      NULL,
+        PopupAcknowledgedAt  DATETIME      NULL               -- popup chiuso: niente piu' popup (solo email)
     );
     PRINT 'Creata tabella dyn.IncomingRequest';
 
@@ -76,6 +81,56 @@ END
 ELSE
 BEGIN
     PRINT 'Colonna ComponentCode gia'' presente';
+END
+GO
+
+-- ------------------------------------------------------------
+-- 1c) Colonne Manufacturer / EmailSent / EmailSentAt / PopupAcknowledgedAt
+--     (idempotente): installazioni pre-esistenti
+-- ------------------------------------------------------------
+IF COL_LENGTH('[Traceability_RS].[dyn].[IncomingRequest]', 'Manufacturer') IS NULL
+BEGIN
+    ALTER TABLE [Traceability_RS].[dyn].[IncomingRequest]
+        ADD Manufacturer NVARCHAR(200) NULL;
+    PRINT 'Aggiunta colonna Manufacturer a dyn.IncomingRequest';
+END
+ELSE
+BEGIN
+    PRINT 'Colonna Manufacturer gia'' presente';
+END
+GO
+IF COL_LENGTH('[Traceability_RS].[dyn].[IncomingRequest]', 'EmailSent') IS NULL
+BEGIN
+    ALTER TABLE [Traceability_RS].[dyn].[IncomingRequest]
+        ADD EmailSent BIT NOT NULL
+            CONSTRAINT DF_dyn_IncomingRequest_EmailSent DEFAULT (0);
+    PRINT 'Aggiunta colonna EmailSent a dyn.IncomingRequest';
+END
+ELSE
+BEGIN
+    PRINT 'Colonna EmailSent gia'' presente';
+END
+GO
+IF COL_LENGTH('[Traceability_RS].[dyn].[IncomingRequest]', 'EmailSentAt') IS NULL
+BEGIN
+    ALTER TABLE [Traceability_RS].[dyn].[IncomingRequest]
+        ADD EmailSentAt DATETIME NULL;
+    PRINT 'Aggiunta colonna EmailSentAt a dyn.IncomingRequest';
+END
+ELSE
+BEGIN
+    PRINT 'Colonna EmailSentAt gia'' presente';
+END
+GO
+IF COL_LENGTH('[Traceability_RS].[dyn].[IncomingRequest]', 'PopupAcknowledgedAt') IS NULL
+BEGIN
+    ALTER TABLE [Traceability_RS].[dyn].[IncomingRequest]
+        ADD PopupAcknowledgedAt DATETIME NULL;
+    PRINT 'Aggiunta colonna PopupAcknowledgedAt a dyn.IncomingRequest';
+END
+ELSE
+BEGIN
+    PRINT 'Colonna PopupAcknowledgedAt gia'' presente';
 END
 GO
 

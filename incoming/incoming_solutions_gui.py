@@ -164,6 +164,18 @@ class IncomingSolutionsWindow(tk.Toplevel):
         wrap.rowconfigure(0, weight=1)
         wrap.columnconfigure(0, weight=1)
         self.tree.bind('<<TreeviewSelect>>', self._on_select)
+        # Colorazione automatica: giallo = salvata ma email riepilogativa non
+        # ancora inviata; arancione = email inviata, in attesa di risposta.
+        self.tree.tag_configure('new', background='#FFF9C4')
+        self.tree.tag_configure('email_sent', background='#FFE0B2')
+
+        # Legenda colori
+        legend = ttk.Frame(self)
+        legend.pack(fill=tk.X, padx=10, pady=(0, 2))
+        tk.Label(legend, text=L('inc_sol_tag_new', 'Salvata — email da inviare'),
+                 bg='#FFF9C4', font=('Segoe UI', 8), padx=6).pack(side=tk.LEFT, padx=(0, 8))
+        tk.Label(legend, text=L('inc_sol_tag_email_sent', 'Email inviata — in attesa di risposta'),
+                 bg='#FFE0B2', font=('Segoe UI', 8), padx=6).pack(side=tk.LEFT, padx=(0, 8))
 
         # Dettaglio + risposta (testo copiabile ma NON modificabile)
         det = ttk.LabelFrame(self, text=L('inc_sol_detail', 'Dettaglio richiesta e soluzione'), padding=8)
@@ -243,7 +255,8 @@ class IncomingSolutionsWindow(tk.Toplevel):
                 r.get('PurOrderNumber') or '',
                 r.get('QtyToReceive') if r.get('QtyToReceive') is not None else '',
                 r.get('RequestedBy') or '',
-                age if age is not None else ''))
+                age if age is not None else ''),
+                tags=('email_sent',) if r.get('EmailSent') else ('new',))
         self.title(L('inc_sol_title', 'Soluzioni — Ricezione') +
                    f"  ({len(rows)} {L('inc_sol_pending', 'in attesa')})")
 
@@ -287,6 +300,7 @@ class IncomingSolutionsWindow(tk.Toplevel):
             f"{L('inc_req_wrong_mpn', 'MPN errato')}: {r.get('WrongMpn') or '-'}",
             f"{L('inc_req_component_code', 'Codice interno (componente)')}: "
             f"{r.get('ComponentCode') or '-'}",
+            f"{L('inc_req_manufacturer', 'Produttore')}: {r.get('Manufacturer') or '-'}",
             f"{L('inc_req_po', 'P.O.')}: {r.get('PurOrderNumber') or '-'}   "
             f"{L('inc_req_qty_receive', 'Q.tà da ricevere')}: {r.get('QtyToReceive') if r.get('QtyToReceive') is not None else '-'}   "
             f"{L('inc_req_qty_expected', 'Q.tà attesa P.O.')}: {r.get('QtyExpectedPerPo') if r.get('QtyExpectedPerPo') is not None else '-'}",

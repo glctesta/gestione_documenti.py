@@ -159,6 +159,7 @@ def new_request_messages(req: dict) -> dict:
         f"DDT: {req.get('DdtNumber', '-')} del {_fmt_dt(req.get('DdtDate'))}\n"
         f"P.O.: {req.get('PurOrderNumber', '-')}\n"
         f"MPN: {req.get('MpnCode', '-') or req.get('WrongMpn', '-')}\n"
+        f"Produttore: {req.get('Manufacturer') or '-'}\n"
         f"Codice interno: {req.get('ComponentCode') or '-'}\n"
         f"Quantita': {req.get('QtyToReceive', '-')} "
         f"(attesa da P.O.: {req.get('QtyExpectedPerPo', '-')})\n"
@@ -209,14 +210,79 @@ def send_answer_email(db, req: dict) -> None:
     _send_email_async(recipients, msg['subject'], msg['body'])
 
 
+# ───────────────────── Email riepilogativa raggruppata ────────────────── #
+
+def grouped_new_requests_message(request_type, requests: list) -> dict:
+    """Testi dell'email riepilogativa: UNA email per tipo che elenca tutte le
+    richieste (codici) salvate e non ancora notificate."""
+    lines = [
+        f"- {r.get('RequestNumber', '?')} | fornitore {r.get('SupplierName', '-')} "
+        f"| DDT {r.get('DdtNumber', '-')} | cod. interno {r.get('ComponentCode') or '-'} "
+        f"| produttore {r.get('Manufacturer') or '-'} "
+        f"| MPN {r.get('MpnCode') or r.get('WrongMpn') or '-'} "
+        f"| q.tà {r.get('QtyToReceive') if r.get('QtyToReceive') is not None else '-'} "
+        f"| da {r.get('RequestedBy', '-')} ({_fmt_dt(r.get('RequestedOn'))})"
+        for r in requests
+    ]
+    subject = (f"[RICHIESTE] Ricezione — {_type_label(request_type)} — "
+               f"{len(requests)} codici in attesa")
+    body = (f"Le seguenti richieste incoming ({_type_label(request_type)}) sono state "
+            f"registrate e attendono una risposta:\n\n"
+            + '\n'.join(lines)
+            + "\n\nAccedi al modulo Ricezione (Soluzioni Incoming) per rispondere.")
+    return {'subject': subject, 'body': body}
+
+
+def send_grouped_new_requests_email(db, request_type=None) -> int:
+    """Invia UNA email riepilogativa per tipo con tutte le richieste ancora
+    non notificate (EmailSent = 0) e le marca come inviate.
+
+    Ritorna il numero di richieste marcate EmailSent = 1. I tipi senza
+    destinatari configurati restano EmailSent = 0 (tentativo al prossimo invio).
+    Mai propagare eccezioni: errori solo loggati.
+    """
+    try:
+        requests = incoming_db.get_unsent_requests(db, request_type) or []
+    except Exception as e:
+        logger.error("Lettura richieste non notificate fallita: %s", e, exc_info=True)
+        return 0
+    if not requests:
+        return 0
+
+    by_type = {}
+    for r in requests:
+        by_type.setdefault(r.get('RequestType'), []).append(r)
+
+    total_marked = 0
+    for rtype, rows in sorted(by_type.items()):
+        recipients = _recipients_for_type(db, rtype)
+        if not recipients:
+            logger.warning("Nessun destinatario per tipo %s: %d richieste NON "
+                           "notificate (restano EmailSent=0)", rtype, len(rows))
+            continue
+        try:
+            marked = incoming_db.mark_emails_sent(db, [r.get('Id') for r in rows])
+        except Exception as e:
+            logger.error("Marcatura EmailSent fallita per tipo %s: %s", rtype, e,
+                         exc_info=True)
+            continue
+        total_marked += marked
+        msg = grouped_new_requests_message(rtype, rows)
+        _send_email_async(recipients, msg['subject'], msg['body'])
+        logger.info("Email riepilogativa inviata per tipo %s (%d richieste)",
+                    rtype, len(rows))
+    return total_marked
+
+
 # ───────────────────── Escalation ─────────────────────────────────────── #
 
 def process_escalations(db, dry_run: bool = False) -> int:
     """Rileva le richieste PENDING in escalation (eta' >= 120 min, nessun
     popup di escalation da >= 30 min) e per ciascuna:
       - claim atomico su LastEscalationPopup (una sola postazione vince);
-      - popup di escalation a 'INCOMING_RECEIVER' (category='INCOMING');
-      - email riepilogativa ai destinatari configurati per il tipo.
+      - popup di escalation a 'INCOMING_RECEIVER' (category='INCOMING'), solo
+        per le richieste il cui popup non e' stato chiuso (PopupAcknowledgedAt);
+      - email riepilogativa ai destinatari configurati per il tipo (sempre).
 
     Ritorna il numero di richieste escalate. Sicuro su piu' PC concorrenti.
     """
@@ -255,6 +321,10 @@ def process_escalations(db, dry_run: bool = False) -> int:
                     claimed.append(c)
             if claimed and not dry_run:
                 for c in claimed:
+                    # Popup solo per chi non ha ancora chiuso il popup della
+                    # richiesta (PopupAcknowledgedAt): gli altri ricevono solo email.
+                    if c.get('PopupAcknowledgedAt') is not None:
+                        continue
                     number = c.get('RequestNumber', '?')
                     title = f"⏰ ESCALATION richiesta Ricezione — {number}"
                     msg = (f"Richiesta {number} ({_type_label(c.get('RequestType'))}) "
@@ -307,7 +377,8 @@ def check_and_send_reminders(db, dry_run: bool = False) -> int:
     sollecito, 0-based, e' consentito solo dopo k * 24/N ore da mezzanotte).
     Per ogni richiesta eleggibile: popup a 'INCOMING_RECEIVER'
     (category='INCOMING') + log su tabella reminder + UNA email riepilogativa
-    per tipo ai destinatari configurati.
+    per tipo ai destinatari configurati. Le richieste il cui popup e' stato
+    chiuso (PopupAcknowledgedAt) ricevono solo l'email, senza popup.
 
     Ritorna il numero di richieste sollecitate. Pensato per essere
     schedulato ogni 30-60 minuti (lock cross-PC sul job).
@@ -376,8 +447,9 @@ def check_and_send_reminders(db, dry_run: bool = False) -> int:
                         msg = (f"Richiesta {number} ({_type_label(request_type)}) "
                                f"ancora in attesa da {age_min} min. "
                                f"Sollecitare il ricevimento.")
-                        queue_popup(cur, 'INCOMING_RECEIVER', title, msg,
-                                    order_number=number, category='INCOMING')
+                        if req.get('PopupAcknowledgedAt') is None:
+                            queue_popup(cur, 'INCOMING_RECEIVER', title, msg,
+                                        order_number=number, category='INCOMING')
                         incoming_db.log_reminder_sent(db, req.get('Id'))
                         sent += 1
                 db.conn.commit()

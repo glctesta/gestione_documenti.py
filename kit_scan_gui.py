@@ -343,13 +343,22 @@ class KitScanWindow(tk.Toplevel):
         if not unique:
             return
         cursor = self.db.conn.cursor()
-        item = whl.find_item_by_unique(cursor, self.list_id, unique)
+        # Il lettore QR puo' inviare '+' come '^' (layout tastiera errato):
+        # prova prima il codice grezzo, poi quello normalizzato.
+        item = None
+        matched = None
+        for variant in whl.scanned_code_variants(unique):
+            item = whl.find_item_by_unique(cursor, self.list_id, variant)
+            if item is not None:
+                matched = variant
+                break
         cursor.close()
         if item is None:
             self._play_error_sound()
-            self._show_big_red_x(unique)
+            self._show_big_red_x(whl.normalize_scanned_code(unique))
             self._register_unknown(unique)
             return
+        self.scan_var.set(matched)
         self._play_success_sound()
         if item['pick_status'] == whl.ST_COMPLETE:
             if not messagebox.askyesno(
@@ -367,7 +376,7 @@ class KitScanWindow(tk.Toplevel):
         self.qty_entry.selection_range(0, 'end')
 
     def _on_confirm(self, event=None):
-        unique = self.scan_var.get().strip()
+        unique = whl.normalize_scanned_code(self.scan_var.get()).strip()
         qty_txt = self.qty_var.get().strip().replace(',', '.')
         self.alert_var.set('')
         if not unique:

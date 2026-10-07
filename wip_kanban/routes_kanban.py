@@ -205,6 +205,30 @@ def api_load_board(code):
         conn.close()
 
 
+@kanban_bp.route("/api/positions/<code>/boards/transfer", methods=["POST"])
+@auth.require_page_token_or_session("kanban_load")
+def api_transfer_board(code):
+    """Trasferisce una scheda dal Kanban WIP alla posizione REPAIR <code>."""
+    labelcode = (request.get_json(silent=True) or {}).get("labelcode") or ""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        ok, err, info = kanban_logic.transfer_board(cur, code, labelcode, _user_name())
+        if not ok:
+            conn.rollback()
+            status = 404 if err in ("invalid_labelcode", "invalid_position",
+                                    "not_in_kanban") else 409
+            return jsonify({"error": err, "info": info}), status
+        conn.commit()
+        return jsonify({"ok": True, "info": info})
+    except Exception as e:
+        conn.rollback()
+        logger.exception("Errore trasferimento scheda: %s", e)
+        return jsonify({"error": "db_error", "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
 # ── PDF ───────────────────────────────────────────────────────────────────────
 
 @kanban_bp.route("/api/masters/<master>/labels.pdf")

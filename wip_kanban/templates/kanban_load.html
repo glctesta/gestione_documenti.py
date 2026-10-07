@@ -244,6 +244,50 @@
       $('scan-input').focus();
     }
 
+    // Notifica fire-and-forget al display di reparto (:6505): il monitor
+    // evidenzia la posizione 3D appena caricata/trasferita. Il fallimento del
+    // display NON deve bloccare l'operazione.
+    function notifyDisplay(area, pos, code, info) {
+      try {
+        info = info || {};
+        fetch('http://' + location.hostname + ':6505/api/highlight', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            area: area,
+            deposit: 1,
+            kind: 'load',
+            position: pos,
+            labelcode: code,
+            order_number: info.OrderNumber || info.order_number || '',
+            product_code: info.ProductCode || info.product_code || ''
+          })
+        }).catch(() => {});
+      } catch (e) { /* display assente: ignora */ }
+    }
+
+    function afterBoardLoaded(pos, code, info) {
+      $('scan-input').value = '';
+      $('scan-info').textContent = '';
+      lastScanInfo = null;
+      refreshBoards();
+      refreshMasters();
+      $('scan-input').focus();
+    }
+
+    // Trasferimento scheda dal Kanban WIP alla posizione REPAIR corrente,
+    // dopo conferma dell'utente (scheda trovata nel WIP durante un carico REPAIR).
+    async function transferBoard(pos, code) {
+      const res = await apiFetch('/kanban/api/positions/' + encodeURIComponent(pos) + '/boards/transfer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ labelcode: code })
+      });
+      msg(UI.transfer_done.replace('{label}', code).replace('{code}', pos), 'success');
+      notifyDisplay('REPAIR', pos, code, res.info || {});
+      afterBoardLoaded(pos, code, res.info);
+    }
+
     async function loadBoard() {
       if (loadingBoard) return;
       clearMsg();
@@ -258,34 +302,22 @@
           body: JSON.stringify({ labelcode: code })
         });
         msg(UI.board_loaded.replace('{label}', code).replace('{code}', pos), 'success');
-        // Notifica fire-and-forget al display di reparto (:6505): il monitor
-        // evidenzia la posizione 3D appena caricata. Il fallimento del display
-        // NON deve bloccare il caricamento.
-        try {
-          const hlInfo = res.info || {};
-          const hlArea = pos.charAt(0) === 'R' ? 'REPAIR' : 'WIP';
-          fetch('http://' + location.hostname + ':6505/api/highlight', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              area: hlArea,
-              deposit: 1,
-              kind: 'load',
-              position: pos,
-              labelcode: code,
-              order_number: hlInfo.OrderNumber || hlInfo.order_number || '',
-              product_code: hlInfo.ProductCode || hlInfo.product_code || ''
-            })
-          }).catch(() => {});
-        } catch (e) { /* display assente: ignora */ }
-        $('scan-input').value = '';
-        $('scan-info').textContent = '';
-        lastScanInfo = null;
-        refreshBoards();
-        refreshMasters();
-        $('scan-input').focus();
+        notifyDisplay(pos.charAt(0) === 'R' ? 'REPAIR' : 'WIP', pos, code, res.info || {});
+        afterBoardLoaded(pos, code, res.info);
       } catch (e) {
-        if (e.error === 'board_already_in') {
+        if (e.error === 'board_in_wip') {
+          const info = e.info || {};
+          const text = UI.transfer_confirm
+            .replace('{product}', info.ProductCode || info.product_code || '?')
+            .replace('{position}', info.position || '?');
+          if (window.confirm(text)) {
+            transferBoard(pos, code).catch(e2 => {
+              msg(UI.msg_error + (e2.message || ''), 'error');
+            });
+          }
+        } else if (e.error === 'fail_in_wip') {
+          msg(UI.fail_in_wip, 'error');
+        } else if (e.error === 'board_already_in') {
           msg(UI.board_already_in.replace('{label}', code).replace('{code}', (e.info && e.info.position) || '?'), 'error');
         } else {
           msg(UI.msg_error + (e.message || UI.invalid_labelcode), 'error');
