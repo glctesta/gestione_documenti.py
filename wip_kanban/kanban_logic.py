@@ -267,21 +267,26 @@ def _find_active_board(cur, labelcode):
     return cur.fetchone()
 
 
-def _board_has_fail(cur, idboard):
-    """True se la scheda ha almeno una scansione con esito FAIL (in qualsiasi fase)."""
+def _latest_scan_is_fail(cur, idboard):
+    """True se l'ULTIMA scansione della scheda ha esito FAIL (IsPass = 0).
+    Un FAIL storico in una fase precedente (es. AOI) non blocca se la scansione
+    piu' recente e' PASS (es. rilavorazione dichiarata dall'operatore)."""
     cur.execute(
-        "SELECT COUNT(*) FROM Traceability_RS.dbo.Scannings WHERE IDBoard = ? AND IsPass = 0",
+        """SELECT TOP 1 IsPass FROM Traceability_RS.dbo.Scannings
+           WHERE IDBoard = ? ORDER BY IDScan DESC""",
         (idboard,),
     )
-    return int(cur.fetchone()[0]) > 0
+    row = cur.fetchone()
+    return bool(row) and row[0] == 0
 
 
 def load_board(cur, position_code, labelcode, user):
     """Carica una scheda in una posizione. Restituisce (ok, errore, info).
 
     Regole area:
-      - WIP:    scheda con FAIL in qualsiasi fase NON caricabile ('fail_in_wip');
-                una scheda gia' in REPAIR resta bloccata ('board_already_in').
+      - WIP:    scheda il cui ULTIMO esito di scansione e' FAIL non caricabile
+                ('fail_in_wip'); una scheda gia' in REPAIR resta bloccata
+                ('board_already_in').
       - REPAIR: se la scheda e' gia' nel WIP restituisce 'board_in_wip' con i
                 dati per la conferma di trasferimento (gestita dal chiamante).
     """
@@ -297,7 +302,7 @@ def load_board(cur, position_code, labelcode, user):
     if not info:
         return False, "invalid_labelcode", None
 
-    if area == "WIP" and _board_has_fail(cur, info["IDBoard"]):
+    if area == "WIP" and _latest_scan_is_fail(cur, info["IDBoard"]):
         return False, "fail_in_wip", info
 
     existing = _find_active_board(cur, labelcode)
